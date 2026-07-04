@@ -1,0 +1,5 @@
+conv.md
+
+# Claude Code: personal settings and runtime state stay local
+.claude/settings.local.json
+.claude/*.lock
