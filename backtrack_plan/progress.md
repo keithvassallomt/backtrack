@@ -5,6 +5,12 @@
 > `[!]` blocked (explain under **Blocked** below).
 > Marking `[x]` without the stage file's acceptance criteria passing is a breach of
 > contract. Version numbers are human-only — see README.md.
+>
+> **GitHub board:** this file is the source of truth; the [Backtrack Project
+> board](https://github.com/users/keithvassallomt/projects/2) mirrors it. After
+> changing any checkbox, run `just sync-board-apply` to update the board. New
+> tasks: add them here + to the stage file, then `just provision-board-apply`.
+> See [../CLAUDE.md](../CLAUDE.md) for the full workflow.
 
 **Current stage:** 0 (not started)
 **Last updated:** (never — set on first commit)
