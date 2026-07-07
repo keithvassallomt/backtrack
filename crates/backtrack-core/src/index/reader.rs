@@ -44,6 +44,26 @@ pub struct VersionSpan {
     pub last_ts: i64,
 }
 
+/// One search result, aggregated across all of a path's versions.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SearchHit {
+    pub path_id: i64,
+    /// Full archive-relative path, reconstructed from the tree.
+    pub path: String,
+    pub name: String,
+    /// Kind of the most recent version.
+    pub kind: Kind,
+    /// Lifespan across every version: earliest first_seq .. latest last_seq.
+    pub first_seq: i64,
+    pub last_seq: i64,
+    pub first_ts: i64,
+    pub last_ts: i64,
+    /// How many distinct versions the path has had.
+    pub version_count: i64,
+    /// Whether the path is present in the latest archive.
+    pub exists_today: bool,
+}
+
 /// A single archive, for the snapshot sidebar. The GUI buckets these by
 /// day/week/month; `repo` drives the "on this computer" (spool/fs-snapshot)
 /// badge.
@@ -66,6 +86,29 @@ pub enum Direction {
 /// Read-only handle onto an index database.
 pub struct IndexReader {
     conn: Connection,
+}
+
+/// Turn user input into a safe FTS5 MATCH expression. The core term is wrapped
+/// in double quotes (so punctuation and FTS operators are treated literally),
+/// and a trailing `*` is preserved as a prefix match. Empty input yields `None`.
+fn fts_match_query(input: &str) -> Option<String> {
+    let trimmed = input.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let (core, prefix) = match trimmed.strip_suffix('*') {
+        Some(c) => (c.trim_end(), true),
+        None => (trimmed, false),
+    };
+    if core.is_empty() {
+        return None;
+    }
+    let escaped = core.replace('"', "\"\"");
+    Some(if prefix {
+        format!("\"{escaped}\"*")
+    } else {
+        format!("\"{escaped}\"")
+    })
 }
 
 impl IndexReader {
@@ -215,6 +258,105 @@ impl IndexReader {
         Ok(self
             .conn
             .query_row(sql, params![path_id, arg], |r| r.get::<_, Option<i64>>(0))?)
+    }
+
+    /// Cross-snapshot filename search over FTS5. Each hit aggregates a path's
+    /// whole history: lifespan, version count, and whether it still exists.
+    /// Results are ranked deleted-first, then by most-recent existence, then by
+    /// FTS relevance (bm25) — so a file you deleted surfaces above ones you
+    /// still have.
+    pub fn search(&self, query: &str) -> Result<Vec<SearchHit>> {
+        let Some(match_query) = fts_match_query(query) else {
+            return Ok(Vec::new());
+        };
+        let global_max = self.max_seq()?.unwrap_or(0);
+
+        // Matching paths with their FTS relevance. Each path has exactly one
+        // fts_names row, so the match (and its bm25 rank) is per file.
+        let mut fts = self.conn.prepare_cached(
+            "SELECT rowid, bm25(fts_names) FROM fts_names WHERE fts_names MATCH ?1",
+        )?;
+        let matches: Vec<(i64, f64)> = fts
+            .query_map(params![match_query], |r| Ok((r.get(0)?, r.get(1)?)))?
+            .collect::<std::result::Result<_, _>>()?;
+
+        let mut agg = self.conn.prepare_cached(
+            "SELECT p.name,
+                    MIN(v.first_seq), MAX(v.last_seq), COUNT(*),
+                    (SELECT kind FROM versions WHERE path_id = p.id ORDER BY last_seq DESC LIMIT 1)
+             FROM paths p JOIN versions v ON v.path_id = p.id
+             WHERE p.id = ?1",
+        )?;
+
+        let mut hits = Vec::with_capacity(matches.len());
+        for (path_id, bm25) in matches {
+            // A matched name might have no versions only if the index is
+            // inconsistent; skip defensively.
+            let row = agg
+                .query_row(params![path_id], |r| {
+                    Ok((
+                        r.get::<_, String>(0)?,
+                        r.get::<_, i64>(1)?,
+                        r.get::<_, i64>(2)?,
+                        r.get::<_, i64>(3)?,
+                        r.get::<_, String>(4)?,
+                    ))
+                })
+                .optional()?;
+            let Some((name, first_seq, last_seq, version_count, kind)) = row else {
+                continue;
+            };
+            hits.push((
+                bm25,
+                SearchHit {
+                    path_id,
+                    path: self.full_path(path_id)?,
+                    name,
+                    kind: Kind::from_token(&kind),
+                    first_seq,
+                    last_seq,
+                    first_ts: self.archive_ts(first_seq)?,
+                    last_ts: self.archive_ts(last_seq)?,
+                    version_count,
+                    exists_today: last_seq == global_max,
+                },
+            ));
+        }
+
+        // Rank: deleted first, then most-recent existence, then FTS relevance
+        // (lower bm25 = better match).
+        hits.sort_by(|(a_rank, a), (b_rank, b)| {
+            a.exists_today
+                .cmp(&b.exists_today)
+                .then(b.last_seq.cmp(&a.last_seq))
+                .then(a_rank.total_cmp(b_rank))
+        });
+        Ok(hits.into_iter().map(|(_, h)| h).collect())
+    }
+
+    /// The creation timestamp (epoch seconds) of the archive with this `seq`.
+    fn archive_ts(&self, seq: i64) -> Result<i64> {
+        Ok(self.conn.query_row(
+            "SELECT ts FROM archives WHERE seq = ?1",
+            params![seq],
+            |r| r.get(0),
+        )?)
+    }
+
+    /// Reconstruct a path's full `/`-separated string by walking to the root.
+    fn full_path(&self, mut id: i64) -> Result<String> {
+        let mut stmt = self
+            .conn
+            .prepare_cached("SELECT parent_id, name FROM paths WHERE id = ?1")?;
+        let mut parts = Vec::new();
+        while id != 0 {
+            let (parent, name): (i64, String) =
+                stmt.query_row(params![id], |r| Ok((r.get(0)?, r.get(1)?)))?;
+            parts.push(name);
+            id = parent;
+        }
+        parts.reverse();
+        Ok(parts.join("/"))
     }
 
     /// Resolve a folder path to its `paths.id`, treating an empty or `/` path as
@@ -427,6 +569,95 @@ mod tests {
         assert_eq!(nc("home/old/data", 2, Direction::Newer), Some(3)); // the deletion
         assert_eq!(nc("home/old/data", 3, Direction::Newer), None); // absent, never returns
         assert_eq!(nc("home/old/data", 3, Direction::Older), Some(2)); // last existence
+    }
+
+    /// The "Charlie" fixture: 50 archives. `home/keep.txt` and
+    /// `home/container.txt` live throughout; `home/contract.pdf` exists only in
+    /// archives 10..=40 and is gone since. Archive N has ts = N * 1000.
+    fn charlie_open() -> (tempfile::TempDir, IndexReader) {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("index.db");
+        {
+            let mut w = IndexWriter::open(&path).unwrap();
+            for seq in 1..=50 {
+                let mut listing = vec![
+                    dir("home"),
+                    file("home/keep.txt", 1),
+                    file("home/container.txt", 3),
+                ];
+                if (10..=40).contains(&seq) {
+                    listing.push(file("home/contract.pdf", 5));
+                }
+                w.ingest_archive(
+                    &meta(&format!("a{seq}"), seq * 1000),
+                    Repo::Primary,
+                    listing.into_iter(),
+                )
+                .unwrap();
+            }
+        }
+        let reader = IndexReader::open(&path).unwrap();
+        (tmp, reader)
+    }
+
+    #[test]
+    fn search_finds_deleted_file_with_correct_lifespan() {
+        let (_t, r) = charlie_open();
+        let hits = r.search("contract").unwrap();
+        assert_eq!(hits.len(), 1);
+        let h = &hits[0];
+        assert_eq!(h.path, "home/contract.pdf");
+        assert_eq!(h.kind, Kind::File);
+        assert!(!h.exists_today, "contract.pdf was deleted after archive 40");
+        assert_eq!((h.first_seq, h.last_seq), (10, 40));
+        assert_eq!((h.first_ts, h.last_ts), (10_000, 40_000));
+        assert_eq!(h.version_count, 1); // unchanged across its life
+    }
+
+    #[test]
+    fn search_prefix_matches_and_ranks_deleted_first() {
+        let (_t, r) = charlie_open();
+        // "cont*" prefix-matches both contract.pdf (deleted) and container.txt
+        // (still present). Deleted must rank first.
+        let hits = r.search("cont*").unwrap();
+        let paths: Vec<&str> = hits.iter().map(|h| h.path.as_str()).collect();
+        assert_eq!(paths, vec!["home/contract.pdf", "home/container.txt"]);
+        assert!(!hits[0].exists_today);
+        assert!(hits[1].exists_today);
+    }
+
+    #[test]
+    fn search_exact_term_does_not_leak_across_tokens() {
+        let (_t, r) = charlie_open();
+        // "contract" must not match "container".
+        let hits = r.search("contract").unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].path, "home/contract.pdf");
+    }
+
+    #[test]
+    fn search_present_file_flagged_exists_today() {
+        let (_t, r) = charlie_open();
+        let hits = r.search("keep").unwrap();
+        assert_eq!(hits.len(), 1);
+        assert!(hits[0].exists_today);
+        assert_eq!((hits[0].first_seq, hits[0].last_seq), (1, 50));
+    }
+
+    #[test]
+    fn search_empty_query_returns_nothing() {
+        let (_t, r) = charlie_open();
+        assert!(r.search("").unwrap().is_empty());
+    }
+
+    #[test]
+    fn fts_query_quotes_and_escapes() {
+        assert_eq!(fts_match_query("contract").as_deref(), Some("\"contract\""));
+        assert_eq!(fts_match_query("cont*").as_deref(), Some("\"cont\"*"));
+        // Quotes are doubled so a crafted name can't break out of the phrase.
+        assert_eq!(fts_match_query(r#"a"b"#).as_deref(), Some("\"a\"\"b\""));
+        assert_eq!(fts_match_query("   "), None);
+        assert_eq!(fts_match_query("*"), None);
     }
 
     #[test]

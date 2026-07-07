@@ -29,7 +29,7 @@
 - [x] S01-T1 Schema migrations + open/integrity-check on start
 - [x] S01-T2 Interval-encoded ingest from borg-list JSONL fixtures
 - [x] S01-T3 Timeline queries (folder@snapshot, file history, diff-vs-previous)
-- [ ] S01-T4 FTS5 filename search incl. deleted-file lifespans
+- [x] S01-T4 FTS5 filename search incl. deleted-file lifespans
 - [ ] S01-T5 Changed-since-archive query (feeds offline spool)
 - [ ] S01-T6 Prune/expiry handling (close intervals, merge)
 - [ ] S01-T7 demo-repo fixture generator
@@ -174,3 +174,11 @@
   `next_change` uses interval boundaries: when the file exists at `from_seq` the
   answer is the adjacent archive past its interval end/start; when absent, the
   nearest (re)appearance/disappearance.
+- 2026-07-07 (S01-T4): `search` uses the default FTS5 unicode61 tokenizer, so a
+  name like `invoice-may.pdf` indexes as tokens `invoice`/`may`/`pdf`; queries
+  are token-exact or, with a trailing `*`, token-prefix (the plan's
+  "substring-ish"). User input is wrapped in a double-quoted FTS phrase (quotes
+  doubled) so punctuation/operators in crafted filenames can't inject MATCH
+  syntax. Ranking: not-exists-today first, then latest existence, then bm25.
+  Charlie test (file living only in archives 10..40) confirmed for `contract`
+  and `cont*`, incl. that `contract` does not match `container`.
