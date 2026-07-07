@@ -90,6 +90,55 @@ test-integration:
     fi
     cargo test --workspace --features integration
 
+# ─── Versioning (human-only — see VERSIONING.md) ────────────────────────────
+
+# Set the version across all tracked locations. Human-only; does NOT commit.
+bump-version NEW_VERSION:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    new="{{NEW_VERSION}}"
+    semver='^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$'
+    if ! [[ "$new" =~ $semver ]]; then
+        echo "Not a valid SemVer version: '$new'" >&2
+        exit 1
+    fi
+    old="$(awk '/^\[workspace\.package\]/{p=1} p&&/^version = /{gsub(/[",]/,"",$3); print $3; exit}' Cargo.toml)"
+    if [[ "$old" == "$new" ]]; then
+        echo "Version is already $new; nothing to do."
+        exit 0
+    fi
+    # Update only the version line inside [workspace.package]; crates inherit it.
+    awk -v new="$new" '
+        /^\[workspace\.package\]/ { inpkg = 1 }
+        /^\[/ && $0 !~ /^\[workspace\.package\]/ { inpkg = 0 }
+        inpkg && /^version = / { sub(/"[^"]*"/, "\"" new "\"") }
+        { print }
+    ' Cargo.toml > Cargo.toml.tmp && mv Cargo.toml.tmp Cargo.toml
+    # Refresh the lockfile so the workspace crates record the new version.
+    cargo update --workspace --quiet
+    echo "Bumped version: $old -> $new"
+    echo "Locations updated: Cargo.toml (+ Cargo.lock). Review and commit manually:"
+    git --no-pager diff --stat
+
+# Fail if version locations disagree (Cargo.toml vs the workspace crates in the lockfile).
+verify-version:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    python3 - <<'PY'
+    import sys, tomllib
+    with open("Cargo.toml", "rb") as f:
+        want = tomllib.load(f)["workspace"]["package"]["version"]
+    with open("Cargo.lock", "rb") as f:
+        lock = tomllib.load(f)
+    crates = {"backtrack-core", "backtrackd", "backtrack-gtk", "backtrack-cli"}
+    bad = [(p["name"], p["version"]) for p in lock["package"]
+           if p["name"] in crates and p["version"] != want]
+    if bad:
+        print(f"Version mismatch (workspace is {want}): {bad}", file=sys.stderr)
+        sys.exit(1)
+    print(f"verify-version OK: all workspace crates at {want}")
+    PY
+
 # ─── Run ────────────────────────────────────────────────────────────────────
 
 # Run the daemon with debug logging.
