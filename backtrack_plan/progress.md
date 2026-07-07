@@ -28,7 +28,7 @@
 ## Stage 1 — Core index ([stage file](stages/stage-01-core-index.md))
 - [x] S01-T1 Schema migrations + open/integrity-check on start
 - [x] S01-T2 Interval-encoded ingest from borg-list JSONL fixtures
-- [ ] S01-T3 Timeline queries (folder@snapshot, file history, diff-vs-previous)
+- [x] S01-T3 Timeline queries (folder@snapshot, file history, diff-vs-previous)
 - [ ] S01-T4 FTS5 filename search incl. deleted-file lifespans
 - [ ] S01-T5 Changed-since-archive query (feeds offline spool)
 - [ ] S01-T6 Prune/expiry handling (close intervals, merge)
@@ -165,3 +165,12 @@
   kind+size+mtime+chunk_hash; Borg `list` supplies no chunk hash, so size+mtime
   decide, as designed. Ingest assumes chronological archive order (backfill is
   Stage 4). proptest-regressions/ is checked in per proptest convention.
+- 2026-07-07 (S01-T3): `IndexReader` opens the DB with `query_only=ON` (rather
+  than strict read-only) to sidestep WAL shared-memory access issues while still
+  forbidding writes; it verifies schema_version == current and never migrates.
+  `folder_at` on the 200k-file index runs under the 10ms budget (asserted in
+  test). `archives_overview` returns per-archive summaries newest-first (repo
+  flag included); day/week/month bucketing is left to the GUI as presentation.
+  `next_change` uses interval boundaries: when the file exists at `from_seq` the
+  answer is the adjacent archive past its interval end/start; when absent, the
+  nearest (re)appearance/disappearance.

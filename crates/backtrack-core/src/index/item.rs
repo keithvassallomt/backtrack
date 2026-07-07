@@ -45,6 +45,17 @@ impl Kind {
             Kind::Other => "other",
         }
     }
+
+    /// Inverse of [`Kind::as_str`]: reconstruct a [`Kind`] from a stored token.
+    /// Unknown tokens (only possible from a corrupt row) map to [`Kind::Other`].
+    pub fn from_token(token: &str) -> Kind {
+        match token {
+            "file" => Kind::File,
+            "dir" => Kind::Dir,
+            "symlink" => Kind::Symlink,
+            _ => Kind::Other,
+        }
+    }
 }
 
 /// Which repository an archive belongs to. Stored in `archives.repo`; drives the
