@@ -1,0 +1,18 @@
+[package]
+name = "backtrack-gtk"
+description = "Backtrack GTK4/libadwaita app: timeline, wizard, preferences, compare."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+backtrack-core.workspace = true
+gtk4.workspace = true
+libadwaita.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true

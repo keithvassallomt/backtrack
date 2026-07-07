@@ -1,0 +1,13 @@
+[package]
+name = "backtrack-core"
+description = "Backtrack core library: borg adapter, index, spool, restore engine, config."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]

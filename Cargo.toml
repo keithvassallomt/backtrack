@@ -1,0 +1,49 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/backtrack-core",
+    "crates/backtrackd",
+    "crates/backtrack-gtk",
+    "crates/backtrack-cli",
+]
+
+# Version is the single Rust source of truth. It is changed ONLY by a human via
+# `just bump-version` (see VERSIONING.md). Crates inherit it with
+# `version.workspace = true`.
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-or-later"
+authors = ["Keith Vassallo <keith@icemalta.com>"]
+repository = "https://github.com/keithvassallomt/backtrack"
+
+# Pinned once here; crates opt in with `<dep>.workspace = true`.
+[workspace.dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "sync", "signal"] }
+zbus = "5"
+rusqlite = { version = "0.40", features = ["bundled"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+tracing-appender = "0.2"
+clap = { version = "4", features = ["derive"] }
+# Minimum supported platform: GTK 4.14 + libadwaita 1.5 (GNOME 46 / Ubuntu 24.04
+# LTS). The version features gate the bindings to that API level; revisit at
+# packaging time (Stage 13).
+gtk4 = { version = "0.11", features = ["v4_14"] }
+libadwaita = { version = "0.9", features = ["v1_5"] }
+oo7 = "0.6"
+
+# Internal crate, referenced by the binaries.
+backtrack-core = { path = "crates/backtrack-core" }
+
+# Shared lint policy. Crates opt in with `[lints] workspace = true`.
+# CI runs clippy with `-D warnings`, so these turn on the extra rigor we want.
+[workspace.lints.rust]
+unsafe_code = "deny"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+
