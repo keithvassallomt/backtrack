@@ -12,7 +12,7 @@
 > tasks: add them here + to the stage file, then `just provision-board-apply`.
 > See [../CLAUDE.md](../CLAUDE.md) for the full workflow.
 
-**Current stage:** 0 (complete) → next: Stage 1
+**Current stage:** 1 (in progress)
 **Last updated:** 2026-07-07
 
 ## Stage 0 — Bootstrap ([stage file](stages/stage-00-bootstrap.md))
@@ -26,7 +26,7 @@
 - [x] S00-T8 License headers (SPDX) + check-license-headers CI gate
 
 ## Stage 1 — Core index ([stage file](stages/stage-01-core-index.md))
-- [ ] S01-T1 Schema migrations + open/integrity-check on start
+- [x] S01-T1 Schema migrations + open/integrity-check on start
 - [ ] S01-T2 Interval-encoded ingest from borg-list JSONL fixtures
 - [ ] S01-T3 Timeline queries (folder@snapshot, file history, diff-vs-previous)
 - [ ] S01-T4 FTS5 filename search incl. deleted-file lifespans
@@ -144,3 +144,10 @@
   the stage acceptance and no source files carry SPDX headers yet; deferred
   pending a decision (raise with human). CI uses actions/checkout@v4 (Node 20
   deprecation warning — cosmetic).
+- 2026-07-07 (S01-T1): Workspace `rusqlite` pin lowered 0.40 → 0.39. rusqlite
+  0.40 pulls `libsqlite3-sys` 0.38.x, whose build script uses the unstable
+  `cfg_select!` macro and fails to compile on Rust 1.94.1 (Fedora stable, the
+  same toolchain CI installs from `fedora:latest`). 0.39 → `libsqlite3-sys`
+  0.37 builds cleanly; `bundled` still compiles SQLite with FTS5 (verified: the
+  `fts_names` virtual table is created by the v1 migration under test). Revisit
+  when the toolchain or crate is fixed upstream.

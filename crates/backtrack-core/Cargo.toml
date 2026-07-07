@@ -18,6 +18,8 @@ integration = []
 tracing.workspace = true
 tracing-subscriber.workspace = true
 tracing-appender.workspace = true
+rusqlite.workspace = true
+thiserror.workspace = true
 
 [dev-dependencies]
 serde_json.workspace = true
