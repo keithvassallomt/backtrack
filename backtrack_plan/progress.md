@@ -12,7 +12,7 @@
 > tasks: add them here + to the stage file, then `just provision-board-apply`.
 > See [../CLAUDE.md](../CLAUDE.md) for the full workflow.
 
-**Current stage:** 1 (in progress)
+**Current stage:** 1 (complete) → next: Stage 2
 **Last updated:** 2026-07-07
 
 ## Stage 0 — Bootstrap ([stage file](stages/stage-00-bootstrap.md))
@@ -32,7 +32,7 @@
 - [x] S01-T4 FTS5 filename search incl. deleted-file lifespans
 - [x] S01-T5 Changed-since-archive query (feeds offline spool)
 - [x] S01-T6 Prune/expiry handling (close intervals, merge)
-- [ ] S01-T7 demo-repo fixture generator
+- [x] S01-T7 demo-repo fixture generator
 
 ## Stage 2 — Borg adapter ([stage file](stages/stage-02-borg-adapter.md))
 - [ ] S02-T1 BackupEngine trait + typed error taxonomy
@@ -198,3 +198,18 @@
   are left in place (harmless: every query joins `versions`, so they are
   invisible, and re-ingest reuses them). The property test is the acceptance
   oracle — verified to bite via a mutation (disabling coalesce fails it).
+- 2026-07-07 (S01-T7): Added an `xtask` workspace member (unpublished, at repo
+  root so it is outside the crates/ println/license gates — it legitimately
+  prints progress). `just demo-repo` shells to real borg to build a 30-snapshot
+  history, ingests each via `borg list --json-lines`, and self-verifies the
+  old-client-folder deleted-after signal. Runs in ~12s (budget 2 min), writing
+  demo-repo/demo-src/index.db under ~/.local/share/backtrack-dev/. The fake home
+  is mutated *incrementally* per day (not rebuilt) so unchanged files keep their
+  mtime and intervals extend; emptied dirs are pruned so a deleted folder truly
+  vanishes. Fast default test builds the same index borg-free (content-derived
+  mtime) and asserts the deletion; the borg round-trip is gated behind the
+  `integration` feature (CI's test-integration). `cargo test --workspace
+  --features integration` confirmed to enable the feature on both core and xtask.
+- 2026-07-07 (Stage 1 done): full quality gate green — 50 core unit/property
+  tests + 3 xtask tests; clippy -D warnings clean; license headers present;
+  verify-version OK. Perf recorded above (ingest, folder_at, demo-repo).

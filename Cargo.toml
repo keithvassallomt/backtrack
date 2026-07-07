@@ -5,6 +5,7 @@ members = [
     "crates/backtrackd",
     "crates/backtrack-gtk",
     "crates/backtrack-cli",
+    "xtask",
 ]
 
 # Version is the single Rust source of truth. It is changed ONLY by a human via

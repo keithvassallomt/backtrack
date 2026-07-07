@@ -24,7 +24,7 @@ use std::path::Path;
 
 use rusqlite::Connection;
 
-pub use item::{ArchiveMeta, BorgItem, ItemParseError, Kind, Repo};
+pub use item::{parse_borg_mtime, ArchiveMeta, BorgItem, ItemParseError, Kind, Repo};
 pub use reader::{
     ArchiveSummary, Direction, Entry, IndexReader, LiveEntry, SearchHit, VersionSpan,
 };
