@@ -10,6 +10,10 @@ repository.workspace = true
 [lints]
 workspace = true
 
+[features]
+# Enables tests that shell out to a real `borg` (run via `just test-integration`).
+integration = []
+
 [dependencies]
 tracing.workspace = true
 tracing-subscriber.workspace = true
