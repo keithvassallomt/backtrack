@@ -31,7 +31,7 @@
 - [x] S01-T3 Timeline queries (folder@snapshot, file history, diff-vs-previous)
 - [x] S01-T4 FTS5 filename search incl. deleted-file lifespans
 - [x] S01-T5 Changed-since-archive query (feeds offline spool)
-- [ ] S01-T6 Prune/expiry handling (close intervals, merge)
+- [x] S01-T6 Prune/expiry handling (close intervals, merge)
 - [ ] S01-T7 demo-repo fixture generator
 
 ## Stage 2 — Borg adapter ([stage file](stages/stage-02-borg-adapter.md))
@@ -188,3 +188,13 @@
   (indexed-but-absent) are intentionally excluded — the spool can only archive
   files that still exist. The real walker (Stage 5) must truncate live mtime to
   microseconds to match Borg's stored resolution, else everything reads changed.
+- 2026-07-07 (S01-T6): `remove_archives` makes the index identical to a
+  from-scratch ingest of the survivors: it densely **renumbers** surviving seqs
+  to 1..=k, clamps/remaps each version interval onto them (dropping versions that
+  lived only in removed archives), and coalesces intervals that removal made
+  adjacent with identical content. Renumbering rewrites version seqs — a full
+  pass, acceptable since prune is infrequent (Stage 4); a seq-preserving variant
+  can come later if it matters. Orphaned path/fts rows from fully-removed files
+  are left in place (harmless: every query joins `versions`, so they are
+  invisible, and re-ingest reuses them). The property test is the acceptance
+  oracle — verified to bite via a mutation (disabling coalesce fails it).

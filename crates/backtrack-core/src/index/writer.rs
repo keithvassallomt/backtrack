@@ -215,11 +215,141 @@ impl IndexWriter {
         Ok(stats)
     }
 
+    /// Remove archives from the index, leaving it exactly as if they had never
+    /// been ingested: surviving archives are densely renumbered to `1..=k`,
+    /// version intervals are clamped to the surviving seqs (versions that lived
+    /// only in removed archives disappear), and intervals that removal made
+    /// adjacent with identical content are merged back together.
+    ///
+    /// Used by prune (Stage 4) and spool expiry (Stage 5). A no-op for an empty
+    /// `seqs`.
+    pub fn remove_archives(&mut self, seqs: &[i64]) -> Result<()> {
+        if seqs.is_empty() {
+            return Ok(());
+        }
+        let tx = self.conn.transaction()?;
+
+        // Stage the removed seqs, then drop those archives. Survivors keep their
+        // old seqs until the remap below.
+        tx.execute_batch("CREATE TEMP TABLE removed_seqs(seq INTEGER PRIMARY KEY)")?;
+        {
+            let mut ins = tx.prepare("INSERT OR IGNORE INTO removed_seqs(seq) VALUES (?1)")?;
+            for &s in seqs {
+                ins.execute([s])?;
+            }
+        }
+        tx.execute(
+            "DELETE FROM archives WHERE seq IN (SELECT seq FROM removed_seqs)",
+            [],
+        )?;
+
+        // Dense old->new seq map over the survivors (chronological order).
+        tx.execute_batch(
+            "CREATE TEMP TABLE seqmap AS
+               SELECT seq AS old_seq, ROW_NUMBER() OVER (ORDER BY seq) AS new_seq
+               FROM archives;
+             CREATE INDEX temp.seqmap_old ON seqmap(old_seq);",
+        )?;
+
+        // Versions living entirely inside removed archives vanish; the rest are
+        // clamped/remapped onto the dense seqs. The SET subqueries read the row's
+        // pre-update first_seq/last_seq, so MIN/MAX pick the surviving endpoints.
+        tx.execute(
+            "DELETE FROM versions WHERE NOT EXISTS
+               (SELECT 1 FROM seqmap WHERE old_seq BETWEEN versions.first_seq AND versions.last_seq)",
+            [],
+        )?;
+        tx.execute(
+            "UPDATE versions SET
+                first_seq = (SELECT MIN(new_seq) FROM seqmap
+                             WHERE old_seq BETWEEN versions.first_seq AND versions.last_seq),
+                last_seq  = (SELECT MAX(new_seq) FROM seqmap
+                             WHERE old_seq BETWEEN versions.first_seq AND versions.last_seq)",
+            [],
+        )?;
+
+        // Renumber the archive rows. Processed in ascending seq (rowid) order and
+        // new_seq <= old_seq, so no transient primary-key collision.
+        tx.execute(
+            "UPDATE archives SET seq = (SELECT new_seq FROM seqmap WHERE old_seq = archives.seq)",
+            [],
+        )?;
+        tx.execute_batch("DROP TABLE seqmap; DROP TABLE removed_seqs;")?;
+
+        coalesce_versions(&tx)?;
+        tx.commit()?;
+        Ok(())
+    }
+
     /// Borrow the connection (read-side queries and tests build on this).
     #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn conn(&self) -> &Connection {
         &self.conn
     }
+}
+
+/// Merge version intervals that became adjacent (`prev.last + 1 == next.first`)
+/// with identical content — the case where the only archives between two equal
+/// versions were removed. Coalescing chains left to right per path.
+fn coalesce_versions(tx: &Transaction) -> Result<()> {
+    struct Row {
+        rowid: i64,
+        path_id: i64,
+        first: i64,
+        last: i64,
+        size: i64,
+        mtime: i64,
+        kind: String,
+        hash: Option<String>,
+    }
+    let mut select = tx.prepare(
+        "SELECT rowid, path_id, first_seq, last_seq, size, mtime, kind, chunk_hash
+         FROM versions ORDER BY path_id, first_seq",
+    )?;
+    let rows: Vec<Row> = select
+        .query_map([], |r| {
+            Ok(Row {
+                rowid: r.get(0)?,
+                path_id: r.get(1)?,
+                first: r.get(2)?,
+                last: r.get(3)?,
+                size: r.get(4)?,
+                mtime: r.get(5)?,
+                kind: r.get(6)?,
+                hash: r.get(7)?,
+            })
+        })?
+        .collect::<std::result::Result<_, _>>()?;
+    drop(select);
+
+    let mut extend = tx.prepare("UPDATE versions SET last_seq = ?2 WHERE rowid = ?1")?;
+    let mut delete = tx.prepare("DELETE FROM versions WHERE rowid = ?1")?;
+    let mut i = 0;
+    while i < rows.len() {
+        let base = &rows[i];
+        let mut new_last = base.last;
+        let mut j = i + 1;
+        while j < rows.len() {
+            let next = &rows[j];
+            let mergeable = next.path_id == base.path_id
+                && next.first == new_last + 1
+                && next.size == base.size
+                && next.mtime == base.mtime
+                && next.kind == base.kind
+                && next.hash == base.hash;
+            if !mergeable {
+                break;
+            }
+            new_last = next.last;
+            delete.execute([next.rowid])?;
+            j += 1;
+        }
+        if new_last != base.last {
+            extend.execute(params![base.rowid, new_last])?;
+        }
+        i = j;
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -441,6 +571,72 @@ mod tests {
     }
 
     #[test]
+    fn remove_middle_archive_clamps_intervals() {
+        let mut w = IndexWriter::open_in_memory().unwrap();
+        ingest(&mut w, "a1", vec![file("a", 1, 100)]);
+        ingest(&mut w, "a2", vec![file("a", 1, 100)]);
+        ingest(&mut w, "a3", vec![file("a", 2, 100)]); // a: [1,2] v1, [3,3] v2
+        w.remove_archives(&[2]).unwrap();
+        // survivors {1,3} -> {1,2}
+        assert_eq!(spans(&w, "a"), vec![(1, 1), (2, 2)]);
+        assert_eq!(scalar(&w, "SELECT COUNT(*) FROM archives"), 2);
+        assert_eq!(scalar(&w, "SELECT MAX(seq) FROM archives"), 2);
+    }
+
+    #[test]
+    fn remove_gap_archive_merges_identical_intervals() {
+        let mut w = IndexWriter::open_in_memory().unwrap();
+        ingest(&mut w, "a1", vec![file("a", 1, 100)]);
+        ingest(&mut w, "a2", vec![]); // a absent
+        ingest(&mut w, "a3", vec![file("a", 1, 100)]); // a: [1,1], [3,3] same content
+        w.remove_archives(&[2]).unwrap();
+        assert_eq!(spans(&w, "a"), vec![(1, 2)]); // gap removed -> merged
+        assert_eq!(versions(&w), 1);
+    }
+
+    #[test]
+    fn remove_renumbers_surviving_archives() {
+        let mut w = IndexWriter::open_in_memory().unwrap();
+        for i in 1..=5 {
+            ingest(&mut w, &format!("a{i}"), vec![file("a", 1, 100)]);
+        } // a: [1,5]
+        w.remove_archives(&[2, 4]).unwrap();
+        // survivors {1,3,5} -> {1,2,3}, still one unbroken interval
+        assert_eq!(spans(&w, "a"), vec![(1, 3)]);
+        assert_eq!(scalar(&w, "SELECT COUNT(*) FROM archives"), 3);
+    }
+
+    #[test]
+    fn remove_deletes_versions_only_in_removed_archives() {
+        let mut w = IndexWriter::open_in_memory().unwrap();
+        ingest(&mut w, "a1", vec![file("a", 1, 100), file("keep", 1, 100)]);
+        ingest(&mut w, "a2", vec![file("keep", 1, 100)]); // a gone; a:[1,1], keep:[1,2]
+        w.remove_archives(&[1]).unwrap();
+        // survivors {2} -> {1}: a lived only in the removed archive
+        assert_eq!(spans(&w, "a"), Vec::<(i64, i64)>::new());
+        assert_eq!(spans(&w, "keep"), vec![(1, 1)]);
+    }
+
+    #[test]
+    fn remove_empty_is_a_noop() {
+        let mut w = IndexWriter::open_in_memory().unwrap();
+        ingest(&mut w, "a1", vec![file("a", 1, 100)]);
+        w.remove_archives(&[]).unwrap();
+        assert_eq!(spans(&w, "a"), vec![(1, 1)]);
+        assert_eq!(scalar(&w, "SELECT COUNT(*) FROM archives"), 1);
+    }
+
+    #[test]
+    fn remove_all_archives_empties_the_index() {
+        let mut w = IndexWriter::open_in_memory().unwrap();
+        ingest(&mut w, "a1", vec![file("a", 1, 100)]);
+        ingest(&mut w, "a2", vec![file("a", 1, 100)]);
+        w.remove_archives(&[1, 2]).unwrap();
+        assert_eq!(versions(&w), 0);
+        assert_eq!(scalar(&w, "SELECT COUNT(*) FROM archives"), 0);
+    }
+
+    #[test]
     fn large_ingest_is_fast_enough() {
         const N: usize = 200_000;
         let build = |bump: i64| -> Vec<BorgItem> {
@@ -537,6 +733,111 @@ mod property_tests {
                 .query_row("SELECT COUNT(*) FROM versions WHERE first_seq=1 AND last_seq=2",
                     [], |r| r.get(0)).unwrap();
             prop_assert_eq!(open_at_2, distinct);
+        }
+    }
+
+    fn flat(name: &str, size: i64) -> BorgItem {
+        BorgItem {
+            path: name.to_string(),
+            kind: Kind::File,
+            size,
+            mtime: 100,
+            mode: 0o644,
+            chunk_hash: None,
+        }
+    }
+
+    /// Canonical dump of (path name, interval, content) for every live version.
+    fn dump_versions(w: &IndexWriter) -> Vec<(String, i64, i64, i64, i64, String)> {
+        let mut stmt = w
+            .conn()
+            .prepare(
+                "SELECT p.name, v.first_seq, v.last_seq, v.size, v.mtime, v.kind
+                 FROM versions v JOIN paths p ON p.id = v.path_id
+                 ORDER BY p.name, v.first_seq",
+            )
+            .unwrap();
+        stmt.query_map([], |r| {
+            Ok((
+                r.get(0)?,
+                r.get(1)?,
+                r.get(2)?,
+                r.get(3)?,
+                r.get(4)?,
+                r.get(5)?,
+            ))
+        })
+        .unwrap()
+        .map(|r| r.unwrap())
+        .collect()
+    }
+
+    fn dump_archives(w: &IndexWriter) -> Vec<(i64, String, i64)> {
+        let mut stmt = w
+            .conn()
+            .prepare("SELECT seq, name, ts FROM archives ORDER BY seq")
+            .unwrap();
+        stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+            .unwrap()
+            .map(|r| r.unwrap())
+            .collect()
+    }
+
+    proptest! {
+        /// The acceptance oracle: ingesting N archives then removing a subset
+        /// yields an index byte-identical (archives + versions) to a from-scratch
+        /// ingest of only the surviving archives. Files a/b/c appear/change/vanish
+        /// independently per archive; a random subset of archives is removed.
+        #[test]
+        fn remove_archives_equals_ingesting_only_survivors(
+            plan in prop::collection::vec(
+                (
+                    prop::option::of(0i64..3),
+                    prop::option::of(0i64..3),
+                    prop::option::of(0i64..3),
+                    any::<bool>(),
+                ),
+                1..7,
+            )
+        ) {
+            let listing = |a: &Option<i64>, b: &Option<i64>, c: &Option<i64>| {
+                let mut items = Vec::new();
+                if let Some(s) = a { items.push(flat("a", *s)); }
+                if let Some(s) = b { items.push(flat("b", *s)); }
+                if let Some(s) = c { items.push(flat("c", *s)); }
+                items
+            };
+            let name = |i: usize| format!("arch{i}");
+            let ts = |i: usize| (i as i64 + 1) * 1000;
+
+            // Full index: ingest everything, then remove the flagged archives.
+            let mut full = IndexWriter::open_in_memory().unwrap();
+            for (i, (a, b, c, _)) in plan.iter().enumerate() {
+                full.ingest_archive(
+                    &ArchiveMeta { borg_id: None, name: name(i), ts: ts(i) },
+                    Repo::Primary,
+                    listing(a, b, c).into_iter(),
+                ).unwrap();
+            }
+            let removed: Vec<i64> = plan.iter().enumerate()
+                .filter(|(_, (_, _, _, rm))| *rm)
+                .map(|(i, _)| i as i64 + 1)
+                .collect();
+            full.remove_archives(&removed).unwrap();
+
+            // Survivor index: ingest only the kept archives, same names/timestamps.
+            let mut surv = IndexWriter::open_in_memory().unwrap();
+            for (i, (a, b, c, rm)) in plan.iter().enumerate() {
+                if *rm { continue; }
+                surv.ingest_archive(
+                    &ArchiveMeta { borg_id: None, name: name(i), ts: ts(i) },
+                    Repo::Primary,
+                    listing(a, b, c).into_iter(),
+                ).unwrap();
+            }
+
+            prop_assert_eq!(dump_archives(&full), dump_archives(&surv));
+            prop_assert_eq!(dump_versions(&full), dump_versions(&surv));
         }
     }
 }
