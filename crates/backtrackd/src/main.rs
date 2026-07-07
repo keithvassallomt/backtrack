@@ -9,14 +9,7 @@ use tracing::info;
 
 #[tokio::main]
 async fn main() {
-    // Minimal structured logging for now; replaced by backtrack_core::logging
-    // (JSONL rotation, panic hook) in S00-T3.
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
-        )
-        .init();
+    let _log_guard = backtrack_core::logging::init("backtrackd");
 
     info!(version = backtrack_core::VERSION, "backtrackd starting");
 

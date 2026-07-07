@@ -18,7 +18,7 @@
 ## Stage 0 — Bootstrap ([stage file](stages/stage-00-bootstrap.md))
 - [x] S00-T1 Git repo, license, .gitignore, README skeleton
 - [x] S00-T2 Cargo workspace with four crates compiling
-- [ ] S00-T3 Logging foundation (tracing, JSONL rotation) wired into all binaries
+- [x] S00-T3 Logging foundation (tracing, JSONL rotation) wired into all binaries
 - [ ] S00-T4 Justfile: setup / build / check / test / run-daemon / run-app / demo-repo
 - [ ] S00-T5 CHANGELOG.md + versioning policy files (version 0.1.0 set by human)
 - [ ] S00-T6 just bump-version recipe (single-source version propagation)
