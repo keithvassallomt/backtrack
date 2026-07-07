@@ -6,7 +6,7 @@
 //! timeline questions the UI is built on — all as indexed SQL against the
 //! interval encoding, instant and offline.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use rusqlite::{params, Connection, OpenFlags, OptionalExtension};
 
@@ -81,6 +81,17 @@ pub struct ArchiveSummary {
 pub enum Direction {
     Newer,
     Older,
+}
+
+/// One live filesystem entry, as produced by a walker for
+/// [`IndexReader::changed_since`]. `path` is archive-relative (matching how Borg
+/// stores paths); `mtime` is epoch **microseconds**, truncated to Borg's
+/// resolution so it compares equal to an unchanged indexed version.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LiveEntry {
+    pub path: PathBuf,
+    pub size: i64,
+    pub mtime: i64,
 }
 
 /// Read-only handle onto an index database.
@@ -258,6 +269,44 @@ impl IndexReader {
         Ok(self
             .conn
             .query_row(sql, params![path_id, arg], |r| r.get::<_, Option<i64>>(0))?)
+    }
+
+    /// Files whose current on-disk state differs from archive `seq` — the set
+    /// the offline spool must capture. Given a walker's live entries (path +
+    /// size + mtime), a path is "changed" when it is not present at `seq` (a new
+    /// file) or its size/mtime differ from the version that was. Paths present at
+    /// `seq` but absent from the walk (deletions) are not returned: the spool can
+    /// only archive files that still exist. Results are sorted for determinism.
+    ///
+    /// The filesystem walk is intentionally the caller's job, so this is testable
+    /// with a synthetic entry list and has no I/O of its own.
+    pub fn changed_since(
+        &self,
+        seq: i64,
+        live: impl IntoIterator<Item = LiveEntry>,
+    ) -> Result<Vec<PathBuf>> {
+        let mut at_seq = self.conn.prepare_cached(
+            "SELECT size, mtime FROM versions
+             WHERE path_id = ?1 AND first_seq <= ?2 AND last_seq >= ?2",
+        )?;
+        let mut changed = Vec::new();
+        for entry in live {
+            let rel = entry.path.to_string_lossy();
+            let indexed = match self.resolve_path(&rel)? {
+                Some(path_id) => at_seq
+                    .query_row(params![path_id, seq], |r| {
+                        Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?))
+                    })
+                    .optional()?,
+                None => None,
+            };
+            let unchanged = matches!(indexed, Some((size, mtime)) if size == entry.size && mtime == entry.mtime);
+            if !unchanged {
+                changed.push(entry.path);
+            }
+        }
+        changed.sort();
+        Ok(changed)
     }
 
     /// Cross-snapshot filename search over FTS5. Each hit aggregates a path's
@@ -658,6 +707,64 @@ mod tests {
         assert_eq!(fts_match_query(r#"a"b"#).as_deref(), Some("\"a\"\"b\""));
         assert_eq!(fts_match_query("   "), None);
         assert_eq!(fts_match_query("*"), None);
+    }
+
+    fn live(path: &str, size: i64, mtime: i64) -> LiveEntry {
+        LiveEntry {
+            path: PathBuf::from(path),
+            size,
+            mtime,
+        }
+    }
+
+    /// One archive (seq 1): home/{a=10, b=20, c=30, e=40}, all mtime 100.
+    fn changed_fixture() -> (tempfile::TempDir, IndexReader) {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("index.db");
+        {
+            let mut w = IndexWriter::open(&path).unwrap();
+            w.ingest_archive(
+                &meta("a1", 1000),
+                Repo::Primary,
+                vec![
+                    dir("home"),
+                    file("home/a", 10),
+                    file("home/b", 20),
+                    file("home/c", 30),
+                    file("home/e", 40),
+                ]
+                .into_iter(),
+            )
+            .unwrap();
+        }
+        (tmp, IndexReader::open(&path).unwrap())
+    }
+
+    #[test]
+    fn changed_since_reports_added_modified_and_touched_only() {
+        let (_t, r) = changed_fixture();
+        let walk = vec![
+            live("home/a", 10, 100), // unchanged
+            live("home/b", 99, 100), // modified: size
+            live("home/e", 40, 999), // touched: mtime only
+            live("home/d", 1, 100),  // added: not in index
+                                     // home/c is deleted (absent from the walk)
+        ];
+        let changed = r.changed_since(1, walk).unwrap();
+        assert_eq!(
+            changed,
+            vec![
+                PathBuf::from("home/b"),
+                PathBuf::from("home/d"),
+                PathBuf::from("home/e"),
+            ]
+        );
+    }
+
+    #[test]
+    fn changed_since_empty_walk_is_empty() {
+        let (_t, r) = changed_fixture();
+        assert!(r.changed_since(1, Vec::new()).unwrap().is_empty());
     }
 
     #[test]

@@ -30,7 +30,7 @@
 - [x] S01-T2 Interval-encoded ingest from borg-list JSONL fixtures
 - [x] S01-T3 Timeline queries (folder@snapshot, file history, diff-vs-previous)
 - [x] S01-T4 FTS5 filename search incl. deleted-file lifespans
-- [ ] S01-T5 Changed-since-archive query (feeds offline spool)
+- [x] S01-T5 Changed-since-archive query (feeds offline spool)
 - [ ] S01-T6 Prune/expiry handling (close intervals, merge)
 - [ ] S01-T7 demo-repo fixture generator
 
@@ -182,3 +182,9 @@
   syntax. Ranking: not-exists-today first, then latest existence, then bm25.
   Charlie test (file living only in archives 10..40) confirmed for `contract`
   and `cont*`, incl. that `contract` does not match `container`.
+- 2026-07-07 (S01-T5): `changed_since(seq, live_entries)` takes the walker's
+  output as an injected iterator (no I/O in core), returning added+modified
+  paths present on disk that differ from index@seq by size/mtime. Deletions
+  (indexed-but-absent) are intentionally excluded — the spool can only archive
+  files that still exist. The real walker (Stage 5) must truncate live mtime to
+  microseconds to match Borg's stored resolution, else everything reads changed.

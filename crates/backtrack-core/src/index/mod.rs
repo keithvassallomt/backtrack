@@ -25,7 +25,9 @@ use std::path::Path;
 use rusqlite::Connection;
 
 pub use item::{ArchiveMeta, BorgItem, ItemParseError, Kind, Repo};
-pub use reader::{ArchiveSummary, Direction, Entry, IndexReader, SearchHit, VersionSpan};
+pub use reader::{
+    ArchiveSummary, Direction, Entry, IndexReader, LiveEntry, SearchHit, VersionSpan,
+};
 pub use schema::SCHEMA_VERSION;
 pub use writer::{IndexWriter, IngestStats};
 
