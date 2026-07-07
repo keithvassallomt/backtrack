@@ -15,13 +15,17 @@
 //! - Writes go through a single writer (the daemon owns it) — Stage 1 T2+.
 //! - Reads open the database read-only and use [`reader`] — Stage 1 T3+.
 
+mod item;
 mod schema;
+mod writer;
 
 use std::path::Path;
 
 use rusqlite::Connection;
 
+pub use item::{ArchiveMeta, BorgItem, ItemParseError, Kind, Repo};
 pub use schema::SCHEMA_VERSION;
+pub use writer::{IndexWriter, IngestStats};
 
 /// Errors surfaced by the index layer.
 #[derive(Debug, thiserror::Error)]
@@ -51,18 +55,42 @@ pub struct Index {
     conn: Connection,
 }
 
+/// Configure a freshly-opened connection: integrity check, WAL + NORMAL
+/// pragmas, then migrate the schema forward. Shared by every opener so the
+/// writer and readers see identical setup.
+fn configure(mut conn: Connection) -> Result<Connection> {
+    // Integrity check first: refuse to migrate (or otherwise write to) a
+    // database we already know is damaged.
+    schema::integrity_check(&conn)?;
+    // WAL with synchronous=NORMAL: concurrent readers (the GUI) while the single
+    // writer (the daemon) ingests, without fsync-per-commit cost.
+    conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;")?;
+    schema::migrate(&mut conn)?;
+    Ok(conn)
+}
+
+fn open_connection(path: &Path) -> Result<Connection> {
+    configure(Connection::open(path)?)
+}
+
+fn open_memory_connection() -> Result<Connection> {
+    configure(Connection::open_in_memory()?)
+}
+
 impl Index {
     /// Open (creating if absent) the index at `path`, run an integrity check,
     /// and migrate the schema forward to the current version.
     pub fn open(path: &Path) -> Result<Index> {
-        let conn = Connection::open(path)?;
-        Self::init(conn)
+        Ok(Index {
+            conn: open_connection(path)?,
+        })
     }
 
     /// Open a private in-memory index. Used by tests and ephemeral tooling.
     pub fn open_in_memory() -> Result<Index> {
-        let conn = Connection::open_in_memory()?;
-        Self::init(conn)
+        Ok(Index {
+            conn: open_memory_connection()?,
+        })
     }
 
     /// The schema version recorded in `meta`.
@@ -76,17 +104,6 @@ impl Index {
     #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn conn(&self) -> &Connection {
         &self.conn
-    }
-
-    fn init(mut conn: Connection) -> Result<Index> {
-        // Integrity check first: refuse to migrate (or otherwise write to) a
-        // database we already know is damaged.
-        schema::integrity_check(&conn)?;
-        // WAL with synchronous=NORMAL: concurrent readers (the GUI) while the
-        // single writer (the daemon) ingests, without fsync-per-commit cost.
-        conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;")?;
-        schema::migrate(&mut conn)?;
-        Ok(Index { conn })
     }
 }
 

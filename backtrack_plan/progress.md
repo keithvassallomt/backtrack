@@ -27,7 +27,7 @@
 
 ## Stage 1 — Core index ([stage file](stages/stage-01-core-index.md))
 - [x] S01-T1 Schema migrations + open/integrity-check on start
-- [ ] S01-T2 Interval-encoded ingest from borg-list JSONL fixtures
+- [x] S01-T2 Interval-encoded ingest from borg-list JSONL fixtures
 - [ ] S01-T3 Timeline queries (folder@snapshot, file history, diff-vs-previous)
 - [ ] S01-T4 FTS5 filename search incl. deleted-file lifespans
 - [ ] S01-T5 Changed-since-archive query (feeds offline spool)
@@ -151,3 +151,17 @@
   0.37 builds cleanly; `bundled` still compiles SQLite with FTS5 (verified: the
   `fts_names` virtual table is created by the v1 migration under test). Revisit
   when the toolchain or crate is fixed upstream.
+- 2026-07-07 (S01-T2): Ingest perf (in-memory, dev hardware) — 200k-item first
+  ingest ~2.9s debug / ~0.5s release (~70k items/sec debug, well over the
+  20k/sec bar); a second identical 200k ingest (the per-path diff-lookup hot
+  path) stays within the same budget. Both under the 15s CI ceiling.
+- 2026-07-07 (S01-T2): Fixtures — the small fixture (`testdata/small-listing.jsonl`,
+  a real 100-file/5-dir/1-symlink `borg list --json-lines` capture) is checked
+  in and drives an end-to-end parse->ingest test. The "large (200k)" fixture is
+  synthesised in-process by the perf test rather than kept as a gitignored file,
+  so CI stays hermetic (no pre-test generation step); this deviates from the
+  stage file's literal "gitignored, built by just demo-repo" wording but meets
+  the acceptance ("large-fixture ingest under 15s in CI"). Change detection is
+  kind+size+mtime+chunk_hash; Borg `list` supplies no chunk hash, so size+mtime
+  decide, as designed. Ingest assumes chronological archive order (backfill is
+  Stage 4). proptest-regressions/ is checked in per proptest convention.
