@@ -12,7 +12,7 @@
 > tasks: add them here + to the stage file, then `just provision-board-apply`.
 > See [../CLAUDE.md](../CLAUDE.md) for the full workflow.
 
-**Current stage:** 0 (complete) → next: Stage 1
+**Current stage:** 1 (complete) → next: Stage 2
 **Last updated:** 2026-07-07
 
 ## Stage 0 — Bootstrap ([stage file](stages/stage-00-bootstrap.md))
@@ -26,13 +26,13 @@
 - [x] S00-T8 License headers (SPDX) + check-license-headers CI gate
 
 ## Stage 1 — Core index ([stage file](stages/stage-01-core-index.md))
-- [ ] S01-T1 Schema migrations + open/integrity-check on start
-- [ ] S01-T2 Interval-encoded ingest from borg-list JSONL fixtures
-- [ ] S01-T3 Timeline queries (folder@snapshot, file history, diff-vs-previous)
-- [ ] S01-T4 FTS5 filename search incl. deleted-file lifespans
-- [ ] S01-T5 Changed-since-archive query (feeds offline spool)
-- [ ] S01-T6 Prune/expiry handling (close intervals, merge)
-- [ ] S01-T7 demo-repo fixture generator
+- [x] S01-T1 Schema migrations + open/integrity-check on start
+- [x] S01-T2 Interval-encoded ingest from borg-list JSONL fixtures
+- [x] S01-T3 Timeline queries (folder@snapshot, file history, diff-vs-previous)
+- [x] S01-T4 FTS5 filename search incl. deleted-file lifespans
+- [x] S01-T5 Changed-since-archive query (feeds offline spool)
+- [x] S01-T6 Prune/expiry handling (close intervals, merge)
+- [x] S01-T7 demo-repo fixture generator
 
 ## Stage 2 — Borg adapter ([stage file](stages/stage-02-borg-adapter.md))
 - [ ] S02-T1 BackupEngine trait + typed error taxonomy
@@ -144,3 +144,72 @@
   the stage acceptance and no source files carry SPDX headers yet; deferred
   pending a decision (raise with human). CI uses actions/checkout@v4 (Node 20
   deprecation warning — cosmetic).
+- 2026-07-07 (S01-T1): Workspace `rusqlite` pin lowered 0.40 → 0.39. rusqlite
+  0.40 pulls `libsqlite3-sys` 0.38.x, whose build script uses the unstable
+  `cfg_select!` macro and fails to compile on Rust 1.94.1 (Fedora stable, the
+  same toolchain CI installs from `fedora:latest`). 0.39 → `libsqlite3-sys`
+  0.37 builds cleanly; `bundled` still compiles SQLite with FTS5 (verified: the
+  `fts_names` virtual table is created by the v1 migration under test). Revisit
+  when the toolchain or crate is fixed upstream.
+- 2026-07-07 (S01-T2): Ingest perf (in-memory, dev hardware) — 200k-item first
+  ingest ~2.9s debug / ~0.5s release (~70k items/sec debug, well over the
+  20k/sec bar); a second identical 200k ingest (the per-path diff-lookup hot
+  path) stays within the same budget. Both under the 15s CI ceiling.
+- 2026-07-07 (S01-T2): Fixtures — the small fixture (`testdata/small-listing.jsonl`,
+  a real 100-file/5-dir/1-symlink `borg list --json-lines` capture) is checked
+  in and drives an end-to-end parse->ingest test. The "large (200k)" fixture is
+  synthesised in-process by the perf test rather than kept as a gitignored file,
+  so CI stays hermetic (no pre-test generation step); this deviates from the
+  stage file's literal "gitignored, built by just demo-repo" wording but meets
+  the acceptance ("large-fixture ingest under 15s in CI"). Change detection is
+  kind+size+mtime+chunk_hash; Borg `list` supplies no chunk hash, so size+mtime
+  decide, as designed. Ingest assumes chronological archive order (backfill is
+  Stage 4). proptest-regressions/ is checked in per proptest convention.
+- 2026-07-07 (S01-T3): `IndexReader` opens the DB with `query_only=ON` (rather
+  than strict read-only) to sidestep WAL shared-memory access issues while still
+  forbidding writes; it verifies schema_version == current and never migrates.
+  `folder_at` on the 200k-file index runs under the 10ms budget (asserted in
+  test). `archives_overview` returns per-archive summaries newest-first (repo
+  flag included); day/week/month bucketing is left to the GUI as presentation.
+  `next_change` uses interval boundaries: when the file exists at `from_seq` the
+  answer is the adjacent archive past its interval end/start; when absent, the
+  nearest (re)appearance/disappearance.
+- 2026-07-07 (S01-T4): `search` uses the default FTS5 unicode61 tokenizer, so a
+  name like `invoice-may.pdf` indexes as tokens `invoice`/`may`/`pdf`; queries
+  are token-exact or, with a trailing `*`, token-prefix (the plan's
+  "substring-ish"). User input is wrapped in a double-quoted FTS phrase (quotes
+  doubled) so punctuation/operators in crafted filenames can't inject MATCH
+  syntax. Ranking: not-exists-today first, then latest existence, then bm25.
+  Charlie test (file living only in archives 10..40) confirmed for `contract`
+  and `cont*`, incl. that `contract` does not match `container`.
+- 2026-07-07 (S01-T5): `changed_since(seq, live_entries)` takes the walker's
+  output as an injected iterator (no I/O in core), returning added+modified
+  paths present on disk that differ from index@seq by size/mtime. Deletions
+  (indexed-but-absent) are intentionally excluded — the spool can only archive
+  files that still exist. The real walker (Stage 5) must truncate live mtime to
+  microseconds to match Borg's stored resolution, else everything reads changed.
+- 2026-07-07 (S01-T6): `remove_archives` makes the index identical to a
+  from-scratch ingest of the survivors: it densely **renumbers** surviving seqs
+  to 1..=k, clamps/remaps each version interval onto them (dropping versions that
+  lived only in removed archives), and coalesces intervals that removal made
+  adjacent with identical content. Renumbering rewrites version seqs — a full
+  pass, acceptable since prune is infrequent (Stage 4); a seq-preserving variant
+  can come later if it matters. Orphaned path/fts rows from fully-removed files
+  are left in place (harmless: every query joins `versions`, so they are
+  invisible, and re-ingest reuses them). The property test is the acceptance
+  oracle — verified to bite via a mutation (disabling coalesce fails it).
+- 2026-07-07 (S01-T7): Added an `xtask` workspace member (unpublished, at repo
+  root so it is outside the crates/ println/license gates — it legitimately
+  prints progress). `just demo-repo` shells to real borg to build a 30-snapshot
+  history, ingests each via `borg list --json-lines`, and self-verifies the
+  old-client-folder deleted-after signal. Runs in ~12s (budget 2 min), writing
+  demo-repo/demo-src/index.db under ~/.local/share/backtrack-dev/. The fake home
+  is mutated *incrementally* per day (not rebuilt) so unchanged files keep their
+  mtime and intervals extend; emptied dirs are pruned so a deleted folder truly
+  vanishes. Fast default test builds the same index borg-free (content-derived
+  mtime) and asserts the deletion; the borg round-trip is gated behind the
+  `integration` feature (CI's test-integration). `cargo test --workspace
+  --features integration` confirmed to enable the feature on both core and xtask.
+- 2026-07-07 (Stage 1 done): full quality gate green — 50 core unit/property
+  tests + 3 xtask tests; clippy -D warnings clean; license headers present;
+  verify-version OK. Perf recorded above (ingest, folder_at, demo-repo).

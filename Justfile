@@ -166,9 +166,10 @@ run-daemon:
 run-app:
     RUST_LOG=debug cargo run -p backtrack-gtk
 
-# Generate a demo Borg repo + index for development. Implemented in Stage 1.
+# Generate a demo Borg repo + index for development (scripted 30-snapshot
+# history under ~/.local/share/backtrack-dev/). Idempotent; rebuilds from scratch.
 demo-repo:
-    @echo "demo-repo: implemented in Stage 1 (S01-T7)."
+    cargo run --quiet -p xtask
 
 # Remove build artifacts.
 clean:
