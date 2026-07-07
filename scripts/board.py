@@ -307,7 +307,7 @@ def cmd_sync() -> None:
 
     # map issue number -> project item id + current status
     items = gh_json(["project", "item-list", str(pnum), "--owner", OWNER,
-                     "--format", "json"]) or {"items": []}
+                     "--limit", "200", "--format", "json"]) or {"items": []}
     item_by_num = {}
     for it in items.get("items", []):
         content = it.get("content", {})
