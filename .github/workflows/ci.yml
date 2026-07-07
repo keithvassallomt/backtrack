@@ -1,0 +1,46 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+  BACKTRACK_DEV: "1"
+
+jobs:
+  ci:
+    name: check (Fedora)
+    runs-on: ubuntu-latest
+    container: fedora:latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install toolchain and system dependencies
+        run: |
+          dnf install -y --setopt=install_weak_deps=False \
+            just cargo clippy rustfmt gcc pkgconf-pkg-config \
+            gtk4-devel libadwaita-devel sqlite-devel dbus-devel \
+            borgbackup python3 git openssl-devel
+
+      - name: Quality gate (fmt, clippy -D warnings, tests)
+        run: just check
+
+      - name: Guard against println!/eprintln!/dbg! outside tests
+        run: |
+          if grep -rn --include='*.rs' -E 'println!|eprintln!|dbg!' crates/ | grep -v -E 'tests?'; then
+            echo "::error::println!/eprintln!/dbg! found outside tests — use tracing instead"
+            exit 1
+          fi
+          echo "No stray println!/eprintln!/dbg! found."
+
+      - name: Verify version consistency
+        run: just verify-version
+
+      - name: Integration tests (real borg)
+        run: just test-integration
+
+      - name: Security audit
+        run: |
+          cargo install cargo-audit --locked
+          cargo audit

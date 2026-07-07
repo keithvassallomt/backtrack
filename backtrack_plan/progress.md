@@ -22,7 +22,7 @@
 - [x] S00-T4 Justfile: setup / build / check / test / run-daemon / run-app / demo-repo
 - [x] S00-T5 CHANGELOG.md + versioning policy files (version 0.1.0 set by human)
 - [x] S00-T6 just bump-version recipe (single-source version propagation)
-- [ ] S00-T7 CI: fmt, clippy, tests, println-guard, license-header check
+- [/] S00-T7 CI: fmt, clippy, tests, println-guard, license-header check
 
 ## Stage 1 — Core index ([stage file](stages/stage-01-core-index.md))
 - [ ] S01-T1 Schema migrations + open/integrity-check on start
@@ -129,3 +129,14 @@
 ## Notes / decisions made during implementation
 
 (append dated entries here; never delete)
+
+- 2026-07-07 (S00-T2): Minimum supported platform pinned to GTK 4.14 / libadwaita
+  1.5 (GNOME 46 / Ubuntu 24.04 LTS) via crate version features — required for
+  libadwaita 0.9 to resolve `gtk::Accessible`. Revisit at Stage 13 packaging.
+- 2026-07-07 (S00-T4): `just setup` (sudo dnf/apt installs) was NOT run on a
+  clean container; build/check/test/run recipes verified locally. Clean-machine
+  walkthrough still to be exercised.
+- 2026-07-07 (S00-T7): Stage file body specifies fmt/clippy/tests, println-guard,
+  verify-version, cargo-audit, integration tests — implemented. The progress.md
+  label's "license-header check" is not in the stage acceptance and no source
+  files carry SPDX headers yet; deferred pending a decision (raise with human).

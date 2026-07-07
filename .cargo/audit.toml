@@ -1,0 +1,6 @@
+# cargo-audit configuration (https://github.com/rustsec/rustsec/tree/main/cargo-audit).
+# Vulnerabilities fail the build. Add advisory IDs to `ignore` only with a
+# justifying comment and, ideally, a tracking issue.
+
+[advisories]
+ignore = []
