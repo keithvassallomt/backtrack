@@ -23,6 +23,7 @@
 - [x] S00-T5 CHANGELOG.md + versioning policy files (version 0.1.0 set by human)
 - [x] S00-T6 just bump-version recipe (single-source version propagation)
 - [x] S00-T7 CI: fmt, clippy, tests, println-guard, license-header check
+- [x] S00-T8 License headers (SPDX) + check-license-headers CI gate
 
 ## Stage 1 — Core index ([stage file](stages/stage-01-core-index.md))
 - [ ] S01-T1 Schema migrations + open/integrity-check on start

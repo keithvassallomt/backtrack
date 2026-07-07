@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-3.0-or-later
+# SPDX-FileCopyrightText: 2026 Keith Vassallo <keith@icemalta.com>
 """Backtrack GitHub Projects board tooling.
 
 Single source of truth for *task state* is backtrack_plan/progress.md. This

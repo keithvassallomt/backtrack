@@ -23,7 +23,7 @@ jobs:
             gtk4-devel libadwaita-devel sqlite-devel dbus-devel \
             borgbackup python3 git openssl-devel
 
-      - name: Quality gate (fmt, clippy -D warnings, tests)
+      - name: Quality gate (fmt, clippy -D warnings, tests, license headers)
         run: just check
 
       - name: Guard against println!/eprintln!/dbg! outside tests

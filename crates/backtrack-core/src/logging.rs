@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-FileCopyrightText: 2026 Keith Vassallo <keith@icemalta.com>
+
 //! Structured logging shared by every Backtrack binary.
 //!
 //! Two layers are installed: a pretty console layer on stderr (respecting

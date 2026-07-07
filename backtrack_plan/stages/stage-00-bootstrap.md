@@ -97,6 +97,17 @@ container (`dnf install borgbackup`).
 **Accept:** CI green on the bootstrap commit; deliberately adding a `println!`
 in a scratch commit fails CI.
 
+### S00-T8 — License headers
+Every Rust source file under `crates/` (and the Python tooling in `scripts/`)
+begins with an SPDX header: `SPDX-License-Identifier: GPL-3.0-or-later` plus an
+`SPDX-FileCopyrightText` line. Add a `just check-license-headers` recipe that
+fails if any `crates/**/*.rs` lacks the identifier, and wire it into CI.
+(Discovered mid-Stage-0; the T7 progress label mentioned a license-header check
+not covered by the T7 body.)
+**Accept:** every `crates/**/*.rs` carries the SPDX identifier;
+`just check-license-headers` passes and runs in CI (inside `just check`);
+removing a header fails the check (verified locally, exit 1).
+
 ## Definition of Done
 All acceptance criteria pass; `progress.md` Stage 0 all `[x]`; CHANGELOG
 `[Unreleased]` notes the bootstrap; a fresh-machine walkthrough

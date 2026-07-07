@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-FileCopyrightText: 2026 Keith Vassallo <keith@icemalta.com>
+
 //! Backtrack daemon entry point.
 //!
 //! Stage 0 skeleton: initialise logging, announce startup, and shut down

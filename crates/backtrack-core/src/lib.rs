@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-FileCopyrightText: 2026 Keith Vassallo <keith@icemalta.com>
+
 //! Backtrack core library.
 //!
 //! Houses the Borg adapter, the SQLite index, the offline spool, the restore

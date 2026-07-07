@@ -70,11 +70,28 @@ build-release:
 
 # ─── Quality gate ───────────────────────────────────────────────────────────
 
-# Format check + clippy (warnings are errors) + unit tests. Mirrors CI.
+# Format check + clippy (warnings are errors) + unit tests + license headers. Mirrors CI.
 check:
     cargo fmt --check
     cargo clippy --workspace --all-targets -- -D warnings
     cargo test --workspace
+    just check-license-headers
+
+# Fail if any Rust source file under crates/ lacks an SPDX license header.
+check-license-headers:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    missing=()
+    while IFS= read -r f; do
+        if ! head -n 3 "$f" | grep -q 'SPDX-License-Identifier: GPL-3.0-or-later'; then
+            missing+=("$f")
+        fi
+    done < <(find crates -name '*.rs')
+    if (( ${#missing[@]} > 0 )); then
+        printf 'Missing SPDX header: %s\n' "${missing[@]}" >&2
+        exit 1
+    fi
+    echo "All crate source files carry an SPDX license header."
 
 # Unit tests only.
 test:
