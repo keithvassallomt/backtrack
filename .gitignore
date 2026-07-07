@@ -3,3 +3,19 @@ conv.md
 # Claude Code: personal settings and runtime state stay local
 .claude/settings.local.json
 .claude/*.lock
+
+# Rust
+/target/
+**/*.rs.bk
+
+# SQLite index databases
+*.db
+*.db-wal
+*.db-shm
+
+# Flatpak build artifacts
+.flatpak-builder/
+
+# Python bytecode (board tooling)
+__pycache__/
+*.pyc

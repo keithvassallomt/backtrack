@@ -12,11 +12,11 @@
 > tasks: add them here + to the stage file, then `just provision-board-apply`.
 > See [../CLAUDE.md](../CLAUDE.md) for the full workflow.
 
-**Current stage:** 0 (not started)
-**Last updated:** (never — set on first commit)
+**Current stage:** 0 (in progress)
+**Last updated:** 2026-07-07
 
 ## Stage 0 — Bootstrap ([stage file](stages/stage-00-bootstrap.md))
-- [ ] S00-T1 Git repo, license, .gitignore, README skeleton
+- [x] S00-T1 Git repo, license, .gitignore, README skeleton
 - [ ] S00-T2 Cargo workspace with four crates compiling
 - [ ] S00-T3 Logging foundation (tracing, JSONL rotation) wired into all binaries
 - [ ] S00-T4 Justfile: setup / build / check / test / run-daemon / run-app / demo-repo
