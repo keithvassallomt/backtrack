@@ -3,16 +3,26 @@
 
 //! Typed engine errors and their mapping to the health.md failure catalogue.
 //!
-//! Each **engine-relevant** row of health.md maps to exactly one [`HealthFailure`];
-//! rows that are not engine failures (index corruption — SQLite; interrupted
-//! backup — checkpoint; snapshot-taken-but-indexing-failed — ingest) are
-//! deliberately absent, because the engine cannot raise them.
+//! The engine can fail in more ways than health.md surfaces as *banner
+//! failures*. [`EngineError::health_failure`] returns `Some(row)` only for the
+//! engine-relevant rows of health.md's failure catalogue, and `None` for errors
+//! that are not banner-failures:
+//! - `RepoUnreachable` is the `PROTECTED_LOCALLY` health *state*, not a failure
+//!   (health.md: an unreachable destination is "the product working as designed",
+//!   no notification);
+//! - `LockedByOther` is transient (borg retries);
+//! - `BorgFailed` is an uncategorised catch-all with no dedicated row.
+//!
+//! Rows of the catalogue that are not engine failures at all — index corruption
+//! (SQLite), interrupted backup (checkpoint), snapshot-taken-but-indexing-failed
+//! (ingest) — have no [`HealthFailure`] entry, because the engine cannot raise
+//! them.
 
 /// A convenience result alias for the engine layer.
 pub type Result<T> = std::result::Result<T, EngineError>;
 
-/// Everything the Borg adapter can fail with. Maps 1:1 onto the engine-relevant
-/// rows of the health.md failure catalogue via [`EngineError::health_failure`].
+/// Everything the Borg adapter can fail with. The engine-relevant rows of
+/// health.md's failure catalogue are reachable via [`EngineError::health_failure`].
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum EngineError {
     #[error("the backup destination is unreachable")]
@@ -37,24 +47,29 @@ pub enum EngineError {
     BorgFailed { code: i32, stderr: String },
 }
 
-/// The engine-relevant rows of health.md's failure catalogue. Used to prove the
-/// error taxonomy is exhaustive over failures the engine can actually detect.
+/// The engine-relevant rows of health.md's failure catalogue — the failures the
+/// engine can detect that health.md surfaces as banner states with a resolution
+/// flow. Used to prove the taxonomy covers every such row.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum HealthFailure {
+    /// "Passphrase missing (keyring reset/locked)"
     PassphraseMissing,
+    /// "Wrong passphrase (repo key changed)"
     PassphraseWrong,
+    /// "Destination credentials expired (SMB/SSH auth)"
     AuthExpired,
+    /// "Destination full"
     DestinationFull,
+    /// "Local disk full (spool/staging)"
     LocalDiskFull,
+    /// "Repo corruption"
     RepoCorrupt,
+    /// "Borg missing / wrong version"
     BorgMissing,
-    RepoUnreachable,
-    LockedByOther,
-    UncategorisedBorgFailure,
 }
 
 impl HealthFailure {
-    /// Every catalogue row, for the exhaustiveness test.
+    /// Every engine-relevant catalogue row, for the coverage test.
     pub const ALL: &'static [HealthFailure] = &[
         HealthFailure::PassphraseMissing,
         HealthFailure::PassphraseWrong,
@@ -63,27 +78,25 @@ impl HealthFailure {
         HealthFailure::LocalDiskFull,
         HealthFailure::RepoCorrupt,
         HealthFailure::BorgMissing,
-        HealthFailure::RepoUnreachable,
-        HealthFailure::LockedByOther,
-        HealthFailure::UncategorisedBorgFailure,
     ];
 }
 
 impl EngineError {
-    /// Which health.md catalogue row this error surfaces as. The `match` is total,
-    /// so the compiler guarantees every error variant is classified.
-    pub fn health_failure(&self) -> HealthFailure {
+    /// Which health.md failure-catalogue row this error surfaces as, if any.
+    /// `None` for errors that are not banner-failures (see the module docs). The
+    /// `match` is total, so the compiler forces every variant to be classified.
+    pub fn health_failure(&self) -> Option<HealthFailure> {
         match self {
-            EngineError::RepoUnreachable => HealthFailure::RepoUnreachable,
-            EngineError::PassphraseMissing => HealthFailure::PassphraseMissing,
-            EngineError::PassphraseWrong => HealthFailure::PassphraseWrong,
-            EngineError::AuthFailed => HealthFailure::AuthExpired,
-            EngineError::DestinationFull => HealthFailure::DestinationFull,
-            EngineError::LocalDiskFull => HealthFailure::LocalDiskFull,
-            EngineError::RepoCorrupt => HealthFailure::RepoCorrupt,
-            EngineError::LockedByOther => HealthFailure::LockedByOther,
-            EngineError::BorgMissing { .. } => HealthFailure::BorgMissing,
-            EngineError::BorgFailed { .. } => HealthFailure::UncategorisedBorgFailure,
+            EngineError::PassphraseMissing => Some(HealthFailure::PassphraseMissing),
+            EngineError::PassphraseWrong => Some(HealthFailure::PassphraseWrong),
+            EngineError::AuthFailed => Some(HealthFailure::AuthExpired),
+            EngineError::DestinationFull => Some(HealthFailure::DestinationFull),
+            EngineError::LocalDiskFull => Some(HealthFailure::LocalDiskFull),
+            EngineError::RepoCorrupt => Some(HealthFailure::RepoCorrupt),
+            EngineError::BorgMissing { .. } => Some(HealthFailure::BorgMissing),
+            EngineError::RepoUnreachable => None,
+            EngineError::LockedByOther => None,
+            EngineError::BorgFailed { .. } => None,
         }
     }
 }
@@ -110,13 +123,26 @@ mod tests {
     }
 
     #[test]
-    fn every_health_row_is_covered_by_some_error() {
-        let produced: HashSet<HealthFailure> =
-            one_of_each().iter().map(|e| e.health_failure()).collect();
+    fn every_health_catalogue_row_has_an_error() {
+        let covered: HashSet<HealthFailure> =
+            one_of_each().iter().filter_map(|e| e.health_failure()).collect();
         let expected: HashSet<HealthFailure> = HealthFailure::ALL.iter().copied().collect();
         assert_eq!(
-            produced, expected,
-            "every engine-relevant health.md row must map to at least one EngineError"
+            covered, expected,
+            "every engine-relevant health.md catalogue row must have a corresponding EngineError"
+        );
+    }
+
+    #[test]
+    fn non_banner_failures_map_to_no_catalogue_row() {
+        // health.md: an unreachable destination is PROTECTED_LOCALLY (not a
+        // failure); lock contention is transient; BorgFailed is an uncategorised
+        // catch-all. None of these is a banner-failure row.
+        assert_eq!(EngineError::RepoUnreachable.health_failure(), None);
+        assert_eq!(EngineError::LockedByOther.health_failure(), None);
+        assert_eq!(
+            EngineError::BorgFailed { code: 2, stderr: String::new() }.health_failure(),
+            None
         );
     }
 }
