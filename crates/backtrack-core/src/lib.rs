@@ -11,6 +11,7 @@
 //! and restore engine arrive in later stages.
 
 pub mod index;
+pub mod engine;
 pub mod logging;
 
 /// The crate version, sourced from the workspace package version at build time.
