@@ -64,7 +64,9 @@ impl JobStream {
     }
 
     /// Build a stream that yields a fixed sequence of events. For mocks and tests
-    /// (used by `backtrack-testkit`); requires a Tokio runtime.
+    /// (used by `backtrack-testkit`); requires a Tokio runtime. It materialises
+    /// the whole sequence up front, so it is unsuitable for unbounded/effectively-
+    /// infinite iterators.
     pub fn from_events(events: impl IntoIterator<Item = JobEvent> + Send + 'static) -> JobStream {
         // Collected eagerly: the bound above only guarantees `events` itself is
         // `Send`, not that its `IntoIter` is too, and `tokio::spawn` needs a
@@ -141,9 +143,19 @@ mod tests {
         let mut s = JobStream::from_events((0..1000).map(|i| JobEvent::ItemDone {
             path: format!("f{i}"),
         }));
+        // Receive the first event, then cancel.
         assert!(s.next().await.is_some());
         s.cancel();
-        // Drain: cancellation makes the feeder stop; the stream ends.
-        while s.next().await.is_some() {}
+        // A working cancel stops the feeder well before all 1000 events are sent
+        // (the channel buffers only a handful while we hold off reading); a no-op
+        // cancel would still deliver all 999 remaining events.
+        let mut remaining = 0;
+        while s.next().await.is_some() {
+            remaining += 1;
+        }
+        assert!(
+            remaining < 999,
+            "cancel() should stop the feeder early; got {remaining} remaining events"
+        );
     }
 }
