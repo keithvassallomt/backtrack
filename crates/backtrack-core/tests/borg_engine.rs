@@ -51,7 +51,13 @@ async fn engine(f: &Fixture) -> BorgCli {
 }
 
 async fn run_to_finish(mut s: backtrack_core::engine::JobStream) -> Result<(), EngineError> {
-    let mut outcome = Ok(());
+    // Default to an error: a job that ends without ever emitting `Finished`
+    // (e.g. a plumbing bug that drops the terminal event) must fail the test
+    // loudly, not silently pass.
+    let mut outcome = Err(EngineError::BorgFailed {
+        code: -1,
+        stderr: "job stream ended without a Finished event".into(),
+    });
     while let Some(ev) = s.next().await {
         if let JobEvent::Finished(r) = ev {
             outcome = r.map(|_| ());
