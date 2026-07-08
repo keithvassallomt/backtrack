@@ -36,7 +36,7 @@
 
 ## Stage 2 — Borg adapter ([stage file](stages/stage-02-borg-adapter.md))
 - [x] S02-T1 BackupEngine trait + typed error taxonomy
-- [ ] S02-T2 BorgCli: create/list/extract/prune/compact/check with --log-json parsing
+- [/] S02-T2 BorgCli: create/list/extract/prune/compact/check with --log-json parsing
 - [x] S02-T3 Keyring (Secret Service) passphrase provider
 - [ ] S02-T4 Repo setup/import/key-export operations
 - [ ] S02-T5 Integration tests against real borg (CI)

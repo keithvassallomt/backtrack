@@ -5,6 +5,7 @@
 //! Borg-specific operation lives, plus its typed error taxonomy and streamed
 //! job events. Borg 2 later is a second implementation, not a rewrite.
 
+mod borg;
 mod error;
 mod job;
 mod spec;
