@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-// SPDX-FileCopyrightText: 2026 Keith Vassallo <keith@icemalta.com>
+// SPDX-FileCopyrightText: 2026 Keith Vassallo <keith@vassallo.cloud>
 
 //! Backtrack core library.
 //!
@@ -10,8 +10,10 @@
 //! The index (Stage 1) is the first real subsystem; the Borg adapter, spool,
 //! and restore engine arrive in later stages.
 
+pub mod engine;
 pub mod index;
 pub mod logging;
+pub mod secret;
 
 /// The crate version, sourced from the workspace package version at build time.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");

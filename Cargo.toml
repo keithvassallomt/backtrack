@@ -5,6 +5,7 @@ members = [
     "crates/backtrackd",
     "crates/backtrack-gtk",
     "crates/backtrack-cli",
+    "crates/backtrack-testkit",
     "xtask",
 ]
 
@@ -15,12 +16,13 @@ members = [
 version = "0.1.0"
 edition = "2021"
 license = "GPL-3.0-or-later"
-authors = ["Keith Vassallo <keith@icemalta.com>"]
+authors = ["Keith Vassallo <keith@vassallo.cloud>"]
 repository = "https://github.com/keithvassallomt/backtrack"
 
 # Pinned once here; crates opt in with `<dep>.workspace = true`.
 [workspace.dependencies]
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "sync", "signal"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "sync", "signal", "io-util", "time"] }
+rustix = { version = "1", features = ["process"] }
 zbus = "5"
 rusqlite = { version = "0.39", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
@@ -36,6 +38,9 @@ clap = { version = "4", features = ["derive"] }
 gtk4 = { version = "0.11", features = ["v4_14"] }
 libadwaita = { version = "0.9", features = ["v1_5"] }
 oo7 = "0.6"
+async-trait = "0.1"
+futures = "0.3"
+tokio-util = "0.7"
 
 # Internal crate, referenced by the binaries.
 backtrack-core = { path = "crates/backtrack-core" }
