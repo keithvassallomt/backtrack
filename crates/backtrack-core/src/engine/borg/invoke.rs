@@ -103,7 +103,7 @@ pub(super) fn spawn_streamed(mut cmd: Command) -> Result<JobStream> {
                     break;
                 }
                 next = lines.next_line() => match next {
-                    Ok(Some(line)) => forward_line(&line, &tx, &mut errbuf).await,
+                    Ok(Some(line)) => forward_line(&line, &tx, &mut errbuf, &task_cancel).await,
                     Ok(None) | Err(_) => break,
                 }
             }
@@ -111,7 +111,7 @@ pub(super) fn spawn_streamed(mut cmd: Command) -> Result<JobStream> {
         // Drain any remaining lines after the child closes stderr (non-cancel path).
         if !cancelled {
             while let Ok(Some(line)) = lines.next_line().await {
-                forward_line(&line, &tx, &mut errbuf).await;
+                forward_line(&line, &tx, &mut errbuf, &task_cancel).await;
             }
         }
         let result = match child.wait().await {
@@ -128,7 +128,12 @@ pub(super) fn spawn_streamed(mut cmd: Command) -> Result<JobStream> {
     Ok(JobStream::new(rx, cancel))
 }
 
-async fn forward_line(line: &str, tx: &mpsc::Sender<JobEvent>, errbuf: &mut Vec<ErrLine>) {
+async fn forward_line(
+    line: &str,
+    tx: &mpsc::Sender<JobEvent>,
+    errbuf: &mut Vec<ErrLine>,
+    cancel: &CancellationToken,
+) {
     let event = match parse_log_line(line) {
         Parsed::Progress {
             current,
@@ -158,7 +163,13 @@ async fn forward_line(line: &str, tx: &mpsc::Sender<JobEvent>, errbuf: &mut Vec<
         }
         Parsed::Ignore => return,
     };
-    let _ = tx.send(event).await;
+    // Observe cancellation even while the channel is full, so a cancelled
+    // job's reader never blocks indefinitely on backpressure (mirrors
+    // JobStream::from_events).
+    tokio::select! {
+        _ = cancel.cancelled() => {}
+        _ = tx.send(event) => {}
+    }
 }
 
 #[cfg(test)]
