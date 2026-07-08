@@ -144,7 +144,7 @@ impl SecretStore for MockSecretStore {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use backtrack_core::engine::{BackupEngine, JobEvent, JobSummary};
+    use backtrack_core::engine::{BackupEngine, EngineError, JobEvent, JobSummary};
     use backtrack_core::secret::SecretStore;
     use futures::StreamExt;
 
@@ -179,7 +179,10 @@ mod tests {
     #[tokio::test]
     async fn mock_secret_store_round_trips_and_reports_missing() {
         let store = MockSecretStore::default();
-        assert!(store.get("r").await.is_err());
+        assert!(matches!(
+            store.get("r").await,
+            Err(EngineError::PassphraseMissing)
+        ));
         store.set("r", "p").await.unwrap();
         assert_eq!(store.get("r").await.unwrap(), "p");
     }
