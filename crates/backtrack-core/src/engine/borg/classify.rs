@@ -3,17 +3,19 @@
 
 //! Map a finished Borg process (exit code + captured error lines) to an
 //! [`EngineError`]. Precedence: specific `msgid`/message patterns first, then a
-//! `BorgFailed` fallback. The table below is the documented mapping; keep it in
-//! sync with health.md.
+//! `BorgFailed` fallback. Broad English fragments ("is incorrect", "does not
+//! exist", "manifest") are matched only when they CO-OCCUR with a
+//! domain-specific token on the same line, so an unrelated borg message cannot
+//! be misclassified.
 //!
-//! | Signal (msgid or message substring) | EngineError |
+//! | Signal | EngineError |
 //! |---|---|
-//! | `Repository.DoesNotExist`, "does not exist", ssh "No route to host"/"Connection refused"/"Connection closed"/"Network is unreachable"/"Could not resolve hostname" | `RepoUnreachable` |
-//! | "passphrase … is incorrect"/"wrong passphrase"/`PassphraseWrong` | `PassphraseWrong` |
-//! | ssh "Permission denied"/"Authentication failed"/"Host key verification failed" | `AuthFailed` |
-//! | "No space left on device"/ENOSPC | `DestinationFull` |
-//! | `LockTimeout`, "Failed to create/acquire the lock" | `LockedByOther` |
-//! | `Repository.CheckNeeded`, "Inconsistency detected"/"Data integrity error"/"manifest" | `RepoCorrupt` |
+//! | msgid `PassphraseWrong`; a line with both "passphrase" and "is incorrect"; or "wrong passphrase" | `PassphraseWrong` |
+//! | "Permission denied", "Authentication failed", "Host key verification failed" | `AuthFailed` |
+//! | msgid `Repository.DoesNotExist`; a line with both "repository" and "does not exist"; or ssh "No route to host"/"Connection refused"/"Connection closed"/"Network is unreachable"/"Could not resolve hostname" | `RepoUnreachable` |
+//! | "No space left on device", "Errno 28" | `DestinationFull` |
+//! | msgid `LockTimeout`, "Failed to create/acquire the lock" | `LockedByOther` |
+//! | msgid `Repository.CheckNeeded`; "Inconsistency detected"; "Data integrity error"; a line with both "manifest" and "corrupt" | `RepoCorrupt` |
 //! | anything else with a non-zero code | `BorgFailed { code, stderr }` |
 
 use crate::engine::EngineError;
@@ -26,10 +28,13 @@ pub struct ErrLine {
     pub message: String,
 }
 
+/// True if any error line matches any single needle: msgid equal
+/// (case-insensitive) OR message contains it (case-insensitive).
 fn any(errors: &[ErrLine], needles: &[&str]) -> bool {
     errors.iter().any(|e| {
+        let msg = e.message.to_lowercase();
         needles.iter().any(|n| {
-            e.message.to_lowercase().contains(&n.to_lowercase())
+            msg.contains(&n.to_lowercase())
                 || e.msgid
                     .as_deref()
                     .map(|m| m.eq_ignore_ascii_case(n))
@@ -38,20 +43,24 @@ fn any(errors: &[ErrLine], needles: &[&str]) -> bool {
     })
 }
 
+/// True if any single error line's message contains ALL of the given fragments
+/// (case-insensitive). Requires a broad fragment to co-occur with a
+/// domain-specific token on the same line.
+fn any_line_with_all(errors: &[ErrLine], fragments: &[&str]) -> bool {
+    errors.iter().any(|e| {
+        let msg = e.message.to_lowercase();
+        fragments.iter().all(|f| msg.contains(&f.to_lowercase()))
+    })
+}
+
 /// Classify a failed Borg invocation. `code` is the process exit code; `errors`
 /// are the error-level `log_message` lines captured from stderr.
 #[cfg_attr(not(test), allow(dead_code))]
 pub fn classify(code: i32, errors: &[ErrLine]) -> EngineError {
     // Order matters: check the most specific signals before the generic fallback.
-    if any(
-        errors,
-        &[
-            "PassphraseWrong",
-            "passphrase supplied",
-            "is incorrect",
-            "wrong passphrase",
-        ],
-    ) {
+    if any(errors, &["PassphraseWrong", "wrong passphrase"])
+        || any_line_with_all(errors, &["passphrase", "is incorrect"])
+    {
         return EngineError::PassphraseWrong;
     }
     if any(
@@ -68,14 +77,14 @@ pub fn classify(code: i32, errors: &[ErrLine]) -> EngineError {
         errors,
         &[
             "Repository.DoesNotExist",
-            "does not exist",
             "No route to host",
             "Connection refused",
             "Connection closed",
             "Network is unreachable",
             "Could not resolve hostname",
         ],
-    ) {
+    ) || any_line_with_all(errors, &["repository", "does not exist"])
+    {
         return EngineError::RepoUnreachable;
     }
     if any(errors, &["No space left on device", "Errno 28"]) {
@@ -93,9 +102,9 @@ pub fn classify(code: i32, errors: &[ErrLine]) -> EngineError {
             "Repository.CheckNeeded",
             "Inconsistency detected",
             "Data integrity error",
-            "manifest",
         ],
-    ) {
+    ) || any_line_with_all(errors, &["manifest", "corrupt"])
+    {
         return EngineError::RepoCorrupt;
     }
     let stderr = errors
@@ -183,6 +192,31 @@ mod tests {
             EngineError::BorgFailed {
                 code: 2,
                 stderr: "something weird happened".into()
+            }
+        );
+    }
+
+    #[test]
+    fn is_incorrect_without_passphrase_is_not_passphrase_wrong() {
+        // A broad fragment alone must not misclassify an unrelated message.
+        let errs = [line(None, "the archive name specified is incorrect")];
+        assert_eq!(
+            classify(2, &errs),
+            EngineError::BorgFailed {
+                code: 2,
+                stderr: "the archive name specified is incorrect".into()
+            }
+        );
+    }
+
+    #[test]
+    fn does_not_exist_without_repository_falls_through() {
+        let errs = [line(None, "the requested path does not exist")];
+        assert_eq!(
+            classify(2, &errs),
+            EngineError::BorgFailed {
+                code: 2,
+                stderr: "the requested path does not exist".into()
             }
         );
     }
