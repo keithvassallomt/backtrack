@@ -39,7 +39,7 @@
 - [x] S02-T2 BorgCli: create/list/extract/prune/compact/check with --log-json parsing
 - [x] S02-T3 Keyring (Secret Service) passphrase provider
 - [x] S02-T4 Repo setup/import/key-export operations
-- [ ] S02-T5 Integration tests against real borg (CI)
+- [x] S02-T5 Integration tests against real borg (CI)
 
 ## Stage 3 — Daemon, D-Bus, CLI ([stage file](stages/stage-03-daemon-dbus-cli.md))
 - [ ] S03-T1 backtrackd skeleton: config load, single-instance, D-Bus name
@@ -130,6 +130,59 @@
 ## Notes / decisions made during implementation
 
 (append dated entries here; never delete)
+
+- 2026-07-08 (Stage 2 — Borg adapter): landed the `engine` + `secret` modules in
+  `backtrack-core` and a new `backtrack-testkit` crate. Key decisions:
+  - **Dispatch:** `BackupEngine` is `#[async_trait]`, held as `Arc<dyn BackupEngine>`
+    (not generics) — the daemon swaps Borg1/Borg2/Mock at runtime; the per-call box
+    is noise next to a subprocess spawn. `BorgCli` is the v1 impl.
+  - **JobStream:** concrete struct = `Stream<JobEvent>` over a `tokio::mpsc` channel;
+    owns the borg child + a `tokio_util` `CancellationToken`. `cancel()` and `Drop`
+    both trip the token; the stderr-reader task SIGTERM/kills the child. Terminal
+    outcome is delivered **in-band** as the final `JobEvent::Finished(Result<..>)`,
+    because `create()` returns `Ok(JobStream)` long before borg finishes. The reader
+    observes cancellation even while blocked on a full channel (send wrapped in the
+    cancel `select!`), so a cancelled-and-not-polled consumer never wedges the child.
+  - **`MockEngine`/`MockSecretStore`** live in `backtrack-testkit` (publish=false),
+    consumed by later stages as a **dev-dependency only** — no test scaffolding in
+    the production library. `MockEngine` builds streams via the public
+    `JobStream::from_events`.
+  - **Error taxonomy → health.md:** `EngineError::health_failure()` returns
+    `Option<HealthFailure>`; `HealthFailure` is exactly the 7 engine-relevant
+    failure-catalogue rows. `RepoUnreachable` (→ PROTECTED_LOCALLY state, not a
+    failure), `LockedByOther` (transient) and `BorgFailed` (uncategorised) map to
+    `None`. A unit test proves every catalogue row is covered.
+  - **borg flags chosen:** `create --json --list --filter AME --compression <c>
+    [--one-file-system] [--exclude ..] <repo>::<name> <sources..>`; `list
+    --json-lines <repo>::<archive>` (NO explicit `--format` — json-lines already
+    carries type/mode/size/mtime, parsed by Stage 1's `BorgItem::from_json_line`);
+    `extract --list` (into `dest` via `current_dir`) and `extract --stdout` for
+    single-file preview; `prune --list --keep-{hourly,daily,weekly,monthly}=N`;
+    `compact`; `check [--repository-only|--archives-only]`; `init
+    --encryption=repokey-blake2`; `info --json`; `key export`.
+  - **Env on every job/data command:** `BORG_PASSPHRASE` (from `SecretStore`, child
+    env only — never on disk), `BORG_RELOCATED_REPO_ACCESS_IS_OK=no`,
+    `BORG_EXIT_CODES=modern`, `LC_ALL=C.UTF-8`, `LANG=C.UTF-8`, `--log-json`. Version
+    probe (`borg --version`) enforces `>= 1.2` → else `BorgMissing`.
+  - **Classification** (`classify.rs`): exit code + captured error-level `log_message`
+    lines → `EngineError`, precedence PassphraseWrong → AuthFailed → RepoUnreachable
+    → DestinationFull → LockedByOther → RepoCorrupt → BorgFailed. Broad English
+    fragments ("is incorrect", "does not exist", "manifest") must **co-occur** with a
+    domain token on the same line so unrelated borg messages aren't misclassified;
+    stable `msgid`s (`Repository.DoesNotExist`, `LockTimeout`,
+    `Repository.CheckNeeded`) are matched directly.
+  - **SecretStore:** `oo7` (Secret Service) for real use; a JSON file store gated on
+    `BACKTRACK_DEV=1` keeps CI headless. Missing entry → `PassphraseMissing` (never a
+    prompt). `oo7 0.6` compiled unmodified.
+  - **tokio `io-util`** added explicitly to the workspace features — the adapter uses
+    `tokio::io` directly (was only enabled transitively via `oo7→zbus`).
+  - **Verified against real borg 1.4.4** (local + CI Fedora container): init → 2
+    archives → list → extract_stdout byte-match → prune/compact/check; wrong
+    passphrase → `PassphraseWrong`, unreachable path → `RepoUnreachable`; borg stores
+    member paths with the leading `/` stripped (`tmp/…/hello.txt`). Integration suite
+    green two consecutive runs. Deferred to Stage 4: `BORG_EXIT_CODES=modern` makes a
+    borg *warning* exit classify as a job failure — revisit when the backup pipeline
+    handles warnings (e.g. a file vanishing mid-create).
 
 - 2026-07-07 (S00-T2): Minimum supported platform pinned to GTK 4.14 / libadwaita
   1.5 (GNOME 46 / Ubuntu 24.04 LTS) via crate version features — required for
