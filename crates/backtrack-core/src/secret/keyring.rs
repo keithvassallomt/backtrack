@@ -28,7 +28,7 @@ impl Default for KeyringSecretStore {
 }
 
 fn attrs(repo_id: &str) -> HashMap<&str, &str> {
-    HashMap::from([("app-id", APP_ID), ("repo-id_", repo_id)])
+    HashMap::from([("app-id", APP_ID), ("repo-id", repo_id)])
 }
 
 fn svc_err(e: impl std::fmt::Display) -> EngineError {

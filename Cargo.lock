@@ -145,6 +145,7 @@ dependencies = [
  "oo7",
  "proptest",
  "rusqlite",
+ "rustix",
  "serde",
  "serde_json",
  "tempfile",

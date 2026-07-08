@@ -11,7 +11,8 @@
 //!   (health.md: an unreachable destination is "the product working as designed",
 //!   no notification);
 //! - `LockedByOther` is transient (borg retries);
-//! - `BorgFailed` is an uncategorised catch-all with no dedicated row.
+//! - `BorgFailed` is an uncategorised catch-all with no dedicated row;
+//! - `Cancelled` is a user-initiated stop, not a failure.
 //!
 //! Rows of the catalogue that are not engine failures at all — index corruption
 //! (SQLite), interrupted backup (checkpoint), snapshot-taken-but-indexing-failed
@@ -48,6 +49,8 @@ pub enum EngineError {
     },
     #[error("borg exited with code {code}: {stderr}")]
     BorgFailed { code: i32, stderr: String },
+    #[error("the job was cancelled")]
+    Cancelled,
 }
 
 /// The engine-relevant rows of health.md's failure catalogue — the failures the
@@ -100,6 +103,7 @@ impl EngineError {
             EngineError::RepoUnreachable => None,
             EngineError::LockedByOther => None,
             EngineError::BorgFailed { .. } => None,
+            EngineError::Cancelled => None,
         }
     }
 }
@@ -128,6 +132,7 @@ mod tests {
                 code: 2,
                 stderr: "boom".into(),
             },
+            EngineError::Cancelled,
         ]
     }
 
@@ -159,5 +164,6 @@ mod tests {
             .health_failure(),
             None
         );
+        assert_eq!(EngineError::Cancelled.health_failure(), None);
     }
 }

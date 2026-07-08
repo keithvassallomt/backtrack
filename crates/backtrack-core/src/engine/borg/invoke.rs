@@ -6,9 +6,10 @@
 
 use std::path::Path;
 use std::process::Stdio;
+use std::time::Duration;
 
 use tokio::io::{AsyncBufReadExt, BufReader};
-use tokio::process::Command;
+use tokio::process::{Child, Command};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
@@ -74,6 +75,20 @@ pub(super) fn base_command(bin: &Path, passphrase: &str) -> Command {
     cmd
 }
 
+/// Grace period for borg to checkpoint and exit after SIGTERM before we SIGKILL.
+const CANCEL_GRACE: Duration = Duration::from_secs(10);
+
+/// Ask the borg child to terminate gracefully (SIGTERM) so it can write a
+/// checkpoint and release the repository lock. Best-effort: a missing pid
+/// means the child has already exited.
+fn send_sigterm(child: &Child) {
+    if let Some(pid) = child.id() {
+        if let Some(pid) = rustix::process::Pid::from_raw(pid as i32) {
+            let _ = rustix::process::kill_process(pid, rustix::process::Signal::TERM);
+        }
+    }
+}
+
 /// Spawn a job-style borg command (progress on stderr) and return its stream.
 /// Stdout is discarded; the stderr reader forwards events and, on exit,
 /// classifies failure into the terminal [`JobEvent::Finished`].
@@ -99,7 +114,7 @@ pub(super) fn spawn_streamed(mut cmd: Command) -> Result<JobStream> {
             tokio::select! {
                 _ = task_cancel.cancelled() => {
                     cancelled = true;
-                    let _ = child.start_kill();
+                    send_sigterm(&child);
                     break;
                 }
                 next = lines.next_line() => match next {
@@ -108,19 +123,31 @@ pub(super) fn spawn_streamed(mut cmd: Command) -> Result<JobStream> {
                 }
             }
         }
-        // Drain any remaining lines after the child closes stderr (non-cancel path).
-        if !cancelled {
+        let result = if cancelled {
+            // Give borg a grace period to checkpoint and exit after SIGTERM,
+            // then escalate to SIGKILL. The outcome is Cancelled regardless of
+            // exit status, so a cancel never reads as a borg failure.
+            if tokio::time::timeout(CANCEL_GRACE, child.wait())
+                .await
+                .is_err()
+            {
+                let _ = child.start_kill();
+                let _ = child.wait().await;
+            }
+            Err(EngineError::Cancelled)
+        } else {
+            // Drain any remaining lines after the child closes stderr.
             while let Ok(Some(line)) = lines.next_line().await {
                 forward_line(&line, &tx, &mut errbuf, &task_cancel).await;
             }
-        }
-        let result = match child.wait().await {
-            Ok(status) if status.success() && !cancelled => Ok(JobSummary::default()),
-            Ok(status) => Err(classify(status.code().unwrap_or(-1), &errbuf)),
-            Err(e) => Err(EngineError::BorgFailed {
-                code: -1,
-                stderr: e.to_string(),
-            }),
+            match child.wait().await {
+                Ok(status) if status.success() => Ok(JobSummary::default()),
+                Ok(status) => Err(classify(status.code().unwrap_or(-1), &errbuf)),
+                Err(e) => Err(EngineError::BorgFailed {
+                    code: -1,
+                    stderr: e.to_string(),
+                }),
+            }
         };
         let _ = tx.send(JobEvent::Finished(result)).await;
     });
