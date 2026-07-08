@@ -38,7 +38,7 @@
 - [x] S02-T1 BackupEngine trait + typed error taxonomy
 - [x] S02-T2 BorgCli: create/list/extract/prune/compact/check with --log-json parsing
 - [x] S02-T3 Keyring (Secret Service) passphrase provider
-- [ ] S02-T4 Repo setup/import/key-export operations
+- [x] S02-T4 Repo setup/import/key-export operations
 - [ ] S02-T5 Integration tests against real borg (CI)
 
 ## Stage 3 — Daemon, D-Bus, CLI ([stage file](stages/stage-03-daemon-dbus-cli.md))
