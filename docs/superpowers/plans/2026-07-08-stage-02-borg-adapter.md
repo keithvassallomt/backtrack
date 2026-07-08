@@ -60,7 +60,7 @@ Create `crates/backtrack-core/src/engine/mod.rs`:
 
 ```rust
 // SPDX-License-Identifier: GPL-3.0-or-later
-// SPDX-FileCopyrightText: 2026 Keith Vassallo <keith@icemalta.com>
+// SPDX-FileCopyrightText: 2026 Keith Vassallo <keith@vassallo.cloud>
 
 //! The Borg adapter: one trait, [`BackupEngine`], behind which every
 //! Borg-specific operation lives, plus its typed error taxonomy and streamed
@@ -77,7 +77,7 @@ Create `crates/backtrack-core/src/engine/error.rs` with only the test module fir
 
 ```rust
 // SPDX-License-Identifier: GPL-3.0-or-later
-// SPDX-FileCopyrightText: 2026 Keith Vassallo <keith@icemalta.com>
+// SPDX-FileCopyrightText: 2026 Keith Vassallo <keith@vassallo.cloud>
 
 #[cfg(test)]
 mod tests {
@@ -277,7 +277,7 @@ Create `crates/backtrack-core/src/engine/job.rs` with just the header + test:
 
 ```rust
 // SPDX-License-Identifier: GPL-3.0-or-later
-// SPDX-FileCopyrightText: 2026 Keith Vassallo <keith@icemalta.com>
+// SPDX-FileCopyrightText: 2026 Keith Vassallo <keith@vassallo.cloud>
 
 #[cfg(test)]
 mod tests {
@@ -433,7 +433,7 @@ Create `crates/backtrack-core/src/engine/spec.rs`:
 
 ```rust
 // SPDX-License-Identifier: GPL-3.0-or-later
-// SPDX-FileCopyrightText: 2026 Keith Vassallo <keith@icemalta.com>
+// SPDX-FileCopyrightText: 2026 Keith Vassallo <keith@vassallo.cloud>
 
 //! Inputs to the engine operations. Minimal-but-honest for Stage 2: only what a
 //! real backup and the integration tests exercise. Retention detail, exclude
@@ -532,7 +532,7 @@ Replace the body of `crates/backtrack-core/src/engine/mod.rs` with:
 
 ```rust
 // SPDX-License-Identifier: GPL-3.0-or-later
-// SPDX-FileCopyrightText: 2026 Keith Vassallo <keith@icemalta.com>
+// SPDX-FileCopyrightText: 2026 Keith Vassallo <keith@vassallo.cloud>
 
 //! The Borg adapter: one trait, [`BackupEngine`], behind which every
 //! Borg-specific operation lives, plus its typed error taxonomy and streamed
@@ -646,7 +646,7 @@ Create `crates/backtrack-core/src/secret/mod.rs`:
 
 ```rust
 // SPDX-License-Identifier: GPL-3.0-or-later
-// SPDX-FileCopyrightText: 2026 Keith Vassallo <keith@icemalta.com>
+// SPDX-FileCopyrightText: 2026 Keith Vassallo <keith@vassallo.cloud>
 
 //! Passphrase storage. The real store is the Secret Service (system keyring) via
 //! `oo7`; `BACKTRACK_DEV=1` selects a file-backed store so CI stays headless.
@@ -702,7 +702,7 @@ Create `crates/backtrack-core/src/secret/file.rs` with header + test only:
 
 ```rust
 // SPDX-License-Identifier: GPL-3.0-or-later
-// SPDX-FileCopyrightText: 2026 Keith Vassallo <keith@icemalta.com>
+// SPDX-FileCopyrightText: 2026 Keith Vassallo <keith@vassallo.cloud>
 
 #[cfg(test)]
 mod tests {
@@ -854,7 +854,7 @@ Create `crates/backtrack-core/src/secret/keyring.rs`:
 
 ```rust
 // SPDX-License-Identifier: GPL-3.0-or-later
-// SPDX-FileCopyrightText: 2026 Keith Vassallo <keith@icemalta.com>
+// SPDX-FileCopyrightText: 2026 Keith Vassallo <keith@vassallo.cloud>
 
 //! Secret Service (system keyring) passphrase store via `oo7`. Not exercised in
 //! headless CI (no Secret Service); the file store is the tested path. The
@@ -996,7 +996,7 @@ Create `crates/backtrack-testkit/src/lib.rs` with header + test only:
 
 ```rust
 // SPDX-License-Identifier: GPL-3.0-or-later
-// SPDX-FileCopyrightText: 2026 Keith Vassallo <keith@icemalta.com>
+// SPDX-FileCopyrightText: 2026 Keith Vassallo <keith@vassallo.cloud>
 
 #[cfg(test)]
 mod tests {
@@ -1227,7 +1227,7 @@ Create `crates/backtrack-core/src/engine/borg/mod.rs`:
 
 ```rust
 // SPDX-License-Identifier: GPL-3.0-or-later
-// SPDX-FileCopyrightText: 2026 Keith Vassallo <keith@icemalta.com>
+// SPDX-FileCopyrightText: 2026 Keith Vassallo <keith@vassallo.cloud>
 
 //! The real [`BackupEngine`](super::BackupEngine): `BorgCli`. Spawns
 //! `borg --log-json` and parses its stderr JSONL into [`JobEvent`](super::JobEvent)s.
@@ -1241,7 +1241,7 @@ Create `crates/backtrack-core/src/engine/borg/logjson.rs` with header + test onl
 
 ```rust
 // SPDX-License-Identifier: GPL-3.0-or-later
-// SPDX-FileCopyrightText: 2026 Keith Vassallo <keith@icemalta.com>
+// SPDX-FileCopyrightText: 2026 Keith Vassallo <keith@vassallo.cloud>
 
 #[cfg(test)]
 mod tests {
@@ -1436,7 +1436,7 @@ Create `crates/backtrack-core/src/engine/borg/classify.rs` with header + test on
 
 ```rust
 // SPDX-License-Identifier: GPL-3.0-or-later
-// SPDX-FileCopyrightText: 2026 Keith Vassallo <keith@icemalta.com>
+// SPDX-FileCopyrightText: 2026 Keith Vassallo <keith@vassallo.cloud>
 
 #[cfg(test)]
 mod tests {
@@ -1623,7 +1623,7 @@ Create `crates/backtrack-core/src/engine/borg/invoke.rs` with header + test only
 
 ```rust
 // SPDX-License-Identifier: GPL-3.0-or-later
-// SPDX-FileCopyrightText: 2026 Keith Vassallo <keith@icemalta.com>
+// SPDX-FileCopyrightText: 2026 Keith Vassallo <keith@vassallo.cloud>
 
 #[cfg(test)]
 mod tests {
@@ -1798,7 +1798,7 @@ Replace the body of `crates/backtrack-core/src/engine/borg/mod.rs` with:
 
 ```rust
 // SPDX-License-Identifier: GPL-3.0-or-later
-// SPDX-FileCopyrightText: 2026 Keith Vassallo <keith@icemalta.com>
+// SPDX-FileCopyrightText: 2026 Keith Vassallo <keith@vassallo.cloud>
 
 //! The real [`BackupEngine`](super::BackupEngine): `BorgCli`. Spawns
 //! `borg --log-json` and parses its stderr JSONL into [`JobEvent`](super::JobEvent)s.
@@ -2145,7 +2145,7 @@ Create `crates/backtrack-core/tests/borg_engine.rs`:
 
 ```rust
 // SPDX-License-Identifier: GPL-3.0-or-later
-// SPDX-FileCopyrightText: 2026 Keith Vassallo <keith@icemalta.com>
+// SPDX-FileCopyrightText: 2026 Keith Vassallo <keith@vassallo.cloud>
 
 //! Real-borg integration tests. Run via `just test-integration`
 //! (`cargo test --features integration`); skipped otherwise.
@@ -2317,7 +2317,7 @@ Create `crates/backtrack-core/tests/borg_repo_lifecycle.rs`:
 
 ```rust
 // SPDX-License-Identifier: GPL-3.0-or-later
-// SPDX-FileCopyrightText: 2026 Keith Vassallo <keith@icemalta.com>
+// SPDX-FileCopyrightText: 2026 Keith Vassallo <keith@vassallo.cloud>
 
 //! S02-T4: repo init / key export / import (open + verify passphrase).
 #![cfg(feature = "integration")]

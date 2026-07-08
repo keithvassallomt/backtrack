@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-// SPDX-FileCopyrightText: 2026 Keith Vassallo <keith@icemalta.com>
+// SPDX-FileCopyrightText: 2026 Keith Vassallo <keith@vassallo.cloud>
 
 //! Test doubles for `backtrack-core`. Downstream crates depend on this crate
 //! under `[dev-dependencies]` only, so no scaffolding compiles into production.

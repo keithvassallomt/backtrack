@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-// SPDX-FileCopyrightText: 2026 Keith Vassallo <keith@icemalta.com>
+// SPDX-FileCopyrightText: 2026 Keith Vassallo <keith@vassallo.cloud>
 
 //! S02-T4: repo init / key export / import (open + verify passphrase).
 #![cfg(feature = "integration")]

@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-// SPDX-FileCopyrightText: 2026 Keith Vassallo <keith@icemalta.com>
+// SPDX-FileCopyrightText: 2026 Keith Vassallo <keith@vassallo.cloud>
 
 //! Passphrase storage. The real store is the Secret Service (system keyring) via
 //! `oo7`; `BACKTRACK_DEV=1` selects a file-backed store so CI stays headless.

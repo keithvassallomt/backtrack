@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-// SPDX-FileCopyrightText: 2026 Keith Vassallo <keith@icemalta.com>
+// SPDX-FileCopyrightText: 2026 Keith Vassallo <keith@vassallo.cloud>
 
 //! Inputs to the engine operations. Minimal-but-honest for Stage 2: only what a
 //! real backup and the integration tests exercise. Retention detail, exclude

@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-// SPDX-FileCopyrightText: 2026 Keith Vassallo <keith@icemalta.com>
+// SPDX-FileCopyrightText: 2026 Keith Vassallo <keith@vassallo.cloud>
 
 //! Streamed job events and the [`JobStream`] that carries them. A job's terminal
 //! outcome is delivered in-band as the final [`JobEvent::Finished`], because a

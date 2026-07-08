@@ -16,7 +16,7 @@ members = [
 version = "0.1.0"
 edition = "2021"
 license = "GPL-3.0-or-later"
-authors = ["Keith Vassallo <keith@icemalta.com>"]
+authors = ["Keith Vassallo <keith@vassallo.cloud>"]
 repository = "https://github.com/keithvassallomt/backtrack"
 
 # Pinned once here; crates opt in with `<dep>.workspace = true`.

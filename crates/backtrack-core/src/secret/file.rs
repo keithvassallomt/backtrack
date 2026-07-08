@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-// SPDX-FileCopyrightText: 2026 Keith Vassallo <keith@icemalta.com>
+// SPDX-FileCopyrightText: 2026 Keith Vassallo <keith@vassallo.cloud>
 
 //! File-backed passphrase store for `BACKTRACK_DEV=1` / headless CI. Stores a
 //! flat JSON map `{ repo_id: passphrase }`. Not for production use.
