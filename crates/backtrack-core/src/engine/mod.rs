@@ -19,6 +19,7 @@ use tokio::io::AsyncRead;
 
 use crate::index::BorgItem;
 
+pub use borg::BorgCli;
 pub use error::{EngineError, HealthFailure, Result};
 pub use job::{JobEvent, JobStream, JobSummary, LogLevel};
 pub use spec::{

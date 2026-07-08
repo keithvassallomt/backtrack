@@ -16,10 +16,7 @@ use serde::Deserialize;
 
 use crate::engine::LogLevel;
 
-/// A single classified log line. Consumed by classification (T3) and
-/// `BorgCli` (T4); for now only the tests below call [`parse_log_line`],
-/// so it is dead code in non-test builds.
-#[cfg_attr(not(test), allow(dead_code))]
+/// A single classified log line. Consumed by classification and `BorgCli`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Parsed {
     Progress {
@@ -38,7 +35,6 @@ pub enum Parsed {
     Ignore,
 }
 
-#[cfg_attr(not(test), allow(dead_code))]
 #[derive(Deserialize)]
 struct Raw {
     #[serde(rename = "type")]
@@ -59,7 +55,6 @@ struct Raw {
     path: Option<String>,
 }
 
-#[cfg_attr(not(test), allow(dead_code))]
 fn level_from(name: Option<&str>) -> LogLevel {
     match name.unwrap_or("INFO") {
         "DEBUG" => LogLevel::Debug,
@@ -70,7 +65,6 @@ fn level_from(name: Option<&str>) -> LogLevel {
 }
 
 /// Parse one stderr line. Never fails: unrecognised input is [`Parsed::Ignore`].
-#[cfg_attr(not(test), allow(dead_code))]
 pub fn parse_log_line(line: &str) -> Parsed {
     let raw: Raw = match serde_json::from_str(line) {
         Ok(r) => r,
@@ -170,6 +164,12 @@ mod tests {
                 message: "Repository does not exist.".into(),
             }
         );
+    }
+
+    #[test]
+    fn file_status_without_path_is_ignored() {
+        let line = r#"{"type":"file_status","status":"A"}"#;
+        assert_eq!(parse_log_line(line), Parsed::Ignore);
     }
 
     #[test]

@@ -21,7 +21,6 @@
 use crate::engine::EngineError;
 
 /// A captured error-level line from Borg's `--log-json` stream.
-#[cfg_attr(not(test), allow(dead_code))]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ErrLine {
     pub msgid: Option<String>,
@@ -55,7 +54,6 @@ fn any_line_with_all(errors: &[ErrLine], fragments: &[&str]) -> bool {
 
 /// Classify a failed Borg invocation. `code` is the process exit code; `errors`
 /// are the error-level `log_message` lines captured from stderr.
-#[cfg_attr(not(test), allow(dead_code))]
 pub fn classify(code: i32, errors: &[ErrLine]) -> EngineError {
     // Order matters: check the most specific signals before the generic fallback.
     if any(errors, &["PassphraseWrong", "wrong passphrase"])
