@@ -42,7 +42,10 @@ pub enum EngineError {
     #[error("the repository is locked by another process")]
     LockedByOther,
     #[error("borg {needed} is required (found {found:?})")]
-    BorgMissing { needed: String, found: Option<String> },
+    BorgMissing {
+        needed: String,
+        found: Option<String>,
+    },
     #[error("borg exited with code {code}: {stderr}")]
     BorgFailed { code: i32, stderr: String },
 }
@@ -117,15 +120,23 @@ mod tests {
             EngineError::LocalDiskFull,
             EngineError::RepoCorrupt,
             EngineError::LockedByOther,
-            EngineError::BorgMissing { needed: ">=1.2".into(), found: None },
-            EngineError::BorgFailed { code: 2, stderr: "boom".into() },
+            EngineError::BorgMissing {
+                needed: ">=1.2".into(),
+                found: None,
+            },
+            EngineError::BorgFailed {
+                code: 2,
+                stderr: "boom".into(),
+            },
         ]
     }
 
     #[test]
     fn every_health_catalogue_row_has_an_error() {
-        let covered: HashSet<HealthFailure> =
-            one_of_each().iter().filter_map(|e| e.health_failure()).collect();
+        let covered: HashSet<HealthFailure> = one_of_each()
+            .iter()
+            .filter_map(|e| e.health_failure())
+            .collect();
         let expected: HashSet<HealthFailure> = HealthFailure::ALL.iter().copied().collect();
         assert_eq!(
             covered, expected,
@@ -141,7 +152,11 @@ mod tests {
         assert_eq!(EngineError::RepoUnreachable.health_failure(), None);
         assert_eq!(EngineError::LockedByOther.health_failure(), None);
         assert_eq!(
-            EngineError::BorgFailed { code: 2, stderr: String::new() }.health_failure(),
+            EngineError::BorgFailed {
+                code: 2,
+                stderr: String::new()
+            }
+            .health_failure(),
             None
         );
     }
