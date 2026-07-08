@@ -5,6 +5,7 @@ members = [
     "crates/backtrackd",
     "crates/backtrack-gtk",
     "crates/backtrack-cli",
+    "crates/backtrack-testkit",
     "xtask",
 ]
 

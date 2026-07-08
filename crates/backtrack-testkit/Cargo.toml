@@ -1,0 +1,18 @@
+[package]
+name = "backtrack-testkit"
+description = "Test doubles for backtrack-core (MockEngine, MockSecretStore). Not published."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+backtrack-core.workspace = true
+async-trait.workspace = true
+futures.workspace = true
+tokio.workspace = true

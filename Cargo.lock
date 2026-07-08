@@ -167,6 +167,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "backtrack-testkit"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "backtrack-core",
+ "futures",
+ "tokio",
+]
+
+[[package]]
 name = "backtrackd"
 version = "0.1.0"
 dependencies = [
