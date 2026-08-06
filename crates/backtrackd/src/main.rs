@@ -9,6 +9,7 @@
 
 mod daemon;
 mod jobs;
+mod service;
 
 use std::process::ExitCode;
 

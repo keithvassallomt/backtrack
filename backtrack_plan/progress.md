@@ -12,8 +12,8 @@
 > tasks: add them here + to the stage file, then `just provision-board-apply`.
 > See [../CLAUDE.md](../CLAUDE.md) for the full workflow.
 
-**Current stage:** 1 (complete) → next: Stage 2
-**Last updated:** 2026-07-07
+**Current stage:** 3 (in progress — T1–T3 done) → next: S03-T4
+**Last updated:** 2026-08-06
 
 ## Stage 0 — Bootstrap ([stage file](stages/stage-00-bootstrap.md))
 - [x] S00-T1 Git repo, license, .gitignore, README skeleton
@@ -44,7 +44,7 @@
 ## Stage 3 — Daemon, D-Bus, CLI ([stage file](stages/stage-03-daemon-dbus-cli.md))
 - [x] S03-T1 backtrackd skeleton: config load, single-instance, D-Bus name
 - [x] S03-T2 Job model (queue, IDs, cancel/pause, progress events)
-- [ ] S03-T3 Full org.backtrack.Daemon1 interface + signals
+- [x] S03-T3 Full org.backtrack.Daemon1 interface + signals
 - [ ] S03-T4 systemd user units + D-Bus activation
 - [ ] S03-T5 backtrack CLI mapping the interface (incl. status --json, doctor)
 
@@ -266,3 +266,59 @@
 - 2026-07-07 (Stage 1 done): full quality gate green — 50 core unit/property
   tests + 3 xtask tests; clippy -D warnings clean; license headers present;
   verify-version OK. Perf recorded above (ingest, folder_at, demo-repo).
+- 2026-08-06 (S03-T1): `config.toml` lives in the data directory, not
+  `XDG_CONFIG_HOME`, per stack.md §3 — one directory to back up, inspect, or
+  wipe. Loading is asymmetric on purpose: unknown keys warn (a stale key after a
+  downgrade must not stop backups), a wrong-typed value fails (silently ignoring
+  a setting the user believes is in force is worse than refusing to start). The
+  schema mirrors the Preferences pages one section per page, so S09-T4's
+  "every key has exactly one control" check has something to compare against.
+  Single-instance is D-Bus name ownership with `DoNotQueue`, not a PID file:
+  nothing stale survives a crash, and without `DoNotQueue` a second instance
+  queues and silently inherits the name when the first exits, leaving two
+  daemons that both believe they own the index. **Under `BACKTRACK_DEV` the bus
+  name gains a `.Dev` suffix** — dev mode already redirects the data directory,
+  and a dev daemon answering the real GUI would report an empty timeline for a
+  fully protected machine. Interface and object path are unchanged, so
+  introspection is identical in both modes; S03-T4's activation file will need
+  templating because of it.
+- 2026-08-06 (S03-T2): Repository admission is a reader/writer rule mirroring
+  Borg's own locking (create/prune/compact/check exclusive; extract/list
+  shared), so colliding work queues instead of failing on a lock the user has
+  never heard of. The queue is *scanned*, not peeked — a restore may pass a
+  queued backup, because someone restoring a file during a long index backfill
+  should not wait for both, and the backup it passes is retried next tick.
+  Cancellation resolves to `Done`, never `Failed`: a cancelled job is not a
+  failure and must not raise a health banner. Two consequences — a job that
+  finished in the gap between the request and the teardown reports *completed*
+  (the archive exists; saying otherwise is a lie the user would act on), and an
+  engine error raised while tearing down reports as the cancellation it followed
+  from. Pause is implemented only for guided DR (per-folder, resumable);
+  everything else is refused with a typed error. `SIGSTOP` is never used: a
+  stopped Borg keeps its repository lock and sockets open indefinitely, so every
+  other job would block on a holder that will never run again. A stream that
+  ends without a terminal event is recorded as **failed** — an unverified backup
+  reported as complete is the one failure mode this product cannot have.
+- 2026-08-06 (S03-T3): The interface is pinned by an introspection snapshot
+  rendered from the interface itself (no bus needed, so it runs in CI).
+  Deviations from stack.md §2, both deliberate: **`ResumeJob` added** (a job that
+  can be paused and never resumed is a bug, not an API — S11 needs it), and
+  **`GetConfigKey` added** alongside `GetConfig`. Configuration crosses the bus
+  as TOML rather than D-Bus variants: half the settings are lists, which a
+  stringly-typed dictionary cannot express without inventing an escaping
+  convention both ends must implement identically, and TOML is already the
+  on-disk format. `PreviewFile` returns a descriptor onto the daemon's private
+  cache (1 GB, LRU, keyed by `(archive, path)` — an archive is immutable, so a
+  hit can never be stale), which is what lets a sandboxed GUI read a file it
+  could not open itself. Writing the end-to-end test found **three real bugs**:
+  (1) `borg create` was missing `--progress`, so borg emitted no
+  `archive_progress` at all and every progress bar in the application would have
+  sat still for the whole backup — added to create/extract/prune/compact/check;
+  (2) `repo_info` counted archives from `borg info --json`, which carries no
+  archive list, so it reported zero for every repository however full — now
+  reads `borg list --json`, which carries both the count and the repository id;
+  (3) a job failing with an *unclassified* error cleared the blocking-failure
+  flag, dismissing a `BROKEN` banner the user still needed to act on — a failure
+  can now raise the flag but never lower it, since only a successful backup
+  proves the problem is gone. Health is seeded from the catalogue at startup, or
+  the daemon would forget every backup it had ever taken each time it restarted.

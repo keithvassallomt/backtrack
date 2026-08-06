@@ -78,8 +78,12 @@ impl BackupEngine for BorgCli {
     }
 
     async fn repo_info(&self) -> Result<RepoInfo> {
+        // `borg list --json`, not `borg info --json`: the latter reports cache
+        // and encryption detail but carries no archive list, so counting from it
+        // reports zero for every repository, however full. Both carry the
+        // repository id, so one invocation answers both questions.
         let mut cmd = self.cmd().await?;
-        cmd.arg("info").arg("--json").arg(&self.repo);
+        cmd.arg("list").arg("--json").arg(&self.repo);
         let out = run_json(cmd).await?;
         let repository_id = out
             .get("repository")
@@ -107,6 +111,10 @@ impl BackupEngine for BorgCli {
     async fn create(&self, spec: &CreateSpec) -> Result<JobStream> {
         let mut cmd = self.cmd().await?;
         cmd.arg("create")
+            // Without --progress, borg emits no `archive_progress` messages at
+            // all, so every progress bar in the application would sit still for
+            // the whole backup.
+            .arg("--progress")
             .arg("--json")
             .arg("--list")
             .arg("--filter")
@@ -173,6 +181,7 @@ impl BackupEngine for BorgCli {
         let mut cmd = self.cmd().await?;
         cmd.current_dir(dest)
             .arg("extract")
+            .arg("--progress")
             .arg("--list")
             .arg(self.archive_ref(id));
         for p in paths {
@@ -209,6 +218,7 @@ impl BackupEngine for BorgCli {
     async fn prune(&self, policy: &PrunePolicy) -> Result<JobStream> {
         let mut cmd = self.cmd().await?;
         cmd.arg("prune")
+            .arg("--progress")
             .arg("--list")
             .arg(format!("--keep-hourly={}", policy.keep_hourly))
             .arg(format!("--keep-daily={}", policy.keep_daily))
@@ -220,13 +230,13 @@ impl BackupEngine for BorgCli {
 
     async fn compact(&self) -> Result<JobStream> {
         let mut cmd = self.cmd().await?;
-        cmd.arg("compact").arg(&self.repo);
+        cmd.arg("compact").arg("--progress").arg(&self.repo);
         spawn_streamed(cmd)
     }
 
     async fn check(&self, level: CheckLevel) -> Result<JobStream> {
         let mut cmd = self.cmd().await?;
-        cmd.arg("check");
+        cmd.arg("check").arg("--progress");
         match level {
             CheckLevel::Repository => {
                 cmd.arg("--repository-only");

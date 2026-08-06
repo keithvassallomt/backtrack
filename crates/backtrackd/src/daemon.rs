@@ -5,18 +5,22 @@
 //!
 //! Startup order is deliberate:
 //!
-//! 1. **Claim the bus name.** Ownership of `org.backtrack.Daemon1` *is* the
-//!    single-instance lock — no PID file, no stale lock to clean up after a
-//!    crash, and the bus arbitrates races for us. Claiming first also means a
-//!    losing instance exits before it has opened anything.
-//! 2. **Load the configuration.** Failures here are fatal: see
+//! 1. **Load the configuration.** Failures here are fatal: see
 //!    [`backtrack_core::config`] for why a bad file is worth refusing to start
 //!    over, while a merely *unknown* key is not.
-//! 3. **Open the index for writing.** The daemon owns the one and only
+//! 2. **Open the index for writing.** The daemon owns the one and only
 //!    [`IndexWriter`]; every other process reads through a read-only connection.
+//! 3. **Export the service object**, then **claim the bus name**. That order
+//!    matters: a client that activated us fires its method call the moment the
+//!    name appears, so owning the name on a connection that serves nothing is a
+//!    race we would lose. Ownership of `org.backtrack.Daemon1` *is* the
+//!    single-instance lock — no PID file, nothing stale to clean up after a
+//!    crash, and the bus arbitrates the race for us.
+//! 4. **Connect the engine.** A destination that is merely unreachable does not
+//!    stop the daemon; reporting that is precisely what the health model is for,
+//!    and a client needs a live daemon to hear it from.
 //!
-//! Shutdown is the reverse and is driven by SIGTERM (systemd) or SIGINT (a
-//! developer's Ctrl-C).
+//! Shutdown is driven by SIGTERM (systemd) or SIGINT (a developer's Ctrl-C).
 
 use std::path::PathBuf;
 
@@ -25,10 +29,13 @@ use backtrack_core::index::IndexWriter;
 use backtrack_core::{dbus, paths};
 
 use crate::jobs::JobRegistry;
+use crate::service::{self, Daemon1, Shared};
+use std::sync::Arc;
 use tokio::signal::unix::{signal, SignalKind};
-use tracing::{error, info};
+use tracing::{error, info, warn};
 use zbus::fdo::RequestNameFlags;
 use zbus::fdo::RequestNameReply;
+use zbus::object_server::SignalEmitter;
 
 /// Why the daemon stopped. Both variants are a successful exit: losing the
 /// single-instance race is a normal outcome, not a failure, which is what makes
@@ -80,6 +87,9 @@ pub enum StartupError {
         source: backtrack_core::index::IndexError,
     },
 
+    #[error("cannot reach the system keyring: {0}")]
+    Secrets(#[source] backtrack_core::engine::EngineError),
+
     #[error("cannot install the {signal} handler: {source}")]
     Signals {
         signal: &'static str,
@@ -90,7 +100,30 @@ pub enum StartupError {
 
 /// Start the daemon and run until a shutdown signal arrives.
 pub async fn run() -> Result<Outcome, StartupError> {
-    let connection = zbus::Connection::session()
+    let config = Config::load()?;
+    info!(
+        configured = config.is_configured(),
+        frequency = ?config.backup.frequency,
+        "configuration loaded"
+    );
+
+    // Held for the daemon's lifetime: this binding is the single-writer
+    // guarantee. Nothing else may open the index for writing while we live.
+    let _index = open_index()?;
+
+    // The one registry every job goes through.
+    let jobs = JobRegistry::new();
+    let secrets = backtrack_core::secret::default_store().map_err(StartupError::Secrets)?;
+    let shared = Shared::new(config, Arc::clone(&jobs), secrets);
+
+    // Export the object *before* claiming the name. A client that activated us
+    // sends its method call the instant the name appears, so a name owned by a
+    // connection with nothing on it is a race we would lose.
+    let connection = zbus::connection::Builder::session()
+        .map_err(StartupError::Bus)?
+        .serve_at(dbus::OBJECT_PATH, Daemon1::new(Arc::clone(&shared)))
+        .map_err(StartupError::Bus)?
+        .build()
         .await
         .map_err(StartupError::Bus)?;
 
@@ -106,25 +139,22 @@ pub async fn run() -> Result<Outcome, StartupError> {
     }
     info!(name, "claimed the bus name");
 
-    let config = Config::load()?;
-    info!(
-        configured = config.is_configured(),
-        frequency = ?config.backup.frequency,
-        "configuration loaded"
-    );
+    // A destination that is merely unreachable must not stop the daemon: the
+    // health model exists to report exactly that, and a GUI needs a live daemon
+    // to hear it from.
+    if let Err(e) = shared.connect_engine().await {
+        warn!("backup engine not available yet: {e}");
+    }
+    // Health must survive a restart: the catalogue remembers when the last
+    // backup landed even though this process does not.
+    shared.seed_last_backup();
 
-    // Held for the daemon's lifetime: this binding is the single-writer
-    // guarantee. Nothing else may open the index for writing while we live.
-    let _index = open_index()?;
-
-    // The one registry every job goes through. S03-T3 gives it callers, by
-    // exposing submit/cancel/pause as D-Bus methods and its update broadcast as
-    // the progress signals.
-    let _jobs = JobRegistry::new();
-
-    // The service interface arrives in S03-T3. Owning the name without serving
-    // it is deliberate for now — it makes the single-instance behaviour
-    // testable before there is anything to call.
+    // Turn job updates into signals for as long as we run.
+    let emitter = SignalEmitter::new(&connection, dbus::OBJECT_PATH).map_err(StartupError::Bus)?;
+    tokio::spawn(service::fan_out_signals(
+        Arc::clone(&shared),
+        emitter.to_owned(),
+    ));
 
     let reason = wait_for_shutdown().await?;
     info!(reason, "shutting down");
