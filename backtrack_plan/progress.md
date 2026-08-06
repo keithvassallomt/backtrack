@@ -43,7 +43,7 @@
 
 ## Stage 3 — Daemon, D-Bus, CLI ([stage file](stages/stage-03-daemon-dbus-cli.md))
 - [x] S03-T1 backtrackd skeleton: config load, single-instance, D-Bus name
-- [ ] S03-T2 Job model (queue, IDs, cancel/pause, progress events)
+- [x] S03-T2 Job model (queue, IDs, cancel/pause, progress events)
 - [ ] S03-T3 Full org.backtrack.Daemon1 interface + signals
 - [ ] S03-T4 systemd user units + D-Bus activation
 - [ ] S03-T5 backtrack CLI mapping the interface (incl. status --json, doctor)

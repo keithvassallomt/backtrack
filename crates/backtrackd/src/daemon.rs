@@ -23,6 +23,8 @@ use std::path::PathBuf;
 use backtrack_core::config::Config;
 use backtrack_core::index::IndexWriter;
 use backtrack_core::{dbus, paths};
+
+use crate::jobs::JobRegistry;
 use tokio::signal::unix::{signal, SignalKind};
 use tracing::{error, info};
 use zbus::fdo::RequestNameFlags;
@@ -112,9 +114,13 @@ pub async fn run() -> Result<Outcome, StartupError> {
     );
 
     // Held for the daemon's lifetime: this binding is the single-writer
-    // guarantee. S03-T2 hands it to the job registry; until then nothing writes
-    // through it, but nothing else may open the index for writing either.
+    // guarantee. Nothing else may open the index for writing while we live.
     let _index = open_index()?;
+
+    // The one registry every job goes through. S03-T3 gives it callers, by
+    // exposing submit/cancel/pause as D-Bus methods and its update broadcast as
+    // the progress signals.
+    let _jobs = JobRegistry::new();
 
     // The service interface arrives in S03-T3. Owning the name without serving
     // it is deliberate for now — it makes the single-instance behaviour

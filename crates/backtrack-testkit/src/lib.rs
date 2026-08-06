@@ -26,6 +26,7 @@ use backtrack_core::secret::SecretStore;
 #[derive(Default)]
 pub struct MockEngine {
     create_events: Vec<JobEvent>,
+    create_pending: bool,
     items: Vec<BorgItem>,
     key: String,
     info: Option<RepoInfo>,
@@ -35,6 +36,14 @@ pub struct MockEngine {
 impl MockEngine {
     pub fn with_create_events(mut self, events: Vec<JobEvent>) -> Self {
         self.create_events = events;
+        self
+    }
+
+    /// Make `create` return a backup that keeps running until it is cancelled
+    /// (see [`JobStream::pending`]). For exercising anything that acts on a job
+    /// mid-flight — cancellation, queuing behind it, status while it runs.
+    pub fn with_create_pending(mut self) -> Self {
+        self.create_pending = true;
         self
     }
     pub fn with_items(mut self, items: Vec<BorgItem>) -> Self {
@@ -83,6 +92,10 @@ impl BackupEngine for MockEngine {
         Ok(self.key.clone())
     }
     async fn create(&self, _spec: &CreateSpec) -> Result<JobStream> {
+        if self.create_pending {
+            self.check_fail()?;
+            return Ok(JobStream::pending());
+        }
         self.job(self.create_events.clone())
     }
     async fn list_archive(&self, _id: &ArchiveId) -> Result<BoxStream<'static, Result<BorgItem>>> {

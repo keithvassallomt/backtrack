@@ -8,6 +8,7 @@
 //! means the startup path can be reasoned about without a process around it.
 
 mod daemon;
+mod jobs;
 
 use std::process::ExitCode;
 

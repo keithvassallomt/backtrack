@@ -91,6 +91,22 @@ impl JobStream {
         JobStream::new(rx, cancel)
     }
 
+    /// A stream that emits nothing and ends only when cancelled — a job that is
+    /// still working. For mocks and tests that need to act on a job *while* it
+    /// runs, which a fixed event list cannot express: [`JobStream::from_events`]
+    /// always drains to its end, so anything racing it is a coin toss.
+    pub fn pending() -> JobStream {
+        let (tx, rx) = mpsc::channel(1);
+        let cancel = CancellationToken::new();
+        let tc = cancel.clone();
+        tokio::spawn(async move {
+            tc.cancelled().await;
+            // Dropping the sender closes the channel, which ends the stream.
+            drop(tx);
+        });
+        JobStream::new(rx, cancel)
+    }
+
     /// Request cancellation: trips the token so the reader task kills the child.
     pub fn cancel(&self) {
         self.cancel.cancel();

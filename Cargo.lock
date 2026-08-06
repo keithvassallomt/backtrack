@@ -287,9 +287,12 @@ name = "backtrackd"
 version = "0.1.0"
 dependencies = [
  "backtrack-core",
+ "backtrack-testkit",
+ "futures",
  "tempfile",
  "thiserror",
  "tokio",
+ "tokio-util",
  "tracing",
  "zbus",
 ]
