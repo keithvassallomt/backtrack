@@ -3,25 +3,36 @@
 
 //! Backtrack daemon entry point.
 //!
-//! Stage 0 skeleton: initialise logging, announce startup, and shut down
-//! cleanly on SIGTERM/SIGINT. The scheduler, D-Bus service, and job queue
-//! arrive in Stage 3+.
+//! Everything of substance lives in [`daemon`]; `main` only installs logging,
+//! runs the daemon, and maps its outcome to an exit code. Keeping the two apart
+//! means the startup path can be reasoned about without a process around it.
 
-use tokio::signal::unix::{signal, SignalKind};
+mod daemon;
+
+use std::process::ExitCode;
+
 use tracing::info;
 
-#[tokio::main]
-async fn main() {
+fn main() -> ExitCode {
     let _log_guard = backtrack_core::logging::init("backtrackd");
-
     info!(version = backtrack_core::VERSION, "backtrackd starting");
 
-    let mut sigterm = signal(SignalKind::terminate()).expect("install SIGTERM handler");
-    let mut sigint = signal(SignalKind::interrupt()).expect("install SIGINT handler");
-    tokio::select! {
-        _ = sigterm.recv() => info!("received SIGTERM, shutting down"),
-        _ = sigint.recv() => info!("received SIGINT, shutting down"),
-    }
+    let runtime = match tokio::runtime::Runtime::new() {
+        Ok(runtime) => runtime,
+        Err(e) => {
+            tracing::error!("cannot start the async runtime: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
 
-    info!("backtrackd stopped");
+    match runtime.block_on(daemon::run()) {
+        Ok(outcome) => {
+            info!(?outcome, "backtrackd stopped");
+            ExitCode::from(outcome.exit_code())
+        }
+        Err(e) => {
+            daemon::report(&e);
+            ExitCode::FAILURE
+        }
+    }
 }

@@ -14,8 +14,7 @@
 //! changes (backup started/finished, job lifecycle), `debug` = per-operation
 //! detail, `trace` = per-file detail.
 
-use std::ffi::OsStr;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::time::{Duration, SystemTime};
 
 use tracing_appender::non_blocking::WorkerGuard;
@@ -35,7 +34,7 @@ pub struct LogGuard(#[allow(dead_code)] WorkerGuard);
 /// Initialise logging for `binary` (e.g. `"backtrackd"`). Call once, early in
 /// `main`, and keep the returned guard alive.
 pub fn init(binary: &str) -> LogGuard {
-    let dir = log_dir();
+    let dir = crate::paths::log_dir();
     let _ = std::fs::create_dir_all(&dir);
     prune_old_logs(&dir, LOG_RETENTION_DAYS, SystemTime::now());
 
@@ -63,33 +62,6 @@ pub fn init(binary: &str) -> LogGuard {
 /// Console/file filter: `RUST_LOG` if set, otherwise `info`.
 fn env_filter() -> EnvFilter {
     EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"))
-}
-
-/// Log directory: `<data_dir>/logs`.
-fn log_dir() -> PathBuf {
-    data_dir().join("logs")
-}
-
-/// Base data directory, honoring `BACKTRACK_DEV` so development never writes to
-/// the real backup/log location.
-fn data_dir() -> PathBuf {
-    data_dir_from(
-        std::env::var_os("BACKTRACK_DEV").is_some(),
-        std::env::var_os("XDG_DATA_HOME").as_deref(),
-        std::env::var_os("HOME").as_deref(),
-    )
-}
-
-/// Pure path resolution, split out so it can be tested without touching the
-/// process environment.
-fn data_dir_from(dev: bool, xdg_data_home: Option<&OsStr>, home: Option<&OsStr>) -> PathBuf {
-    let leaf = if dev { "backtrack-dev" } else { "backtrack" };
-    let base = xdg_data_home
-        .filter(|p| !p.is_empty())
-        .map(PathBuf::from)
-        .or_else(|| home.map(|h| PathBuf::from(h).join(".local/share")))
-        .unwrap_or_else(|| PathBuf::from("."));
-    base.join(leaf)
 }
 
 /// Record panics through `tracing` (so they land in the JSONL log) before
@@ -188,21 +160,6 @@ mod tests {
         assert_eq!(value["level"], "INFO");
         assert_eq!(value["target"], "acceptance_target");
         assert_eq!(value["message"], "structured startup line");
-    }
-
-    #[test]
-    fn data_dir_honors_dev_flag_and_xdg() {
-        let real = data_dir_from(false, Some(OsStr::new("/x/data")), None);
-        assert_eq!(real, PathBuf::from("/x/data/backtrack"));
-
-        let dev = data_dir_from(true, Some(OsStr::new("/x/data")), None);
-        assert_eq!(dev, PathBuf::from("/x/data/backtrack-dev"));
-
-        let from_home = data_dir_from(false, None, Some(OsStr::new("/home/u")));
-        assert_eq!(from_home, PathBuf::from("/home/u/.local/share/backtrack"));
-
-        let empty_xdg = data_dir_from(false, Some(OsStr::new("")), Some(OsStr::new("/home/u")));
-        assert_eq!(empty_xdg, PathBuf::from("/home/u/.local/share/backtrack"));
     }
 
     #[test]

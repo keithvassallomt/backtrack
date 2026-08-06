@@ -42,7 +42,7 @@
 - [x] S02-T5 Integration tests against real borg (CI)
 
 ## Stage 3 — Daemon, D-Bus, CLI ([stage file](stages/stage-03-daemon-dbus-cli.md))
-- [ ] S03-T1 backtrackd skeleton: config load, single-instance, D-Bus name
+- [x] S03-T1 backtrackd skeleton: config load, single-instance, D-Bus name
 - [ ] S03-T2 Job model (queue, IDs, cancel/pause, progress events)
 - [ ] S03-T3 Full org.backtrack.Daemon1 interface + signals
 - [ ] S03-T4 systemd user units + D-Bus activation
