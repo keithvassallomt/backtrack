@@ -13,17 +13,52 @@ default:
 
 # ─── Setup ──────────────────────────────────────────────────────────────────
 
-# Install system deps (Fedora/Ubuntu) + Rust if absent, then run checks. Idempotent.
-setup:
+# Install system deps + Rust if absent, then run checks. Idempotent.
+setup FAMILY="":
     #!/usr/bin/env bash
     set -euo pipefail
-    if [[ ! -r /etc/os-release ]]; then
-        echo "Cannot detect distro (/etc/os-release missing)." >&2
-        exit 1
+
+    # FAMILY is the installation type: dnf, apt, or pacman. Given explicitly it
+    # overrides detection (`just setup pacman`); left empty it is detected from
+    # /etc/os-release, and if that fails you are asked to choose.
+    family="{{FAMILY}}"
+
+    if [[ -z "${family}" && -r /etc/os-release ]]; then
+        # shellcheck disable=SC1091
+        source /etc/os-release
+        echo "Detected: ${NAME:-unknown} ${VERSION_ID:-}"
+        # ID first, then ID_LIKE so derivatives resolve to their parent family.
+        for id in "${ID:-}" ${ID_LIKE:-}; do
+            case "${id}" in
+                fedora|rhel|centos|rocky|almalinux) family=dnf;    break ;;
+                ubuntu|debian|pop|linuxmint)        family=apt;    break ;;
+                arch|archlinux|manjaro|endeavouros) family=pacman; break ;;
+            esac
+        done
     fi
-    # shellcheck disable=SC1091
-    source /etc/os-release
-    echo "Detected: ${NAME} ${VERSION_ID:-}"
+
+    if [[ -z "${family}" ]]; then
+        if [[ ! -r /dev/tty ]]; then
+            echo "Could not determine the installation type, and there is no" >&2
+            echo "terminal to ask on. Re-run as: just setup dnf|apt|pacman" >&2
+            exit 1
+        fi
+        echo "Could not match this system to a known package manager." >&2
+        echo "  1) dnf     — Fedora, RHEL, CentOS, Rocky, Alma" >&2
+        echo "  2) apt     — Ubuntu, Debian, Mint, Pop!_OS" >&2
+        echo "  3) pacman  — Arch, Manjaro, EndeavourOS" >&2
+        read -rp "Choose 1-3 (anything else aborts): " reply < /dev/tty
+        case "${reply}" in
+            1) family=dnf ;;
+            2) family=apt ;;
+            3) family=pacman ;;
+            *)
+                echo "Aborted. Install the GTK4/libadwaita/sqlite/dbus dev packages" >&2
+                echo "plus borgbackup and flatpak-builder manually." >&2
+                exit 1
+                ;;
+        esac
+    fi
 
     if ! command -v cargo >/dev/null 2>&1; then
         echo "Installing Rust via rustup…"
@@ -32,15 +67,15 @@ setup:
         source "${HOME}/.cargo/env"
     fi
 
-    case "${ID}" in
-        fedora|rhel|centos|rocky|almalinux)
+    case "${family}" in
+        dnf)
             echo "Installing dependencies with dnf…"
             sudo dnf install -y \
                 gcc pkgconf-pkg-config \
                 gtk4-devel libadwaita-devel sqlite-devel dbus-devel \
                 borgbackup flatpak-builder python3-gobject
             ;;
-        ubuntu|debian|pop|linuxmint)
+        apt)
             echo "Installing dependencies with apt…"
             sudo apt-get update
             sudo apt-get install -y \
@@ -48,9 +83,16 @@ setup:
                 libgtk-4-dev libadwaita-1-dev libsqlite3-dev libdbus-1-dev \
                 borgbackup flatpak-builder python3-gi
             ;;
+        pacman)
+            echo "Installing dependencies with pacman…"
+            sudo pacman -S --needed --noconfirm \
+                gcc pkgconf \
+                gtk4 libadwaita sqlite dbus \
+                borg flatpak-builder python-gobject
+            ;;
         *)
-            echo "Unsupported distro '${ID}'. Install the GTK4/libadwaita/sqlite/dbus" >&2
-            echo "dev packages plus borgbackup and flatpak-builder manually." >&2
+            echo "Unknown installation type '${family}'." >&2
+            echo "Expected one of: dnf, apt, pacman." >&2
             exit 1
             ;;
     esac
