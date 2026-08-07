@@ -15,7 +15,14 @@ use rusqlite::{params, OptionalExtension};
 use rusqlite::{Connection, Transaction};
 
 use super::item::{ArchiveMeta, BorgItem, Repo};
-use super::{open_connection, open_memory_connection, Result};
+use super::{open_connection, open_memory_connection, IndexError, Result};
+
+/// The source of a listing could not produce the rest of it.
+///
+/// Deliberately carries no detail: the caller keeps its own error, and the index
+/// needs to know only that what it received is not the whole archive.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ListingIncomplete;
 
 /// What an [`IndexWriter::ingest_archive`] call did, for logging and tests.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -255,6 +262,24 @@ impl IndexWriter {
         seq: i64,
         items: impl Iterator<Item = BorgItem>,
     ) -> Result<IngestStats> {
+        self.ingest_pending_fallible(seq, items.map(Ok))
+    }
+
+    /// [`Self::ingest_pending`], for a listing arriving from something that can
+    /// fail part way through — which, when it is a pipe from a Borg subprocess,
+    /// is every real ingest.
+    ///
+    /// A single [`ListingIncomplete`] rolls the whole transaction back and
+    /// leaves the archive `pending`. Committing what arrived would be much
+    /// worse than it sounds: the archive would be marked browsable while holding
+    /// half its files, so the timeline would show a snapshot with the user's
+    /// documents missing and no indication anything was wrong. Re-reading the
+    /// listing later is cheap; a catalogue that quietly lies is not recoverable.
+    pub fn ingest_pending_fallible(
+        &mut self,
+        seq: i64,
+        items: impl Iterator<Item = std::result::Result<BorgItem, ListingIncomplete>>,
+    ) -> Result<IngestStats> {
         let tx = self.conn.transaction()?;
         let mut stats = IngestStats {
             seq,
@@ -293,6 +318,9 @@ impl IndexWriter {
             };
 
             for item in items {
+                // Dropping `tx` here rolls the transaction back, so a listing
+                // cut short leaves the catalogue exactly as it was.
+                let item = item.map_err(|_| IndexError::ListingIncomplete { seq })?;
                 stats.items += 1;
                 let path_id = resolver.resolve(&item.path)?;
 
@@ -473,6 +501,26 @@ impl IndexWriter {
         // taken, so that is the one worth catalogued first.
         report.pending = inserted.iter().map(|(seq, _)| *seq).rev().collect();
         Ok(report)
+    }
+
+    /// Archives whose row exists but whose file list has never been read,
+    /// **newest first**.
+    ///
+    /// The order is the whole point. An archive nobody has catalogued is one
+    /// nobody can browse, and the snapshot somebody wants is almost always the
+    /// most recent — so a first run on a repository with a year of history
+    /// becomes useful in seconds rather than after the whole backfill.
+    ///
+    /// This is also what makes cataloguing resumable across a restart: the work
+    /// still outstanding is a query, not something held in memory.
+    pub fn pending_archives(&self) -> Result<Vec<(i64, String)>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT seq, name FROM archives WHERE status IS NOT NULL ORDER BY seq DESC")?;
+        let rows = stmt
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+            .collect::<std::result::Result<_, _>>()?;
+        Ok(rows)
     }
 
     /// Every archive row, oldest first.
@@ -1371,6 +1419,71 @@ mod catalogue_tests {
             vec![(1, 1, 1), (2, 2, 99), (3, 3, 1)],
             "the file really did change and change back"
         );
+    }
+
+    #[test]
+    fn an_incomplete_listing_commits_nothing_and_leaves_the_archive_pending() {
+        // Half a catalogue marked complete is worse than no catalogue: the
+        // timeline would show a snapshot with files missing and nothing to
+        // indicate anything was wrong.
+        let mut w = IndexWriter::open_in_memory().unwrap();
+        w.sync_archives(Repo::Primary, &[entry("a", 100)]).unwrap();
+
+        let feed = vec![Ok(flat("x", 1)), Ok(flat("y", 2)), Err(ListingIncomplete)];
+        let err = w
+            .ingest_pending_fallible(1, feed.into_iter())
+            .expect_err("an incomplete listing is an error");
+        assert!(
+            matches!(err, IndexError::ListingIncomplete { seq: 1 }),
+            "got {err:?}"
+        );
+
+        assert!(dump_versions(&w).is_empty(), "the transaction rolled back");
+        assert_eq!(
+            dump_status(&w),
+            vec![Some("pending".to_string())],
+            "the archive is still waiting to be read"
+        );
+    }
+
+    #[test]
+    fn re_reading_that_listing_catalogues_it_properly() {
+        let mut w = IndexWriter::open_in_memory().unwrap();
+        w.sync_archives(Repo::Primary, &[entry("a", 100)]).unwrap();
+        let _ = w.ingest_pending_fallible(
+            1,
+            vec![Ok(flat("x", 1)), Err(ListingIncomplete)].into_iter(),
+        );
+
+        let stats = w
+            .ingest_pending(1, vec![flat("x", 1), flat("y", 2)].into_iter())
+            .expect("the retry succeeds");
+        assert_eq!(stats.items, 2);
+        assert_eq!(
+            stats.new_versions, 2,
+            "no duplicates from the failed attempt"
+        );
+        assert_eq!(dump_status(&w), vec![None]);
+    }
+
+    #[test]
+    fn pending_archives_are_reported_newest_first() {
+        // Backfill order: the snapshot somebody wants to browse is the last one
+        // taken, so a year of history becomes useful in seconds.
+        let mut w = IndexWriter::open_in_memory().unwrap();
+        w.sync_archives(
+            Repo::Primary,
+            &[entry("a", 100), entry("b", 200), entry("c", 300)],
+        )
+        .unwrap();
+        let pending = w.pending_archives().unwrap();
+        assert_eq!(
+            pending.iter().map(|(_, n)| n.as_str()).collect::<Vec<_>>(),
+            vec!["c", "b", "a"]
+        );
+
+        w.ingest_pending(3, vec![flat("x", 1)].into_iter()).unwrap();
+        assert_eq!(w.pending_archives().unwrap().len(), 2);
     }
 
     #[test]

@@ -15,13 +15,18 @@
 //!    what the health model is for, and a client needs a live daemon to hear it
 //!    from.
 //! 4. **Export the service object and start the signal fan-out.**
-//! 5. **Claim the bus name, last.** Ownership of `org.backtrack.Daemon1` *is*
-//!    the single-instance lock — no PID file, nothing stale to clean up after a
+//! 5. **Claim the bus name.** Ownership of `org.backtrack.Daemon1` *is* the
+//!    single-instance lock — no PID file, nothing stale to clean up after a
 //!    crash, and the bus arbitrates the race for us. It is also the readiness
 //!    announcement: systemd marks the unit started when the name appears, and an
 //!    activating client's queued call arrives immediately afterwards. **Nothing
 //!    that shapes an answer may happen after this point**, or the first call
 //!    races it.
+//! 6. **Start the scheduler and reconcile the catalogue, after the name is
+//!    won.** These are the two things that *act on* the repository rather than
+//!    merely describe it, and winning the name is what makes this process the
+//!    single writer. An instance that is about to lose the race must not have
+//!    begun a backup in the meantime.
 //!
 //! Shutdown is driven by SIGTERM (systemd) or SIGINT (a developer's Ctrl-C).
 
@@ -153,22 +158,14 @@ pub async fn run() -> Result<Outcome, StartupError> {
         emitter.to_owned(),
     ));
 
-    // The scheduler is what makes this a backup product rather than a remote
-    // control. It starts before the name is claimed so a machine that has been
-    // off for a week is already catching up by the time anything asks.
-    let scheduler = Scheduler::new(Arc::clone(&shared));
-    let waker = scheduler.waker();
-    shared.set_waker(Arc::clone(&waker));
-    connect_system_probe(&shared, waker).await;
-    tokio::spawn(scheduler.run());
-
-    // Claiming the name is the readiness announcement, so it goes last. systemd
-    // reports the unit started the moment the name appears, and an activating
-    // client's queued call is delivered immediately after — so anything still
-    // unfinished at this point is something that call can race. Getting this
-    // wrong is not a crash: it is a daemon that answers `GetStatus` with "never
-    // backed up" for a machine holding a year of archives, because the
-    // catalogue had not been read yet.
+    // Claiming the name is the readiness announcement, so every piece of state
+    // that shapes an answer is already in place by here. systemd reports the
+    // unit started the moment the name appears, and an activating client's
+    // queued call is delivered immediately after — so anything still unfinished
+    // at this point is something that call can race. Getting this wrong is not a
+    // crash: it is a daemon that answers `GetStatus` with "never backed up" for
+    // a machine holding a year of archives, because the catalogue had not been
+    // read yet.
     let name = dbus::bus_name();
     if !claim_name(&connection, name).await? {
         // Not an error: this is how a second `systemctl --user start`, or a
@@ -180,6 +177,35 @@ pub async fn run() -> Result<Outcome, StartupError> {
         return Ok(Outcome::AlreadyRunning);
     }
     info!(name, "claimed the bus name");
+
+    // Only now does anything start *touching* the repository. Winning the name
+    // is what makes this daemon the single writer, and an instance that is about
+    // to discover it lost the race must not have started a backup or begun
+    // rewriting the catalogue in the meantime. Borg's own locking would prevent
+    // corruption, but the user would see spurious failures from a daemon that
+    // was never meant to be running.
+    let scheduler = Scheduler::new(Arc::clone(&shared));
+    let waker = scheduler.waker();
+    shared.set_waker(Arc::clone(&waker));
+    connect_system_probe(&shared, waker).await;
+    tokio::spawn(scheduler.run());
+
+    // A backup can reach the repository and never be catalogued — the daemon
+    // killed mid-ingest, the machine losing power, a listing that broke off. The
+    // repository is the authority, so every start asks it what it actually holds
+    // and catalogues whatever is missing. It runs as a job because it takes only
+    // a shared lock and can take minutes on a large repository: a restore, and
+    // the next hourly backup, must not wait for it.
+    let outstanding = shared.uncatalogued_count();
+    if outstanding > 0 {
+        warn!(
+            count = outstanding,
+            "backups exist that are not browsable yet; cataloguing them"
+        );
+    }
+    if let Some(job) = shared.reconcile_catalogue() {
+        info!(job, "reconciling the catalogue against the repository");
+    }
 
     let reason = wait_for_shutdown().await?;
     info!(reason, "shutting down");

@@ -52,7 +52,7 @@
 - [x] S04-T1 Scheduler (timer, missed-run catch-up, pause/resume)
 - [x] S04-T2 Preflight: battery (UPower), metered (NetworkManager), pause state
 - [x] S04-T3 create → stream-index → prune per retention → scheduled compact
-- [ ] S04-T4 Checkpoint/interrupted-backup handling (hidden from timeline)
+- [x] S04-T4 Checkpoint/interrupted-backup handling (hidden from timeline)
 - [ ] S04-T5 First-run backfill indexing (newest-first, background)
 
 ## Stage 5 — Offline protection ([stage file](stages/stage-05-offline-protection.md))
@@ -341,6 +341,46 @@
   therefore reported "never backed up" for a machine with 30 archives, while a
   second call reported the truth. Startup now finishes all state assembly before
   claiming the name; verified over 8 consecutive cold starts.
+- 2026-08-07 (S04-T4): Reconciliation is one job, `start_catalogue`, used for
+  three problems that are really the same one: a backup that reached the
+  repository but was never catalogued (killed daemon, power cut), an adopted
+  repository with nothing catalogued, and a prune that changed what exists. It
+  runs on every start as a `JobKind::Index` job — a *shared* repository lock, so
+  a restore and the next hourly backup proceed alongside it, and neither the bus
+  name nor the first backup waits for it.
+  - **Bug found while writing it, and it was the serious kind.** A listing that
+    broke off mid-stream was committed as a complete catalogue and the archive
+    marked browsable — a snapshot holding half its files, with the user's
+    documents missing from the timeline and nothing anywhere saying so. Fixed by
+    making the ingest fallible: the batch channel carries `Result`, a
+    `ListingIncomplete` rolls the whole transaction back, and the archive stays
+    `pending` to be re-read. A test pins that the retry produces no duplicates.
+  - **Second bug, found by running it.** The scheduler and the reconcile job were
+    both started *before* the bus name was claimed, so an instance about to lose
+    the single-instance race could begin a backup and start rewriting the
+    catalogue first. Borg's locking would have prevented corruption; the user
+    would have seen spurious failures from a daemon that was never meant to be
+    running. Startup is now explicitly two phases — assemble every fact that
+    shapes an answer *before* the claim (the S03-T4 invariant, unchanged), start
+    everything that *acts on* the repository *after* it.
+  - **Checkpoint archives**: filtered at `parse_archive_line`, the single funnel
+    every caller goes through, matching `<name>.checkpoint` and
+    `<name>.checkpoint.N`. Discovered while testing that **Borg 1.4 already hides
+    them from `list`** — and that `borg create` refuses a `.checkpoint` name
+    outright (reporting it as already existing) while `borg rename` accepts one.
+    The filter stays as defence in depth: that behaviour is version-dependent,
+    and a checkpoint reaching the timeline would offer a restore from a backup
+    that never finished. The rename trick is what makes the integration test
+    cheap — producing a real checkpoint honestly needs gigabytes of
+    incompressible data and a race with Borg's checkpoint timer, which does not
+    belong in a test suite.
+  - Verified against real Borg: an archive removed from the catalogue and a
+    second never catalogued are both recovered by reconciliation, with the
+    contents queryable afterwards; a checkpoint-named archive appears in neither
+    the engine's listing nor the catalogue. Verified live: the stray archive left
+    by an S04-T1 test run (seq 31, sitting between 30 and 32) was catalogued on
+    the next start, and the demo repo and catalogue now both report 32 with
+    nothing pending.
 - 2026-08-07 (S04-T3): A backup is now one job with three phases — `archiving`,
   `cataloguing`, `pruning` — composed over a new public `JobStream::channel`,
   rather than three jobs. Three jobs would mean three progress bars, a cancel

@@ -15,7 +15,7 @@
 #![cfg(all(test, feature = "integration"))]
 
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 use backtrack_core::config::Config;
 use backtrack_core::engine::{BackupEngine, BorgCli, Encryption, RepoSpec};
@@ -274,6 +274,151 @@ async fn errors_cross_the_bus_with_their_documented_names() {
         "org.backtrack.Error.NotConfigured",
         "clients match on the name, so it is the contract"
     );
+}
+
+#[tokio::test]
+async fn a_backup_that_was_never_catalogued_is_picked_up_on_the_next_start() {
+    // The stage's acceptance criterion, against a real repository. The archive
+    // exists in Borg but the catalogue never heard of it — which is exactly what
+    // a `kill -9` between `borg create` finishing and the ingest committing
+    // leaves behind. The next start must notice and catalogue it.
+    let fixture = fixture().await;
+    let shared = Arc::clone(&fixture.shared);
+
+    // One real backup through the whole pipeline.
+    let job = Daemon1::new(Arc::clone(&shared))
+        .backup_now()
+        .await
+        .expect("backup starts");
+    wait_for_job(&shared, job).await;
+    let archive = newest_archive(&shared).await;
+
+    // Now forget it, precisely as a crash before the ingest committed would.
+    shared
+        .index()
+        .unwrap()
+        .lock()
+        .unwrap()
+        .remove_archives(&[1])
+        .expect("forget the archive");
+    assert!(
+        shared
+            .index()
+            .unwrap()
+            .lock()
+            .unwrap()
+            .pending_archives()
+            .unwrap()
+            .is_empty(),
+        "the catalogue now knows nothing about it at all"
+    );
+
+    // A second, uncatalogued archive too, so reconciliation has to handle both
+    // an unknown archive and ordering.
+    let job = Daemon1::new(Arc::clone(&shared))
+        .backup_now()
+        .await
+        .expect("second backup starts");
+    wait_for_job(&shared, job).await;
+
+    // What the daemon does on every start.
+    let job = shared.reconcile_catalogue().expect("reconciliation starts");
+    wait_for_job(&shared, job).await;
+
+    let reader = backtrack_core::index::IndexReader::open(&shared.index_path).unwrap();
+    let archives = reader.archives_overview().unwrap();
+    assert_eq!(
+        archives.len(),
+        2,
+        "both archives are catalogued: {:?}",
+        archives.iter().map(|a| &a.name).collect::<Vec<_>>()
+    );
+    assert!(archives.iter().any(|a| a.name == archive));
+    assert_eq!(
+        shared.uncatalogued_count(),
+        0,
+        "nothing is left un-browsable"
+    );
+    // And the contents really are there, not just the archive rows.
+    let newest = archives.iter().map(|a| a.seq).max().unwrap();
+    assert!(
+        reader
+            .search("notes")
+            .unwrap()
+            .iter()
+            .any(|h| h.last_seq == newest),
+        "the recovered catalogue can answer for the newest snapshot"
+    );
+}
+
+#[tokio::test]
+async fn borgs_checkpoint_archives_never_reach_the_timeline() {
+    // Borg leaves `<name>.checkpoint` behind when a create is interrupted, and
+    // consumes it on the next run. It is scaffolding, not a snapshot: offering
+    // one in the timeline would offer a restore from a backup that never
+    // finished.
+    //
+    // Producing one honestly — killing a create mid-run — needs gigabytes of
+    // incompressible data and a race with Borg's checkpoint timer, which is not
+    // something to put in a test suite. `borg rename` reaches the same end state
+    // in milliseconds: `create` *refuses* a `.checkpoint` name (it reports the
+    // archive as already existing) but `rename` accepts one, leaving a real
+    // archive under a real checkpoint name in a real repository.
+    let fixture = fixture().await;
+    let shared = Arc::clone(&fixture.shared);
+    let repo = shared.config().storage.repository.clone().unwrap();
+
+    let job = Daemon1::new(Arc::clone(&shared))
+        .backup_now()
+        .await
+        .expect("backup starts");
+    wait_for_job(&shared, job).await;
+    let real = newest_archive(&shared).await;
+
+    let job = Daemon1::new(Arc::clone(&shared))
+        .backup_now()
+        .await
+        .expect("second backup starts");
+    wait_for_job(&shared, job).await;
+    let doomed = newest_archive(&shared).await;
+
+    let renamed = format!("{doomed}.checkpoint");
+    let status = tokio::process::Command::new("borg")
+        .arg("rename")
+        .arg(format!("{repo}::{doomed}"))
+        .arg(&renamed)
+        .env("BORG_PASSPHRASE", PASS)
+        .status()
+        .await
+        .expect("borg rename runs");
+    assert!(status.success(), "borg rename accepts a checkpoint name");
+
+    // Our engine sees only the finished backup.
+    let listed = engine(&shared).list_archives().await.expect("listing");
+    assert_eq!(
+        listed.iter().map(|a| a.name.as_str()).collect::<Vec<_>>(),
+        vec![real.as_str()],
+        "a checkpoint archive is not a snapshot and must not be offered"
+    );
+
+    // Reconciliation therefore drops the row the checkpoint used to occupy,
+    // rather than keeping a snapshot the repository will not admit to having.
+    let job = shared.reconcile_catalogue().expect("reconciliation starts");
+    wait_for_job(&shared, job).await;
+
+    let reader = backtrack_core::index::IndexReader::open(&shared.index_path).unwrap();
+    let names: Vec<String> = reader
+        .archives_overview()
+        .unwrap()
+        .into_iter()
+        .map(|a| a.name)
+        .collect();
+    assert_eq!(names, vec![real]);
+    assert!(
+        !names.iter().any(|n| n.contains(".checkpoint")),
+        "no checkpoint rows in the catalogue: {names:?}"
+    );
+    assert_eq!(shared.uncatalogued_count(), 0);
 }
 
 /// The engine the fixture installed. Reaching into the private field is fine

@@ -29,7 +29,7 @@ pub use reader::{
     ArchiveSummary, Direction, Entry, IndexReader, LiveEntry, SearchHit, VersionSpan,
 };
 pub use schema::SCHEMA_VERSION;
-pub use writer::{IndexWriter, IngestStats, SyncReport, STATUS_PENDING};
+pub use writer::{IndexWriter, IngestStats, ListingIncomplete, SyncReport, STATUS_PENDING};
 
 /// Errors surfaced by the index layer.
 #[derive(Debug, thiserror::Error)]
@@ -42,6 +42,11 @@ pub enum IndexError {
     /// A schema migration could not be applied.
     #[error("index schema migration failed: {0}")]
     Migration(String),
+
+    /// The listing being ingested stopped part way through, so nothing was
+    /// committed. The archive stays `pending` and can be re-read.
+    #[error("the file listing for archive {seq} was incomplete; nothing was catalogued")]
+    ListingIncomplete { seq: i64 },
 
     /// An underlying SQLite error not otherwise classified.
     #[error(transparent)]

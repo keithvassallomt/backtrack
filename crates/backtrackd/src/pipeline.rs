@@ -26,7 +26,7 @@ use backtrack_core::engine::{
     ArchiveId, BackupEngine, CreateSpec, EngineError, JobEvent, JobSink, JobStream, JobSummary,
     PrunePolicy,
 };
-use backtrack_core::index::{ArchiveMeta, BorgItem, IndexWriter, Repo};
+use backtrack_core::index::{ArchiveMeta, BorgItem, IndexWriter, ListingIncomplete, Repo};
 use futures::StreamExt;
 use tracing::{debug, info, warn};
 
@@ -69,6 +69,168 @@ pub fn start_backup(plan: BackupPlan) -> JobStream {
         sink.send(JobEvent::Finished(outcome)).await;
     });
     stream
+}
+
+/// Bring the catalogue up to date with the repository.
+///
+/// Runs on three occasions, all the same problem seen from different angles:
+/// at startup (a backup that reached the repository but was never catalogued —
+/// the daemon was killed, the machine lost power), after adopting an existing
+/// repository (nothing is catalogued yet), and whenever a prune has changed what
+/// exists.
+///
+/// Deliberately a `JobKind::Index` job, which takes only a *shared* repository
+/// lock: a year of history takes a while to catalogue, and it must not stop the
+/// user restoring a file — or the next hourly backup — in the meantime.
+pub struct CataloguePlan {
+    pub engine: Arc<dyn BackupEngine>,
+    pub index: Arc<Mutex<IndexWriter>>,
+}
+
+/// Start cataloguing whatever is outstanding.
+pub fn start_catalogue(plan: CataloguePlan) -> JobStream {
+    let (sink, stream) = JobStream::channel(EVENT_BUFFER);
+    tokio::spawn(async move {
+        let outcome = catch_up(&plan, &sink).await;
+        sink.send(JobEvent::Finished(outcome)).await;
+    });
+    stream
+}
+
+async fn catch_up(plan: &CataloguePlan, sink: &JobSink) -> Result<JobSummary, EngineError> {
+    let entries = plan.engine.list_archives().await?;
+    let index = Arc::clone(&plan.index);
+    let report = tokio::task::spawn_blocking(move || {
+        index.lock().unwrap().sync_archives(Repo::Primary, &entries)
+    })
+    .await
+    .map_err(joined)?
+    .map_err(indexing)?;
+    if report.removed > 0 {
+        info!(
+            removed = report.removed,
+            "archives the repository no longer has left the catalogue"
+        );
+    }
+
+    // Everything outstanding, not merely what this sync added: a run cut short
+    // last time left work behind, and this is where it gets picked up.
+    let index = Arc::clone(&plan.index);
+    let pending = tokio::task::spawn_blocking(move || index.lock().unwrap().pending_archives())
+        .await
+        .map_err(joined)?
+        .map_err(indexing)?;
+    if pending.is_empty() {
+        return Ok(JobSummary::default());
+    }
+    info!(
+        count = pending.len(),
+        "cataloguing backups that are not browsable yet"
+    );
+
+    let total = pending.len() as u64;
+    for (done, (seq, name)) in pending.into_iter().enumerate() {
+        if sink.is_cancelled() {
+            // Nothing is lost. What remains is still `pending` in the
+            // catalogue, so the next run — or the next daemon — picks up
+            // exactly here.
+            info!(
+                catalogued = done,
+                remaining = total as usize - done,
+                "cataloguing stopped; the rest stays queued"
+            );
+            return Err(EngineError::Cancelled);
+        }
+        // Progress is per archive rather than per item: the interesting number
+        // during a backfill is how many snapshots are still not browsable, and
+        // Borg gives no denominator for a listing anyway.
+        sink.send(JobEvent::Progress {
+            current: done as u64,
+            total: Some(total),
+            phase: name.clone(),
+        })
+        .await;
+
+        match ingest_one(plan, seq, &name).await {
+            Ok(items) => debug!(archive = %name, seq, items, "archive catalogued"),
+            // One unreadable archive must not abandon the rest: it stays
+            // pending and the others still become browsable.
+            Err(e) => warn!(archive = %name, "could not catalogue this archive: {e}"),
+        }
+    }
+    sink.send(JobEvent::Progress {
+        current: total,
+        total: Some(total),
+        phase: String::new(),
+    })
+    .await;
+    Ok(JobSummary::default())
+}
+
+/// Read one archive's listing into the catalogue.
+async fn ingest_one(plan: &CataloguePlan, seq: i64, name: &str) -> Result<usize, EngineError> {
+    let mut listing = plan
+        .engine
+        .list_archive(&ArchiveId(name.to_string()))
+        .await?;
+    let (tx, rx) = channel();
+    let index = Arc::clone(&plan.index);
+    let writer = tokio::task::spawn_blocking(move || {
+        index
+            .lock()
+            .unwrap()
+            .ingest_pending_fallible(seq, BatchedItems::new(rx))
+    });
+
+    let mut batch = Vec::with_capacity(INGEST_BATCH);
+    let mut failure = None;
+    while let Some(item) = listing.next().await {
+        match item {
+            Ok(item) => batch.push(item),
+            Err(e) => {
+                failure = Some(e);
+                break;
+            }
+        }
+        if batch.len() >= INGEST_BATCH && tx.send(Ok(std::mem::take(&mut batch))).await.is_err() {
+            break;
+        }
+    }
+    finish(&tx, batch, failure.is_some()).await;
+    drop(tx);
+
+    let stats = writer.await.map_err(joined)?.map_err(indexing)?;
+    match failure {
+        Some(e) => Err(e),
+        None => Ok(stats.items),
+    }
+}
+
+/// The channel the listing crosses into the blocking ingest on.
+///
+/// It carries a `Result` rather than bare batches so a listing that dies part
+/// way tells the writer to roll back, instead of ending indistinguishably from
+/// a complete one. Without that, an interrupted listing would be committed as a
+/// finished catalogue and the archive marked browsable while missing half its
+/// files — a snapshot that shows the user's documents gone, with nothing to say
+/// anything went wrong.
+type Batch = std::result::Result<Vec<BorgItem>, ListingIncomplete>;
+
+fn channel() -> (
+    tokio::sync::mpsc::Sender<Batch>,
+    tokio::sync::mpsc::Receiver<Batch>,
+) {
+    tokio::sync::mpsc::channel(2)
+}
+
+/// Send the last batch, or the abort marker if the listing did not finish.
+async fn finish(tx: &tokio::sync::mpsc::Sender<Batch>, batch: Vec<BorgItem>, aborted: bool) {
+    let last = if aborted {
+        Err(ListingIncomplete)
+    } else {
+        Ok(batch)
+    };
+    let _ = tx.send(last).await;
 }
 
 /// The pipeline proper.
@@ -189,11 +351,11 @@ async fn catalogue(plan: &BackupPlan, sink: &JobSink, archive: &str) -> Result<u
     .map_err(joined)?
     .map_err(indexing)?;
 
-    let (tx, rx) = tokio::sync::mpsc::channel::<Vec<BorgItem>>(2);
+    let (tx, rx) = channel();
     let index = Arc::clone(&plan.index);
     let writer = tokio::task::spawn_blocking(move || {
         let mut index = index.lock().unwrap();
-        index.ingest_pending(seq, BatchedItems::new(rx))
+        index.ingest_pending_fallible(seq, BatchedItems::new(rx))
     });
 
     let mut listing = plan
@@ -213,7 +375,7 @@ async fn catalogue(plan: &BackupPlan, sink: &JobSink, archive: &str) -> Result<u
         }
         if batch.len() >= INGEST_BATCH {
             sent += batch.len();
-            if tx.send(std::mem::take(&mut batch)).await.is_err() {
+            if tx.send(Ok(std::mem::take(&mut batch))).await.is_err() {
                 break;
             }
             batch.reserve(INGEST_BATCH);
@@ -231,9 +393,7 @@ async fn catalogue(plan: &BackupPlan, sink: &JobSink, archive: &str) -> Result<u
             }
         }
     }
-    if failure.is_none() && !sink.is_cancelled() {
-        let _ = tx.send(batch).await;
-    }
+    finish(&tx, batch, failure.is_some() || sink.is_cancelled()).await;
     drop(tx);
 
     let stats = writer.await.map_err(joined)?.map_err(indexing)?;
@@ -271,12 +431,12 @@ async fn reconcile(plan: &BackupPlan) -> Result<usize, EngineError> {
 /// channel between them. Runs on a blocking thread, which is the only place
 /// `blocking_recv` is allowed.
 struct BatchedItems {
-    rx: tokio::sync::mpsc::Receiver<Vec<BorgItem>>,
+    rx: tokio::sync::mpsc::Receiver<Batch>,
     current: std::vec::IntoIter<BorgItem>,
 }
 
 impl BatchedItems {
-    fn new(rx: tokio::sync::mpsc::Receiver<Vec<BorgItem>>) -> BatchedItems {
+    fn new(rx: tokio::sync::mpsc::Receiver<Batch>) -> BatchedItems {
         BatchedItems {
             rx,
             current: Vec::new().into_iter(),
@@ -285,14 +445,19 @@ impl BatchedItems {
 }
 
 impl Iterator for BatchedItems {
-    type Item = BorgItem;
+    type Item = std::result::Result<BorgItem, ListingIncomplete>;
 
-    fn next(&mut self) -> Option<BorgItem> {
+    fn next(&mut self) -> Option<Self::Item> {
         loop {
             if let Some(item) = self.current.next() {
-                return Some(item);
+                return Some(Ok(item));
             }
-            self.current = self.rx.blocking_recv()?.into_iter();
+            match self.rx.blocking_recv()? {
+                Ok(batch) => self.current = batch.into_iter(),
+                // The producer stopped early. Passing this on rolls the
+                // transaction back, leaving the archive to be re-read.
+                Err(incomplete) => return Some(Err(incomplete)),
+            }
         }
     }
 }
@@ -637,6 +802,171 @@ mod tests {
         // The row is there, awaiting its listing.
         let reader = IndexReader::open(&path).unwrap();
         assert_eq!(reader.archives_overview().unwrap().len(), 1);
+    }
+
+    /// Drain a catalogue job to its terminal event.
+    async fn drain_catalogue(mut stream: JobStream) -> Result<JobSummary, EngineError> {
+        while let Some(event) = stream.next().await {
+            if let JobEvent::Finished(result) = event {
+                return result;
+            }
+        }
+        panic!("the catalogue job ended without a terminal event");
+    }
+
+    fn archive(name: &str, ts: i64) -> ArchiveMeta {
+        ArchiveMeta {
+            borg_id: None,
+            name: name.to_string(),
+            ts,
+        }
+    }
+
+    #[tokio::test]
+    async fn reconciliation_catalogues_archives_the_index_never_heard_of() {
+        // The crash case: backups that reached the repository while the daemon
+        // was being killed, or before it was ever run against this repository.
+        let engine = Arc::new(
+            MockEngine::default()
+                .with_archives(vec![
+                    archive("bt-host-1", 1_000),
+                    archive("bt-host-2", 2_000),
+                    archive("bt-host-3", 3_000),
+                ])
+                .with_items(vec![item("home/a.txt", 1)]),
+        );
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("index.db");
+        let index = Arc::new(Mutex::new(IndexWriter::open(&path).unwrap()));
+
+        drain_catalogue(start_catalogue(CataloguePlan {
+            engine,
+            index: Arc::clone(&index),
+        }))
+        .await
+        .expect("cataloguing succeeds");
+
+        assert!(
+            index.lock().unwrap().pending_archives().unwrap().is_empty(),
+            "everything the repository holds is browsable"
+        );
+        let reader = IndexReader::open(&path).unwrap();
+        assert_eq!(reader.archives_overview().unwrap().len(), 3);
+        assert_eq!(reader.folder_at("home", 2).unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn reconciliation_leaves_a_catalogued_repository_alone() {
+        // It runs on every start, so doing nothing when there is nothing to do
+        // has to be genuinely nothing.
+        let engine = Arc::new(
+            MockEngine::default()
+                .with_archives(vec![archive("bt-host-1", 1_000)])
+                .with_items(vec![item("home/a.txt", 1)]),
+        );
+        let dir = tempfile::tempdir().unwrap();
+        let index = Arc::new(Mutex::new(
+            IndexWriter::open(&dir.path().join("index.db")).unwrap(),
+        ));
+        let plan = || CataloguePlan {
+            engine: Arc::clone(&engine) as Arc<dyn BackupEngine>,
+            index: Arc::clone(&index),
+        };
+
+        drain_catalogue(start_catalogue(plan())).await.unwrap();
+        let first = IndexReader::open(&dir.path().join("index.db"))
+            .unwrap()
+            .folder_at("home", 1)
+            .unwrap();
+        drain_catalogue(start_catalogue(plan())).await.unwrap();
+        let second = IndexReader::open(&dir.path().join("index.db"))
+            .unwrap()
+            .folder_at("home", 1)
+            .unwrap();
+        assert_eq!(first, second, "a second reconciliation changes nothing");
+    }
+
+    #[tokio::test]
+    async fn a_listing_cut_short_catalogues_nothing_and_leaves_the_archive_pending() {
+        // The failure this guards against is the nastiest one available: an
+        // archive marked browsable while holding half its files, so the timeline
+        // shows a snapshot with the user's documents missing and nothing
+        // anywhere says something went wrong.
+        let engine = Arc::new(
+            MockEngine::default()
+                .with_archives(vec![archive("bt-host-1", 1_000)])
+                .with_items(vec![item("home/a.txt", 1), item("home/b.txt", 2)])
+                .with_truncated_listing(EngineError::BorgFailed {
+                    code: 2,
+                    stderr: "connection lost".into(),
+                }),
+        );
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("index.db");
+        let index = Arc::new(Mutex::new(IndexWriter::open(&path).unwrap()));
+
+        // The job as a whole succeeds — one unreadable archive must not abandon
+        // the rest — but that archive is not catalogued.
+        drain_catalogue(start_catalogue(CataloguePlan {
+            engine,
+            index: Arc::clone(&index),
+        }))
+        .await
+        .expect("the run itself completes");
+
+        assert_eq!(
+            index.lock().unwrap().pending_archives().unwrap().len(),
+            1,
+            "the half-read archive stays queued for another attempt"
+        );
+        let reader = IndexReader::open(&path).unwrap();
+        assert!(
+            reader.folder_at("home", 1).unwrap().is_empty(),
+            "nothing partial was committed"
+        );
+    }
+
+    #[tokio::test]
+    async fn cataloguing_can_be_stopped_and_picks_up_where_it_left_off() {
+        // Cancellation has to be safe at any point, because the user closing
+        // the lid during a first-run backfill is the normal case, not an edge
+        // one. What remains is still `pending`, which is the whole resume state.
+        let engine = Arc::new(
+            MockEngine::default()
+                .with_archives(
+                    (1..=4)
+                        .map(|i| archive(&format!("a{i}"), i * 1_000))
+                        .collect(),
+                )
+                .with_items(vec![item("home/a.txt", 1)]),
+        );
+        let dir = tempfile::tempdir().unwrap();
+        let index = Arc::new(Mutex::new(
+            IndexWriter::open(&dir.path().join("index.db")).unwrap(),
+        ));
+
+        let stream = start_catalogue(CataloguePlan {
+            engine: Arc::clone(&engine) as Arc<dyn BackupEngine>,
+            index: Arc::clone(&index),
+        });
+        // Dropping the stream is how the job registry cancels.
+        drop(stream);
+        // Give the cancelled task a moment to notice and stop.
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        let after_cancel = index.lock().unwrap().pending_archives().unwrap().len();
+
+        drain_catalogue(start_catalogue(CataloguePlan {
+            engine,
+            index: Arc::clone(&index),
+        }))
+        .await
+        .expect("the second run finishes the job");
+
+        assert!(after_cancel <= 4);
+        assert!(
+            index.lock().unwrap().pending_archives().unwrap().is_empty(),
+            "resuming caught up whatever the first run did not reach"
+        );
     }
 
     #[test]

@@ -38,6 +38,8 @@ pub struct MockEngine {
     archives: Mutex<Vec<ArchiveMeta>>,
     /// How many archives `prune` leaves behind; `None` means it removes none.
     prune_keeps: Option<usize>,
+    /// Fails `list_archive` after its items, mimicking a listing cut short.
+    listing_error: Option<EngineError>,
 }
 
 impl MockEngine {
@@ -72,6 +74,14 @@ impl MockEngine {
     }
     pub fn with_items(mut self, items: Vec<BorgItem>) -> Self {
         self.items = items;
+        self
+    }
+
+    /// Make `list_archive` yield its items and then fail — a Borg subprocess
+    /// dying part way through a listing, which is the case that decides whether
+    /// a half-read archive can be mistaken for a catalogued one.
+    pub fn with_truncated_listing(mut self, err: EngineError) -> Self {
+        self.listing_error = Some(err);
         self
     }
     pub fn with_key(mut self, key: impl Into<String>) -> Self {
@@ -139,7 +149,11 @@ impl BackupEngine for MockEngine {
     }
     async fn list_archive(&self, _id: &ArchiveId) -> Result<BoxStream<'static, Result<BorgItem>>> {
         self.check_fail()?;
-        Ok(stream::iter(self.items.clone().into_iter().map(Ok)).boxed())
+        let items = self.items.clone().into_iter().map(Ok);
+        match self.listing_error.clone() {
+            Some(err) => Ok(stream::iter(items.chain(std::iter::once(Err(err)))).boxed()),
+            None => Ok(stream::iter(items).boxed()),
+        }
     }
     async fn extract(&self, _id: &ArchiveId, _paths: &[String], _dest: &Path) -> Result<JobStream> {
         self.job(vec![JobEvent::Finished(Ok(Default::default()))])

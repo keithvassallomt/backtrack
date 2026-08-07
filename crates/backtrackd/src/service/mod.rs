@@ -353,6 +353,40 @@ impl Shared {
         Ok(self.jobs.submit(JobKind::Backup, factory))
     }
 
+    /// Catalogue anything the repository has that the index does not.
+    ///
+    /// Submitted as a job rather than run inline, for two reasons: it takes only
+    /// a shared repository lock, so a restore or the next backup can proceed
+    /// alongside it; and a repository with a year of history takes minutes to
+    /// read, which is far too long to hold up a daemon that has not yet told
+    /// systemd it is ready.
+    ///
+    /// Returns `None` when there is no destination to reconcile against.
+    pub fn reconcile_catalogue(&self) -> Option<u64> {
+        let engine = self.engine().ok()?;
+        let index = self.index().ok()?;
+        let factory: JobFactory = Arc::new(move || {
+            let plan = pipeline::CataloguePlan {
+                engine: Arc::clone(&engine),
+                index: Arc::clone(&index),
+            };
+            Box::pin(async move { Ok(pipeline::start_catalogue(plan)) }) as BoxFuture<'_, _>
+        });
+        Some(self.jobs.submit(JobKind::Index, factory))
+    }
+
+    /// How many backups exist but cannot be browsed yet.
+    ///
+    /// health.md's "snapshot taken but indexing failed" row: `DEGRADED`, badged
+    /// "1 backup not yet browsable". Stage 10 surfaces it; this is the number.
+    pub fn uncatalogued_count(&self) -> usize {
+        self.index()
+            .ok()
+            .and_then(|index| index.lock().unwrap().pending_archives().ok())
+            .map(|pending| pending.len())
+            .unwrap_or(0)
+    }
+
     /// Run `borg compact` if it is due, on its own daily cadence.
     ///
     /// Separate from the backup because it is a different kind of work: a backup
