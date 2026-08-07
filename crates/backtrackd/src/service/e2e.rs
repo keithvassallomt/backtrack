@@ -455,6 +455,7 @@ async fn importing_a_repository_leaves_the_newest_snapshot_browsable_at_once() {
             compression: Default::default(),
             one_file_system: true,
             created_at: SystemTime::now(),
+            paths: Vec::new(),
         };
         let mut stream = engine(&shared).create(&spec).await.expect("create starts");
         while let Some(event) = stream.next().await {

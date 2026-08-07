@@ -88,6 +88,7 @@ async fn full_round_trip() {
             compression: Compression::Zstd,
             one_file_system: false,
             created_at: std::time::SystemTime::now(),
+            paths: Vec::new(),
         };
         run_to_finish(eng.create(&spec).await.unwrap())
             .await
@@ -177,6 +178,7 @@ async fn a_file_that_disappears_mid_backup_still_produces_a_successful_backup() 
         compression: Compression::Zstd,
         one_file_system: false,
         created_at: std::time::SystemTime::now(),
+        paths: Vec::new(),
     };
     run_to_finish(eng.create(&spec).await.unwrap())
         .await

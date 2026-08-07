@@ -254,6 +254,7 @@ mod tests {
             compression: Default::default(),
             one_file_system: true,
             created_at: std::time::SystemTime::UNIX_EPOCH,
+            paths: vec![],
         };
         let events: Vec<JobEvent> = engine.create(&spec).await.unwrap().collect().await;
         assert!(matches!(events.last(), Some(JobEvent::Finished(Ok(_)))));

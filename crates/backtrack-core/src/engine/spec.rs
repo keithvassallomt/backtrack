@@ -16,6 +16,19 @@ pub struct CreateSpec {
     pub excludes: Vec<String>,
     pub compression: Compression,
     pub one_file_system: bool,
+    /// Archive exactly these paths instead of walking [`CreateSpec::sources`].
+    /// Empty for an ordinary backup.
+    ///
+    /// This is how the offline spool archives a delta: it has already worked
+    /// out which files changed, and asking Borg to walk the tree again to
+    /// rediscover them would cost more than the archive itself. The paths are
+    /// absolute and are stored the same way any other member is, so a spool
+    /// archive's members line up with the primary repository's.
+    ///
+    /// The exclusions still apply — Borg evaluates them against an explicit
+    /// list as it does against a walked one — so a file that should never be
+    /// archived cannot get in this way even if the caller offers it.
+    pub paths: Vec<PathBuf>,
     /// When the backup was started. Carried so the catalogue can date the
     /// archive from the same instant its name was built from, rather than from
     /// whenever the ingest happened to run — on a large first backup those are

@@ -1,14 +1,17 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // SPDX-FileCopyrightText: 2026 Keith Vassallo <keith@vassallo.cloud>
 
-//! The unit of ingest: a single entry from `borg list --json-lines`, parsed
-//! into the shape the index stores.
+//! The unit of ingest: a single entry from a Borg archive listing, parsed into
+//! the shape the index stores.
 //!
-//! Borg emits one JSON object per line, e.g.
-//! ```text
-//! {"type": "-", "mode": "-rw-r--r--", "path": "home/user/report.odt",
-//!  "size": 12345, "mtime": "2026-05-01T12:00:00.489198", ...}
-//! ```
+//! Listings are read with `borg list --format` ([`ITEM_FORMAT`]) rather than
+//! `--json-lines`, and the reason is the timestamp. Borg's JSON renders `mtime`
+//! as a naive local-time string with no offset recorded, so a catalogue built
+//! from it holds every file's modification time shifted by whatever the
+//! machine's UTC offset happened to be. `{mtime:%s.%f}` asks Borg's own Python
+//! for the epoch it already holds. [`BorgItem::from_json_line`] is kept for
+//! reading captured listings.
+//!
 //! Borg's `list` output carries no per-file content hash, so [`BorgItem::chunk_hash`]
 //! is populated only when a future source provides one; change detection at
 //! ingest falls back to size + mtime, exactly as the architecture intends.
@@ -114,6 +117,8 @@ pub enum ItemParseError {
     Mtime(String),
     #[error("unparseable mode {0:?}")]
     Mode(String),
+    #[error("malformed borg list line {0:?}")]
+    Format(String),
 }
 
 /// The raw JSON shape Borg emits, before domain conversion. Fields we do not use
@@ -131,6 +136,11 @@ struct RawBorgItem {
 
 impl BorgItem {
     /// Parse one `borg list --json-lines` line.
+    ///
+    /// Retained for reading captured listings, but **not** what the engine uses:
+    /// Borg's JSON renders `mtime` as a naive local-time string with no offset
+    /// recorded, so reading it back yields a timestamp shifted by whatever the
+    /// machine's UTC offset happened to be. See [`BorgItem::from_format_line`].
     pub fn from_json_line(line: &str) -> Result<BorgItem, ItemParseError> {
         let raw: RawBorgItem = serde_json::from_str(line)?;
         Ok(BorgItem {
@@ -142,6 +152,73 @@ impl BorgItem {
             chunk_hash: None,
         })
     }
+
+    /// Parse one line of [`ITEM_FORMAT`] output:
+    /// `mode \t size \t epoch.micros \t isomtime \t path`.
+    ///
+    /// This is how listings are actually read, for the same reason archive
+    /// timestamps are read with `{time:%s}`: Borg's JSON carries local time
+    /// with no offset, so a catalogue built from it holds every file's
+    /// modification time shifted by the machine's UTC offset — an hour out for
+    /// half the year in most of Europe, and shifted by a different amount again
+    /// if the repository is ever read somewhere else. Asking Borg's own Python
+    /// for the epoch it already holds is exact and costs nothing.
+    ///
+    /// It also happens to be the difference between the offline spool working
+    /// and not working at all: change detection compares an indexed timestamp
+    /// against one read from the live filesystem, and those two can only ever
+    /// agree if the indexed one is a real epoch.
+    ///
+    /// The path is last because an imported repository's member paths are
+    /// whatever was on somebody's disk, including tabs.
+    pub fn from_format_line(line: &str) -> Result<BorgItem, ItemParseError> {
+        let err = || ItemParseError::Format(line.to_string());
+        let mut fields = line.splitn(5, '\t');
+        let mode = fields.next().ok_or_else(err)?;
+        let size = fields.next().ok_or_else(err)?.trim();
+        let epoch = fields.next().ok_or_else(err)?.trim();
+        let iso = fields.next().ok_or_else(err)?.trim();
+        let path = fields
+            .next()
+            .ok_or_else(err)?
+            .trim_end_matches(['\r', '\n']);
+        if path.is_empty() {
+            return Err(err());
+        }
+        Ok(BorgItem {
+            // The mode string's leading character carries the object type, so
+            // no separate field is needed for it.
+            kind: Kind::from_borg(&mode[..1.min(mode.len())]),
+            mode: parse_mode_string(mode)?,
+            mtime: parse_epoch_micros(epoch)
+                // `%s` is a glibc extension rather than C89. A platform that
+                // does not honour it leaves the field unparseable, and falling
+                // back to the ISO string keeps the file catalogued — with the
+                // timezone caveat above, which is a far smaller problem than
+                // losing the entry.
+                .or_else(|| parse_borg_mtime(iso).ok())
+                .ok_or_else(err)?,
+            size: size.parse().map_err(|_| err())?,
+            path: path.to_string(),
+            chunk_hash: None,
+        })
+    }
+}
+
+/// The `--format` string [`BorgItem::from_format_line`] reads.
+pub const ITEM_FORMAT: &str = "{mode}\t{size}\t{mtime:%s.%f}\t{isomtime}\t{path}{NL}";
+
+/// Parse `seconds.microseconds` into epoch microseconds.
+fn parse_epoch_micros(text: &str) -> Option<i64> {
+    let (secs, micros) = match text.split_once('.') {
+        Some((s, m)) => (s, m),
+        None => (text, "0"),
+    };
+    let secs: i64 = secs.parse().ok()?;
+    let digits: String = micros.chars().take_while(|c| c.is_ascii_digit()).collect();
+    let padded = format!("{digits:0<6}");
+    let micros: i64 = padded.get(..6)?.parse().ok()?;
+    secs.checked_mul(1_000_000)?.checked_add(micros)
 }
 
 /// Parse Borg's naive-UTC timestamp (`YYYY-MM-DDTHH:MM:SS[.ffffff]`) to epoch
@@ -272,6 +349,90 @@ mod tests {
         assert_eq!(parse_mode_string("-rwsr-xr-x").unwrap(), 0o4755);
         assert_eq!(parse_mode_string("drwxrwxrwt").unwrap(), 0o1777);
         assert_eq!(parse_mode_string("----------").unwrap(), 0);
+    }
+
+    #[test]
+    fn parses_a_real_format_line() {
+        // A genuine capture from borg 1.4.5 with ITEM_FORMAT.
+        let line = "-rw-r--r--\t5\t1786097862.839217\t2026-08-07T11:17:42.839217\tsrc/f1.txt";
+        let item = BorgItem::from_format_line(line).unwrap();
+        assert_eq!(item.path, "src/f1.txt");
+        assert_eq!(item.kind, Kind::File);
+        assert_eq!(item.size, 5);
+        assert_eq!(item.mode, 0o644);
+        assert_eq!(
+            item.mtime, 1_786_097_862_839_217,
+            "the epoch comes from borg, not from re-reading its local-time string"
+        );
+    }
+
+    #[test]
+    fn the_epoch_is_preferred_over_the_local_time_string() {
+        // The two fields disagree by an hour, which is exactly what a machine on
+        // summer time produces. Reading the ISO one would shift every file's
+        // recorded time — and would make every file compare as modified against
+        // a live filesystem, which is what the offline spool does.
+        let line = "-rw-r--r--\t5\t1786097862.839217\t2026-08-07T12:17:42.839217\tf";
+        assert_eq!(
+            BorgItem::from_format_line(line).unwrap().mtime,
+            1_786_097_862_839_217
+        );
+    }
+
+    #[test]
+    fn an_unusable_epoch_falls_back_to_the_local_time_string() {
+        // A platform whose strftime does not honour `%s` leaves the field as a
+        // literal. Keeping the file catalogued with a shifted time beats losing
+        // it from the timeline entirely.
+        let line = "-rw-r--r--\t5\t%s.%f\t1970-01-02T00:00:00.000000\tf";
+        assert_eq!(
+            BorgItem::from_format_line(line).unwrap().mtime,
+            86_400_000_000
+        );
+    }
+
+    #[test]
+    fn directories_and_symlinks_are_read_from_the_mode_string() {
+        // `--format` has no separate type field; the mode's first character is
+        // the same information the JSON `type` carries.
+        let dir = "drwxr-xr-x\t0\t100.000000\tiso\thome";
+        let link = "lrwxrwxrwx\t10\t100.000000\tiso\thome/link";
+        assert_eq!(BorgItem::from_format_line(dir).unwrap().kind, Kind::Dir);
+        assert_eq!(BorgItem::from_format_line(dir).unwrap().mode, 0o755);
+        assert_eq!(
+            BorgItem::from_format_line(link).unwrap().kind,
+            Kind::Symlink
+        );
+    }
+
+    #[test]
+    fn a_member_path_containing_a_tab_survives() {
+        // Only our own archives are named to a scheme; the files inside anyone's
+        // repository are whatever was on their disk.
+        let line = "-rw-r--r--\t1\t100.000000\tiso\todd\tname.txt";
+        assert_eq!(
+            BorgItem::from_format_line(line).unwrap().path,
+            "odd\tname.txt"
+        );
+    }
+
+    #[test]
+    fn a_fractionless_epoch_is_accepted() {
+        let line = "-rw-r--r--\t1\t1786097862\tiso\tf";
+        assert_eq!(
+            BorgItem::from_format_line(line).unwrap().mtime,
+            1_786_097_862_000_000
+        );
+    }
+
+    #[test]
+    fn malformed_format_lines_are_rejected_rather_than_guessed_at() {
+        for line in ["", "not a listing", "-rw-r--r--\t1\t100.0\tiso\t"] {
+            assert!(
+                BorgItem::from_format_line(line).is_err(),
+                "{line:?} should not parse"
+            );
+        }
     }
 
     #[test]

@@ -656,6 +656,7 @@ mod tests {
             compression: Default::default(),
             one_file_system: true,
             created_at: UNIX_EPOCH + Duration::from_secs(1_000),
+            paths: vec![],
         }
     }
 

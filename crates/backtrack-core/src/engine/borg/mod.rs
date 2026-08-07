@@ -128,8 +128,17 @@ impl BackupEngine for BorgCli {
             cmd.arg("--exclude").arg(ex);
         }
         cmd.arg(format!("{}::{}", self.repo, spec.archive_name));
-        for src in &spec.sources {
-            cmd.arg(src);
+        // An explicit list replaces the sources rather than adding to them: the
+        // caller has already decided what this archive holds. Borg processes
+        // exactly the paths given and does not recurse, which is why the walk
+        // emits files and symlinks and never directories.
+        let targets = if spec.paths.is_empty() {
+            &spec.sources
+        } else {
+            &spec.paths
+        };
+        for target in targets {
+            cmd.arg(target);
         }
         spawn_streamed(cmd)
     }
@@ -155,9 +164,15 @@ impl BackupEngine for BorgCli {
     }
 
     async fn list_archive(&self, id: &ArchiveId) -> Result<BoxStream<'static, Result<BorgItem>>> {
+        // `--format` rather than `--json-lines`, for the timestamp — the same
+        // reason `list_archives` uses `{time:%s}`. Borg's JSON renders `mtime`
+        // as naive local time with no offset recorded, so a catalogue built
+        // from it holds every file's modification time shifted by the machine's
+        // UTC offset. See `BorgItem::from_format_line`.
         let mut cmd = self.cmd().await?;
         cmd.arg("list")
-            .arg("--json-lines")
+            .arg("--format")
+            .arg(crate::index::ITEM_FORMAT)
             .arg(self.archive_ref(id));
         cmd.stdout(Stdio::piped())
             .stderr(Stdio::null())
@@ -172,26 +187,36 @@ impl BackupEngine for BorgCli {
         // Own the child in the stream state so it lives as long as the stream
         // (kill_on_drop reaps it if the consumer drops early).
         let stream = stream::unfold((lines, child), |(mut lines, mut child)| async move {
-            match lines.next_line().await {
-                Ok(Some(line)) => {
-                    let item =
-                        BorgItem::from_json_line(&line).map_err(|e| EngineError::BorgFailed {
-                            code: -1,
-                            stderr: format!("parsing borg list line: {e}"),
+            // Loops rather than yielding per line, so a blank line — which
+            // `--format` produces for an item whose fields are all empty, and
+            // which the `{NL}` at the end of the format can leave trailing — is
+            // skipped instead of being reported as a malformed item.
+            loop {
+                match lines.next_line().await {
+                    Ok(Some(line)) if line.trim().is_empty() => continue,
+                    Ok(Some(line)) => {
+                        let item = BorgItem::from_format_line(&line).map_err(|e| {
+                            EngineError::BorgFailed {
+                                code: -1,
+                                stderr: format!("parsing borg list line: {e}"),
+                            }
                         });
-                    Some((item, (lines, child)))
+                        return Some((item, (lines, child)));
+                    }
+                    Ok(None) => {
+                        let _ = child.wait().await;
+                        return None;
+                    }
+                    Err(e) => {
+                        return Some((
+                            Err(EngineError::BorgFailed {
+                                code: -1,
+                                stderr: e.to_string(),
+                            }),
+                            (lines, child),
+                        ))
+                    }
                 }
-                Ok(None) => {
-                    let _ = child.wait().await;
-                    None
-                }
-                Err(e) => Some((
-                    Err(EngineError::BorgFailed {
-                        code: -1,
-                        stderr: e.to_string(),
-                    }),
-                    (lines, child),
-                )),
             }
         });
         Ok(stream.boxed())

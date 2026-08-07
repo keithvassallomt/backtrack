@@ -467,6 +467,7 @@ mod tests {
             compression: Default::default(),
             one_file_system: true,
             created_at: std::time::SystemTime::UNIX_EPOCH,
+            paths: vec![],
         }
     }
 

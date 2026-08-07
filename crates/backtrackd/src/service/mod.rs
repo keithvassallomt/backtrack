@@ -1210,13 +1210,27 @@ fn kind_name(kind: Kind) -> &'static str {
     }
 }
 
+/// Everything the user asked to exclude, plus the one exclusion they should not
+/// have to think of.
+///
+/// Backtrack's own data directory holds the catalogue and — from Stage 5 — the
+/// offline spool repository. A source of `/home/k` contains it, so without this
+/// every backup would archive the spool into the primary repository, hourly,
+/// and archive a live SQLite database while it was being written to.
+fn effective_excludes(config: &Config) -> Vec<String> {
+    let mut excludes = config.backup.exclude.clone();
+    excludes.push(format!("pp:{}", paths::data_dir().display()));
+    excludes
+}
+
 fn create_spec(config: &Config) -> CreateSpec {
     let now = SystemTime::now();
     CreateSpec {
         archive_name: pipeline::archive_name(&pipeline::hostname(), now),
         created_at: now,
         sources: config.backup.include.clone(),
-        excludes: config.backup.exclude.clone(),
+        excludes: effective_excludes(config),
+        paths: Vec::new(),
         compression: match config.advanced.compression {
             backtrack_core::config::Compression::Zstd => backtrack_core::engine::Compression::Zstd,
             backtrack_core::config::Compression::Lz4 => backtrack_core::engine::Compression::Lz4,
@@ -1580,10 +1594,35 @@ mod tests {
         config.backup.include = vec![PathBuf::from("/home/k/Documents")];
         let spec = create_spec(&config);
         assert_eq!(spec.sources, config.backup.include);
-        assert_eq!(spec.excludes, config.backup.exclude);
+        for exclusion in &config.backup.exclude {
+            assert!(
+                spec.excludes.contains(exclusion),
+                "the user's exclusion {exclusion} reached the engine"
+            );
+        }
+        assert!(
+            spec.paths.is_empty(),
+            "an ordinary backup lets borg walk the sources"
+        );
         assert!(
             spec.one_file_system,
             "crossing filesystems would drag in mounted media"
+        );
+    }
+
+    #[test]
+    fn backtracks_own_data_directory_is_never_backed_up() {
+        // A source of `/home/k` contains the data directory, which holds the
+        // catalogue and the offline spool repository. Without this exclusion
+        // every backup would copy the spool into the primary repository, hourly,
+        // and would archive a live SQLite database mid-write.
+        let config = Config::default();
+        let spec = create_spec(&config);
+        let data_dir = paths::data_dir().display().to_string();
+        assert!(
+            spec.excludes.iter().any(|e| e.contains(&data_dir)),
+            "expected the data directory to be excluded, got {:?}",
+            spec.excludes
         );
     }
 
