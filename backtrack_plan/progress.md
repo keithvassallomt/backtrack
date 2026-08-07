@@ -367,6 +367,77 @@
   badge a snapshot "cataloguing…" rather than showing it as empty, and
   reconciliation is skipped outright when the destination is not reachable, so an
   unplugged drive does not write an error to the log on every start.
+- 2026-08-07 (Stage 5 — Offline protection): the design question the stage
+  turned on was not "how do we archive locally" but "how do we know what
+  changed", and that is where the surprises were.
+  - **Two timestamp defects, both latent since Stage 1, both fatal to the
+    spool.** Listings were read from `borg list --json-lines`, whose `mtime` is
+    a naive local-time string with no offset — so the catalogue held every
+    file's modification time shifted by the machine's UTC offset, which is also
+    what Stage 6's file pane would have displayed. And Borg *rounds* nanoseconds
+    to microseconds where the walk truncated. Change detection is an equality
+    test, so either defect alone made every file on the machine compare as
+    modified. Listings now use `--format` with `{mtime:%s.%f}`, exactly as
+    archive timestamps already used `{time:%s}` and for the same reason.
+  - **Exact timestamp comparison is not achievable, and the number is measured.**
+    Borg can only report microseconds through a value it renders via a float, so
+    the stored value and the one read from the filesystem do not always round the
+    same way. On a 3,000-file tree nothing had touched: an exact comparison
+    reported **234 files as modified**, a two-microsecond tolerance reported
+    none. No `--format` key exposes the raw nanoseconds. `MTIME_TOLERANCE_MICROS`
+    is that finding, and the test that produced both numbers is kept.
+  - **Exclusion patterns had to be reimplemented locally**, because the spool
+    must know the delta before it can ask Borg anything, and a walk that ignored
+    exclusions would report every file under `~/.cache` as new — those paths are
+    excluded from backups, so the catalogue has never heard of them, so they can
+    only compare as new. Semantics were measured against borg 1.4.5 rather than
+    read off the manual: `*` does cross `/` in the default style and does not
+    under `sh:`, patterns match the archive-relative path, and a matched
+    directory prunes its subtree. `re:` is reported rather than guessed at.
+  - **A delta archive needs a delta ingest.** `ingest_delta` folds in what the
+    archive lists and then carries every interval that ended at the previous
+    archive across this one, so a local snapshot browses as the whole tree.
+    Ingesting it as a full listing would show every unchanged file as deleted at
+    that snapshot — somebody browsing an hour spent on a train would find their
+    documents missing. Deletions during an offline window are not captured,
+    which is the trade offline-strategy.md names.
+  - **btrfs mode will not run on a stock desktop, and that is a product finding
+    rather than a bug.** Measured with btrfs-progs 7.1: `$HOME` is not a
+    subvolume boundary (inode 257, inside a root-owned `@home`); an unprivileged
+    process cannot snapshot a root-owned subvolume; and `btrfs subvolume delete`
+    is refused without `user_subvol_rm_allowed`. Backtrack's daemon is a *user*
+    service, so it detects btrfs, tries, fails, says so once, and the spool
+    carries the load. The probe therefore creates **and removes** a real
+    snapshot: one that can be created but not removed is worse than none, since
+    hourly snapshots nothing can expire would fill the disk with no way out from
+    inside the application. Removal clears the read-only property and unlinks
+    the tree, which works with the permissions a user service has. Tested for
+    real against a subvolume the test user owns — the only kind an unprivileged
+    process can snapshot, which is the same limitation that decides the
+    fallback.
+  - **Two archives in one second collided.** `bt-local-<iso>` has one-second
+    resolution and Borg refuses a duplicate name outright (exit 30), failing the
+    whole run — reachable by pressing Back Up Now twice while away, or by the
+    development interval override. A colliding snapshot is now dated to the next
+    free second. **The primary path has the same latent flaw** (`bt-{host}-{iso}`)
+    and is untouched here: no test reaches it, backups are minutes apart, and
+    changing primary archive naming has a wider blast radius. Worth fixing when
+    something else takes that code.
+  - **`JobKind::Offline` exists for one reason:** only a backup that reached the
+    *real* destination may start the local snapshots' expiry clock. Marking them
+    discardable because another local snapshot succeeded would throw away the
+    only copy of the versions they hold, and telling the two apart from
+    bookkeeping rather than from the job itself is exactly how that goes wrong.
+  - **Deviations, both deliberate.** The cap setting is
+    `storage.offline.space_limit_gb`, which was already in the schema and mirrors
+    the Preferences page, rather than the stage file's `spool_cap_gb`. And the
+    delta is computed against the newest *catalogued* archive of any kind rather
+    than the last network one: the union across spool archives is the same set of
+    at-risk files, and each hour's archive is smaller for it.
+  - The data directory is now excluded from every backup. A source of `/home/k`
+    contains it, so without that each backup would copy the spool repository into
+    the primary one, hourly, and archive a live SQLite database mid-write.
+
 - 2026-08-07 (S04-T5): `ImportRepo` returns once the **newest** snapshot is
   browsable and leaves the rest to the background job, newest to oldest. Two
   different kinds of work on purpose: the first is synchronous because the caller

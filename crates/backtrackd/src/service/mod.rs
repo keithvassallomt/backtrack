@@ -441,6 +441,9 @@ impl Shared {
             paused_until: self.pause.lock().unwrap().until(SystemTime::now()),
             configured: config.is_configured(),
             busy: self.busy(),
+            // Owned by the scheduler loop, which is the only thing that knows
+            // whether it has already served a catch-up delay.
+            catch_up_deferred: false,
         }
     }
 
@@ -666,7 +669,7 @@ impl Shared {
                     sources: config.backup.include.clone(),
                     excludes: backtrack_core::pattern::ExcludeSet::compile(&excludes),
                     one_file_system: true,
-                    never: vec![paths::data_dir(), self.spool_dir.clone()],
+                    never: vec![self.spool_dir.clone(), self.snapshots_dir.clone()],
                     include_dirs: true,
                 },
                 excludes,
@@ -695,12 +698,13 @@ impl Shared {
                 sources: config.backup.include.clone(),
                 excludes: backtrack_core::pattern::ExcludeSet::compile(&excludes),
                 one_file_system: true,
-                // Never walk into our own storage. The spool is named
-                // explicitly as well as the data directory that normally
-                // contains it: archiving the spool into the spool would grow
-                // without bound, and that must hold however the paths are
-                // configured.
-                never: vec![paths::data_dir(), self.spool_dir.clone()],
+                // The two directories that would feed the walk its own
+                // output. Deliberately *not* the whole data directory: a
+                // backup source can legitimately live inside it — the
+                // development fixture's does — and pruning it wholesale made
+                // every local snapshot empty with nothing to say so. The rest
+                // of our storage is handled by `effective_excludes`.
+                never: vec![self.spool_dir.clone(), self.snapshots_dir.clone()],
                 // A delta for borg, so no directory entries — see `WalkSpec`.
                 include_dirs: false,
             },
@@ -1649,16 +1653,34 @@ fn kind_name(kind: Kind) -> &'static str {
     }
 }
 
-/// Everything the user asked to exclude, plus the one exclusion they should not
-/// have to think of.
+/// Everything the user asked to exclude, plus the ones they should not have to
+/// think of.
 ///
-/// Backtrack's own data directory holds the catalogue and — from Stage 5 — the
-/// offline spool repository. A source of `/home/k` contains it, so without this
-/// every backup would archive the spool into the primary repository, hourly,
-/// and archive a live SQLite database while it was being written to.
+/// A source of `/home/k` contains Backtrack's own data directory, and parts of
+/// it must never be archived: the offline spool would copy the backup into the
+/// backup hourly, the snapshots directory the same, and `index.db` is a live
+/// SQLite database that would be captured mid-write.
+///
+/// Deliberately *not* the whole data directory. `config.toml` and `state.toml`
+/// are small, they change rarely, and they are exactly what somebody restoring
+/// a machine would be glad to find — excluding them to save a few kilobytes
+/// would be throwing away the user's settings for nothing.
 fn effective_excludes(config: &Config) -> Vec<String> {
     let mut excludes = config.backup.exclude.clone();
-    excludes.push(format!("pp:{}", paths::data_dir().display()));
+    for dir in [
+        paths::spool_dir(),
+        paths::snapshots_dir(),
+        paths::cache_dir(),
+        paths::staging_dir(),
+        paths::replaced_dir(),
+        paths::log_dir(),
+    ] {
+        excludes.push(format!("pp:{}", dir.display()));
+    }
+    // The catalogue and its write-ahead log. A glob rather than a prefix,
+    // because `index.db-wal` and `index.db-shm` are siblings of `index.db`
+    // rather than children of it.
+    excludes.push(format!("{}*", paths::index_db().display()));
     excludes
 }
 
@@ -2050,18 +2072,54 @@ mod tests {
     }
 
     #[test]
-    fn backtracks_own_data_directory_is_never_backed_up() {
-        // A source of `/home/k` contains the data directory, which holds the
-        // catalogue and the offline spool repository. Without this exclusion
-        // every backup would copy the spool into the primary repository, hourly,
-        // and would archive a live SQLite database mid-write.
-        let config = Config::default();
-        let spec = create_spec(&config);
-        let data_dir = paths::data_dir().display().to_string();
+    fn the_volatile_parts_of_the_data_directory_are_never_backed_up() {
+        // A source of `/home/k` contains the data directory. The spool would
+        // copy the backup into the backup hourly, and `index.db` is a live
+        // SQLite database that would be captured mid-write.
+        let excludes = effective_excludes(&Config::default());
+        let compiled = backtrack_core::pattern::ExcludeSet::compile(&excludes);
+        let rel = |p: std::path::PathBuf| backtrack_core::walk::archive_path(&p);
+
+        for must_go in [
+            rel(paths::spool_dir().join("data/0/1")),
+            rel(paths::snapshots_dir().join("bt-local-1/home/k/f")),
+            rel(paths::cache_dir().join("something")),
+            rel(paths::log_dir().join("backtrack.jsonl")),
+            rel(paths::index_db()),
+            format!("{}-wal", rel(paths::index_db())),
+            format!("{}-shm", rel(paths::index_db())),
+        ] {
+            assert!(compiled.excludes(&must_go), "{must_go} should be excluded");
+        }
+    }
+
+    #[test]
+    fn the_users_settings_are_still_backed_up() {
+        // Excluding the whole data directory to be safe would throw away
+        // `config.toml` and `state.toml` — small, rarely changed, and exactly
+        // what somebody restoring a machine would be glad to find.
+        let excludes = effective_excludes(&Config::default());
+        let compiled = backtrack_core::pattern::ExcludeSet::compile(&excludes);
+        for keep in [paths::config_file(), paths::state_file()] {
+            let path = backtrack_core::walk::archive_path(&keep);
+            assert!(!compiled.excludes(&path), "{path} should be kept");
+        }
+    }
+
+    #[test]
+    fn a_source_inside_the_data_directory_is_still_backed_up() {
+        // Found by running the daemon: excluding the whole data directory made
+        // every archive on the development machine empty, because its demo
+        // source tree lives inside it. Nothing said so — the backups "worked",
+        // they just contained nothing.
+        let excludes = effective_excludes(&Config::default());
+        let compiled = backtrack_core::pattern::ExcludeSet::compile(&excludes);
+        let source = backtrack_core::walk::archive_path(
+            &paths::data_dir().join("demo-src/home/user/notes.txt"),
+        );
         assert!(
-            spec.excludes.iter().any(|e| e.contains(&data_dir)),
-            "expected the data directory to be excluded, got {:?}",
-            spec.excludes
+            !compiled.excludes(&source),
+            "{source} is a backup source, not our own storage"
         );
     }
 

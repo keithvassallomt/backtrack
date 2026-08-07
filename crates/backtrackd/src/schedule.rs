@@ -67,6 +67,15 @@ pub struct ScheduleInput {
     /// Whether a job is already running or queued. A second backup queued behind
     /// the first would run the moment it finished, which is not a schedule.
     pub busy: bool,
+    /// Whether the loop has already served a [`Decision::CatchUp`] delay and is
+    /// coming back to act on it.
+    ///
+    /// Without this the catch-up never happens. A run that is overdue by more
+    /// than a period is deferred; the loop sleeps the jitter and asks again; and
+    /// because nothing has advanced the attempt clock in the meantime it is
+    /// *still* overdue by more than a period, so it is deferred again, forever.
+    /// A laptop that was closed for two hours would never back up again.
+    pub catch_up_deferred: bool,
 }
 
 /// What to do at this moment.
@@ -147,8 +156,10 @@ pub fn decide(input: &ScheduleInput, now: SystemTime, jitter: Duration) -> Decis
     }
 
     // Late by more than a whole period means time passed without us running —
-    // suspend, hibernation, or a daemon that was not there. Defer briefly.
-    if now >= due + interval {
+    // suspend, hibernation, or a daemon that was not there. Defer briefly, but
+    // only once: the deferral is there to let the network and the disk come
+    // back, not to postpone the backup indefinitely.
+    if now >= due + interval && !input.catch_up_deferred {
         return Decision::CatchUp(jitter.min(CATCH_UP_WINDOW));
     }
 
@@ -235,8 +246,12 @@ impl Scheduler {
     /// The scheduling loop. Never returns.
     pub async fn run(self) {
         info!("scheduler started");
+        // Carried across ticks: a deferred catch-up has to be *acted on* next
+        // time round, not deferred again. See `ScheduleInput::catch_up_deferred`.
+        let mut deferred = false;
         loop {
-            let sleep_for = self.tick().await;
+            let (sleep_for, defer_now) = self.tick(deferred).await;
+            deferred = defer_now;
             tokio::select! {
                 _ = tokio::time::sleep(sleep_for) => {}
                 _ = self.wake.notified() => debug!("scheduler woken early"),
@@ -244,9 +259,11 @@ impl Scheduler {
         }
     }
 
-    /// One pass: decide, act, and report how long to wait next.
-    async fn tick(&self) -> Duration {
-        let input = self.shared.schedule_input();
+    /// One pass: decide, act, and report how long to wait next and whether a
+    /// catch-up is now owed.
+    async fn tick(&self, deferred: bool) -> (Duration, bool) {
+        let mut input = self.shared.schedule_input();
+        input.catch_up_deferred = deferred;
 
         // Maintenance first, and only when nothing else wants the repository.
         // If it starts, the backup decision below sees a busy daemon and waits
@@ -257,13 +274,13 @@ impl Scheduler {
         }
 
         match decide(&input, SystemTime::now(), jitter()) {
-            Decision::Idle(d) => d,
+            Decision::Idle(d) => (d, false),
             Decision::CatchUp(d) => {
                 info!(
                     delay_secs = d.as_secs(),
                     "a scheduled backup was missed; catching up shortly"
                 );
-                d
+                (d, true)
             }
             Decision::Run => {
                 match self.shared.start_scheduled_backup().await {
@@ -280,7 +297,7 @@ impl Scheduler {
                 // connection watchers — polling faster would only mean a
                 // laptop left on battery reading two D-Bus properties every few
                 // seconds all afternoon.
-                MAX_SLEEP
+                (MAX_SLEEP, false)
             }
         }
     }
@@ -308,6 +325,7 @@ mod tests {
             paused_until: None,
             configured: true,
             busy: false,
+            catch_up_deferred: false,
         }
     }
 
@@ -365,6 +383,50 @@ mod tests {
             delay <= CATCH_UP_WINDOW,
             "catch-up must happen inside the two-minute window, got {delay:?}"
         );
+    }
+
+    #[test]
+    fn a_deferred_catch_up_actually_runs() {
+        // The bug this pins was found by running the daemon, not by a test: a
+        // run overdue by more than a period was deferred, and on the next tick
+        // it was *still* overdue by more than a period, so it was deferred
+        // again — with a fresh jitter each time, forever. A laptop closed for
+        // two hours would never have backed up again, which is precisely the
+        // case the catch-up exists for.
+        let input = ScheduleInput {
+            last_attempt: ago(8 * 3_600),
+            ..hourly()
+        };
+        assert!(matches!(decide_now(&input), Decision::CatchUp(_)));
+
+        let after_waiting = ScheduleInput {
+            catch_up_deferred: true,
+            ..input
+        };
+        assert_eq!(
+            decide_now(&after_waiting),
+            Decision::Run,
+            "once the delay has been served, the backup has to happen"
+        );
+    }
+
+    #[test]
+    fn a_served_catch_up_still_respects_the_other_gates() {
+        // "Act on it now" must not mean "ignore everything else": a pause the
+        // user set still holds, and a busy repository still waits.
+        let base = ScheduleInput {
+            last_attempt: ago(8 * 3_600),
+            catch_up_deferred: true,
+            ..hourly()
+        };
+        let paused = ScheduleInput {
+            paused_until: Some(now() + Duration::from_secs(30)),
+            ..base.clone()
+        };
+        assert_eq!(decide_now(&paused), Decision::Idle(Duration::from_secs(30)));
+
+        let busy = ScheduleInput { busy: true, ..base };
+        assert_eq!(decide_now(&busy), Decision::Idle(MAX_SLEEP));
     }
 
     #[test]
