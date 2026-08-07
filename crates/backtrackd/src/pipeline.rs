@@ -387,8 +387,36 @@ async fn drive(
 /// hundred. SQLite's writes are blocking, so the ingest runs on a blocking
 /// thread and the two halves meet over a bounded channel.
 async fn catalogue(plan: &BackupPlan, sink: &JobSink, archive: &str) -> Result<usize, EngineError> {
-    let ts = plan
-        .spec
+    catalogue_archive(
+        CatalogueOne {
+            engine: &plan.engine,
+            index: &plan.index,
+            archive,
+            created_at: plan.spec.created_at,
+            repo: Repo::Primary,
+            delta: false,
+        },
+        sink,
+    )
+    .await
+}
+
+/// One archive's listing, read into the catalogue.
+struct CatalogueOne<'a> {
+    engine: &'a Arc<dyn BackupEngine>,
+    index: &'a Arc<Mutex<IndexWriter>>,
+    archive: &'a str,
+    created_at: SystemTime,
+    repo: Repo,
+    /// Whether the archive holds only what changed. See
+    /// [`IndexWriter::ingest_delta`] — a delta read as a full listing would show
+    /// every unchanged file as deleted at that snapshot.
+    delta: bool,
+}
+
+async fn catalogue_archive(one: CatalogueOne<'_>, sink: &JobSink) -> Result<usize, EngineError> {
+    let archive = one.archive;
+    let ts = one
         .created_at
         .duration_since(UNIX_EPOCH)
         .unwrap_or(Duration::ZERO)
@@ -401,22 +429,28 @@ async fn catalogue(plan: &BackupPlan, sink: &JobSink, archive: &str) -> Result<u
 
     // Record the archive before reading a single item. See the module note: a
     // crash from here on leaves a row reconciliation can find.
-    let index = Arc::clone(&plan.index);
-    let seq = tokio::task::spawn_blocking(move || {
-        index.lock().unwrap().append_archive(&meta, Repo::Primary)
-    })
-    .await
-    .map_err(joined)?
-    .map_err(indexing)?;
+    let index = Arc::clone(one.index);
+    let repo = one.repo;
+    let seq =
+        tokio::task::spawn_blocking(move || index.lock().unwrap().append_archive(&meta, repo))
+            .await
+            .map_err(joined)?
+            .map_err(indexing)?;
 
     let (tx, rx) = channel();
-    let index = Arc::clone(&plan.index);
+    let index = Arc::clone(one.index);
+    let delta = one.delta;
     let writer = tokio::task::spawn_blocking(move || {
         let mut index = index.lock().unwrap();
-        index.ingest_pending_fallible(seq, BatchedItems::new(rx))
+        let items = BatchedItems::new(rx);
+        if delta {
+            index.ingest_delta(seq, items)
+        } else {
+            index.ingest_pending_fallible(seq, items)
+        }
     });
 
-    let mut listing = plan
+    let mut listing = one
         .engine
         .list_archive(&ArchiveId(archive.to_string()))
         .await?;
@@ -474,6 +508,259 @@ async fn catalogue(plan: &BackupPlan, sink: &JobSink, archive: &str) -> Result<u
         "catalogue updated"
     );
     Ok(stats.items)
+}
+
+/// Phase name for evicting local snapshots to stay inside the spool cap.
+pub const PHASE_EVICTING: &str = "making room";
+
+/// Everything a local, offline-window backup needs.
+///
+/// Assembled by the service layer, like [`BackupPlan`], but the expensive parts
+/// — walking the sources, diffing against the catalogue — happen inside the job
+/// rather than when it is submitted. A walk of a large home directory takes
+/// seconds, and the scheduler tick that asks for the backup must not wait for
+/// it.
+pub struct OfflinePlan {
+    /// An engine pointing at the local spool repository, not the destination.
+    pub engine: Arc<dyn BackupEngine>,
+    pub index: Arc<Mutex<IndexWriter>>,
+    /// Where to read the catalogue from for the diff. A separate read-only
+    /// connection, so working out what changed never contends with the writer.
+    pub index_path: std::path::PathBuf,
+    pub walk: backtrack_core::walk::WalkSpec,
+    pub excludes: Vec<String>,
+    pub compression: backtrack_core::engine::Compression,
+    /// The spool's size limit in bytes; `0` for no limit.
+    pub cap_bytes: u64,
+    pub spool_dir: std::path::PathBuf,
+    pub created_at: SystemTime,
+}
+
+/// What a local backup did, for the caller's logging and health bookkeeping.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct OfflineOutcome {
+    /// Files archived. Zero means nothing had changed, which is the common case.
+    pub files: usize,
+    /// Local snapshots dropped to stay inside the cap.
+    pub evicted: usize,
+    /// The spool is under strain and the user should be told.
+    pub degraded: bool,
+}
+
+/// Protect what changed, locally.
+pub fn start_offline_backup(plan: OfflinePlan) -> (JobStream, OfflineHandle) {
+    let (sink, stream) = JobStream::channel(EVENT_BUFFER);
+    let outcome = Arc::new(Mutex::new(OfflineOutcome::default()));
+    let handle = OfflineHandle {
+        outcome: Arc::clone(&outcome),
+    };
+    tokio::spawn(async move {
+        let result = run_offline(&plan, &sink, &outcome).await;
+        sink.send(JobEvent::Finished(result)).await;
+    });
+    (stream, handle)
+}
+
+/// Lets the submitter read what the local backup did once it has finished.
+///
+/// The job model carries only success or failure, and the health model needs
+/// more than that: whether the safety net actually holds anything, and whether
+/// it is under strain.
+#[derive(Clone)]
+pub struct OfflineHandle {
+    outcome: Arc<Mutex<OfflineOutcome>>,
+}
+
+impl OfflineHandle {
+    pub fn outcome(&self) -> OfflineOutcome {
+        *self.outcome.lock().unwrap()
+    }
+}
+
+async fn run_offline(
+    plan: &OfflinePlan,
+    sink: &JobSink,
+    outcome: &Arc<Mutex<OfflineOutcome>>,
+) -> Result<JobSummary, EngineError> {
+    // ── What changed ──
+    //
+    // The walk and the diff are both blocking and both potentially long, so
+    // they go to a blocking thread together. The catalogue is read through its
+    // own read-only connection: the writer's lock is held by ingests, and
+    // taking it here to answer a question would be the deadlock S04-T5 already
+    // found once.
+    let index_path = plan.index_path.clone();
+    let walk_spec = clone_walk_spec(&plan.walk, &plan.excludes);
+    let (changed, unreadable, baseline) = tokio::task::spawn_blocking(move || {
+        let reader = backtrack_core::index::IndexReader::open(&index_path)?;
+        let baseline = reader.latest_catalogued_seq()?;
+        let walked = backtrack_core::walk::walk(&walk_spec);
+        let changed = match baseline {
+            Some(seq) => reader.changed_since(seq, walked.entries)?,
+            // Nothing has ever been catalogued, so there is no "since" to speak
+            // of. Everything walked is at risk.
+            None => walked.entries.into_iter().map(|e| e.path).collect(),
+        };
+        Ok::<_, backtrack_core::index::IndexError>((changed, walked.unreadable, baseline))
+    })
+    .await
+    .map_err(joined)?
+    .map_err(indexing)?;
+
+    if unreadable > 0 {
+        debug!(
+            unreadable,
+            "some paths could not be read while looking for changes"
+        );
+    }
+    if changed.is_empty() {
+        // The quiet, common case: an offline hour in which nothing was edited.
+        // No archive, no log line above debug, nothing for the user to see.
+        debug!(?baseline, "nothing has changed; no local snapshot needed");
+        return Ok(JobSummary::default());
+    }
+
+    // ── Room to put it ──
+    let projected: u64 = changed
+        .iter()
+        .map(|p| {
+            std::fs::symlink_metadata(std::path::Path::new("/").join(p))
+                .map(|m| m.len())
+                .unwrap_or(0)
+        })
+        .sum();
+    let held = crate::offline::directory_bytes(&plan.spool_dir);
+    let index = Arc::clone(&plan.index);
+    let existing =
+        tokio::task::spawn_blocking(move || index.lock().unwrap().archives_in(Repo::Spool))
+            .await
+            .map_err(joined)?
+            .map_err(indexing)?;
+    let existing: Vec<crate::offline::LocalArchive> = existing
+        .into_iter()
+        .map(|(seq, name)| crate::offline::LocalArchive { seq, name })
+        .collect();
+    let cap = crate::offline::plan_cap(plan.cap_bytes, held, projected, &existing);
+
+    if !cap.evict.is_empty() {
+        sink.send(JobEvent::Progress {
+            current: 0,
+            total: Some(cap.evict.len() as u64),
+            phase: PHASE_EVICTING.to_string(),
+        })
+        .await;
+        evict(plan, &cap.evict).await?;
+        info!(
+            count = cap.evict.len(),
+            "older local snapshots removed to stay inside the storage limit"
+        );
+    }
+
+    {
+        let mut outcome = outcome.lock().unwrap();
+        outcome.evicted = cap.evict.len();
+        outcome.degraded = cap.degraded;
+    }
+    if cap.degraded {
+        // health.md's DEGRADED, not an error: protection is still happening,
+        // it is just constrained. Never silently stop.
+        warn!(
+            limit_bytes = plan.cap_bytes,
+            held, projected, "the local safety net is at its storage limit"
+        );
+    }
+    if !cap.proceed {
+        return Ok(JobSummary::default());
+    }
+
+    // ── Archive it ──
+    let archive = crate::offline::local_archive_name(plan.created_at);
+    let spec = CreateSpec {
+        archive_name: archive.clone(),
+        sources: plan.walk.sources.clone(),
+        // Absolute paths: the walk reports them archive-relative, which is the
+        // form the catalogue holds, but borg is being asked to read them off
+        // the disk.
+        paths: changed
+            .iter()
+            .map(|p| std::path::Path::new("/").join(p))
+            .collect(),
+        excludes: plan.excludes.clone(),
+        compression: plan.compression,
+        one_file_system: plan.walk.one_file_system,
+        created_at: plan.created_at,
+    };
+    let files = spec.paths.len();
+    drive(plan.engine.create(&spec).await?, sink, PHASE_ARCHIVING).await?;
+    if sink.is_cancelled() {
+        return Err(EngineError::Cancelled);
+    }
+
+    // ── Catalogue it ──
+    //
+    // As a *delta*: the archive holds only what changed, and the catalogue has
+    // to read every other file as still being there.
+    match catalogue_archive(
+        CatalogueOne {
+            engine: &plan.engine,
+            index: &plan.index,
+            archive: &archive,
+            created_at: plan.created_at,
+            repo: Repo::Spool,
+            delta: true,
+        },
+        sink,
+    )
+    .await
+    {
+        Ok(items) => debug!(archive, items, "local snapshot catalogued"),
+        Err(e) if sink.is_cancelled() => return Err(e),
+        // Same rule as a network backup: the files are protected, which is what
+        // matters. Reconciliation catalogues it later.
+        Err(e) => warn!(
+            archive,
+            "the local snapshot could not be catalogued yet: {e}"
+        ),
+    }
+
+    outcome.lock().unwrap().files = files;
+    info!(archive, files, "changes protected on this computer");
+    Ok(JobSummary::default())
+}
+
+/// Drop local snapshots from the spool repository and the catalogue together.
+async fn evict(
+    plan: &OfflinePlan,
+    archives: &[crate::offline::LocalArchive],
+) -> Result<(), EngineError> {
+    let ids: Vec<ArchiveId> = archives.iter().map(|a| ArchiveId(a.name.clone())).collect();
+    let mut stream = plan.engine.delete_archives(&ids).await?;
+    while let Some(event) = stream.next().await {
+        if let JobEvent::Finished(result) = event {
+            result?;
+        }
+    }
+    let seqs: Vec<i64> = archives.iter().map(|a| a.seq).collect();
+    let index = Arc::clone(&plan.index);
+    tokio::task::spawn_blocking(move || index.lock().unwrap().remove_archives(&seqs))
+        .await
+        .map_err(joined)?
+        .map_err(indexing)?;
+    Ok(())
+}
+
+/// `WalkSpec` holds a compiled `ExcludeSet`, which is not `Clone` — recompiling
+/// from the patterns is cheap and keeps the plan's ownership simple.
+fn clone_walk_spec(
+    spec: &backtrack_core::walk::WalkSpec,
+    excludes: &[String],
+) -> backtrack_core::walk::WalkSpec {
+    backtrack_core::walk::WalkSpec {
+        sources: spec.sources.clone(),
+        excludes: backtrack_core::pattern::ExcludeSet::compile(excludes),
+        one_file_system: spec.one_file_system,
+        never: spec.never.clone(),
+    }
 }
 
 /// Make the catalogue agree with the repository, and report how many archives
@@ -594,6 +881,16 @@ pub fn hostname() -> String {
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| "unknown".to_string())
+}
+
+/// `YYYYMMDDThhmmssZ` for an instant, shared by every archive-naming scheme so
+/// primary and local snapshots sort together and read alike.
+pub fn iso8601_basic_at(now: SystemTime) -> String {
+    iso8601_basic(
+        now.duration_since(UNIX_EPOCH)
+            .unwrap_or(Duration::ZERO)
+            .as_secs() as i64,
+    )
 }
 
 /// Epoch seconds as `YYYYMMDDThhmmssZ` (UTC).

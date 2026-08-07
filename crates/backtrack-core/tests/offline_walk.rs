@@ -244,6 +244,95 @@ async fn an_unchanged_tree_has_nothing_to_spool() {
 }
 
 #[tokio::test]
+async fn an_untouched_tree_of_thousands_of_files_still_has_nothing_to_spool() {
+    // The same claim as above, at a scale where a per-file disagreement of one
+    // in a hundred would show up rather than hiding behind a lucky run.
+    //
+    // Borg reports microseconds through a float, so the timestamp it stores and
+    // the one read from the filesystem do not always round the same way. This
+    // is the test that says how often that matters in practice, and it is why
+    // `MTIME_TOLERANCE_MICROS` exists.
+    let dir = tempfile::tempdir().unwrap();
+    let repo = dir.path().join("repo").to_str().unwrap().to_string();
+    let src = dir.path().join("src");
+    std::fs::create_dir_all(&src).unwrap();
+    for i in 0..3_000 {
+        std::fs::write(src.join(format!("f{i}.txt")), format!("{i}")).unwrap();
+    }
+
+    let store = FileSecretStore::new(dir.path().join("secrets.json"));
+    store.set("test", PASS).await.unwrap();
+    let secrets: Arc<dyn SecretStore> = Arc::new(store);
+    let engine = BorgCli::new(repo.clone(), "test".into(), secrets)
+        .await
+        .expect("borg available");
+    engine
+        .init_repo(&RepoSpec {
+            path: repo,
+            encryption: Encryption::RepokeyBlake2,
+        })
+        .await
+        .unwrap();
+
+    let spec = CreateSpec {
+        archive_name: "bulk".into(),
+        sources: vec![src.clone()],
+        excludes: vec![],
+        compression: Compression::Zstd,
+        one_file_system: false,
+        created_at: std::time::SystemTime::now(),
+        paths: Vec::new(),
+    };
+    let mut stream = engine.create(&spec).await.unwrap();
+    while let Some(event) = stream.next().await {
+        if let JobEvent::Finished(r) = event {
+            r.expect("create succeeds");
+        }
+    }
+
+    let index_path = dir.path().join("index.db");
+    {
+        let mut writer = IndexWriter::open(&index_path).unwrap();
+        let mut items = engine
+            .list_archive(&ArchiveId("bulk".into()))
+            .await
+            .unwrap();
+        let mut listing = Vec::new();
+        while let Some(item) = items.next().await {
+            listing.push(item.unwrap());
+        }
+        assert!(listing.len() >= 3_000, "the whole tree was catalogued");
+        writer
+            .ingest_archive(
+                &ArchiveMeta {
+                    borg_id: None,
+                    name: "bulk".into(),
+                    ts: 1_000,
+                },
+                Repo::Primary,
+                listing.into_iter(),
+            )
+            .unwrap();
+    }
+
+    let reader = IndexReader::open(&index_path).unwrap();
+    let live = walk(&WalkSpec {
+        sources: vec![src],
+        excludes: ExcludeSet::default(),
+        one_file_system: false,
+        never: Vec::new(),
+    });
+    let changed = reader.changed_since(1, live.entries).unwrap();
+    assert!(
+        changed.is_empty(),
+        "{} of 3000 untouched files were reported as modified; \
+         the first few were {:?}",
+        changed.len(),
+        changed.iter().take(5).collect::<Vec<_>>()
+    );
+}
+
+#[tokio::test]
 async fn only_what_actually_changed_is_reported() {
     let f = fixture().await;
     create(&f, "baseline").await;

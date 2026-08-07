@@ -273,6 +273,26 @@ impl BackupEngine for BorgCli {
         spawn_streamed(cmd)
     }
 
+    async fn delete_archives(&self, ids: &[ArchiveId]) -> Result<JobStream> {
+        if ids.is_empty() {
+            // Never spawn `borg delete` with no archives named: the first
+            // positional argument is the repository, so an empty list is the
+            // command for deleting the entire repository.
+            return Ok(JobStream::from_events(vec![JobEvent::Finished(Ok(
+                Default::default(),
+            ))]));
+        }
+        let mut cmd = self.cmd().await?;
+        cmd.arg("delete").arg("--progress").arg("--list");
+        // `borg delete repo::first second third` — the repository and the first
+        // archive share an argument, the rest are bare names.
+        cmd.arg(self.archive_ref(&ids[0]));
+        for id in &ids[1..] {
+            cmd.arg(&id.0);
+        }
+        spawn_streamed(cmd)
+    }
+
     async fn compact(&self) -> Result<JobStream> {
         let mut cmd = self.cmd().await?;
         cmd.arg("compact").arg("--progress").arg(&self.repo);

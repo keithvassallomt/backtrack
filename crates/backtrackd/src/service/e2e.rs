@@ -520,6 +520,283 @@ async fn importing_a_repository_leaves_the_newest_snapshot_browsable_at_once() {
     );
 }
 
+/// A fixture without the 50 MB of blobs: for the offline tests, where what
+/// matters is which files are archived, not how long borg takes.
+async fn small_fixture() -> Fixture {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = dir.path().join("repo").to_str().unwrap().to_string();
+    let src = dir.path().join("src");
+    std::fs::create_dir_all(src.join("docs")).unwrap();
+    std::fs::create_dir_all(src.join(".cache")).unwrap();
+    for name in ["docs/a.txt", "docs/b.txt", "docs/c.txt", "docs/d.txt"] {
+        std::fs::write(src.join(name), b"original").unwrap();
+    }
+    // Churn that must never reach the spool, however often it changes.
+    std::fs::write(src.join(".cache/junk"), b"junk").unwrap();
+
+    let secrets: Arc<dyn SecretStore> = Arc::new(FileSecretStore::new(dir.path().join("s.json")));
+    secrets.set(&repo, PASS).await.unwrap();
+
+    let engine = BorgCli::new(repo.clone(), repo.clone(), Arc::clone(&secrets))
+        .await
+        .expect("borg is available");
+    engine
+        .init_repo(&RepoSpec {
+            path: repo.clone(),
+            encryption: Encryption::RepokeyBlake2,
+        })
+        .await
+        .expect("repo created");
+
+    let mut config = Config::default();
+    config.storage.repository = Some(repo);
+    config.backup.include = vec![src];
+
+    let shared = Shared::in_dir(config, JobRegistry::new(), secrets, dir.path());
+    shared.set_engine(Arc::new(engine));
+    shared.set_index(Arc::new(std::sync::Mutex::new(
+        backtrack_core::index::IndexWriter::open(&dir.path().join("index.db")).unwrap(),
+    )));
+    Fixture { _dir: dir, shared }
+}
+
+/// The source tree the fixture is backing up.
+fn source(shared: &Arc<Shared>) -> std::path::PathBuf {
+    shared.config().backup.include[0].clone()
+}
+
+/// Make the destination unreachable, exactly as unplugging a drive or losing a
+/// mount would.
+fn cut_the_destination(shared: &Arc<Shared>) {
+    let repo = shared.config().storage.repository.clone().unwrap();
+    std::fs::rename(&repo, format!("{repo}.away")).expect("destination removed");
+}
+
+fn restore_the_destination(shared: &Arc<Shared>) {
+    let repo = shared.config().storage.repository.clone().unwrap();
+    std::fs::rename(format!("{repo}.away"), &repo).expect("destination back");
+}
+
+#[tokio::test]
+async fn losing_the_destination_protects_the_changed_files_on_this_computer() {
+    // The stage's acceptance criterion, end to end against real borg: cut the
+    // destination, touch three files, run the tick that would have been a
+    // backup, and find exactly those three files held locally.
+    let fixture = small_fixture().await;
+    let shared = Arc::clone(&fixture.shared);
+    let src = source(&shared);
+
+    // A real backup first, so there is a baseline to compare against.
+    let job = Daemon1::new(Arc::clone(&shared))
+        .backup_now()
+        .await
+        .expect("backup starts");
+    wait_for_job(&shared, job).await;
+
+    cut_the_destination(&shared);
+
+    // Three edits, and one to a file nobody wants backed up.
+    for name in ["docs/a.txt", "docs/b.txt", "docs/c.txt"] {
+        std::fs::write(src.join(name), b"edited while away").unwrap();
+    }
+    std::fs::write(src.join(".cache/junk"), b"churn churn churn").unwrap();
+
+    let job = shared
+        .start_scheduled_backup()
+        .await
+        .expect("the tick is not an error")
+        .expect("an unreachable destination starts local protection instead");
+    wait_for_job(&shared, job).await;
+
+    // The spool holds one archive, and it holds exactly the three edited files.
+    let spool = shared.spool_engine().await.expect("spool engine");
+    let archives = spool.list_archives().await.expect("spool listing");
+    assert_eq!(archives.len(), 1, "one local snapshot: {archives:?}");
+    assert!(archives[0].name.starts_with("bt-local-"));
+
+    let mut items = spool
+        .list_archive(&backtrack_core::engine::ArchiveId(archives[0].name.clone()))
+        .await
+        .unwrap();
+    let mut held = Vec::new();
+    while let Some(item) = items.next().await {
+        held.push(item.unwrap().path);
+    }
+    held.sort();
+    let expected: Vec<String> = ["docs/a.txt", "docs/b.txt", "docs/c.txt"]
+        .iter()
+        .map(|n| src.join(n).strip_prefix("/").unwrap().display().to_string())
+        .collect();
+    assert_eq!(
+        held, expected,
+        "exactly the changed files, and nothing from the cache"
+    );
+
+    // The catalogue knows it is a local snapshot, and browsing it shows the
+    // whole tree rather than only the three files that moved.
+    let reader = backtrack_core::index::IndexReader::open(&shared.index_path).unwrap();
+    let catalogued = reader.archives_overview().unwrap();
+    assert_eq!(catalogued.len(), 2, "the backup and the local snapshot");
+    assert_eq!(
+        catalogued[0].repo, "spool",
+        "flagged as held on this computer"
+    );
+    assert!(catalogued[0].catalogued, "and browsable");
+
+    let docs = src
+        .join("docs")
+        .strip_prefix("/")
+        .unwrap()
+        .display()
+        .to_string();
+    let at_local = reader.folder_at(&docs, catalogued[0].seq).unwrap();
+    assert_eq!(
+        at_local.len(),
+        4,
+        "all four documents are visible in the local snapshot, got {:?}",
+        at_local.iter().map(|e| &e.name).collect::<Vec<_>>()
+    );
+    let edited = at_local.iter().find(|e| e.name == "a.txt").unwrap();
+    let untouched = at_local.iter().find(|e| e.name == "d.txt").unwrap();
+    assert_eq!(edited.size, "edited while away".len() as i64);
+    assert_eq!(untouched.size, "original".len() as i64);
+
+    restore_the_destination(&shared);
+}
+
+#[tokio::test]
+async fn an_offline_hour_with_no_edits_takes_no_local_snapshot() {
+    // The quiet case, and the one that decides whether a laptop left closed on
+    // a desk fills its disk with identical snapshots.
+    let fixture = small_fixture().await;
+    let shared = Arc::clone(&fixture.shared);
+
+    let job = Daemon1::new(Arc::clone(&shared))
+        .backup_now()
+        .await
+        .expect("backup starts");
+    wait_for_job(&shared, job).await;
+    cut_the_destination(&shared);
+
+    let job = shared.start_scheduled_backup().await.expect("not an error");
+    if let Some(job) = job {
+        wait_for_job(&shared, job).await;
+    }
+
+    let spool = shared.spool_engine().await.expect("spool engine");
+    assert!(
+        spool.list_archives().await.unwrap().is_empty(),
+        "nothing changed, so there is nothing to protect and no snapshot to take"
+    );
+    restore_the_destination(&shared);
+}
+
+#[tokio::test]
+async fn the_storage_cap_drops_the_oldest_local_snapshots_first() {
+    // Driven through the pipeline directly so the cap can be set in bytes: the
+    // user-facing setting is in whole gigabytes, and filling one to test it
+    // would be an unkind thing to do to a test suite.
+    let fixture = small_fixture().await;
+    let shared = Arc::clone(&fixture.shared);
+    let src = source(&shared);
+
+    let job = Daemon1::new(Arc::clone(&shared))
+        .backup_now()
+        .await
+        .expect("backup starts");
+    wait_for_job(&shared, job).await;
+    cut_the_destination(&shared);
+
+    let spool = shared.spool_engine().await.expect("spool engine");
+    let excludes = vec![format!("pp:{}", shared.spool_dir.display())];
+
+    let take_one = |n: usize, cap_bytes: u64| {
+        let spool = Arc::clone(&spool);
+        let shared = Arc::clone(&shared);
+        let src = src.clone();
+        let excludes = excludes.clone();
+        async move {
+            let plan = crate::pipeline::OfflinePlan {
+                engine: spool,
+                index: shared.index().unwrap(),
+                index_path: shared.index_path.clone(),
+                walk: backtrack_core::walk::WalkSpec {
+                    sources: vec![src],
+                    excludes: backtrack_core::pattern::ExcludeSet::compile(&excludes),
+                    one_file_system: true,
+                    never: vec![shared.spool_dir.clone()],
+                },
+                excludes,
+                compression: Default::default(),
+                cap_bytes,
+                spool_dir: shared.spool_dir.clone(),
+                created_at: SystemTime::now() + Duration::from_secs(n as u64 * 60),
+            };
+            let (mut stream, _handle) = crate::pipeline::start_offline_backup(plan);
+            while let Some(event) = stream.next().await {
+                if let backtrack_core::engine::JobEvent::Finished(result) = event {
+                    result.expect("the local snapshot succeeds");
+                }
+            }
+        }
+    };
+
+    // Two snapshots with no cap at all, to find out what a spool holding two
+    // actually occupies. A Borg repository carries fixed overhead — config,
+    // index, segment headers — that dwarfs a few kilobytes of test data, so
+    // guessing a byte figure here would be testing an assumption about Borg
+    // rather than the eviction rule.
+    let names = ["docs/a.txt", "docs/b.txt", "docs/c.txt", "docs/d.txt"];
+    for (n, name) in names.iter().enumerate().take(2) {
+        std::fs::write(src.join(name), vec![b'x'; 64 * 1024 * (n + 1)]).unwrap();
+        take_one(n, 0).await;
+    }
+    assert_eq!(
+        spool.list_archives().await.unwrap().len(),
+        2,
+        "no cap, so both are kept"
+    );
+    let occupied = crate::offline::directory_bytes(&shared.spool_dir);
+    assert!(occupied > 0, "the spool is holding something");
+
+    // Now a cap that two snapshots plus another delta cannot fit inside.
+    for (n, name) in names.iter().enumerate().skip(2) {
+        std::fs::write(src.join(name), vec![b'x'; 64 * 1024 * (n + 1)]).unwrap();
+        take_one(n, occupied).await;
+    }
+
+    let held = spool.list_archives().await.unwrap();
+    assert!(
+        held.len() < 4,
+        "the cap must have dropped something, but {} snapshots are held",
+        held.len()
+    );
+    assert!(!held.is_empty(), "and it must not have dropped everything");
+
+    // Whatever survived is the newest: the oldest go first.
+    let names: Vec<&str> = held.iter().map(|a| a.name.as_str()).collect();
+    let mut sorted = names.clone();
+    sorted.sort_unstable();
+    assert_eq!(names, sorted);
+
+    // And the catalogue followed the repository rather than keeping rows for
+    // snapshots that no longer exist.
+    let reader = backtrack_core::index::IndexReader::open(&shared.index_path).unwrap();
+    let spool_rows: Vec<_> = reader
+        .archives_overview()
+        .unwrap()
+        .into_iter()
+        .filter(|a| a.repo == "spool")
+        .collect();
+    assert_eq!(
+        spool_rows.len(),
+        held.len(),
+        "catalogue and spool repository agree on what is held"
+    );
+
+    restore_the_destination(&shared);
+}
+
 /// The engine the fixture installed. Reaching into the private field is fine
 /// here: this module is a child of `service`.
 fn engine(shared: &Arc<Shared>) -> Arc<dyn backtrack_core::engine::BackupEngine> {

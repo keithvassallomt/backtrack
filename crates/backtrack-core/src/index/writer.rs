@@ -280,7 +280,54 @@ impl IndexWriter {
         seq: i64,
         items: impl Iterator<Item = std::result::Result<BorgItem, ListingIncomplete>>,
     ) -> Result<IngestStats> {
+        self.ingest_inner(seq, items, false)
+    }
+
+    /// Ingest a **delta** listing: an archive that holds only what changed since
+    /// the previous snapshot, which is what the offline spool writes.
+    ///
+    /// A full listing says "this is everything that existed". A delta says "this
+    /// is what moved", and the catalogue has to read the rest — every file that
+    /// did *not* change — as still being there. Ingesting a delta as though it
+    /// were a full listing would be a disaster in the timeline: every unchanged
+    /// file would appear deleted at the spool snapshot and restored at the next
+    /// one, so somebody browsing an hour spent on a train would see their
+    /// documents missing.
+    ///
+    /// So the listed items are folded in exactly as usual, and then every
+    /// interval that ended at `seq - 1` **and was not mentioned** is extended
+    /// across `seq`. The result is the state of the filesystem at that moment:
+    /// what it was, plus what changed.
+    ///
+    /// **Deletions are not captured.** The delta can only contain files that
+    /// still exist, so a file deleted during an offline window keeps its
+    /// interval extended and goes on appearing in local snapshots until the
+    /// next backup to the real destination records its absence. That is the
+    /// honest trade named in offline-strategy.md — the spool exists to protect
+    /// changed data, not to be a complete record — and erring this way shows a
+    /// file that is gone rather than hiding one that is there.
+    ///
+    /// Assumes `seq` is the newest archive in the catalogue, which it always is:
+    /// spool snapshots are appended as they are taken. There is therefore no
+    /// right-hand neighbour to rejoin.
+    pub fn ingest_delta(
+        &mut self,
+        seq: i64,
+        items: impl Iterator<Item = std::result::Result<BorgItem, ListingIncomplete>>,
+    ) -> Result<IngestStats> {
+        self.ingest_inner(seq, items, true)
+    }
+
+    fn ingest_inner(
+        &mut self,
+        seq: i64,
+        items: impl Iterator<Item = std::result::Result<BorgItem, ListingIncomplete>>,
+        delta: bool,
+    ) -> Result<IngestStats> {
         let tx = self.conn.transaction()?;
+        if delta {
+            tx.execute_batch("CREATE TEMP TABLE mentioned(path_id INTEGER PRIMARY KEY)")?;
+        }
         let mut stats = IngestStats {
             seq,
             ..IngestStats::default()
@@ -304,6 +351,11 @@ impl IndexWriter {
                  (path_id, first_seq, last_seq, size, mtime, mode, kind, chunk_hash)
                  VALUES (?1, ?2, ?2, ?3, ?4, ?5, ?6, ?7)",
             )?;
+            // Prepared only for a delta, so an ordinary ingest — the hot path,
+            // 200,000 items at a time — does not pay an extra insert per file.
+            let mut mention = delta
+                .then(|| tx.prepare("INSERT OR IGNORE INTO temp.mentioned(path_id) VALUES (?1)"))
+                .transpose()?;
 
             let read = |r: &rusqlite::Row| -> rusqlite::Result<Neighbour> {
                 Ok(Neighbour {
@@ -322,6 +374,9 @@ impl IndexWriter {
                 let item = item.map_err(|_| IndexError::ListingIncomplete { seq })?;
                 stats.items += 1;
                 let path_id = resolver.resolve(&item.path)?;
+                if let Some(mention) = mention.as_mut() {
+                    mention.execute(params![path_id])?;
+                }
 
                 let left = neighbour
                     .query_row(params![path_id, seq - 1], read)
@@ -361,6 +416,20 @@ impl IndexWriter {
                     }
                 }
             }
+        }
+        if delta {
+            // Everything the delta did not mention was, by construction,
+            // unchanged — so its current version reaches across this snapshot.
+            // Restricted to intervals ending exactly at `seq - 1`: an interval
+            // that already ended earlier belongs to a file that was gone before
+            // this window opened, and must stay gone.
+            stats.extended += tx.execute(
+                "UPDATE versions SET last_seq = ?1
+                 WHERE last_seq = ?1 - 1
+                   AND path_id NOT IN (SELECT path_id FROM temp.mentioned)",
+                params![seq],
+            )?;
+            tx.execute_batch("DROP TABLE temp.mentioned")?;
         }
         tx.execute(
             "UPDATE archives SET status = NULL WHERE seq = ?1",
@@ -518,6 +587,20 @@ impl IndexWriter {
             .prepare("SELECT seq, name FROM archives WHERE status IS NOT NULL ORDER BY seq DESC")?;
         let rows = stmt
             .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+            .collect::<std::result::Result<_, _>>()?;
+        Ok(rows)
+    }
+
+    /// Archives belonging to `repo`, oldest first, as `(seq, name)`.
+    ///
+    /// The order is what the spool's cap eviction needs: when local storage has
+    /// to give, the oldest snapshot is the one to let go of.
+    pub fn archives_in(&self, repo: Repo) -> Result<Vec<(i64, String)>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT seq, name FROM archives WHERE repo = ?1 ORDER BY seq")?;
+        let rows = stmt
+            .query_map([repo.as_str()], |r| Ok((r.get(0)?, r.get(1)?)))?
             .collect::<std::result::Result<_, _>>()?;
         Ok(rows)
     }
@@ -1483,6 +1566,193 @@ mod catalogue_tests {
 
         w.ingest_pending(3, vec![flat("x", 1)].into_iter()).unwrap();
         assert_eq!(w.pending_archives().unwrap().len(), 2);
+    }
+
+    /// All (first_seq, last_seq) spans for a path's leaf name, ordered.
+    fn spans(w: &IndexWriter, name: &str) -> Vec<(i64, i64)> {
+        let mut stmt = w
+            .conn()
+            .prepare(
+                "SELECT v.first_seq, v.last_seq FROM versions v
+                 JOIN paths p ON p.id = v.path_id
+                 WHERE p.name = ?1 ORDER BY v.first_seq",
+            )
+            .unwrap();
+        stmt.query_map([name], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap()
+            .map(|r| r.unwrap())
+            .collect()
+    }
+
+    /// Ingest a delta listing at the end of the catalogue, the way a spool
+    /// snapshot arrives.
+    fn ingest_spool(w: &mut IndexWriter, name: &str, items: Vec<BorgItem>) -> IngestStats {
+        let seq = w.append_archive(&meta(name), Repo::Spool).unwrap();
+        w.ingest_delta(seq, items.into_iter().map(Ok)).unwrap()
+    }
+
+    #[test]
+    fn a_delta_leaves_unchanged_files_present_rather_than_deleted() {
+        // The failure this exists to prevent: ingesting a changed-files-only
+        // archive as though it were a full listing makes every untouched file
+        // look deleted at that snapshot. Somebody browsing an hour spent on a
+        // train would find their documents missing.
+        let mut w = IndexWriter::open_in_memory().unwrap();
+        ingest(
+            &mut w,
+            "primary-1",
+            vec![flat("a", 1), flat("b", 1), flat("c", 1)],
+        );
+
+        // Offline: only `b` changed.
+        ingest_spool(&mut w, "spool-1", vec![flat("b", 2)]);
+
+        assert_eq!(spans(&w, "a"), vec![(1, 2)], "untouched, and still there");
+        assert_eq!(spans(&w, "c"), vec![(1, 2)], "untouched, and still there");
+        assert_eq!(
+            spans(&w, "b"),
+            vec![(1, 1), (2, 2)],
+            "the file that changed opens a new version"
+        );
+    }
+
+    #[test]
+    fn a_delta_snapshot_browses_as_the_whole_tree() {
+        // The same thing stated the way the timeline asks it.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("index.db");
+        {
+            let mut w = IndexWriter::open(&path).unwrap();
+            ingest(
+                &mut w,
+                "primary-1",
+                vec![
+                    BorgItem {
+                        path: "home/report.odt".into(),
+                        ..flat("x", 10)
+                    },
+                    BorgItem {
+                        path: "home/notes.txt".into(),
+                        ..flat("x", 20)
+                    },
+                ],
+            );
+            ingest_spool(
+                &mut w,
+                "spool-1",
+                vec![BorgItem {
+                    path: "home/notes.txt".into(),
+                    ..flat("x", 99)
+                }],
+            );
+        }
+        let reader = crate::index::IndexReader::open(&path).unwrap();
+        let at_spool = reader.folder_at("home", 2).unwrap();
+        assert_eq!(
+            at_spool.len(),
+            2,
+            "both files are visible in the local snapshot, got {:?}",
+            at_spool.iter().map(|e| &e.name).collect::<Vec<_>>()
+        );
+        let notes = at_spool.iter().find(|e| e.name == "notes.txt").unwrap();
+        assert_eq!(notes.size, 99, "and the edited one shows its new contents");
+    }
+
+    #[test]
+    fn a_delta_does_not_resurrect_a_file_that_was_already_gone() {
+        // Only intervals ending at the immediately preceding archive are carried
+        // across. A file deleted two snapshots ago must stay deleted.
+        let mut w = IndexWriter::open_in_memory().unwrap();
+        ingest(&mut w, "p1", vec![flat("a", 1), flat("gone", 1)]);
+        ingest(&mut w, "p2", vec![flat("a", 1)]);
+        ingest_spool(&mut w, "spool-1", vec![flat("a", 2)]);
+
+        assert_eq!(spans(&w, "gone"), vec![(1, 1)], "still gone");
+        assert_eq!(spans(&w, "a"), vec![(1, 2), (3, 3)]);
+    }
+
+    #[test]
+    fn a_delta_records_a_file_that_did_not_exist_before() {
+        let mut w = IndexWriter::open_in_memory().unwrap();
+        ingest(&mut w, "p1", vec![flat("a", 1)]);
+        let stats = ingest_spool(&mut w, "spool-1", vec![flat("new", 1)]);
+
+        assert_eq!(stats.new_versions, 1);
+        assert_eq!(spans(&w, "new"), vec![(2, 2)]);
+        assert_eq!(spans(&w, "a"), vec![(1, 2)], "and the rest carried across");
+    }
+
+    #[test]
+    fn an_empty_delta_carries_the_whole_tree_across() {
+        // An offline hour in which nothing changed still produces a snapshot in
+        // the timeline, and it must show the same files as the one before it.
+        let mut w = IndexWriter::open_in_memory().unwrap();
+        ingest(&mut w, "p1", vec![flat("a", 1), flat("b", 1)]);
+        let stats = ingest_spool(&mut w, "spool-1", vec![]);
+
+        assert_eq!(stats.items, 0);
+        assert_eq!(stats.extended, 2);
+        assert_eq!(spans(&w, "a"), vec![(1, 2)]);
+        assert_eq!(spans(&w, "b"), vec![(1, 2)]);
+    }
+
+    #[test]
+    fn an_ordinary_ingest_is_untouched_by_the_delta_path() {
+        // The delta rule must not leak into normal backups, where an absent file
+        // genuinely means the file was deleted.
+        let mut w = IndexWriter::open_in_memory().unwrap();
+        ingest(&mut w, "p1", vec![flat("a", 1), flat("deleted", 1)]);
+        ingest(&mut w, "p2", vec![flat("a", 1)]);
+        assert_eq!(
+            spans(&w, "deleted"),
+            vec![(1, 1)],
+            "a full listing that omits a file means it is gone"
+        );
+    }
+
+    #[test]
+    fn archives_can_be_listed_per_repository_oldest_first() {
+        let mut w = IndexWriter::open_in_memory().unwrap();
+        ingest(&mut w, "p1", vec![flat("a", 1)]);
+        ingest_spool(&mut w, "s1", vec![flat("a", 2)]);
+        ingest_spool(&mut w, "s2", vec![flat("a", 3)]);
+
+        let spool = w.archives_in(Repo::Spool).unwrap();
+        assert_eq!(
+            spool.iter().map(|(_, n)| n.as_str()).collect::<Vec<_>>(),
+            vec!["s1", "s2"],
+            "oldest first: the one to evict when local storage has to give"
+        );
+        assert_eq!(w.archives_in(Repo::Primary).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn the_delta_is_compared_against_the_newest_catalogued_archive() {
+        // Not MAX(seq): an archive that exists but has not been read has no
+        // versions recorded, so comparing against it would report every file on
+        // the machine as new and spool the lot.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("index.db");
+        let latest = || {
+            crate::index::IndexReader::open(&path)
+                .unwrap()
+                .latest_catalogued_seq()
+                .unwrap()
+        };
+
+        let mut w = IndexWriter::open(&path).unwrap();
+        ingest(&mut w, "p1", vec![flat("a", 1)]);
+        assert_eq!(latest(), Some(1));
+
+        w.append_archive(&meta("p2"), Repo::Primary).unwrap();
+        assert_eq!(
+            latest(),
+            Some(1),
+            "a pending archive is not something to compare against"
+        );
+
+        w.ingest_pending(2, vec![flat("a", 1)].into_iter()).unwrap();
+        assert_eq!(latest(), Some(2));
     }
 
     #[test]

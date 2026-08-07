@@ -186,6 +186,15 @@ impl BackupEngine for MockEngine {
         }
         Ok(stream)
     }
+    async fn delete_archives(&self, ids: &[ArchiveId]) -> Result<JobStream> {
+        let stream = self.job(vec![JobEvent::Finished(Ok(Default::default()))])?;
+        let names: Vec<&str> = ids.iter().map(|id| id.0.as_str()).collect();
+        self.archives
+            .lock()
+            .unwrap()
+            .retain(|a| !names.contains(&a.name.as_str()));
+        Ok(stream)
+    }
     async fn compact(&self) -> Result<JobStream> {
         self.job(vec![JobEvent::Finished(Ok(Default::default()))])
     }

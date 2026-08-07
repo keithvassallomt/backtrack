@@ -66,6 +66,15 @@ pub trait BackupEngine: Send + Sync {
     /// Apply a retention policy (`borg prune`).
     async fn prune(&self, policy: &PrunePolicy) -> Result<JobStream>;
 
+    /// Remove named archives (`borg delete`).
+    ///
+    /// Distinct from [`BackupEngine::prune`], which removes whatever a *policy*
+    /// says to. This removes exactly what it is told, which is what the offline
+    /// spool needs: its archives are evicted to stay inside a size cap and
+    /// expired once the real destination has caught up, and neither of those is
+    /// a retention ladder.
+    async fn delete_archives(&self, ids: &[ArchiveId]) -> Result<JobStream>;
+
     /// Free repository space (`borg compact`).
     async fn compact(&self) -> Result<JobStream>;
 

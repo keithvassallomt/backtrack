@@ -111,6 +111,23 @@ pub struct Shared {
     /// that lost its backup drive would keep announcing its old state until the
     /// next job happened to finish.
     health_changed: Arc<Notify>,
+    /// The engine for the local spool repository, built on first use.
+    spool: Mutex<Option<Arc<dyn BackupEngine>>>,
+    /// Where the local spool repository lives. A field for the same reason
+    /// `state_path` is one: a test that exercises the real spool must not write
+    /// a Borg repository into the developer's own data directory.
+    spool_dir: PathBuf,
+    /// Set when local protection could not run at all, which is what turns
+    /// "the drive isn't reachable, and that's fine" into something the user
+    /// needs to know about.
+    offline_broken: Mutex<bool>,
+    /// Set when the spool is at its storage limit. `DEGRADED`, not a failure:
+    /// protection is still happening, it is just constrained.
+    offline_degraded: Mutex<bool>,
+    /// Lets a finished local backup report what it did. Nested because the job
+    /// factory only learns the handle once the job actually starts.
+    #[allow(clippy::type_complexity)]
+    offline_handle: Mutex<Option<Arc<Mutex<Option<pipeline::OfflineHandle>>>>>,
 }
 
 impl Shared {
@@ -128,6 +145,7 @@ impl Shared {
             paths::index_db(),
             paths::cache_dir(),
             paths::state_file(),
+            paths::spool_dir(),
         )
     }
 
@@ -148,6 +166,7 @@ impl Shared {
             dir.join("index.db"),
             dir.join("cache"),
             dir.join("state.toml"),
+            dir.join("spool"),
         )
     }
 
@@ -158,6 +177,7 @@ impl Shared {
         index_path: PathBuf,
         cache_dir: PathBuf,
         state_path: PathBuf,
+        spool_dir: PathBuf,
     ) -> Arc<Shared> {
         Arc::new(Shared {
             config: Mutex::new(config),
@@ -180,6 +200,11 @@ impl Shared {
             index: Mutex::new(None),
             destination_probe: Mutex::new(Arc::new(RealProbe)),
             health_changed: Arc::new(Notify::new()),
+            spool: Mutex::new(None),
+            spool_dir,
+            offline_broken: Mutex::new(false),
+            offline_degraded: Mutex::new(false),
+            offline_handle: Mutex::new(None),
         })
     }
 
@@ -369,6 +394,28 @@ impl Shared {
                 self.announce_skip(None);
                 Ok(Some(self.submit_backup()?))
             }
+            // The destination is away. This is not a skipped backup, it is the
+            // moment local protection takes over — the promise the wizard makes
+            // ("keeps protecting your changes on this computer and catches up
+            // when it reconnects"), kept.
+            Verdict::Skip(preflight::Skip::Unreachable) => {
+                self.announce_skip(Some(preflight::Skip::Unreachable));
+                match self.start_offline_protection().await {
+                    Ok(job) => {
+                        *self.offline_broken.lock().unwrap() = false;
+                        Ok(job)
+                    }
+                    Err(e) => {
+                        // The safety net itself is not working, which the user
+                        // does need to know about — being away from the drive
+                        // was supposed to be covered.
+                        warn!("changes cannot be protected on this computer: {e}");
+                        *self.offline_broken.lock().unwrap() = true;
+                        self.health_changed.notify_one();
+                        Ok(None)
+                    }
+                }
+            }
             Verdict::Skip(reason) => {
                 self.announce_skip(Some(reason));
                 Ok(None)
@@ -427,6 +474,140 @@ impl Shared {
             Box::pin(async move { Ok(pipeline::start_backup(plan)) }) as BoxFuture<'_, _>
         });
         Ok(self.jobs.submit(JobKind::Backup, factory))
+    }
+
+    /// The engine for the local spool repository, creating the repository on
+    /// first use.
+    ///
+    /// Keyed to the *primary* repository's secret, so the spool is encrypted
+    /// with the same passphrase and the user never meets a second one — or has
+    /// to know this repository exists at all. A machine whose keyring is locked
+    /// therefore cannot spool either, which is correct: that is already a
+    /// blocking health failure with its own banner.
+    async fn spool_engine(&self) -> Result<Arc<dyn BackupEngine>> {
+        if let Some(engine) = self.spool.lock().unwrap().clone() {
+            return Ok(engine);
+        }
+        let repository = self
+            .config()
+            .storage
+            .repository
+            .ok_or_else(|| DaemonError::NotConfigured("no destination is configured".into()))?;
+        let path = self.spool_dir.clone();
+        std::fs::create_dir_all(&path)
+            .map_err(|e| DaemonError::LocalDiskFull(format!("cannot create the spool: {e}")))?;
+
+        let engine = BorgCli::new(
+            path.display().to_string(),
+            repository,
+            Arc::clone(&self.secrets),
+        )
+        .await?;
+        // An empty directory is not yet a repository. Decided by looking for
+        // Borg's own `config` file rather than by asking Borg and reading the
+        // error: an empty directory reports "not a valid repository" (exit 15),
+        // which is not the same error as an absent one, and inferring "needs
+        // creating" from an error string is exactly the kind of thing that
+        // works until a Borg release rewords it.
+        if !path.join("config").exists() {
+            engine
+                .init_repo(&backtrack_core::engine::RepoSpec {
+                    path: path.display().to_string(),
+                    encryption: Default::default(),
+                })
+                .await?;
+            info!(path = %path.display(), "local safety net prepared");
+        }
+
+        let engine: Arc<dyn BackupEngine> = Arc::new(engine);
+        *self.spool.lock().unwrap() = Some(Arc::clone(&engine));
+        Ok(engine)
+    }
+
+    /// Protect what has changed since the last snapshot, on this computer.
+    ///
+    /// Runs in place of a scheduled backup when the destination does not
+    /// answer. Returns the job id, or `None` when there is nothing to do or
+    /// local protection is switched off.
+    pub async fn start_offline_protection(&self) -> Result<Option<u64>> {
+        let config = self.config();
+        if !config.storage.offline.enabled {
+            return Ok(None);
+        }
+        if config.backup.include.is_empty() {
+            return Ok(None);
+        }
+
+        let engine = self.spool_engine().await?;
+        let index = self.index()?;
+        let excludes = effective_excludes(&config);
+        let plan = pipeline::OfflinePlan {
+            engine,
+            index,
+            index_path: self.index_path.clone(),
+            walk: backtrack_core::walk::WalkSpec {
+                sources: config.backup.include.clone(),
+                excludes: backtrack_core::pattern::ExcludeSet::compile(&excludes),
+                one_file_system: true,
+                // Never walk into our own storage. The spool is named
+                // explicitly as well as the data directory that normally
+                // contains it: archiving the spool into the spool would grow
+                // without bound, and that must hold however the paths are
+                // configured.
+                never: vec![paths::data_dir(), self.spool_dir.clone()],
+            },
+            excludes,
+            compression: create_spec(&config).compression,
+            cap_bytes: u64::from(config.storage.offline.space_limit_gb) * 1024 * 1024 * 1024,
+            spool_dir: self.spool_dir.clone(),
+            created_at: SystemTime::now(),
+        };
+
+        // The attempt clock advances here as it does for a network backup: this
+        // *is* the scheduled run for this hour. Without it the tick would fire
+        // again immediately and walk the whole home directory every few seconds.
+        self.update_persisted(|state| {
+            state.last_attempt = backtrack_core::state::to_epoch(Some(SystemTime::now()));
+        });
+
+        let plan = Arc::new(Mutex::new(Some(plan)));
+        let handle: Arc<Mutex<Option<pipeline::OfflineHandle>>> = Arc::new(Mutex::new(None));
+        let factory_handle = Arc::clone(&handle);
+        let factory: JobFactory = Arc::new(move || {
+            let plan = plan.lock().unwrap().take();
+            let handle = Arc::clone(&factory_handle);
+            Box::pin(async move {
+                let plan = plan.ok_or(backtrack_core::engine::EngineError::Cancelled)?;
+                let (stream, started) = pipeline::start_offline_backup(plan);
+                *handle.lock().unwrap() = Some(started);
+                Ok(stream)
+            }) as BoxFuture<'_, _>
+        });
+        let job = self.jobs.submit(JobKind::Backup, factory);
+        *self.offline_handle.lock().unwrap() = Some(handle);
+        Ok(Some(job))
+    }
+
+    /// Whether the local safety net is in a position to protect anything.
+    ///
+    /// Feeds health.md's `PROTECTED_LOCALLY`, which is the difference between
+    /// "your backup drive isn't reachable" reading as reassurance or as an
+    /// alarm. True whenever offline protection is switched on and has not
+    /// failed — the promise the wizard makes is that changes *are* being kept,
+    /// and claiming it only after the first local snapshot would leave the first
+    /// hour offline reporting nothing at all.
+    fn offline_protection_active(&self) -> bool {
+        self.config().storage.offline.enabled && !*self.offline_broken.lock().unwrap()
+    }
+
+    /// Fold a finished local backup into the health facts.
+    fn record_offline_outcome(&self) {
+        let handle = self.offline_handle.lock().unwrap().clone();
+        let Some(outcome) = handle.and_then(|h| h.lock().unwrap().clone()) else {
+            return;
+        };
+        let outcome = outcome.outcome();
+        *self.offline_degraded.lock().unwrap() = outcome.degraded;
     }
 
     /// Catalogue anything the repository has that the index does not.
@@ -619,12 +800,11 @@ impl Shared {
             blocking_failure: *self.blocking_failure.lock().unwrap(),
             paused_until: self.pause.lock().unwrap().until(now),
             destination_reachable: *self.destination_reachable.lock().unwrap(),
-            // The offline spool lands in Stage 5; until then there is no local
-            // safety net to claim credit for.
-            offline_protection_active: false,
+            offline_protection_active: self.offline_protection_active(),
             last_success: *self.last_backup.lock().unwrap(),
             frequency: config.backup.frequency.interval(),
-            needs_attention: *self.needs_attention.lock().unwrap(),
+            needs_attention: *self.needs_attention.lock().unwrap()
+                || *self.offline_degraded.lock().unwrap(),
         };
         health::evaluate(&inputs, now)
     }
@@ -1176,7 +1356,12 @@ pub async fn fan_out_signals(shared: Arc<Shared>, emitter: SignalEmitter<'static
 fn update_health(shared: &Arc<Shared>, kind: JobKind, state: &JobState) {
     match state {
         JobState::Done(Outcome::Completed) if kind == JobKind::Backup => {
+            // A local snapshot counts, and health.md says so: the last success
+            // is "the last backup that succeeded anywhere — network, spool, or
+            // snapshot". A laptop that has been away for a week and protecting
+            // itself hourly is not at risk, and must not be told it is.
             shared.record_backup_success();
+            shared.record_offline_outcome();
         }
         // Only failures the catalogue calls blocking put the product in BROKEN;
         // a transient lock or an unreachable destination does not.
