@@ -65,6 +65,17 @@ bytes, expirable count. Index rows already carry `repo` — Stage 6 renders the
 **Accept:** `backtrack status --json` shows the offline block with correct numbers
 during the T2 integration test.
 
+### S05-T6 — Borg warning exits are not backup failures
+`BORG_EXIT_CODES=modern` gives borg an exit-code band per severity: `0` success,
+`1` and `100..=127` warning, `2..=99` error, `128+N` signal. The engine treated
+every non-zero code as a failure, so a file that vanished mid-run (exit 107,
+`BackupFileNotFoundError`) failed the whole backup even though the archive was
+written intact. Deferred from Stage 2; the spool forces it, because the spool
+archives exactly the files most likely to be mid-write.
+**Accept:** exit-band classification unit-tested; integration test against real
+borg proves a backup naming a file that is not there succeeds and archives the
+files that are.
+
 ## Definition of Done
 Full offline→online cycle green in CI (spool path) and locally (btrfs path);
 status copy matches offline-strategy.md ("never an error, never a nag" — assert

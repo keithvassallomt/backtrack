@@ -13,7 +13,7 @@ use tokio::process::{Child, Command};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
-use crate::engine::borg::classify::{classify, ErrLine};
+use crate::engine::borg::classify::{classify, classify_exit, ErrLine, ExitClass};
 use crate::engine::borg::logjson::{parse_log_line, Parsed};
 use crate::engine::{EngineError, JobEvent, JobStream, JobSummary, LogLevel, Result};
 
@@ -141,8 +141,21 @@ pub(super) fn spawn_streamed(mut cmd: Command) -> Result<JobStream> {
                 forward_line(&line, &tx, &mut errbuf, &task_cancel).await;
             }
             match child.wait().await {
-                Ok(status) if status.success() => Ok(JobSummary::default()),
-                Ok(status) => Err(classify(status.code().unwrap_or(-1), &errbuf)),
+                Ok(status) => {
+                    let code = status.code().unwrap_or(-1);
+                    match classify_exit(code) {
+                        ExitClass::Success => Ok(JobSummary::default()),
+                        // The operation reached its normal end. The individual
+                        // warnings have already gone out as `JobEvent::Log`, so
+                        // this line is only the fact that the run as a whole
+                        // ended in the warning band.
+                        ExitClass::Warning => {
+                            tracing::info!(code, "borg finished with warnings");
+                            Ok(JobSummary::default())
+                        }
+                        ExitClass::Error => Err(classify(code, &errbuf)),
+                    }
+                }
                 Err(e) => Err(EngineError::BorgFailed {
                     code: -1,
                     stderr: e.to_string(),

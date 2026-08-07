@@ -148,6 +148,58 @@ async fn full_round_trip() {
 }
 
 #[tokio::test]
+async fn a_file_that_disappears_mid_backup_still_produces_a_successful_backup() {
+    // The race this stands in for is real and common: a backup reads a file
+    // that a browser, an editor, or a download has moved or deleted since the
+    // scan. Borg writes the archive with everything that still exists and exits
+    // 107 — non-zero, but a *warning*, not a failure.
+    //
+    // Reproduced deterministically by naming a source that is not there, which
+    // is the same condition borg hits when a file vanishes under it. Racing a
+    // real deletion would need gigabytes and a coin toss.
+    //
+    // Before this was fixed, the whole backup was reported as failed, no
+    // successful backup was recorded, and the machine drifted towards a health
+    // banner while holding a perfectly good archive.
+    let f = fixture().await;
+    let eng = engine(&f).await;
+    eng.init_repo(&RepoSpec {
+        path: f.repo.clone(),
+        encryption: Encryption::RepokeyBlake2,
+    })
+    .await
+    .unwrap();
+
+    let spec = CreateSpec {
+        archive_name: "with-a-gap".into(),
+        sources: vec![f.src.join("hello.txt"), f.src.join("never-existed.txt")],
+        excludes: vec![],
+        compression: Compression::Zstd,
+        one_file_system: false,
+        created_at: std::time::SystemTime::now(),
+    };
+    run_to_finish(eng.create(&spec).await.unwrap())
+        .await
+        .expect("a vanished file is a warning, not a failed backup");
+
+    // And the point of insisting on that: the archive really is there, holding
+    // the file that did exist.
+    let paths: Vec<String> = eng
+        .list_archive(&ArchiveId("with-a-gap".into()))
+        .await
+        .unwrap()
+        .collect::<Vec<_>>()
+        .await
+        .into_iter()
+        .map(|i| i.unwrap().path)
+        .collect();
+    assert!(
+        paths.iter().any(|p| p.ends_with("hello.txt")),
+        "the surviving file was archived: {paths:?}"
+    );
+}
+
+#[tokio::test]
 async fn wrong_passphrase_yields_passphrase_wrong() {
     let f = fixture().await;
     let eng = engine(&f).await;

@@ -12,7 +12,7 @@
 > tasks: add them here + to the stage file, then `just provision-board-apply`.
 > See [../CLAUDE.md](../CLAUDE.md) for the full workflow.
 
-**Current stage:** 4 (complete) → next: Stage 5
+**Current stage:** 5 (in progress)
 **Last updated:** 2026-08-07
 
 ## Stage 0 — Bootstrap ([stage file](stages/stage-00-bootstrap.md))
@@ -61,6 +61,7 @@
 - [ ] S05-T3 btrfs detection + subvolume snapshot mode
 - [ ] S05-T4 Reconnect: immediate catch-up backup, spool expiry (~30 days)
 - [ ] S05-T5 Status surfaces ("on this computer" archives in index)
+- [x] S05-T6 Borg warning exits (1, 100–127) are not backup failures
 
 ## Stage 6 — GTK timeline browser ([stage file](stages/stage-06-gtk-timeline.md))
 - [ ] S06-T1 App shell, main window layout, dark/light (mockups 1, 6)

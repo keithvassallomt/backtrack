@@ -348,38 +348,41 @@ async fn drain_to_result(mut stream: JobStream) -> Result<()> {
 }
 
 /// Run a borg command that prints one JSON document to stdout; parse it.
-async fn run_json(mut cmd: Command) -> Result<serde_json::Value> {
-    cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
-    let out = cmd.output().await.map_err(|e| EngineError::BorgFailed {
-        code: -1,
-        stderr: format!("running borg: {e}"),
-    })?;
-    if !out.status.success() {
-        return Err(classify::classify(
-            out.status.code().unwrap_or(-1),
-            &collect_json_errors(&out.stderr),
-        ));
-    }
-    serde_json::from_slice(&out.stdout).map_err(|e| EngineError::BorgFailed {
+async fn run_json(cmd: Command) -> Result<serde_json::Value> {
+    let out = run_to_completion(cmd).await?;
+    serde_json::from_slice(&out).map_err(|e| EngineError::BorgFailed {
         code: -1,
         stderr: format!("parsing borg --json: {e}"),
     })
 }
 
 /// Run a borg command and return its stdout as a UTF-8 string (e.g. key export).
-async fn run_stdout_string(mut cmd: Command) -> Result<String> {
+async fn run_stdout_string(cmd: Command) -> Result<String> {
+    Ok(String::from_utf8_lossy(&run_to_completion(cmd).await?).into_owned())
+}
+
+/// Run a borg command to completion and hand back its stdout, failing only on a
+/// genuine error exit.
+///
+/// A warning exit keeps its output: `borg list` that warns about something is
+/// still a listing, and discarding it would lose the catalogue over a message.
+/// See [`classify::classify_exit`] for why "non-zero" and "failed" are not the
+/// same question.
+async fn run_to_completion(mut cmd: Command) -> Result<Vec<u8>> {
     cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
     let out = cmd.output().await.map_err(|e| EngineError::BorgFailed {
         code: -1,
         stderr: format!("running borg: {e}"),
     })?;
-    if !out.status.success() {
-        return Err(classify::classify(
-            out.status.code().unwrap_or(-1),
-            &collect_json_errors(&out.stderr),
-        ));
+    let code = out.status.code().unwrap_or(-1);
+    match classify::classify_exit(code) {
+        classify::ExitClass::Success => {}
+        classify::ExitClass::Warning => tracing::info!(code, "borg finished with warnings"),
+        classify::ExitClass::Error => {
+            return Err(classify::classify(code, &collect_json_errors(&out.stderr)))
+        }
     }
-    Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+    Ok(out.stdout)
 }
 
 /// Extract error-level lines from captured `--log-json` stderr, for the
