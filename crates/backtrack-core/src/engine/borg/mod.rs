@@ -22,7 +22,7 @@ use crate::engine::{
     ArchiveId, BackupEngine, CheckLevel, CreateSpec, EngineError, JobEvent, JobStream, PrunePolicy,
     RepoInfo, RepoSpec, Result,
 };
-use crate::index::BorgItem;
+use crate::index::{ArchiveMeta, BorgItem};
 use crate::secret::SecretStore;
 
 use invoke::{base_command, probe_version, spawn_streamed};
@@ -132,6 +132,26 @@ impl BackupEngine for BorgCli {
             cmd.arg(src);
         }
         spawn_streamed(cmd)
+    }
+
+    async fn list_archives(&self) -> Result<Vec<ArchiveMeta>> {
+        // `--format` rather than `--json`, for one field: `{time:%s}`. Borg's
+        // JSON reports archive times as a naive ISO string in the machine's
+        // *local* time, with no offset recorded, so reading it back costs a
+        // timezone database and still guesses across a DST boundary. `%s` asks
+        // Borg's own Python for the epoch seconds it already holds, which is
+        // exact and needs nothing.
+        //
+        // The name goes last and the fields are tab-separated, because an
+        // archive name is user-supplied text and an imported repository's could
+        // contain anything — including a tab.
+        let mut cmd = self.cmd().await?;
+        cmd.arg("list")
+            .arg("--format")
+            .arg("{id}\t{time:%s}\t{time}\t{barchive}{NL}")
+            .arg(&self.repo);
+        let text = run_stdout_string(cmd).await?;
+        Ok(text.lines().filter_map(parse_archive_line).collect())
     }
 
     async fn list_archive(&self, id: &ArchiveId) -> Result<BoxStream<'static, Result<BorgItem>>> {
@@ -251,6 +271,52 @@ impl BackupEngine for BorgCli {
     }
 }
 
+/// Parse one line of the archive listing, or skip it.
+///
+/// Checkpoint archives are dropped here, at the single point every caller goes
+/// through. Borg writes `<name>.checkpoint` when a `create` is interrupted, and
+/// the next run consumes it: it is scaffolding, not a snapshot, and showing one
+/// in the timeline would offer the user a restore from a backup that was never
+/// finished.
+fn parse_archive_line(line: &str) -> Option<ArchiveMeta> {
+    let mut fields = line.splitn(4, '\t');
+    let id = fields.next()?.trim();
+    let epoch = fields.next()?.trim();
+    let iso = fields.next()?.trim();
+    let name = fields.next()?.trim_end_matches(['\r', '\n']);
+    if name.is_empty() || is_checkpoint(name) {
+        return None;
+    }
+
+    // `%s` is a glibc/musl strftime extension rather than C89, so a platform
+    // that does not honour it would hand back something unparseable. Falling
+    // back to the ISO string keeps the archive visible; the note is that the
+    // fallback reads a local timestamp as if it were UTC, so a foreign
+    // repository's dates could be out by the machine's offset. Ordering, which
+    // is what the catalogue depends on, survives either way.
+    let ts = match epoch.parse::<i64>() {
+        Ok(ts) => ts,
+        Err(_) => {
+            tracing::warn!(
+                archive = name,
+                "borg did not report an epoch timestamp; falling back to its local-time string"
+            );
+            crate::index::parse_borg_mtime(iso).ok()? / 1_000_000
+        }
+    };
+
+    Some(ArchiveMeta {
+        borg_id: (!id.is_empty()).then(|| id.to_string()),
+        name: name.to_string(),
+        ts,
+    })
+}
+
+/// Whether this is one of Borg's interrupted-run checkpoint archives.
+pub fn is_checkpoint(name: &str) -> bool {
+    name.ends_with(".checkpoint") || name.contains(".checkpoint.")
+}
+
 /// A reader that streams a borg-extracted file and keeps the child alive.
 struct ChildStdoutReader {
     _child: tokio::process::Child,
@@ -332,4 +398,56 @@ fn collect_json_errors(stderr: &[u8]) -> Vec<classify::ErrLine> {
             _ => None,
         })
         .collect()
+}
+
+#[cfg(test)]
+mod archive_listing_tests {
+    use super::*;
+
+    #[test]
+    fn parses_a_real_borg_listing_line() {
+        let line =
+            "830239d8c5e10c\t1786085752\t2026-08-07T07:55:52.000000\tbt-thinkpad-20260807T065552Z";
+        let meta = parse_archive_line(line).expect("a well-formed line");
+        assert_eq!(meta.name, "bt-thinkpad-20260807T065552Z");
+        assert_eq!(meta.borg_id.as_deref(), Some("830239d8c5e10c"));
+        assert_eq!(
+            meta.ts, 1_786_085_752,
+            "the epoch comes from borg, not from re-reading its local-time string"
+        );
+    }
+
+    #[test]
+    fn checkpoint_archives_never_reach_the_catalogue() {
+        // Borg's scaffolding from an interrupted run. Offering one in the
+        // timeline would offer a restore from a backup that never finished.
+        assert!(parse_archive_line("id\t100\tiso\tbt-host-20260807T065552Z.checkpoint").is_none());
+        // Borg 1.2 numbers them when several accumulate.
+        assert!(parse_archive_line("id\t100\tiso\tbt-host-x.checkpoint.1").is_none());
+        assert!(is_checkpoint("anything.checkpoint"));
+        assert!(!is_checkpoint("holiday-checkpoint-photos"));
+    }
+
+    #[test]
+    fn an_archive_name_containing_a_tab_survives() {
+        // Only ours are named to a scheme; an imported repository's names are
+        // whatever somebody typed, which is why the name is the last field.
+        let meta = parse_archive_line("id\t100\tiso\todd\tname").expect("parses");
+        assert_eq!(meta.name, "odd\tname");
+    }
+
+    #[test]
+    fn an_unparseable_epoch_falls_back_to_the_iso_string() {
+        // If a platform's strftime does not honour `%s`, the archive stays
+        // visible rather than vanishing from the catalogue.
+        let meta = parse_archive_line("id\t%s\t1970-01-02T00:00:00.000000\tarch").expect("parses");
+        assert_eq!(meta.ts, 86_400);
+    }
+
+    #[test]
+    fn blank_and_malformed_lines_are_skipped() {
+        assert!(parse_archive_line("").is_none());
+        assert!(parse_archive_line("no tabs here").is_none());
+        assert!(parse_archive_line("id\t100\tiso\t").is_none());
+    }
 }

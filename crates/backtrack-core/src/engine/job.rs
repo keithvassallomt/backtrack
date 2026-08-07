@@ -107,9 +107,64 @@ impl JobStream {
         JobStream::new(rx, cancel)
     }
 
+    /// A stream fed by hand, for work that is more than one Borg invocation.
+    ///
+    /// A backup is `create`, then reading the new archive's file list into the
+    /// catalogue, then applying the retention policy — three phases the user
+    /// experiences as one operation, with one progress bar and one cancel
+    /// button. Composing them as one [`JobStream`] is what makes the daemon's
+    /// job model agree with what the user sees; running them as three jobs would
+    /// mean three progress bars, three chances to cancel half a backup, and a
+    /// "finished" the moment the archive existed but before it was browsable.
+    ///
+    /// The returned [`JobSink`] carries the same cancellation token as the
+    /// stream, so dropping the stream — which is how the registry cancels —
+    /// stops the composed work at its next checkpoint.
+    pub fn channel(buffer: usize) -> (JobSink, JobStream) {
+        let (tx, rx) = mpsc::channel(buffer);
+        let cancel = CancellationToken::new();
+        let sink = JobSink {
+            tx,
+            cancel: cancel.clone(),
+        };
+        (sink, JobStream::new(rx, cancel))
+    }
+
     /// Request cancellation: trips the token so the reader task kills the child.
     pub fn cancel(&self) {
         self.cancel.cancel();
+    }
+}
+
+/// The writing end of [`JobStream::channel`].
+pub struct JobSink {
+    tx: mpsc::Sender<JobEvent>,
+    cancel: CancellationToken,
+}
+
+impl JobSink {
+    /// Emit an event, waiting if the consumer is behind.
+    ///
+    /// Returns `false` once nobody is listening — the consumer dropped the
+    /// stream, which is how cancellation reaches composed work. A caller that
+    /// ignores the answer will simply be cancelled at its next check instead.
+    pub async fn send(&self, event: JobEvent) -> bool {
+        tokio::select! {
+            _ = self.cancel.cancelled() => false,
+            result = self.tx.send(event) => result.is_ok(),
+        }
+    }
+
+    /// Whether this job has been cancelled. Checked between phases, and between
+    /// batches within a phase, so a cancel lands promptly without needing to
+    /// interrupt whatever is in flight.
+    pub fn is_cancelled(&self) -> bool {
+        self.cancel.is_cancelled()
+    }
+
+    /// The token itself, to hand to work that can select on it.
+    pub fn token(&self) -> CancellationToken {
+        self.cancel.clone()
     }
 }
 

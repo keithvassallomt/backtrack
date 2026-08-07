@@ -17,12 +17,16 @@ use backtrack_core::engine::{
     ArchiveId, BackupEngine, CheckLevel, CreateSpec, EngineError, JobEvent, JobStream, PrunePolicy,
     RepoInfo, RepoSpec, Result,
 };
-use backtrack_core::index::BorgItem;
+use backtrack_core::index::{ArchiveMeta, BorgItem};
 use backtrack_core::secret::SecretStore;
 
 /// A scriptable [`BackupEngine`]. Set the events `create`/`prune`/etc. should
 /// emit and the items `list_archive` should yield; optionally force every call
 /// to fail with a fixed error.
+///
+/// It also keeps a pretend repository: `create` adds an archive to it and
+/// `prune` removes the oldest, so a caller can watch the catalogue follow the
+/// repository without a real Borg anywhere near the test.
 #[derive(Default)]
 pub struct MockEngine {
     create_events: Vec<JobEvent>,
@@ -31,12 +35,32 @@ pub struct MockEngine {
     key: String,
     info: Option<RepoInfo>,
     fail: Option<EngineError>,
+    archives: Mutex<Vec<ArchiveMeta>>,
+    /// How many archives `prune` leaves behind; `None` means it removes none.
+    prune_keeps: Option<usize>,
 }
 
 impl MockEngine {
     pub fn with_create_events(mut self, events: Vec<JobEvent>) -> Self {
         self.create_events = events;
         self
+    }
+
+    /// Pre-populate the pretend repository.
+    pub fn with_archives(self, archives: Vec<ArchiveMeta>) -> Self {
+        *self.archives.lock().unwrap() = archives;
+        self
+    }
+
+    /// Make `prune` keep only the newest `n` archives.
+    pub fn keeping(mut self, n: usize) -> Self {
+        self.prune_keeps = Some(n);
+        self
+    }
+
+    /// The pretend repository's current contents.
+    pub fn archives(&self) -> Vec<ArchiveMeta> {
+        self.archives.lock().unwrap().clone()
     }
 
     /// Make `create` return a backup that keeps running until it is cancelled
@@ -91,12 +115,27 @@ impl BackupEngine for MockEngine {
         self.check_fail()?;
         Ok(self.key.clone())
     }
-    async fn create(&self, _spec: &CreateSpec) -> Result<JobStream> {
+    async fn create(&self, spec: &CreateSpec) -> Result<JobStream> {
         if self.create_pending {
             self.check_fail()?;
             return Ok(JobStream::pending());
         }
-        self.job(self.create_events.clone())
+        let stream = self.job(self.create_events.clone())?;
+        // The archive exists as soon as create succeeds — which is exactly the
+        // window a crash can fall into, and what reconciliation has to notice.
+        let mut archives = self.archives.lock().unwrap();
+        let ts = archives.last().map(|a| a.ts + 1_000).unwrap_or(1_000);
+        let borg_id = Some(format!("mock-{}", archives.len() + 1));
+        archives.push(ArchiveMeta {
+            borg_id,
+            name: spec.archive_name.clone(),
+            ts,
+        });
+        Ok(stream)
+    }
+    async fn list_archives(&self) -> Result<Vec<ArchiveMeta>> {
+        self.check_fail()?;
+        Ok(self.archives.lock().unwrap().clone())
     }
     async fn list_archive(&self, _id: &ArchiveId) -> Result<BoxStream<'static, Result<BorgItem>>> {
         self.check_fail()?;
@@ -114,7 +153,13 @@ impl BackupEngine for MockEngine {
         Ok(Box::pin(tokio::io::empty()))
     }
     async fn prune(&self, _policy: &PrunePolicy) -> Result<JobStream> {
-        self.job(vec![JobEvent::Finished(Ok(Default::default()))])
+        let stream = self.job(vec![JobEvent::Finished(Ok(Default::default()))])?;
+        if let Some(keep) = self.prune_keeps {
+            let mut archives = self.archives.lock().unwrap();
+            let drop_count = archives.len().saturating_sub(keep);
+            archives.drain(..drop_count);
+        }
+        Ok(stream)
     }
     async fn compact(&self) -> Result<JobStream> {
         self.job(vec![JobEvent::Finished(Ok(Default::default()))])
@@ -183,6 +228,7 @@ mod tests {
             excludes: vec![],
             compression: Default::default(),
             one_file_system: true,
+            created_at: std::time::SystemTime::UNIX_EPOCH,
         };
         let events: Vec<JobEvent> = engine.create(&spec).await.unwrap().collect().await;
         assert!(matches!(events.last(), Some(JobEvent::Finished(Ok(_)))));

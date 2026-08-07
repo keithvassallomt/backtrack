@@ -51,7 +51,7 @@
 ## Stage 4 — Backup pipeline ([stage file](stages/stage-04-backup-pipeline.md))
 - [x] S04-T1 Scheduler (timer, missed-run catch-up, pause/resume)
 - [x] S04-T2 Preflight: battery (UPower), metered (NetworkManager), pause state
-- [ ] S04-T3 create → stream-index → prune per retention → scheduled compact
+- [x] S04-T3 create → stream-index → prune per retention → scheduled compact
 - [ ] S04-T4 Checkpoint/interrupted-backup handling (hidden from timeline)
 - [ ] S04-T5 First-run backfill indexing (newest-first, background)
 
@@ -341,6 +341,66 @@
   therefore reported "never backed up" for a machine with 30 archives, while a
   second call reported the truth. Startup now finishes all state assembly before
   claiming the name; verified over 8 consecutive cold starts.
+- 2026-08-07 (S04-T3): A backup is now one job with three phases — `archiving`,
+  `cataloguing`, `pruning` — composed over a new public `JobStream::channel`,
+  rather than three jobs. Three jobs would mean three progress bars, a cancel
+  that could leave half a backup behind, and a "finished" the moment the archive
+  existed but before it was browsable. **The archive row is written before its
+  file list is read**, so a crash during cataloguing leaves a `pending` row
+  reconciliation can find; recording it only after cataloguing would lose the
+  archive silently. A cataloguing failure is a *warning*, not a failed backup:
+  the files are in the repository and the user is protected, and a banner saying
+  otherwise would be false and would train people to ignore banners.
+  - **The index gained an order-independent ingest.** `ingest_pending(seq, …)`
+    compares each item against its neighbours on *both* sides (the interval
+    ending at `seq-1` and the one starting at `seq+1`) and extends, rejoins, or
+    opens a version accordingly. Chronological ingest only ever finds a left
+    neighbour — the original Stage 1 behaviour, unchanged — while backfill only
+    finds a right one and a crash-hole finds both. A proptest is the oracle:
+    reserve every archive, catalogue them in an arbitrary order, and the result
+    must equal a plain chronological ingest. `sync_archives` reconciles the
+    catalogue against the repository, inserting missing archives in chronological
+    position and **splitting any version interval that would span an
+    uncatalogued archive** — an interval spanning an archive nobody has read is
+    the catalogue asserting something it does not know. Ingesting that archive
+    later rejoins the halves if the content did match.
+  - **Timestamps come from `borg list --format '{id}\t{time:%s}\t…'`, not
+    `--json`.** Borg's JSON reports archive times as a naive ISO string in the
+    machine's *local* time with no offset recorded, so reading it back costs a
+    timezone database and still guesses across a DST boundary; `{time:%s}` asks
+    Borg's own Python for the epoch it already holds. Verified: archive
+    `backtrack-1786085752` reports exactly 1786085752. The name is the last
+    tab-separated field because an imported repository's archive names are
+    whatever somebody typed.
+  - **Archive naming** is `bt-{hostname}-{YYYYMMDDThhmmssZ}`, basic ISO 8601
+    rather than extended: the extended form's colons are the one character Borg
+    gives meaning to in `repo::archive`. The trailing `Z` makes the instant
+    unambiguous when a repository is read on a machine in another timezone.
+    `CreateSpec` gained `created_at` so the catalogue dates an archive from the
+    instant its name was built, not from whenever the ingest finished — on a
+    long first backup those are hours apart.
+  - **Cataloguing streams**: the listing crosses from Borg's pipe into SQLite in
+    4096-item batches over a bounded channel, with the blocking ingest on a
+    blocking thread. At 500k files the difference from buffering is hundreds of
+    megabytes.
+  - **Prune reconciles rather than parses.** After `borg prune` the catalogue is
+    re-synced from the repository's own archive list, so it is correct even if
+    Borg removed something we did not predict, and any earlier disagreement is
+    repaired for free.
+  - **Deviation, deliberate:** scheduled `compact` runs daily and only when no
+    job holds the repository, but *not* at "03:00-ish". Knowing when 03:00 is
+    locally costs a timezone database; the property behind the requirement —
+    never compact while a backup is competing for the same repository — is what
+    is implemented. Revisit at Stage 6, which needs local dates for the sidebar
+    and will bring the means. A daemon that has never compacted starts its clock
+    rather than compacting a freshly-adopted repository over a slow link.
+  - **This closes the Stage 3 Definition-of-Done gap.** Verified live on the demo
+    repo: repository and catalogue both report 32 archives (they were 34 and 30),
+    prune removed archives from both together, and `backtrack search report`
+    finds files from the newly-created archive. One archive sits `pending` — an
+    archive created by an S04-T1 test run before the pipeline existed, which
+    `sync_archives` discovered and slotted into chronological position. That is
+    exactly the S04-T4/T5 case, waiting for its listing.
 - 2026-08-07 (S04-T2): Three rules govern every gate. **A skip is a decision,
   not a failure** — nothing here raises a health banner and nothing here advances
   the attempt clock, so a backup deferred on battery runs when the charger goes

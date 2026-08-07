@@ -9,6 +9,7 @@
 
 mod daemon;
 mod jobs;
+mod pipeline;
 mod preflight;
 mod schedule;
 mod service;

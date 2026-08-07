@@ -35,7 +35,7 @@ use backtrack_core::config::Config;
 use backtrack_core::engine::{
     ArchiveId, BackupEngine, BorgCli, CheckLevel, CreateSpec, PrunePolicy,
 };
-use backtrack_core::index::{IndexReader, Kind};
+use backtrack_core::index::{IndexReader, IndexWriter, Kind};
 use backtrack_core::paths;
 use backtrack_core::secret::SecretStore;
 use backtrack_core::state::RuntimeState;
@@ -47,6 +47,7 @@ use zbus::object_server::SignalEmitter;
 use zbus::zvariant::OwnedFd;
 
 use crate::jobs::{JobFactory, JobKind, JobRegistry, JobState, JobUpdate, Outcome};
+use crate::pipeline;
 use crate::preflight::{self, Facts, SystemProbe, UnknownProbe, Verdict};
 use crate::schedule::{self, ScheduleInput};
 
@@ -97,6 +98,10 @@ pub struct Shared {
     /// The last preflight skip announced, so a machine that sits on battery all
     /// afternoon logs the reason once rather than once a minute.
     last_skip: Mutex<Option<preflight::Skip>>,
+    /// The one catalogue writer in the process. Shared rather than owned by the
+    /// daemon module because the backup pipeline writes through it too, and
+    /// there must never be a second.
+    index: Mutex<Option<Arc<Mutex<IndexWriter>>>>,
 }
 
 impl Shared {
@@ -163,6 +168,7 @@ impl Shared {
             probe: Mutex::new(Arc::new(UnknownProbe)),
             needs_attention: Mutex::new(false),
             last_skip: Mutex::new(None),
+            index: Mutex::new(None),
         })
     }
 
@@ -324,18 +330,73 @@ impl Shared {
     /// instead of one per tick.
     fn submit_backup(&self) -> Result<u64> {
         let engine = self.engine()?;
+        let index = self.index()?;
         let config = self.config();
         let spec = create_spec(&config);
         *self.last_archive.lock().unwrap() = Some(spec.archive_name.clone());
         self.update_persisted(|state| {
             state.last_attempt = backtrack_core::state::to_epoch(Some(SystemTime::now()));
         });
+        // Retention is applied as part of the backup rather than on a schedule
+        // of its own: a repository is only ever over its policy in the moment
+        // after a backup, so that is the only moment worth checking.
+        let prune = Some(prune_policy(&config));
         let factory: JobFactory = Arc::new(move || {
-            let engine = Arc::clone(&engine);
-            let spec = spec.clone();
-            Box::pin(async move { engine.create(&spec).await }) as BoxFuture<'_, _>
+            let plan = pipeline::BackupPlan {
+                engine: Arc::clone(&engine),
+                index: Arc::clone(&index),
+                spec: spec.clone(),
+                prune: prune.clone(),
+            };
+            Box::pin(async move { Ok(pipeline::start_backup(plan)) }) as BoxFuture<'_, _>
         });
         Ok(self.jobs.submit(JobKind::Backup, factory))
+    }
+
+    /// Run `borg compact` if it is due, on its own daily cadence.
+    ///
+    /// Separate from the backup because it is a different kind of work: a backup
+    /// protects new data, compaction reclaims space that pruned archives were
+    /// still occupying. Folding it into every backup would put a repository
+    /// rewrite between the user and their hourly protection.
+    pub async fn maybe_compact(&self) {
+        let last = backtrack_core::state::from_epoch(self.persisted.lock().unwrap().last_compact);
+        // First start with a destination: begin the clock rather than compacting
+        // a repository that may not have been backed up to yet.
+        if last.is_none() {
+            self.update_persisted(|state| {
+                state.last_compact = backtrack_core::state::to_epoch(Some(SystemTime::now()));
+            });
+            return;
+        }
+        if !schedule::compact_due(last, SystemTime::now(), self.busy()) {
+            return;
+        }
+        let Ok(engine) = self.engine() else { return };
+        self.update_persisted(|state| {
+            state.last_compact = backtrack_core::state::to_epoch(Some(SystemTime::now()));
+        });
+        let factory: JobFactory = Arc::new(move || {
+            let engine = Arc::clone(&engine);
+            Box::pin(async move { engine.compact().await }) as BoxFuture<'_, _>
+        });
+        let job = self.jobs.submit(JobKind::Compact, factory);
+        info!(job, "reclaiming repository space");
+    }
+
+    /// The catalogue writer, which only exists once a data directory does.
+    fn index(&self) -> Result<Arc<Mutex<IndexWriter>>> {
+        self.index
+            .lock()
+            .unwrap()
+            .clone()
+            .ok_or_else(|| DaemonError::NotConfigured("the catalogue is not open".into()))
+    }
+
+    /// Hand over the writer the daemon opened at startup. There is exactly one
+    /// in the process — the single-writer rule the whole architecture rests on.
+    pub fn set_index(&self, index: Arc<Mutex<IndexWriter>>) {
+        *self.index.lock().unwrap() = Some(index);
     }
 
     /// Replace the engine. Used at startup once the configuration is known, and
@@ -967,15 +1028,11 @@ fn kind_name(kind: Kind) -> &'static str {
     }
 }
 
-/// The archive name for a backup taken now. Seconds since the epoch keeps names
-/// sortable and unique without pulling in a date library.
-fn archive_name(now: SystemTime) -> String {
-    format!("backtrack-{}", to_epoch(Some(now)))
-}
-
 fn create_spec(config: &Config) -> CreateSpec {
+    let now = SystemTime::now();
     CreateSpec {
-        archive_name: archive_name(SystemTime::now()),
+        archive_name: pipeline::archive_name(&pipeline::hostname(), now),
+        created_at: now,
         sources: config.backup.include.clone(),
         excludes: config.backup.exclude.clone(),
         compression: match config.advanced.compression {
@@ -1024,6 +1081,9 @@ mod tests {
             dir,
         );
         shared.set_engine(Arc::new(MockEngine::default().with_create_pending()));
+        shared.set_index(Arc::new(Mutex::new(
+            IndexWriter::open(&dir.join("index.db")).unwrap(),
+        )));
         shared
     }
 
@@ -1227,13 +1287,6 @@ mod tests {
             Some(Duration::from_secs(3_600)),
             "the frequency is still hourly; it is the destination that is missing"
         );
-    }
-
-    #[test]
-    fn archive_names_sort_chronologically() {
-        let earlier = archive_name(SystemTime::UNIX_EPOCH + Duration::from_secs(1_000));
-        let later = archive_name(SystemTime::UNIX_EPOCH + Duration::from_secs(2_000));
-        assert!(earlier < later, "{earlier} should sort before {later}");
     }
 
     #[test]

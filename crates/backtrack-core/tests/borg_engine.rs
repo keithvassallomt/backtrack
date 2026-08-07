@@ -87,6 +87,7 @@ async fn full_round_trip() {
             excludes: vec![],
             compression: Compression::Zstd,
             one_file_system: false,
+            created_at: std::time::SystemTime::now(),
         };
         run_to_finish(eng.create(&spec).await.unwrap())
             .await

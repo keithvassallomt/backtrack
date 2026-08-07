@@ -17,11 +17,11 @@ use async_trait::async_trait;
 use futures::stream::BoxStream;
 use tokio::io::AsyncRead;
 
-use crate::index::BorgItem;
+use crate::index::{ArchiveMeta, BorgItem};
 
-pub use borg::BorgCli;
+pub use borg::{is_checkpoint, BorgCli};
 pub use error::{EngineError, HealthFailure, Result};
-pub use job::{JobEvent, JobStream, JobSummary, LogLevel};
+pub use job::{JobEvent, JobSink, JobStream, JobSummary, LogLevel};
 pub use spec::{
     ArchiveId, CheckLevel, Compression, CreateSpec, Encryption, PrunePolicy, RepoInfo, RepoSpec,
 };
@@ -43,6 +43,12 @@ pub trait BackupEngine: Send + Sync {
 
     /// Create an archive (`borg create`).
     async fn create(&self, spec: &CreateSpec) -> Result<JobStream>;
+
+    /// Every archive in the repository, oldest first (`borg list`).
+    ///
+    /// Cheap — seconds, even on a large repository — unlike listing the files
+    /// *inside* an archive. This is what the catalogue reconciles against.
+    async fn list_archives(&self) -> Result<Vec<ArchiveMeta>>;
 
     /// Stream one archive's file list (`borg list --json-lines`).
     async fn list_archive(&self, id: &ArchiveId) -> Result<BoxStream<'static, Result<BorgItem>>>;

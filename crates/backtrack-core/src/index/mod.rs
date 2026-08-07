@@ -29,7 +29,7 @@ pub use reader::{
     ArchiveSummary, Direction, Entry, IndexReader, LiveEntry, SearchHit, VersionSpan,
 };
 pub use schema::SCHEMA_VERSION;
-pub use writer::{IndexWriter, IngestStats};
+pub use writer::{IndexWriter, IngestStats, SyncReport, STATUS_PENDING};
 
 /// Errors surfaced by the index layer.
 #[derive(Debug, thiserror::Error)]

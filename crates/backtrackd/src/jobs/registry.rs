@@ -466,6 +466,7 @@ mod tests {
             excludes: vec![],
             compression: Default::default(),
             one_file_system: true,
+            created_at: std::time::SystemTime::UNIX_EPOCH,
         }
     }
 

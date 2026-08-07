@@ -16,6 +16,11 @@ pub struct CreateSpec {
     pub excludes: Vec<String>,
     pub compression: Compression,
     pub one_file_system: bool,
+    /// When the backup was started. Carried so the catalogue can date the
+    /// archive from the same instant its name was built from, rather than from
+    /// whenever the ingest happened to run — on a large first backup those are
+    /// hours apart, and the timeline would show the wrong one.
+    pub created_at: std::time::SystemTime,
 }
 
 /// Compression algorithm passed to `--compression`.

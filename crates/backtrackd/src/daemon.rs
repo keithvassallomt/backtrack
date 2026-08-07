@@ -112,14 +112,16 @@ pub async fn run() -> Result<Outcome, StartupError> {
         "configuration loaded"
     );
 
-    // Held for the daemon's lifetime: this binding is the single-writer
-    // guarantee. Nothing else may open the index for writing while we live.
-    let _index = open_index()?;
+    // The single-writer guarantee: one `IndexWriter` for the process, held for
+    // its lifetime. Shared with the service layer because the backup pipeline
+    // catalogues through it; nothing else may open the index for writing.
+    let index = Arc::new(std::sync::Mutex::new(open_index()?));
 
     // The one registry every job goes through.
     let jobs = JobRegistry::new();
     let secrets = backtrack_core::secret::default_store().map_err(StartupError::Secrets)?;
     let shared = Shared::new(config, Arc::clone(&jobs), secrets);
+    shared.set_index(index);
 
     // Everything that shapes an answer happens before the name is claimed.
     //

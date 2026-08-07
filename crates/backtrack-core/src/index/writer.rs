@@ -18,7 +18,7 @@ use super::item::{ArchiveMeta, BorgItem, Repo};
 use super::{open_connection, open_memory_connection, Result};
 
 /// What an [`IndexWriter::ingest_archive`] call did, for logging and tests.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct IngestStats {
     /// The `seq` assigned to the newly-ingested archive.
     pub seq: i64,
@@ -28,6 +28,32 @@ pub struct IngestStats {
     pub new_versions: usize,
     /// Existing version intervals extended because the item was unchanged.
     pub extended: usize,
+    /// Intervals on both sides of this archive rejoined into one, because the
+    /// content matched across it. Only ever non-zero when catalogues are filled
+    /// in out of order (backfill, reconciliation).
+    pub merged: usize,
+}
+
+/// The status stored in `archives.status` for an archive whose row exists but
+/// whose file list has not been read yet. `NULL` means catalogued.
+pub const STATUS_PENDING: &str = "pending";
+
+/// What [`IndexWriter::sync_archives`] changed.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SyncReport {
+    /// Seqs of archives newly recorded as `pending`, newest first — the order
+    /// they should be catalogued in, since the newest snapshot is the one the
+    /// user wants to browse.
+    pub pending: Vec<i64>,
+    /// How many archives the repository no longer has, and the index dropped.
+    pub removed: usize,
+}
+
+impl SyncReport {
+    /// Whether the index already matched the repository.
+    pub fn is_empty(&self) -> bool {
+        self.pending.is_empty() && self.removed == 0
+    }
 }
 
 /// The sole writer onto an index database.
@@ -35,16 +61,19 @@ pub struct IndexWriter {
     conn: Connection,
 }
 
-/// The previous archive's open version for a path, used for change detection.
-struct PrevVersion {
+/// A version interval abutting the archive being ingested, on either side.
+struct Neighbour {
     rowid: i64,
     kind: String,
     size: i64,
     mtime: i64,
     chunk_hash: Option<String>,
+    #[allow(dead_code)]
+    first_seq: i64,
+    last_seq: i64,
 }
 
-impl PrevVersion {
+impl Neighbour {
     /// Whether `item` is unchanged from this version. Content identity is
     /// kind + size + mtime + chunk hash (the hash is usually absent, so size
     /// and mtime carry the decision — exactly as the architecture specifies).
@@ -54,6 +83,42 @@ impl PrevVersion {
             && self.mtime == item.mtime
             && self.chunk_hash == item.chunk_hash
     }
+}
+
+/// One `archives` row, as [`IndexWriter::sync_archives`] needs it.
+struct ArchiveRow {
+    seq: i64,
+    name: String,
+    ts: i64,
+    repo: String,
+}
+
+/// Split every version interval that spans `seq` into the parts either side of
+/// it, so nothing claims to know what an uncatalogued archive contained.
+///
+/// The rows to split are materialised into a temporary table first: inserting
+/// into `versions` while selecting from it would let the statement see its own
+/// output, and the halves it produces are themselves candidates for the next
+/// insertion's split.
+fn split_versions_around(tx: &Transaction, seq: i64) -> Result<()> {
+    tx.execute(
+        "CREATE TEMP TABLE spanning AS
+           SELECT rowid AS rid, path_id, last_seq, size, mtime, mode, kind, chunk_hash
+           FROM versions WHERE first_seq < ?1 AND last_seq > ?1",
+        params![seq],
+    )?;
+    tx.execute(
+        "INSERT INTO versions
+           (path_id, first_seq, last_seq, size, mtime, mode, kind, chunk_hash)
+         SELECT path_id, ?1, last_seq, size, mtime, mode, kind, chunk_hash FROM spanning",
+        params![seq + 1],
+    )?;
+    tx.execute(
+        "UPDATE versions SET last_seq = ?1 WHERE rowid IN (SELECT rid FROM spanning)",
+        params![seq - 1],
+    )?;
+    tx.execute_batch("DROP TABLE spanning")?;
+    Ok(())
 }
 
 /// Resolves `/`-separated paths to `paths.id`, inserting missing components (and
@@ -123,80 +188,139 @@ impl IndexWriter {
         })
     }
 
-    /// Ingest one archive listing, assigning it the next `seq`. Items are
-    /// diffed against the previous archive: unchanged entries extend their
-    /// interval, changed/new entries open a fresh version row, and entries that
-    /// have vanished simply stop being extended (their interval already ends at
-    /// the previous archive).
+    /// Append an archive to the end of the catalogue and ingest its listing.
     ///
-    /// Archives must be ingested in chronological order — each call diffs
-    /// against the current maximum `seq`. Newest-first backfill (Stage 4) will
-    /// need a different entry point.
+    /// The straightforward path, and the only one a normal hourly backup takes:
+    /// the archive that was just created is newer than everything already
+    /// indexed, so it goes on the end. Out-of-order catalogues — reconciliation
+    /// after a crash, first-run backfill — go through [`Self::sync_archives`]
+    /// and [`Self::ingest_pending`] instead.
     pub fn ingest_archive(
         &mut self,
         meta: &ArchiveMeta,
         repo: Repo,
         items: impl Iterator<Item = BorgItem>,
     ) -> Result<IngestStats> {
-        let prev_seq: Option<i64> = self
+        let seq = self.append_archive(meta, repo)?;
+        self.ingest_pending(seq, items)
+    }
+
+    /// Record an archive at the end of the catalogue, not yet catalogued.
+    /// Returns its `seq`.
+    pub fn append_archive(&mut self, meta: &ArchiveMeta, repo: Repo) -> Result<i64> {
+        let max: Option<i64> = self
             .conn
             .query_row("SELECT MAX(seq) FROM archives", [], |r| r.get(0))
             .optional()?
             .flatten();
-        let seq = prev_seq.unwrap_or(0) + 1;
-
-        let tx = self.conn.transaction()?;
-        tx.execute(
+        let seq = max.unwrap_or(0) + 1;
+        self.conn.execute(
             "INSERT INTO archives(seq, borg_id, name, ts, repo, status)
-             VALUES (?1, ?2, ?3, ?4, ?5, NULL)",
-            params![seq, meta.borg_id, meta.name, meta.ts, repo.as_str()],
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![
+                seq,
+                meta.borg_id,
+                meta.name,
+                meta.ts,
+                repo.as_str(),
+                STATUS_PENDING
+            ],
         )?;
+        Ok(seq)
+    }
 
+    /// Ingest the file listing for the archive at `seq`, wherever it sits in the
+    /// catalogue, and mark it browsable.
+    ///
+    /// Each item is compared against its neighbours on *both* sides — the
+    /// version interval ending at `seq - 1` and the one starting at `seq + 1`:
+    ///
+    /// - matches both → the two intervals are one interval that was interrupted
+    ///   by an archive nobody had read yet; they are rejoined.
+    /// - matches the left only → that interval extends forward over `seq`.
+    /// - matches the right only → that interval extends backward over `seq`.
+    /// - matches neither → a new version row covering `seq` alone.
+    ///
+    /// The symmetry is what makes catalogue order irrelevant. Ingesting oldest
+    /// to newest only ever finds a left neighbour, which is the original Stage 1
+    /// behaviour; ingesting newest to oldest, as backfill does, only ever finds a
+    /// right one; filling a hole left by a crash finds both. All three produce
+    /// exactly the catalogue a from-scratch chronological ingest would.
+    ///
+    /// Relies on the invariant that no version interval *spans* an uncatalogued
+    /// archive — [`Self::sync_archives`] splits any that would, so an interval
+    /// never claims a file was unchanged across an archive nobody has read.
+    pub fn ingest_pending(
+        &mut self,
+        seq: i64,
+        items: impl Iterator<Item = BorgItem>,
+    ) -> Result<IngestStats> {
+        let tx = self.conn.transaction()?;
         let mut stats = IngestStats {
             seq,
-            items: 0,
-            new_versions: 0,
-            extended: 0,
+            ..IngestStats::default()
         };
         {
             let mut resolver = PathResolver::new(&tx)?;
-            let mut prev = tx.prepare(
-                "SELECT rowid, kind, size, mtime, chunk_hash
+            let mut neighbour = tx.prepare(
+                "SELECT rowid, kind, size, mtime, chunk_hash, first_seq, last_seq
                  FROM versions WHERE path_id = ?1 AND last_seq = ?2",
             )?;
-            let mut extend = tx.prepare("UPDATE versions SET last_seq = ?2 WHERE rowid = ?1")?;
+            let mut successor = tx.prepare(
+                "SELECT rowid, kind, size, mtime, chunk_hash, first_seq, last_seq
+                 FROM versions WHERE path_id = ?1 AND first_seq = ?2",
+            )?;
+            let mut set_first =
+                tx.prepare("UPDATE versions SET first_seq = ?2 WHERE rowid = ?1")?;
+            let mut set_last = tx.prepare("UPDATE versions SET last_seq = ?2 WHERE rowid = ?1")?;
+            let mut delete = tx.prepare("DELETE FROM versions WHERE rowid = ?1")?;
             let mut insert = tx.prepare(
                 "INSERT INTO versions
                  (path_id, first_seq, last_seq, size, mtime, mode, kind, chunk_hash)
                  VALUES (?1, ?2, ?2, ?3, ?4, ?5, ?6, ?7)",
             )?;
 
+            let read = |r: &rusqlite::Row| -> rusqlite::Result<Neighbour> {
+                Ok(Neighbour {
+                    rowid: r.get(0)?,
+                    kind: r.get(1)?,
+                    size: r.get(2)?,
+                    mtime: r.get(3)?,
+                    chunk_hash: r.get(4)?,
+                    first_seq: r.get(5)?,
+                    last_seq: r.get(6)?,
+                })
+            };
+
             for item in items {
                 stats.items += 1;
                 let path_id = resolver.resolve(&item.path)?;
 
-                // The still-open version at the previous archive, if any.
-                let existing = match prev_seq {
-                    Some(ps) => prev
-                        .query_row(params![path_id, ps], |r| {
-                            Ok(PrevVersion {
-                                rowid: r.get(0)?,
-                                kind: r.get(1)?,
-                                size: r.get(2)?,
-                                mtime: r.get(3)?,
-                                chunk_hash: r.get(4)?,
-                            })
-                        })
-                        .optional()?,
-                    None => None,
-                };
+                let left = neighbour
+                    .query_row(params![path_id, seq - 1], read)
+                    .optional()?
+                    .filter(|n| n.matches(&item));
+                let right = successor
+                    .query_row(params![path_id, seq + 1], read)
+                    .optional()?
+                    .filter(|n| n.matches(&item));
 
-                match existing {
-                    Some(p) if p.matches(&item) => {
-                        extend.execute(params![p.rowid, seq])?;
+                match (left, right) {
+                    (Some(left), Some(right)) => {
+                        set_last.execute(params![left.rowid, right.last_seq])?;
+                        delete.execute([right.rowid])?;
+                        stats.merged += 1;
                         stats.extended += 1;
                     }
-                    _ => {
+                    (Some(left), None) => {
+                        set_last.execute(params![left.rowid, seq])?;
+                        stats.extended += 1;
+                    }
+                    (None, Some(right)) => {
+                        set_first.execute(params![right.rowid, seq])?;
+                        stats.extended += 1;
+                    }
+                    (None, None) => {
                         insert.execute(params![
                             path_id,
                             seq,
@@ -211,8 +335,162 @@ impl IndexWriter {
                 }
             }
         }
+        tx.execute(
+            "UPDATE archives SET status = NULL WHERE seq = ?1",
+            params![seq],
+        )?;
         tx.commit()?;
         Ok(stats)
+    }
+
+    /// Make the catalogue's archive list match the repository's.
+    ///
+    /// Archives the repository no longer has are removed; archives it has that
+    /// the catalogue does not are inserted in chronological position and marked
+    /// `pending`, to be catalogued by [`Self::ingest_pending`].
+    ///
+    /// Inserting into the middle of the catalogue means existing version
+    /// intervals may span the new archive, claiming a file was unchanged across
+    /// a snapshot nobody has read. Those intervals are split around it, which
+    /// makes the file simply absent from that (pending) archive's view until it
+    /// is catalogued, and lets the ingest rejoin them if the content did match.
+    /// Guessing would be worse: an interval that spans an unread archive is the
+    /// catalogue asserting something it does not know.
+    ///
+    /// `entries` is the repository's archive list, in any order. Only rows
+    /// belonging to `repo` are reconciled, so the offline spool (Stage 5) can be
+    /// synchronised separately without disturbing the primary catalogue.
+    pub fn sync_archives(&mut self, repo: Repo, entries: &[ArchiveMeta]) -> Result<SyncReport> {
+        let mut report = SyncReport::default();
+
+        // Removals first, through the existing path: it renumbers densely and
+        // repairs the intervals, so the insert step below sees a tidy catalogue.
+        let existing = self.archive_rows()?;
+        let wanted: std::collections::HashSet<&str> =
+            entries.iter().map(|e| e.name.as_str()).collect();
+        let gone: Vec<i64> = existing
+            .iter()
+            .filter(|row| row.repo == repo.as_str() && !wanted.contains(row.name.as_str()))
+            .map(|row| row.seq)
+            .collect();
+        report.removed = gone.len();
+        self.remove_archives(&gone)?;
+
+        let existing = self.archive_rows()?;
+        let known: std::collections::HashSet<&str> = existing
+            .iter()
+            .filter(|row| row.repo == repo.as_str())
+            .map(|row| row.name.as_str())
+            .collect();
+        let missing: Vec<&ArchiveMeta> = entries
+            .iter()
+            .filter(|e| !known.contains(e.name.as_str()))
+            .collect();
+        if missing.is_empty() {
+            return Ok(report);
+        }
+
+        // The catalogue's order, with the newcomers slotted in by timestamp.
+        // Name breaks ties so two archives taken in the same second land in a
+        // stable order rather than one that changes between runs.
+        enum Slot<'a> {
+            Existing(&'a ArchiveRow),
+            New(&'a ArchiveMeta),
+        }
+        let mut order: Vec<(i64, &str, Slot)> = existing
+            .iter()
+            .map(|row| (row.ts, row.name.as_str(), Slot::Existing(row)))
+            .chain(
+                missing
+                    .iter()
+                    .map(|e| (e.ts, e.name.as_str(), Slot::New(e))),
+            )
+            .collect();
+        order.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(b.1)));
+
+        let mut remap: Vec<(i64, i64)> = Vec::new();
+        let mut inserted: Vec<(i64, &ArchiveMeta)> = Vec::new();
+        for (index, (_, _, slot)) in order.iter().enumerate() {
+            let new_seq = index as i64 + 1;
+            match slot {
+                Slot::Existing(row) => remap.push((row.seq, new_seq)),
+                Slot::New(meta) => inserted.push((new_seq, meta)),
+            }
+        }
+
+        let tx = self.conn.transaction()?;
+        {
+            // Shift the existing catalogue up to make room. Archive rows are
+            // rewritten wholesale rather than updated in place: new seqs are
+            // greater than old ones here, so an in-place UPDATE would collide
+            // with a row it has not moved yet.
+            tx.execute_batch(
+                "CREATE TEMP TABLE seqmap(old_seq INTEGER PRIMARY KEY, new_seq INTEGER)",
+            )?;
+            {
+                let mut ins = tx.prepare("INSERT INTO seqmap(old_seq, new_seq) VALUES (?1, ?2)")?;
+                for (old, new) in &remap {
+                    ins.execute(params![old, new])?;
+                }
+            }
+            tx.execute(
+                "UPDATE versions SET
+                    first_seq = (SELECT new_seq FROM seqmap WHERE old_seq = versions.first_seq),
+                    last_seq  = (SELECT new_seq FROM seqmap WHERE old_seq = versions.last_seq)",
+                [],
+            )?;
+            tx.execute_batch(
+                "CREATE TEMP TABLE restacked AS
+                   SELECT (SELECT new_seq FROM seqmap WHERE old_seq = a.seq) AS seq,
+                          borg_id, name, ts, repo, status
+                   FROM archives a;
+                 DELETE FROM archives;
+                 INSERT INTO archives(seq, borg_id, name, ts, repo, status)
+                   SELECT seq, borg_id, name, ts, repo, status FROM restacked;
+                 DROP TABLE restacked;
+                 DROP TABLE seqmap;",
+            )?;
+
+            let mut add = tx.prepare(
+                "INSERT INTO archives(seq, borg_id, name, ts, repo, status)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            )?;
+            for (seq, meta) in &inserted {
+                add.execute(params![
+                    seq,
+                    meta.borg_id,
+                    meta.name,
+                    meta.ts,
+                    repo.as_str(),
+                    STATUS_PENDING
+                ])?;
+                split_versions_around(&tx, *seq)?;
+            }
+        }
+        tx.commit()?;
+
+        // Newest first: the snapshot somebody wants to browse is the last one
+        // taken, so that is the one worth catalogued first.
+        report.pending = inserted.iter().map(|(seq, _)| *seq).rev().collect();
+        Ok(report)
+    }
+
+    /// Every archive row, oldest first.
+    fn archive_rows(&self) -> Result<Vec<ArchiveRow>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT seq, name, ts, repo FROM archives ORDER BY seq")?;
+        let rows = stmt
+            .query_map([], |r| {
+                Ok(ArchiveRow {
+                    seq: r.get(0)?,
+                    name: r.get(1)?,
+                    ts: r.get(2)?,
+                    repo: r.get(3)?,
+                })
+            })?
+            .collect::<std::result::Result<_, _>>()?;
+        Ok(rows)
     }
 
     /// Remove archives from the index, leaving it exactly as if they had never
@@ -681,11 +959,28 @@ mod tests {
     }
 }
 
+/// Tests about the *shape* of the catalogue: what removal and out-of-order
+/// cataloguing do to the interval encoding. The two oracles here are the ones
+/// that keep the encoding honest — each says "however you got here, the answer
+/// must equal a plain chronological ingest of what survives".
 #[cfg(test)]
-mod property_tests {
+mod catalogue_tests {
     use super::*;
     use crate::index::Kind;
     use proptest::prelude::*;
+
+    fn meta(name: &str) -> ArchiveMeta {
+        ArchiveMeta {
+            borg_id: None,
+            name: name.to_string(),
+            ts: 0,
+        }
+    }
+
+    fn ingest(w: &mut IndexWriter, name: &str, items: Vec<BorgItem>) -> IngestStats {
+        w.ingest_archive(&meta(name), Repo::Primary, items.into_iter())
+            .unwrap()
+    }
 
     prop_compose! {
         fn a_file()(
@@ -839,5 +1134,258 @@ mod property_tests {
             prop_assert_eq!(dump_archives(&full), dump_archives(&surv));
             prop_assert_eq!(dump_versions(&full), dump_versions(&surv));
         }
+    }
+
+    proptest! {
+        /// The oracle for out-of-order cataloguing: reserving every archive up
+        /// front and reading their listings in an arbitrary order must produce
+        /// exactly the catalogue a straight chronological ingest produces.
+        ///
+        /// This is what lets backfill work newest-first and lets reconciliation
+        /// fill a hole a crash left in the middle, without either of them being
+        /// a second implementation of the interval encoding.
+        #[test]
+        fn catalogue_order_does_not_change_the_catalogue(
+            plan in prop::collection::vec(
+                (
+                    prop::option::of(0i64..3),
+                    prop::option::of(0i64..3),
+                    prop::option::of(0i64..3),
+                ),
+                1..7,
+            ),
+            shuffle in prop::collection::vec(0usize..100, 1..7),
+        ) {
+            let listing = |a: &Option<i64>, b: &Option<i64>, c: &Option<i64>| {
+                let mut items = Vec::new();
+                if let Some(s) = a { items.push(flat("a", *s)); }
+                if let Some(s) = b { items.push(flat("b", *s)); }
+                if let Some(s) = c { items.push(flat("c", *s)); }
+                items
+            };
+            let entries: Vec<ArchiveMeta> = (0..plan.len())
+                .map(|i| ArchiveMeta {
+                    borg_id: None,
+                    name: format!("arch{i}"),
+                    ts: (i as i64 + 1) * 1000,
+                })
+                .collect();
+
+            // Chronological, the ordinary hourly-backup path.
+            let mut expected = IndexWriter::open_in_memory().unwrap();
+            for (i, (a, b, c)) in plan.iter().enumerate() {
+                expected.ingest_archive(
+                    &entries[i], Repo::Primary, listing(a, b, c).into_iter(),
+                ).unwrap();
+            }
+
+            // Reserved up front, then catalogued in a shuffled order. The
+            // shuffle keys give proptest something to shrink; equal keys keep
+            // their relative order, which is fine — any order must work.
+            let mut actual = IndexWriter::open_in_memory().unwrap();
+            let report = actual.sync_archives(Repo::Primary, &entries).unwrap();
+            prop_assert_eq!(report.pending.len(), plan.len());
+            prop_assert_eq!(report.removed, 0);
+
+            let mut order: Vec<usize> = (0..plan.len()).collect();
+            order.sort_by_key(|i| shuffle.get(*i).copied().unwrap_or(0));
+            for i in order {
+                let (a, b, c) = &plan[i];
+                // Seqs are 1-based and chronological, so archive i is seq i+1.
+                actual.ingest_pending(i as i64 + 1, listing(a, b, c).into_iter()).unwrap();
+            }
+
+            prop_assert_eq!(dump_archives(&actual), dump_archives(&expected));
+            prop_assert_eq!(dump_versions(&actual), dump_versions(&expected));
+        }
+    }
+
+    /// Every archive row's `status`, oldest first.
+    fn dump_status(w: &IndexWriter) -> Vec<Option<String>> {
+        let mut stmt = w
+            .conn()
+            .prepare("SELECT status FROM archives ORDER BY seq")
+            .unwrap();
+        stmt.query_map([], |r| r.get(0))
+            .unwrap()
+            .map(|r| r.unwrap())
+            .collect()
+    }
+
+    fn entry(name: &str, ts: i64) -> ArchiveMeta {
+        ArchiveMeta {
+            borg_id: None,
+            name: name.to_string(),
+            ts,
+        }
+    }
+
+    #[test]
+    fn syncing_an_empty_index_records_every_archive_as_pending() {
+        let mut w = IndexWriter::open_in_memory().unwrap();
+        let entries = [entry("a", 100), entry("b", 200), entry("c", 300)];
+        let report = w.sync_archives(Repo::Primary, &entries).unwrap();
+
+        assert_eq!(
+            report.pending,
+            vec![3, 2, 1],
+            "newest first: the snapshot somebody wants to browse is the last one taken"
+        );
+        assert_eq!(report.removed, 0);
+        assert_eq!(dump_status(&w).len(), 3);
+        assert!(dump_status(&w)
+            .iter()
+            .all(|s| s.as_deref() == Some("pending")));
+    }
+
+    #[test]
+    fn cataloguing_an_archive_marks_it_browsable() {
+        let mut w = IndexWriter::open_in_memory().unwrap();
+        w.sync_archives(Repo::Primary, &[entry("a", 100)]).unwrap();
+        w.ingest_pending(1, vec![flat("x", 1)].into_iter()).unwrap();
+        assert_eq!(dump_status(&w), vec![None]);
+    }
+
+    #[test]
+    fn a_repeated_sync_changes_nothing() {
+        // Reconciliation runs on every startup and after every prune. It has to
+        // be free when there is nothing to do, or it would churn the catalogue.
+        let mut w = IndexWriter::open_in_memory().unwrap();
+        let entries = [entry("a", 100), entry("b", 200)];
+        w.sync_archives(Repo::Primary, &entries).unwrap();
+        w.ingest_pending(1, vec![flat("x", 1)].into_iter()).unwrap();
+        w.ingest_pending(2, vec![flat("x", 1)].into_iter()).unwrap();
+        let before = dump_versions(&w);
+
+        let report = w.sync_archives(Repo::Primary, &entries).unwrap();
+        assert!(report.is_empty(), "nothing to do: {report:?}");
+        assert_eq!(dump_versions(&w), before);
+    }
+
+    #[test]
+    fn sync_drops_archives_the_repository_no_longer_has() {
+        // What a prune leaves behind: the repository is the authority, and the
+        // catalogue must not keep offering snapshots that are gone.
+        let mut w = IndexWriter::open_in_memory().unwrap();
+        for (i, name) in ["a", "b", "c"].iter().enumerate() {
+            ingest(&mut w, name, vec![flat("x", i as i64)]);
+        }
+        let report = w
+            .sync_archives(Repo::Primary, &[entry("b", 0), entry("c", 0)])
+            .unwrap();
+
+        assert_eq!(report.removed, 1);
+        assert!(report.pending.is_empty());
+        assert_eq!(
+            dump_archives(&w)
+                .iter()
+                .map(|a| a.1.clone())
+                .collect::<Vec<_>>(),
+            vec!["b", "c"]
+        );
+    }
+
+    #[test]
+    fn an_archive_inserted_into_the_middle_splits_the_intervals_that_spanned_it() {
+        // The crash case: a backup landed in the repository but was never
+        // catalogued, and a later one was. The catalogue must not go on
+        // claiming a file was unchanged across a snapshot nobody has read.
+        let mut w = IndexWriter::open_in_memory().unwrap();
+        ingest(&mut w, "a", vec![flat("x", 1)]);
+        ingest(&mut w, "c", vec![flat("x", 1)]);
+        assert_eq!(dump_versions(&w)[0].1..=dump_versions(&w)[0].2, 1..=2);
+
+        // "b" belongs between them by timestamp.
+        let entries = [entry("a", 100), entry("b", 200), entry("c", 300)];
+        // Give the existing rows the timestamps the repository reports.
+        w.conn()
+            .execute_batch(
+                "UPDATE archives SET ts = 100 WHERE name='a';
+                            UPDATE archives SET ts = 300 WHERE name='c';",
+            )
+            .unwrap();
+        let report = w.sync_archives(Repo::Primary, &entries).unwrap();
+        assert_eq!(report.pending, vec![2]);
+
+        let versions = dump_versions(&w);
+        assert_eq!(
+            versions.iter().map(|v| (v.1, v.2)).collect::<Vec<_>>(),
+            vec![(1, 1), (3, 3)],
+            "the interval is split around the archive nobody has read"
+        );
+    }
+
+    #[test]
+    fn cataloguing_that_archive_rejoins_the_intervals() {
+        let mut w = IndexWriter::open_in_memory().unwrap();
+        ingest(&mut w, "a", vec![flat("x", 1)]);
+        ingest(&mut w, "c", vec![flat("x", 1)]);
+        w.conn()
+            .execute_batch(
+                "UPDATE archives SET ts = 100 WHERE name='a';
+                            UPDATE archives SET ts = 300 WHERE name='c';",
+            )
+            .unwrap();
+        w.sync_archives(
+            Repo::Primary,
+            &[entry("a", 100), entry("b", 200), entry("c", 300)],
+        )
+        .unwrap();
+
+        // The file was there all along, unchanged.
+        let stats = w.ingest_pending(2, vec![flat("x", 1)].into_iter()).unwrap();
+        assert_eq!(stats.merged, 1, "the two halves are one interval again");
+
+        let versions = dump_versions(&w);
+        assert_eq!(versions.len(), 1);
+        assert_eq!((versions[0].1, versions[0].2), (1, 3));
+    }
+
+    #[test]
+    fn cataloguing_a_hole_where_the_file_differed_keeps_three_intervals() {
+        let mut w = IndexWriter::open_in_memory().unwrap();
+        ingest(&mut w, "a", vec![flat("x", 1)]);
+        ingest(&mut w, "c", vec![flat("x", 1)]);
+        w.conn()
+            .execute_batch(
+                "UPDATE archives SET ts = 100 WHERE name='a';
+                            UPDATE archives SET ts = 300 WHERE name='c';",
+            )
+            .unwrap();
+        w.sync_archives(
+            Repo::Primary,
+            &[entry("a", 100), entry("b", 200), entry("c", 300)],
+        )
+        .unwrap();
+
+        let stats = w
+            .ingest_pending(2, vec![flat("x", 99)].into_iter())
+            .unwrap();
+        assert_eq!(stats.merged, 0);
+        assert_eq!(stats.new_versions, 1);
+        assert_eq!(
+            dump_versions(&w)
+                .iter()
+                .map(|v| (v.1, v.2, v.3))
+                .collect::<Vec<_>>(),
+            vec![(1, 1, 1), (2, 2, 99), (3, 3, 1)],
+            "the file really did change and change back"
+        );
+    }
+
+    #[test]
+    fn appending_records_the_archive_before_its_listing_is_read() {
+        // The order the pipeline needs: the archive exists in the repository the
+        // moment `borg create` finishes, so the catalogue records it before
+        // spending minutes reading its file list. A crash in between leaves a
+        // pending row, which is exactly what reconciliation looks for.
+        let mut w = IndexWriter::open_in_memory().unwrap();
+        let seq = w.append_archive(&meta("a"), Repo::Primary).unwrap();
+        assert_eq!(seq, 1);
+        assert_eq!(dump_status(&w), vec![Some("pending".to_string())]);
+
+        w.ingest_pending(seq, vec![flat("x", 1)].into_iter())
+            .unwrap();
+        assert_eq!(dump_status(&w), vec![None]);
     }
 }
