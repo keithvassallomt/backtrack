@@ -18,3 +18,13 @@ workspace = true
 backtrack-core.workspace = true
 clap.workspace = true
 tracing.workspace = true
+tokio.workspace = true
+zbus.workspace = true
+serde_json.workspace = true
+# `doctor` writes a compressed bundle; both are pure Rust, so no shelling out
+# to tar on a machine that may already be misbehaving.
+tar = "0.4"
+flate2 = "1"
+
+[dev-dependencies]
+tempfile = "3"

@@ -11,56 +11,8 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use backtrack_core::config::Config;
 use serde::{Deserialize, Serialize};
-use zbus::zvariant::Type;
 
 use super::error::{DaemonError, Result};
-
-/// What `GetStatus` answers with.
-///
-/// A struct rather than a loose dictionary: the shape is part of the published
-/// interface, so it belongs in the introspection output where a client can see
-/// it and a snapshot test can pin it.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
-pub struct Status {
-    /// One of health.md's states, as its documented spelling.
-    pub state: String,
-    /// When the last backup succeeded, as seconds since the epoch; 0 for never.
-    pub last_backup: u64,
-    /// When the next scheduled backup is due; 0 when the schedule is manual or
-    /// currently paused.
-    pub next_backup: u64,
-    /// Whether the destination answered the last time it was probed.
-    pub destination_reachable: bool,
-    /// Bytes the offline spool is currently holding.
-    pub spool_bytes: u64,
-    /// The job currently running, or 0 when idle.
-    pub active_job: u64,
-    /// When the current pause lifts; 0 when not paused.
-    pub paused_until: u64,
-    /// Whether a repository has been configured at all.
-    pub configured: bool,
-}
-
-/// One result row from `SearchFiles`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
-pub struct SearchResult {
-    /// Archive-relative path.
-    pub path: String,
-    pub name: String,
-    /// "file", "dir", or "symlink".
-    pub kind: String,
-    /// First and last archive sequence the path appears in.
-    pub first_seq: i64,
-    pub last_seq: i64,
-    /// Timestamps of those archives, seconds since the epoch.
-    pub first_ts: i64,
-    pub last_ts: i64,
-    /// How many distinct versions the path has had.
-    pub versions: u32,
-    /// Whether the file still exists in the newest archive. A false here is what
-    /// drives the "deleted after this" badge.
-    pub exists_today: bool,
-}
 
 /// What to do when a restore would overwrite something.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]

@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // SPDX-FileCopyrightText: 2026 Keith Vassallo <keith@vassallo.cloud>
 
-//! The names that identify Backtrack on the session bus.
+//! The published D-Bus contract: the names that identify Backtrack on the
+//! session bus, and the payload types its methods return.
 //!
-//! Only the names live here — the daemon implements the interface and the
+//! The names live here — the daemon implements the interface and the
 //! clients call it, but both have to agree on what to call, so the strings sit
 //! in the one crate they both depend on. There is no zbus dependency in this
 //! module.
@@ -15,6 +16,63 @@
 //! sounds: dev mode already redirects the data directory, so a dev daemon
 //! answering the real GUI would show an empty timeline for a machine that is in
 //! fact fully backed up.
+//!
+//! The payload types live here for the same reason: the daemon marshals them
+//! and every client unmarshals them, so a single definition is the only way the
+//! two cannot drift apart.
+
+use serde::{Deserialize, Serialize};
+use zvariant::Type;
+
+/// What `GetStatus` answers with.
+///
+/// A struct rather than a loose dictionary: the shape is part of the published
+/// interface, so it belongs in the introspection output where a client can see
+/// it and a snapshot test can pin it.
+///
+/// Times are seconds since the epoch, with `0` meaning "never" or "not
+/// applicable" — D-Bus has no null, and inventing one per field would be worse
+/// than one convention applied everywhere.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+pub struct Status {
+    /// One of health.md's states, as its documented spelling.
+    pub state: String,
+    /// When the last backup succeeded.
+    pub last_backup: u64,
+    /// When the next scheduled backup is due; 0 when manual or paused.
+    pub next_backup: u64,
+    /// Whether the destination answered the last time it was probed.
+    pub destination_reachable: bool,
+    /// Bytes the offline spool is currently holding.
+    pub spool_bytes: u64,
+    /// The job currently running, or 0 when idle.
+    pub active_job: u64,
+    /// When the current pause lifts; 0 when not paused.
+    pub paused_until: u64,
+    /// Whether a repository has been configured at all.
+    pub configured: bool,
+}
+
+/// One result row from `SearchFiles`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+pub struct SearchResult {
+    /// Archive-relative path.
+    pub path: String,
+    pub name: String,
+    /// "file", "dir", "symlink", or "other".
+    pub kind: String,
+    /// First and last archive sequence the path appears in.
+    pub first_seq: i64,
+    pub last_seq: i64,
+    /// Timestamps of those archives, seconds since the epoch.
+    pub first_ts: i64,
+    pub last_ts: i64,
+    /// How many distinct versions the path has had.
+    pub versions: u32,
+    /// Whether the file still exists in the newest archive. A false here is what
+    /// drives the "deleted after this" badge.
+    pub exists_today: bool,
+}
 
 /// The well-known bus name of an installed daemon.
 pub const BUS_NAME: &str = "org.backtrack.Daemon1";

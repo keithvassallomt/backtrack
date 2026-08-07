@@ -12,7 +12,7 @@
 > tasks: add them here + to the stage file, then `just provision-board-apply`.
 > See [../CLAUDE.md](../CLAUDE.md) for the full workflow.
 
-**Current stage:** 3 (in progress — T1–T4 done) → next: S03-T5
+**Current stage:** 3 (complete) → next: Stage 4
 **Last updated:** 2026-08-07
 
 ## Stage 0 — Bootstrap ([stage file](stages/stage-00-bootstrap.md))
@@ -46,7 +46,7 @@
 - [x] S03-T2 Job model (queue, IDs, cancel/pause, progress events)
 - [x] S03-T3 Full org.backtrack.Daemon1 interface + signals
 - [x] S03-T4 systemd user units + D-Bus activation
-- [ ] S03-T5 backtrack CLI mapping the interface (incl. status --json, doctor)
+- [x] S03-T5 backtrack CLI mapping the interface (incl. status --json, doctor)
 
 ## Stage 4 — Backup pipeline ([stage file](stages/stage-04-backup-pipeline.md))
 - [ ] S04-T1 Scheduler (timer, missed-run catch-up, pause/resume)
@@ -341,3 +341,23 @@
   therefore reported "never backed up" for a machine with 30 archives, while a
   second call reported the truth. Startup now finishes all state assembly before
   claiming the name; verified over 8 consecutive cold starts.
+- 2026-08-07 (S03-T5): `Status` and `SearchResult` moved from the daemon into
+  `core::dbus`, so the payloads have exactly one definition rather than a copy
+  per client that can drift silently into a runtime unmarshalling error. Core
+  gained `zvariant` (the type system only, not a D-Bus implementation).
+  `--json` is treated as an interface with the same seriousness as the D-Bus
+  one — pinned by a golden test, because somebody will put it in a monitoring
+  script and never look at it again. On-the-wire `0`-means-never becomes JSON
+  `null`: a script comparing `last_backup < cutoff` would read 0 as 1970 and
+  conclude a healthy machine was decades overdue. The human rendering is
+  explicitly *not* pinned and may be rewritten whenever it reads better.
+  `doctor` redaction matches the *shape* of a secret assignment (a secret-ish
+  word followed by `=` or `:`) rather than a list of field names, so it covers
+  TOML, JSON, JSONL log fields and env dumps with one rule and keeps working
+  when a new field name appears; the keyring is never read. Verified by planting
+  a passphrase in `BORG_PASSPHRASE`, running the real command, extracting the
+  real bundle and grepping every file — with a sanity check that the grep was
+  not vacuous. **Bug found while checking live output:** an unconfigured machine
+  computes `HEALTHY` (correctly — nothing has failed), so `status` printed "Your
+  files are backed up" directly above "no destination is set up". The CLI now
+  leads with configuredness and overrides the health headline entirely.

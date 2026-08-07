@@ -46,10 +46,11 @@ use zbus::zvariant::OwnedFd;
 
 use crate::jobs::{JobFactory, JobKind, JobRegistry, JobState, JobUpdate, Outcome};
 
+pub use backtrack_core::dbus::{SearchResult, Status};
 pub use error::{DaemonError, Result};
 pub use health::{HealthInputs, HealthState};
 pub use preview::PreviewCache;
-pub use state::{PauseState, RestorePolicy, SearchResult, Status};
+pub use state::{PauseState, RestorePolicy};
 
 use state::{config_document, config_get, config_set, next_due, to_epoch};
 
