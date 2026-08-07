@@ -41,10 +41,29 @@ pub struct Status {
     pub last_backup: u64,
     /// When the next scheduled backup is due; 0 when manual or paused.
     pub next_backup: u64,
-    /// Whether the destination answered the last time it was probed.
+    /// Whether the destination answered the last time it was probed. `false`
+    /// is what "offline" means everywhere in the interface — there is no
+    /// separate flag, because two fields that must agree are two fields that
+    /// can disagree.
     pub destination_reachable: bool,
-    /// Bytes the offline spool is currently holding.
+    /// Bytes the local safety net is holding.
+    ///
+    /// Meaningful for the spool, which is a repository with a size. Filesystem
+    /// snapshots share their extents with the live files, so what they "use" is
+    /// only what has diverged since — a figure that costs a full tree scan to
+    /// compute, and is near zero when it matters. Reported as 0 in that mode;
+    /// [`Status::local_snapshots`] is the number to show.
     pub spool_bytes: u64,
+    /// How changes are protected while the destination is away: `spool`,
+    /// `fs-snapshot`, or `off`.
+    pub offline_mode: String,
+    /// Snapshots currently held on this computer, of either kind. What the
+    /// Storage preferences page counts, and what the timeline badges as "on
+    /// this computer".
+    pub local_snapshots: u32,
+    /// How many of those the destination has caught up with, and which will
+    /// therefore be discarded in due course.
+    pub expirable_snapshots: u32,
     /// The job currently running, or 0 when idle.
     pub active_job: u64,
     /// When the current pause lifts; 0 when not paused.

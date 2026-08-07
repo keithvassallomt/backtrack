@@ -99,6 +99,11 @@ pub struct LocalArchiveRow {
     pub name: String,
     /// When the snapshot was taken, epoch seconds.
     pub ts: i64,
+    /// Which local store holds it — `spool` or `fs-snapshot`.
+    pub repo: String,
+    /// When it may be discarded; `None` while it is still the only copy of the
+    /// versions it holds.
+    pub expirable_at: Option<i64>,
 }
 
 /// One `archives` row, as [`IndexWriter::sync_archives`] needs it.
@@ -606,19 +611,66 @@ impl IndexWriter {
     /// to give, the oldest snapshot is the one to let go of. The timestamp is
     /// what snapshot expiry needs, which works on age rather than on size.
     pub fn archives_in(&self, repo: Repo) -> Result<Vec<LocalArchiveRow>> {
-        let mut stmt = self
-            .conn
-            .prepare("SELECT seq, name, ts FROM archives WHERE repo = ?1 ORDER BY seq")?;
+        let mut stmt = self.conn.prepare(
+            "SELECT seq, name, ts, repo, expirable_at FROM archives
+             WHERE repo = ?1 ORDER BY seq",
+        )?;
         let rows = stmt
             .query_map([repo.as_str()], |r| {
                 Ok(LocalArchiveRow {
                     seq: r.get(0)?,
                     name: r.get(1)?,
                     ts: r.get(2)?,
+                    repo: r.get(3)?,
+                    expirable_at: r.get(4)?,
                 })
             })?
             .collect::<std::result::Result<_, _>>()?;
         Ok(rows)
+    }
+
+    /// Every locally-held snapshot, of either kind, oldest first.
+    pub fn local_archives(&self) -> Result<Vec<LocalArchiveRow>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT seq, name, ts, repo, expirable_at FROM archives
+             WHERE repo IN ('spool','fs-snapshot') ORDER BY seq",
+        )?;
+        let rows = stmt
+            .query_map([], |r| {
+                Ok(LocalArchiveRow {
+                    seq: r.get(0)?,
+                    name: r.get(1)?,
+                    ts: r.get(2)?,
+                    repo: r.get(3)?,
+                    expirable_at: r.get(4)?,
+                })
+            })?
+            .collect::<std::result::Result<_, _>>()?;
+        Ok(rows)
+    }
+
+    /// Mark every locally-held snapshot that is not already marked as
+    /// discardable from `at`.
+    ///
+    /// Called when a backup to the real destination succeeds. From that moment
+    /// the current state of every file is off the machine, so what these still
+    /// hold is only the *intermediate* versions made while the destination was
+    /// away — the 10:00, 11:00 and 12:00 edits of a file that changed several
+    /// times. Those are worth keeping for a while, and not forever.
+    ///
+    /// Only unmarked rows are touched, so a snapshot's clock starts at the
+    /// first catch-up and is not reset by every backup afterwards.
+    ///
+    /// BORG2: with `borg transfer`, these archives could be moved into the
+    /// primary repository instead of expiring — the intermediate versions would
+    /// survive rather than being discarded. Replace this and the expiry sweep
+    /// when Borg 2 is a foundation worth standing on.
+    pub fn mark_expirable(&mut self, at: i64) -> Result<usize> {
+        Ok(self.conn.execute(
+            "UPDATE archives SET expirable_at = ?1
+             WHERE repo IN ('spool','fs-snapshot') AND expirable_at IS NULL",
+            params![at],
+        )?)
     }
 
     /// Every archive row, oldest first.

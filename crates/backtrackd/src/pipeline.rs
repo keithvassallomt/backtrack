@@ -679,7 +679,8 @@ async fn run_offline(
     }
 
     // ── Archive it ──
-    let archive = crate::offline::local_archive_name(plan.created_at);
+    let taken: Vec<String> = existing.iter().map(|a| a.name.clone()).collect();
+    let (archive, created_at) = crate::offline::next_local_name(plan.created_at, &taken);
     let spec = CreateSpec {
         archive_name: archive.clone(),
         sources: plan.walk.sources.clone(),
@@ -693,7 +694,7 @@ async fn run_offline(
         excludes: plan.excludes.clone(),
         compression: plan.compression,
         one_file_system: plan.walk.one_file_system,
-        created_at: plan.created_at,
+        created_at,
     };
     let files = spec.paths.len();
     drive(plan.engine.create(&spec).await?, sink, PHASE_ARCHIVING).await?;
@@ -710,7 +711,7 @@ async fn run_offline(
             engine: &plan.engine,
             index: &plan.index,
             archive: &archive,
-            created_at: plan.created_at,
+            created_at,
             repo: Repo::Spool,
             delta: true,
         },
@@ -781,7 +782,14 @@ pub fn start_snapshot_backup(plan: SnapshotPlan) -> JobStream {
 }
 
 async fn run_snapshot(plan: &SnapshotPlan, sink: &JobSink) -> Result<JobSummary, EngineError> {
-    let name = crate::offline::local_archive_name(plan.created_at);
+    let index = Arc::clone(&plan.index);
+    let taken =
+        tokio::task::spawn_blocking(move || index.lock().unwrap().archives_in(Repo::FsSnapshot))
+            .await
+            .map_err(joined)?
+            .map_err(indexing)?;
+    let taken: Vec<String> = taken.into_iter().map(|row| row.name).collect();
+    let (name, created_at) = crate::offline::next_local_name(plan.created_at, &taken);
     let root = plan.snapshots_dir.join(&name);
 
     sink.send(JobEvent::Progress {
@@ -839,8 +847,7 @@ async fn run_snapshot(plan: &SnapshotPlan, sink: &JobSink) -> Result<JobSummary,
     .await
     .map_err(joined)?;
 
-    let ts = plan
-        .created_at
+    let ts = created_at
         .duration_since(UNIX_EPOCH)
         .unwrap_or(Duration::ZERO)
         .as_secs() as i64;

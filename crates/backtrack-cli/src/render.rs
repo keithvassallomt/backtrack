@@ -32,6 +32,14 @@ pub fn status_json(status: &Status, now: SystemTime) -> serde_json::Value {
         "paused_until": epoch_field(status.paused_until),
         "active_job": if status.active_job == 0 { serde_json::Value::Null } else { status.active_job.into() },
         "spool_bytes": status.spool_bytes,
+        // What is being held on this computer while the destination is away.
+        // `offline` is derived rather than sent, because a script asking "am I
+        // away from my backups?" should not have to know that the answer is
+        // spelled as the negation of something else.
+        "offline": !status.destination_reachable,
+        "offline_mode": status.offline_mode,
+        "local_snapshots": status.local_snapshots,
+        "expirable_snapshots": status.expirable_snapshots,
     })
 }
 
@@ -100,11 +108,20 @@ pub fn status_human(status: &Status, now: SystemTime) -> String {
         }
     ));
 
-    if status.spool_bytes > 0 {
-        out.push_str(&format!(
-            "  On this PC    {} held locally\n",
-            format_bytes(status.spool_bytes)
-        ));
+    if status.local_snapshots > 0 {
+        // Bytes only when there are bytes to speak of: filesystem snapshots
+        // share their storage with the live files, so a "0 B" beside a count of
+        // fourteen would read as a bug rather than as the truth.
+        let held = if status.spool_bytes > 0 {
+            format!(
+                "{} · {}",
+                plural(status.local_snapshots, "snapshot"),
+                format_bytes(status.spool_bytes)
+            )
+        } else {
+            plural(status.local_snapshots, "snapshot")
+        };
+        out.push_str(&format!("  On this PC    {held}\n"));
     }
     if status.active_job > 0 {
         out.push_str(&format!("  Running       job {}\n", status.active_job));
@@ -211,6 +228,11 @@ pub fn relative(time: SystemTime, now: SystemTime) -> String {
     )
 }
 
+/// "1 snapshot" / "14 snapshots".
+fn plural(count: u32, noun: &str) -> String {
+    format!("{count} {noun}{}", if count == 1 { "" } else { "s" })
+}
+
 /// Human-readable byte counts.
 pub fn format_bytes(bytes: u64) -> String {
     const UNITS: [&str; 5] = ["B", "kB", "MB", "GB", "TB"];
@@ -267,6 +289,9 @@ mod tests {
             next_backup: 1_700_003_600,
             destination_reachable: true,
             spool_bytes: 0,
+            offline_mode: "spool".into(),
+            local_snapshots: 0,
+            expirable_snapshots: 0,
             active_job: 0,
             paused_until: 0,
             configured: true,
@@ -291,6 +316,10 @@ mod tests {
             "paused_until": null,
             "active_job": null,
             "spool_bytes": 0u64,
+            "offline": false,
+            "offline_mode": "spool",
+            "local_snapshots": 0u32,
+            "expirable_snapshots": 0u32,
         });
         assert_eq!(json, expected);
     }
@@ -321,6 +350,55 @@ mod tests {
         let json = status_json(&status, at(1_700_001_800));
         assert_eq!(json["paused"], serde_json::Value::Bool(true));
         assert_eq!(json["paused_until"], serde_json::json!(1_700_010_000u64));
+    }
+
+    #[test]
+    fn the_offline_block_reports_what_is_held_on_this_computer() {
+        let status = Status {
+            destination_reachable: false,
+            spool_bytes: 2_500_000_000,
+            offline_mode: "spool".into(),
+            local_snapshots: 14,
+            expirable_snapshots: 3,
+            ..status()
+        };
+        let json = status_json(&status, at(1_700_001_800));
+        assert_eq!(json["offline"], serde_json::Value::Bool(true));
+        assert_eq!(json["offline_mode"], "spool");
+        assert_eq!(json["local_snapshots"], serde_json::json!(14u32));
+        assert_eq!(json["expirable_snapshots"], serde_json::json!(3u32));
+
+        let text = status_human(&status, at(1_700_001_800));
+        assert!(text.contains("14 snapshots"), "got: {text}");
+        assert!(text.contains("2.5 GB"), "got: {text}");
+    }
+
+    #[test]
+    fn a_snapshot_count_without_bytes_does_not_print_a_misleading_zero() {
+        // Filesystem snapshots share their storage with the live files, so
+        // "0 B" beside a count of fourteen would read as a bug.
+        let status = Status {
+            offline_mode: "fs-snapshot".into(),
+            local_snapshots: 14,
+            spool_bytes: 0,
+            ..status()
+        };
+        let text = status_human(&status, at(1_700_001_800));
+        assert!(text.contains("14 snapshots"), "got: {text}");
+        assert!(!text.contains("0 B"), "got: {text}");
+    }
+
+    #[test]
+    fn nothing_held_locally_says_nothing_at_all() {
+        let text = status_human(&status(), at(1_700_001_800));
+        assert!(!text.contains("On this PC"), "got: {text}");
+    }
+
+    #[test]
+    fn one_snapshot_is_singular() {
+        assert_eq!(plural(1, "snapshot"), "1 snapshot");
+        assert_eq!(plural(0, "snapshot"), "0 snapshots");
+        assert_eq!(plural(14, "snapshot"), "14 snapshots");
     }
 
     #[test]

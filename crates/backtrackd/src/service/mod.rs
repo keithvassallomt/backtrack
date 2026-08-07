@@ -40,6 +40,7 @@ use backtrack_core::paths;
 use backtrack_core::secret::SecretStore;
 use backtrack_core::state::RuntimeState;
 use futures::future::BoxFuture;
+use futures::StreamExt;
 use tokio::io::AsyncWriteExt;
 use tokio::sync::Notify;
 use tracing::{debug, info, warn};
@@ -274,11 +275,102 @@ impl Shared {
 
     /// What to do the moment the destination comes back.
     ///
-    /// Filled in by S05-T4, which turns this into an immediate catch-up backup
-    /// and the expiry of everything the local safety net was holding. For now
-    /// the schedule is nudged so the ordinary path picks it up.
+    /// Back up **now**, not at the next scheduled tick. Until that backup lands,
+    /// the current state of every file exists in exactly one place — this
+    /// machine — and the whole offline design rests on closing that window as
+    /// soon as it can be closed. Waiting up to an hour because the cadence says
+    /// so would be the wrong answer to the one event the user cannot see.
+    ///
+    /// It still goes through preflight: reconnecting on a phone tether, on
+    /// battery, is a reason to wait, and those gates already know it.
     async fn on_reconnected(&self) {
+        match self.start_scheduled_backup().await {
+            Ok(Some(job)) => info!(job, "catching up now the destination is back"),
+            // A gate declined; the reason is logged there and the schedule will
+            // come round again.
+            Ok(None) => {}
+            Err(e) => warn!("could not start the catch-up backup: {e}"),
+        }
         self.wake_scheduler();
+    }
+
+    /// Fold a successful backup *to the real destination* into the local
+    /// safety net's bookkeeping.
+    ///
+    /// This is the moment everything changes for the local snapshots: the
+    /// current state of every file is now off the machine, so what they still
+    /// hold is only the intermediate versions from the offline window. Those
+    /// get a clock, and the ones whose clock has run out are removed.
+    ///
+    /// Deliberately not called for a local backup — that is the whole reason
+    /// `JobKind::Offline` exists as its own kind. Marking snapshots discardable
+    /// because *another local snapshot* succeeded would throw away the only
+    /// copy of the versions they hold.
+    async fn after_catch_up(&self) {
+        let Ok(index) = self.index() else { return };
+        let now = SystemTime::now();
+        let at = backtrack_core::state::to_epoch(Some(now)).unwrap_or(0) as i64;
+
+        let marking = Arc::clone(&index);
+        let marked =
+            tokio::task::spawn_blocking(move || marking.lock().unwrap().mark_expirable(at)).await;
+        match marked {
+            Ok(Ok(0)) => {}
+            Ok(Ok(count)) => info!(
+                count,
+                "the destination has caught up; local snapshots will expire in 30 days"
+            ),
+            Ok(Err(e)) => return warn!("could not date the local snapshots: {e}"),
+            Err(e) => return warn!("could not date the local snapshots: {e}"),
+        }
+
+        if let Err(e) = self.expire_local_snapshots(now).await {
+            // Housekeeping. The user is protected either way.
+            warn!("expired local snapshots could not be cleared: {e}");
+        }
+    }
+
+    /// Remove local snapshots whose time is up, from their store and the
+    /// catalogue together.
+    async fn expire_local_snapshots(&self, now: SystemTime) -> Result<()> {
+        let index = self.index()?;
+        let reading = Arc::clone(&index);
+        let held = tokio::task::spawn_blocking(move || reading.lock().unwrap().local_archives())
+            .await
+            .map_err(|e| DaemonError::InvalidConfig(e.to_string()))?
+            .map_err(DaemonError::from)?;
+
+        let (snapshots, spooled): (Vec<_>, Vec<_>) = held
+            .into_iter()
+            .filter(|row| crate::offline::expired(row, now))
+            .partition(|row| row.repo == backtrack_core::index::Repo::FsSnapshot.as_str());
+
+        if !snapshots.is_empty() {
+            let named: Vec<(i64, String)> =
+                snapshots.iter().map(|r| (r.seq, r.name.clone())).collect();
+            pipeline::expire_snapshots(&index, &self.snapshots_dir, &named).await?;
+        }
+
+        if !spooled.is_empty() {
+            let engine = self.spool_engine().await?;
+            let ids: Vec<ArchiveId> = spooled.iter().map(|r| ArchiveId(r.name.clone())).collect();
+            let mut stream = engine.delete_archives(&ids).await?;
+            while let Some(event) = stream.next().await {
+                if let backtrack_core::engine::JobEvent::Finished(result) = event {
+                    result?;
+                }
+            }
+            let seqs: Vec<i64> = spooled.iter().map(|r| r.seq).collect();
+            let index = Arc::clone(&index);
+            tokio::task::spawn_blocking(move || index.lock().unwrap().remove_archives(&seqs))
+                .await
+                .map_err(|e| DaemonError::InvalidConfig(e.to_string()))??;
+            info!(
+                count = spooled.len(),
+                "expired local snapshots removed from the spool"
+            );
+        }
+        Ok(())
     }
 
     /// Adopt a probe that can answer for the machine, once one is available.
@@ -591,7 +683,7 @@ impl Shared {
                     Ok(pipeline::start_snapshot_backup(plan))
                 }) as BoxFuture<'_, _>
             });
-            return Ok(Some(self.jobs.submit(JobKind::Backup, factory)));
+            return Ok(Some(self.jobs.submit(JobKind::Offline, factory)));
         }
 
         let engine = self.spool_engine().await?;
@@ -639,7 +731,7 @@ impl Shared {
                 Ok(stream)
             }) as BoxFuture<'_, _>
         });
-        let job = self.jobs.submit(JobKind::Backup, factory);
+        let job = self.jobs.submit(JobKind::Offline, factory);
         *self.offline_handle.lock().unwrap() = Some(handle);
         Ok(Some(job))
     }
@@ -662,6 +754,48 @@ impl Shared {
     /// Forget the detected mode, so the next offline tick works it out again.
     fn forget_offline_mode(&self) {
         *self.offline_mode.lock().unwrap() = None;
+    }
+
+    /// What the local safety net is currently holding, for `GetStatus`.
+    ///
+    /// Read from the catalogue rather than from a counter kept in step by hand:
+    /// the catalogue is what the timeline shows, so a number derived from
+    /// anything else could disagree with what the user is looking at.
+    async fn local_protection(&self) -> LocalProtection {
+        let config = self.config();
+        let mode = if config.storage.offline.enabled {
+            // Not `offline_mode()`: that probes, and probing takes a real
+            // filesystem snapshot. `GetStatus` is called whenever a window
+            // opens. Report what has already been worked out, and let the
+            // offline path do the finding out.
+            self.offline_mode
+                .lock()
+                .unwrap()
+                .as_ref()
+                .map(|mode| mode.as_str())
+                .unwrap_or(crate::offline::Mode::Spool.as_str())
+        } else {
+            "off"
+        };
+
+        let Ok(index) = self.index() else {
+            return LocalProtection {
+                mode: mode.to_string(),
+                ..LocalProtection::default()
+            };
+        };
+        let held = tokio::task::spawn_blocking(move || index.lock().unwrap().local_archives())
+            .await
+            .ok()
+            .and_then(|r| r.ok())
+            .unwrap_or_default();
+
+        LocalProtection {
+            bytes: crate::offline::directory_bytes(&self.spool_dir),
+            snapshots: held.len() as u32,
+            expirable: held.iter().filter(|r| r.expirable_at.is_some()).count() as u32,
+            mode: mode.to_string(),
+        }
     }
 
     /// Whether the local safety net is in a position to protect anything.
@@ -907,6 +1041,15 @@ impl Shared {
     }
 }
 
+/// What the local safety net is holding, as `GetStatus` reports it.
+#[derive(Debug, Default)]
+struct LocalProtection {
+    bytes: u64,
+    snapshots: u32,
+    expirable: u32,
+    mode: String,
+}
+
 /// Every file and directory the daemon writes.
 ///
 /// Grouped rather than passed one by one so a test can redirect the whole lot
@@ -999,13 +1142,16 @@ impl Daemon1 {
         } else {
             next_due(schedule.interval, schedule.last_attempt, now)
         };
+        let local = self.shared.local_protection().await;
         Ok(Status {
             state: self.shared.health().as_str().to_string(),
             last_backup: to_epoch(last_backup),
             next_backup: to_epoch(next),
-            destination_reachable: *self.shared.destination_reachable.lock().unwrap(),
-            // The spool arrives in Stage 5.
-            spool_bytes: 0,
+            destination_reachable: self.shared.destination_reachable(),
+            spool_bytes: local.bytes,
+            offline_mode: local.mode,
+            local_snapshots: local.snapshots,
+            expirable_snapshots: local.expirable,
             active_job: self.shared.active_job(),
             paused_until: to_epoch(paused_until),
             configured: config.is_configured(),
@@ -1414,7 +1560,9 @@ pub async fn fan_out_signals(shared: Arc<Shared>, emitter: SignalEmitter<'static
             } => {
                 let total = total.unwrap_or(0);
                 let _ = match kind {
-                    JobKind::Backup => {
+                    // Local protection is a backup as far as anyone watching is
+                    // concerned, and reports itself as one.
+                    JobKind::Backup | JobKind::Offline => {
                         Daemon1::backup_progress(&emitter, id, &phase, current, total).await
                     }
                     JobKind::Restore | JobKind::RestoreEverything => {
@@ -1432,6 +1580,12 @@ pub async fn fan_out_signals(shared: Arc<Shared>, emitter: SignalEmitter<'static
             JobUpdate::State { kind, state, .. } => {
                 if state.is_terminal() {
                     update_health(&shared, kind, &state);
+                    // A backup that reached the real destination is what starts
+                    // the local safety net's clock. Awaited here rather than
+                    // spawned so the marking cannot race the next backup.
+                    if kind == JobKind::Backup && state == JobState::Done(Outcome::Completed) {
+                        shared.after_catch_up().await;
+                    }
                     // The repository is free again, so a backup the scheduler
                     // declined to queue while busy can be reconsidered now
                     // rather than at the next tick.
@@ -1451,13 +1605,17 @@ pub async fn fan_out_signals(shared: Arc<Shared>, emitter: SignalEmitter<'static
 /// Fold a finished job into the facts health is computed from.
 fn update_health(shared: &Arc<Shared>, kind: JobKind, state: &JobState) {
     match state {
-        JobState::Done(Outcome::Completed) if kind == JobKind::Backup => {
+        JobState::Done(Outcome::Completed)
+            if matches!(kind, JobKind::Backup | JobKind::Offline) =>
+        {
             // A local snapshot counts, and health.md says so: the last success
             // is "the last backup that succeeded anywhere — network, spool, or
             // snapshot". A laptop that has been away for a week and protecting
             // itself hourly is not at risk, and must not be told it is.
             shared.record_backup_success();
-            shared.record_offline_outcome();
+            if kind == JobKind::Offline {
+                shared.record_offline_outcome();
+            }
         }
         // Only failures the catalogue calls blocking put the product in BROKEN;
         // a transient lock or an unreachable destination does not.

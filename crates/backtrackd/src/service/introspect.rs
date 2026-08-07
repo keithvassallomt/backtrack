@@ -24,7 +24,7 @@ pub const METHODS: &[(&str, &str, &str)] = &[
     ("CompareFile", "ss", "t"),
     ("GetConfig", "", "s"),
     ("GetConfigKey", "s", "s"),
-    ("GetStatus", "", "(sttbtttb)"),
+    ("GetStatus", "", "(sttbtsuuttb)"),
     ("ImportRepo", "ss", ""),
     ("Pause", "t", ""),
     ("PauseJob", "t", ""),

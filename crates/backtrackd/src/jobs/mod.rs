@@ -34,6 +34,12 @@ pub type JobId = u64;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum JobKind {
     Backup,
+    /// Protecting changes locally because the destination is away. A backup in
+    /// every way that matters to the user, and a distinct kind for one reason:
+    /// only a backup that reached the *real* destination lets the local
+    /// snapshots start expiring, and telling the two apart from bookkeeping
+    /// rather than from the job itself is how that goes wrong.
+    Offline,
     Restore,
     RestoreEverything,
     Index,
@@ -46,6 +52,7 @@ impl JobKind {
     /// Every kind, for exhaustiveness tests.
     pub const ALL: &'static [JobKind] = &[
         JobKind::Backup,
+        JobKind::Offline,
         JobKind::Restore,
         JobKind::RestoreEverything,
         JobKind::Index,
@@ -63,9 +70,11 @@ impl JobKind {
     /// take.
     pub fn access(self) -> RepoAccess {
         match self {
-            JobKind::Backup | JobKind::Prune | JobKind::Compact | JobKind::Check => {
-                RepoAccess::Exclusive
-            }
+            JobKind::Backup
+            | JobKind::Offline
+            | JobKind::Prune
+            | JobKind::Compact
+            | JobKind::Check => RepoAccess::Exclusive,
             JobKind::Restore | JobKind::RestoreEverything | JobKind::Index => RepoAccess::Shared,
         }
     }
@@ -90,6 +99,7 @@ impl JobKind {
     pub fn as_str(self) -> &'static str {
         match self {
             JobKind::Backup => "backup",
+            JobKind::Offline => "offline",
             JobKind::Restore => "restore",
             JobKind::RestoreEverything => "restore-everything",
             JobKind::Index => "index",
@@ -323,6 +333,7 @@ mod tests {
         // Exclusive: everything that writes to or rewrites the repository.
         for kind in [
             JobKind::Backup,
+            JobKind::Offline,
             JobKind::Prune,
             JobKind::Compact,
             JobKind::Check,

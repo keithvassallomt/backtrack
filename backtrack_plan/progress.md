@@ -59,8 +59,8 @@
 - [x] S05-T1 Destination reachability probe + network-change wakeup
 - [x] S05-T2 Spool repo: capped, changed-files-only archives
 - [x] S05-T3 btrfs detection + subvolume snapshot mode
-- [ ] S05-T4 Reconnect: immediate catch-up backup, spool expiry (~30 days)
-- [ ] S05-T5 Status surfaces ("on this computer" archives in index)
+- [x] S05-T4 Reconnect: immediate catch-up backup, spool expiry (~30 days)
+- [x] S05-T5 Status surfaces ("on this computer" archives in index)
 - [x] S05-T6 Borg warning exits (1, 100–127) are not backup failures
 
 ## Stage 6 — GTK timeline browser ([stage file](stages/stage-06-gtk-timeline.md))

@@ -665,6 +665,51 @@ async fn losing_the_destination_protects_the_changed_files_on_this_computer() {
 }
 
 #[tokio::test]
+async fn status_reports_what_is_held_on_this_computer() {
+    // S05-T5's acceptance: the offline block has to carry real numbers during
+    // the offline cycle, not placeholders.
+    let fixture = small_fixture().await;
+    let shared = Arc::clone(&fixture.shared);
+    let src = source(&shared);
+    let daemon = Daemon1::new(Arc::clone(&shared));
+
+    let job = daemon.backup_now().await.expect("backup starts");
+    wait_for_job(&shared, job).await;
+
+    let before = daemon.get_status().await.expect("status");
+    assert!(before.destination_reachable);
+    assert_eq!(before.local_snapshots, 0, "nothing held yet");
+    assert_eq!(before.offline_mode, "spool");
+
+    cut_the_destination(&shared);
+    std::fs::write(src.join("docs/a.txt"), b"edited while away").unwrap();
+    let job = shared
+        .start_scheduled_backup()
+        .await
+        .expect("not an error")
+        .expect("local protection runs");
+    wait_for_job(&shared, job).await;
+
+    let during = daemon.get_status().await.expect("status");
+    assert!(!during.destination_reachable, "the drive is not there");
+    assert_eq!(
+        during.local_snapshots, 1,
+        "and one snapshot is held locally"
+    );
+    assert_eq!(
+        during.expirable_snapshots, 0,
+        "nothing may expire until the destination catches up"
+    );
+    assert!(
+        during.spool_bytes > 0,
+        "the spool occupies real bytes and says so"
+    );
+    assert_eq!(during.state, "PROTECTED_LOCALLY", "and it is not a warning");
+
+    restore_the_destination(&shared);
+}
+
+#[tokio::test]
 async fn an_offline_hour_with_no_edits_takes_no_local_snapshot() {
     // The quiet case, and the one that decides whether a laptop left closed on
     // a desk fills its disk with identical snapshots.
@@ -798,10 +843,195 @@ async fn the_storage_cap_drops_the_oldest_local_snapshots_first() {
     restore_the_destination(&shared);
 }
 
+#[tokio::test]
+async fn reconnecting_catches_up_and_dates_the_local_snapshots() {
+    // The stage's end-to-end criterion: go offline, protect changes locally
+    // twice, come back, and find a catch-up archive in the real repository with
+    // the local snapshots marked for expiry rather than deleted on the spot —
+    // they still hold the intermediate versions from the offline window.
+    let fixture = small_fixture().await;
+    let shared = Arc::clone(&fixture.shared);
+    let src = source(&shared);
+
+    // The signal fan-out is what folds a finished job back into the daemon's
+    // state, so the reconnect bookkeeping only happens with it running — as it
+    // always is in the real daemon.
+    let (server, _client) = connect(Arc::clone(&shared)).await;
+    let emitter = SignalEmitter::new(&server, PATH).unwrap();
+    tokio::spawn(fan_out_signals(Arc::clone(&shared), emitter.to_owned()));
+
+    let job = Daemon1::new(Arc::clone(&shared))
+        .backup_now()
+        .await
+        .expect("backup starts");
+    wait_for_job(&shared, job).await;
+    cut_the_destination(&shared);
+
+    // Two offline hours, each editing something.
+    for name in ["docs/a.txt", "docs/b.txt"] {
+        std::fs::write(src.join(name), format!("edited {name}")).unwrap();
+        let job = shared
+            .start_scheduled_backup()
+            .await
+            .expect("not an error")
+            .expect("local protection runs");
+        wait_for_job(&shared, job).await;
+    }
+
+    let spool = shared.spool_engine().await.expect("spool engine");
+    assert_eq!(
+        spool.list_archives().await.unwrap().len(),
+        2,
+        "two local snapshots were taken"
+    );
+    // Nothing may expire yet: these are the only copy of what they hold.
+    let held = local_rows(&shared).await;
+    assert_eq!(held.len(), 2);
+    assert!(
+        held.iter().all(|row| row.expirable_at.is_none()),
+        "nothing expires while it is the only copy"
+    );
+
+    restore_the_destination(&shared);
+
+    // The reconnect path, as the destination watcher would drive it.
+    let before = engine(&shared).list_archives().await.unwrap().len();
+    shared.destination_changed(true).await;
+    // Wait for the catch-up backup, and for the bookkeeping that follows it.
+    let mut marked = Vec::new();
+    for _ in 0..300 {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        marked = local_rows(&shared).await;
+        if !marked.is_empty() && marked.iter().all(|row| row.expirable_at.is_some()) {
+            break;
+        }
+    }
+
+    let after = engine(&shared).list_archives().await.unwrap();
+    assert!(
+        after.len() > before,
+        "reconnecting must take a backup to the real destination at once, \
+         had {before} archives and now has {}",
+        after.len()
+    );
+    assert_eq!(marked.len(), 2, "the local snapshots are still there");
+    assert!(
+        marked.iter().all(|row| row.expirable_at.is_some()),
+        "and are now dated for expiry rather than deleted"
+    );
+}
+
+#[tokio::test]
+async fn local_snapshots_are_removed_once_their_time_is_up() {
+    // The time-travel half. Rather than waiting 30 days, the marking is moved
+    // into the past and the sweep is asked to run at "now".
+    let fixture = small_fixture().await;
+    let shared = Arc::clone(&fixture.shared);
+    let src = source(&shared);
+
+    let job = Daemon1::new(Arc::clone(&shared))
+        .backup_now()
+        .await
+        .expect("backup starts");
+    wait_for_job(&shared, job).await;
+    cut_the_destination(&shared);
+
+    std::fs::write(src.join("docs/a.txt"), b"edited while away").unwrap();
+    let job = shared
+        .start_scheduled_backup()
+        .await
+        .expect("not an error")
+        .expect("local protection runs");
+    wait_for_job(&shared, job).await;
+    restore_the_destination(&shared);
+
+    let long_ago =
+        SystemTime::now() - crate::offline::EXPIRE_AFTER_CATCH_UP - Duration::from_secs(1);
+    let at = backtrack_core::state::to_epoch(Some(long_ago)).unwrap() as i64;
+    let index = shared.index().unwrap();
+    let marked = tokio::task::spawn_blocking(move || index.lock().unwrap().mark_expirable(at))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        marked, 1,
+        "the local snapshot is dated as if the destination caught up a month ago"
+    );
+
+    shared
+        .expire_local_snapshots(SystemTime::now())
+        .await
+        .expect("the sweep runs");
+
+    let spool = shared.spool_engine().await.expect("spool engine");
+    assert!(
+        spool.list_archives().await.unwrap().is_empty(),
+        "the expired snapshot is gone from the spool repository"
+    );
+    assert!(
+        local_rows(&shared).await.is_empty(),
+        "and from the catalogue"
+    );
+    // The real backup is untouched: expiry removes local copies, never the
+    // repository the user is actually protected by.
+    assert!(!engine(&shared).list_archives().await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn an_unmarked_local_snapshot_is_never_swept_away() {
+    // The rule that stops expiry losing data: while the destination has not
+    // caught up, the local snapshot is the only copy of what it holds.
+    let fixture = small_fixture().await;
+    let shared = Arc::clone(&fixture.shared);
+    let src = source(&shared);
+
+    let job = Daemon1::new(Arc::clone(&shared))
+        .backup_now()
+        .await
+        .expect("backup starts");
+    wait_for_job(&shared, job).await;
+    cut_the_destination(&shared);
+
+    std::fs::write(src.join("docs/a.txt"), b"only copy").unwrap();
+    let job = shared
+        .start_scheduled_backup()
+        .await
+        .expect("not an error")
+        .expect("local protection runs");
+    wait_for_job(&shared, job).await;
+
+    // A sweep far in the future still takes nothing, because nothing is marked.
+    shared
+        .expire_local_snapshots(SystemTime::now() + Duration::from_secs(365 * 24 * 3_600))
+        .await
+        .expect("the sweep runs");
+
+    assert_eq!(
+        local_rows(&shared).await.len(),
+        1,
+        "an unmarked snapshot survives any amount of time passing"
+    );
+    restore_the_destination(&shared);
+}
+
 /// The engine the fixture installed. Reaching into the private field is fine
 /// here: this module is a child of `service`.
 fn engine(shared: &Arc<Shared>) -> Arc<dyn backtrack_core::engine::BackupEngine> {
     shared.engine.lock().unwrap().clone().expect("engine set")
+}
+
+/// The locally-held snapshot rows, read without taking the catalogue lock on
+/// the runtime thread.
+///
+/// The trap S04-T5 found, from the other side: an ingest in flight holds that
+/// lock from a blocking thread while waiting for the next batch from its async
+/// half. Blocking a `#[tokio::test]`'s single worker on it means the async half
+/// can never run, and the whole thing wedges.
+async fn local_rows(shared: &Arc<Shared>) -> Vec<backtrack_core::index::LocalArchiveRow> {
+    let index = shared.index().unwrap();
+    tokio::task::spawn_blocking(move || index.lock().unwrap().local_archives().unwrap())
+        .await
+        .unwrap()
 }
 
 /// Block until a job reaches a terminal state.

@@ -32,6 +32,7 @@
 //!   rather than quietly growing without limit.
 
 use std::path::{Path, PathBuf};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 /// One local snapshot, as the cap planner sees it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -210,14 +211,76 @@ pub async fn detect(sources: &[PathBuf], snapshots_dir: &Path) -> Mode {
     Mode::Spool
 }
 
+/// How long a locally-held snapshot is kept after the destination has caught
+/// up.
+///
+/// Not arbitrary: what these still hold once a real backup has succeeded is the
+/// *intermediate* versions from the offline window — the 10:00, 11:00 and 12:00
+/// edits of a file that changed several times while away. A month is long
+/// enough that somebody who realises on their return that they want the
+/// mid-afternoon version can still have it, and short enough that a laptop does
+/// not carry an offline week around forever.
+pub const EXPIRE_AFTER_CATCH_UP: Duration = Duration::from_secs(30 * 24 * 3_600);
+
+/// Whether a locally-held snapshot may be discarded at `now`.
+///
+/// Two rules, and which applies depends on what kind of snapshot it is:
+///
+/// - **Nothing expires until the destination has caught up.** An unmarked
+///   archive is the only copy of the versions it holds, and discarding it would
+///   be losing data to save disk.
+/// - Once marked, a **spool** archive lives for [`EXPIRE_AFTER_CATCH_UP`],
+///   while a **filesystem snapshot** also has its own daily retention and goes
+///   at whichever comes first. Snapshots are near-free but they pin extents, so
+///   yesterday's hourlies stop earning their keep quickly.
+pub fn expired(row: &backtrack_core::index::LocalArchiveRow, now: SystemTime) -> bool {
+    let Some(marked) = row.expirable_at else {
+        return false;
+    };
+    let marked = UNIX_EPOCH + Duration::from_secs(marked.max(0) as u64);
+    let due = marked + EXPIRE_AFTER_CATCH_UP;
+    let due = if row.repo == backtrack_core::index::Repo::FsSnapshot.as_str() {
+        let created = UNIX_EPOCH + Duration::from_secs(row.ts.max(0) as u64);
+        due.min(crate::snapshot::expires_at(created, None))
+    } else {
+        due
+    };
+    due <= now
+}
+
 /// The archive name for a local snapshot taken at `now`.
 ///
 /// `bt-local-` rather than the primary's `bt-{hostname}-`, so a glance at a
 /// repository — or at a log line — says which kind of snapshot this is. The
 /// timestamp format is shared with the primary naming, so both sort
 /// lexicographically in chronological order.
-pub fn local_archive_name(now: std::time::SystemTime) -> String {
+pub fn local_archive_name(now: SystemTime) -> String {
     format!("bt-local-{}", crate::pipeline::iso8601_basic_at(now))
+}
+
+/// A local snapshot name that is not already taken, and the instant it names.
+///
+/// The name has one-second resolution, which reads well in a timeline and is
+/// unique for any realistic cadence — offline ticks are an hour apart. It is
+/// not unique for two snapshots taken inside the same second, and Borg does not
+/// forgive that: `borg create` refuses with "Archive … already exists" and the
+/// run fails outright.
+///
+/// That is reachable in three ways worth defending against: pressing "Back Up
+/// Now" twice while away from the destination, the development interval
+/// override set to a second or two, and a retry after a failure that was quick.
+/// Rather than making the name ugly for everyone, a colliding snapshot is dated
+/// to the next free second — off by under a second from when it was taken,
+/// against a run that would otherwise not happen at all.
+pub fn next_local_name(now: SystemTime, taken: &[String]) -> (String, SystemTime) {
+    let mut at = now;
+    loop {
+        let name = local_archive_name(at);
+        if !taken.iter().any(|existing| existing == &name) {
+            return (name, at);
+        }
+        at += Duration::from_secs(1);
+    }
 }
 
 #[cfg(test)]
@@ -318,6 +381,42 @@ mod tests {
     fn a_spool_that_does_not_exist_yet_occupies_nothing() {
         let dir = tempfile::tempdir().unwrap();
         assert_eq!(directory_bytes(&dir.path().join("not-there")), 0);
+    }
+
+    #[test]
+    fn a_name_that_is_already_taken_moves_to_the_next_free_second() {
+        // Borg refuses a duplicate archive name outright ("Archive … already
+        // exists", exit 30), which fails the whole run. Two local snapshots
+        // inside one second are reachable by pressing Back Up Now twice while
+        // away, or by the development interval override.
+        use std::time::UNIX_EPOCH;
+        let now = UNIX_EPOCH + Duration::from_secs(1_000);
+        let first = local_archive_name(now);
+        let (name, at) = next_local_name(now, std::slice::from_ref(&first));
+        assert_ne!(name, first);
+        assert_eq!(at, now + Duration::from_secs(1));
+        assert_eq!(name, local_archive_name(now + Duration::from_secs(1)));
+    }
+
+    #[test]
+    fn a_free_name_is_used_as_is() {
+        use std::time::UNIX_EPOCH;
+        let now = UNIX_EPOCH + Duration::from_secs(1_000);
+        let (name, at) = next_local_name(now, &["bt-local-somethingelse".to_string()]);
+        assert_eq!(name, local_archive_name(now));
+        assert_eq!(at, now);
+    }
+
+    #[test]
+    fn several_collisions_in_a_row_still_terminate() {
+        use std::time::UNIX_EPOCH;
+        let now = UNIX_EPOCH + Duration::from_secs(1_000);
+        let taken: Vec<String> = (0..5)
+            .map(|i| local_archive_name(now + Duration::from_secs(i)))
+            .collect();
+        let (name, at) = next_local_name(now, &taken);
+        assert_eq!(at, now + Duration::from_secs(5));
+        assert!(!taken.contains(&name));
     }
 
     #[test]

@@ -14,7 +14,7 @@ use super::{IndexError, Result};
 
 /// The schema version this build of the crate expects. Bump when appending a
 /// migration.
-pub const SCHEMA_VERSION: i64 = 1;
+pub const SCHEMA_VERSION: i64 = 2;
 
 /// Ordered list of migrations. Index `i` migrates the database *to* version
 /// `i + 1`. The runner applies only those beyond the current version.
@@ -63,6 +63,16 @@ const MIGRATIONS: &[&str] = &[
     CREATE VIRTUAL TABLE fts_names USING fts5(name);
 
     CREATE TABLE meta(key TEXT PRIMARY KEY, value);
+    "#,
+    // ── v2 ── when a locally-held snapshot may be discarded.
+    r#"
+    -- Set on spool and fs-snapshot archives once a backup to the real
+    -- destination has succeeded: from that moment the current state of every
+    -- file is safely off the machine, and what these still hold is only the
+    -- intermediate versions made during the offline window. NULL means "still
+    -- carrying the load" — nothing has caught up yet, so nothing may be
+    -- discarded. Epoch seconds, like every other time in this schema.
+    ALTER TABLE archives ADD COLUMN expirable_at INTEGER;
     "#,
 ];
 
