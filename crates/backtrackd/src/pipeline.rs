@@ -167,6 +167,41 @@ async fn catch_up(plan: &CataloguePlan, sink: &JobSink) -> Result<JobSummary, En
     Ok(JobSummary::default())
 }
 
+/// Catalogue the single newest archive, and report how many are still
+/// outstanding.
+///
+/// The one piece of cataloguing that is *not* a background job. Adopting an
+/// existing repository with a year of history means a wizard that has just said
+/// "you're set up" opening onto an empty timeline, which reads as a failure —
+/// so the newest snapshot, the one anybody would look at first, is read before
+/// the import call returns. The rest follows in the background, newest to
+/// oldest, so the timeline fills in from the end people care about.
+pub async fn catalogue_newest(plan: &CataloguePlan) -> Result<usize, EngineError> {
+    let entries = plan.engine.list_archives().await?;
+    let index = Arc::clone(&plan.index);
+    tokio::task::spawn_blocking(move || {
+        index.lock().unwrap().sync_archives(Repo::Primary, &entries)
+    })
+    .await
+    .map_err(joined)?
+    .map_err(indexing)?;
+
+    let index = Arc::clone(&plan.index);
+    let pending = tokio::task::spawn_blocking(move || index.lock().unwrap().pending_archives())
+        .await
+        .map_err(joined)?
+        .map_err(indexing)?;
+
+    // `pending_archives` is newest first, so the head is the snapshot the user
+    // is about to be shown.
+    let Some((seq, name)) = pending.first().cloned() else {
+        return Ok(0);
+    };
+    let items = ingest_one(plan, seq, &name).await?;
+    info!(archive = %name, items, "newest snapshot catalogued");
+    Ok(pending.len() - 1)
+}
+
 /// Read one archive's listing into the catalogue.
 async fn ingest_one(plan: &CataloguePlan, seq: i64, name: &str) -> Result<usize, EngineError> {
     let mut listing = plan
@@ -966,6 +1001,168 @@ mod tests {
         assert!(
             index.lock().unwrap().pending_archives().unwrap().is_empty(),
             "resuming caught up whatever the first run did not reach"
+        );
+    }
+
+    #[tokio::test]
+    async fn adopting_a_repository_makes_the_newest_snapshot_browsable_first() {
+        // The acceptance criterion for a first run: thirty archives, and the one
+        // the user is about to be shown is readable before anything else has
+        // been touched.
+        let engine = Arc::new(
+            MockEngine::default()
+                .with_archives(
+                    (1..=30)
+                        .map(|i| archive(&format!("a{i:02}"), i * 1_000))
+                        .collect(),
+                )
+                .with_items(vec![item("home/a.txt", 1)]),
+        );
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("index.db");
+        let index = Arc::new(Mutex::new(IndexWriter::open(&path).unwrap()));
+
+        let remaining = catalogue_newest(&CataloguePlan {
+            engine: Arc::clone(&engine) as Arc<dyn BackupEngine>,
+            index: Arc::clone(&index),
+        })
+        .await
+        .expect("the newest archive is catalogued");
+
+        assert_eq!(remaining, 29, "the rest are left for the background");
+        let reader = IndexReader::open(&path).unwrap();
+        assert_eq!(
+            reader.archives_overview().unwrap().len(),
+            30,
+            "the whole history is known about straight away"
+        );
+        assert_eq!(
+            reader.folder_at("home", 30).unwrap().len(),
+            1,
+            "and the newest snapshot can already be browsed"
+        );
+        assert!(
+            reader.folder_at("home", 1).unwrap().is_empty(),
+            "the oldest is not catalogued yet, and does not pretend to be"
+        );
+
+        // The background job then finishes the job.
+        drain_catalogue(start_catalogue(CataloguePlan {
+            engine,
+            index: Arc::clone(&index),
+        }))
+        .await
+        .expect("backfill completes");
+        assert!(index.lock().unwrap().pending_archives().unwrap().is_empty());
+        let reader = IndexReader::open(&path).unwrap();
+        assert_eq!(reader.folder_at("home", 1).unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_backfill_interrupted_by_a_restart_resumes_where_it_stopped() {
+        // "Resumes after restart via archives.status='pending' rows" — the
+        // resume state is a query against the catalogue, not anything held in
+        // memory, so a fresh process picks up exactly where the last one
+        // stopped. Modelled here by cataloguing a few archives, then starting
+        // over with a brand new writer over the same database.
+        let engine = Arc::new(
+            MockEngine::default()
+                .with_archives(
+                    (1..=10)
+                        .map(|i| archive(&format!("a{i:02}"), i * 1_000))
+                        .collect(),
+                )
+                .with_items(vec![item("home/a.txt", 1)]),
+        );
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("index.db");
+
+        {
+            let index = Arc::new(Mutex::new(IndexWriter::open(&path).unwrap()));
+            catalogue_newest(&CataloguePlan {
+                engine: Arc::clone(&engine) as Arc<dyn BackupEngine>,
+                index: Arc::clone(&index),
+            })
+            .await
+            .unwrap();
+            assert_eq!(index.lock().unwrap().pending_archives().unwrap().len(), 9);
+        }
+
+        // A new daemon over the same catalogue.
+        let index = Arc::new(Mutex::new(IndexWriter::open(&path).unwrap()));
+        assert_eq!(
+            index.lock().unwrap().pending_archives().unwrap().len(),
+            9,
+            "the outstanding work survived the restart"
+        );
+        drain_catalogue(start_catalogue(CataloguePlan {
+            engine,
+            index: Arc::clone(&index),
+        }))
+        .await
+        .expect("the new daemon finishes it");
+
+        assert!(index.lock().unwrap().pending_archives().unwrap().is_empty());
+        let reader = IndexReader::open(&path).unwrap();
+        for seq in 1..=10 {
+            assert_eq!(
+                reader.folder_at("home", seq).unwrap().len(),
+                1,
+                "archive {seq} is browsable"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn backfilling_newest_to_oldest_builds_the_same_catalogue_as_a_forward_ingest() {
+        // The catalogue must not depend on the direction it was filled in. Here
+        // a file changes half way through the history, so the intervals have a
+        // boundary that a naive backward pass would put in the wrong place.
+        let mut listings = Vec::new();
+        for i in 1..=6 {
+            listings.push(item("home/a.txt", if i <= 3 { 1 } else { 2 }));
+        }
+        let dir = tempfile::tempdir().unwrap();
+
+        // Forward, one archive at a time — the ordinary hourly path.
+        let forward_path = dir.path().join("forward.db");
+        {
+            let mut w = IndexWriter::open(&forward_path).unwrap();
+            for (i, listing) in listings.iter().enumerate() {
+                w.ingest_archive(
+                    &archive(&format!("a{:02}", i + 1), (i as i64 + 1) * 1_000),
+                    Repo::Primary,
+                    std::iter::once(listing.clone()),
+                )
+                .unwrap();
+            }
+        }
+
+        // Backward, through the backfill path.
+        let backward_path = dir.path().join("backward.db");
+        {
+            let mut w = IndexWriter::open(&backward_path).unwrap();
+            let entries: Vec<ArchiveMeta> = (1..=6)
+                .map(|i| archive(&format!("a{i:02}"), i * 1_000))
+                .collect();
+            w.sync_archives(Repo::Primary, &entries).unwrap();
+            for (seq, _) in w.pending_archives().unwrap() {
+                let listing = listings[seq as usize - 1].clone();
+                w.ingest_pending(seq, std::iter::once(listing)).unwrap();
+            }
+        }
+
+        let forward = IndexReader::open(&forward_path).unwrap();
+        let backward = IndexReader::open(&backward_path).unwrap();
+        assert_eq!(
+            forward.file_history("home/a.txt").unwrap(),
+            backward.file_history("home/a.txt").unwrap(),
+            "the direction of the backfill must not show in the result"
+        );
+        assert_eq!(
+            forward.file_history("home/a.txt").unwrap().len(),
+            2,
+            "one interval either side of the change"
         );
     }
 

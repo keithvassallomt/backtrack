@@ -53,7 +53,7 @@
 - [x] S04-T2 Preflight: battery (UPower), metered (NetworkManager), pause state
 - [x] S04-T3 create → stream-index → prune per retention → scheduled compact
 - [x] S04-T4 Checkpoint/interrupted-backup handling (hidden from timeline)
-- [ ] S04-T5 First-run backfill indexing (newest-first, background)
+- [x] S04-T5 First-run backfill indexing (newest-first, background)
 
 ## Stage 5 — Offline protection ([stage file](stages/stage-05-offline-protection.md))
 - [ ] S05-T1 Destination reachability probe + network-change wakeup
@@ -341,6 +341,43 @@
   therefore reported "never backed up" for a machine with 30 archives, while a
   second call reported the truth. Startup now finishes all state assembly before
   claiming the name; verified over 8 consecutive cold starts.
+- 2026-08-07 (S04-T5): `ImportRepo` returns once the **newest** snapshot is
+  browsable and leaves the rest to the background job, newest to oldest. Two
+  different kinds of work on purpose: the first is synchronous because the caller
+  is a wizard about to show a timeline, and a wizard that says "you're set up"
+  over an empty timeline reads as a failure; the second is a job because a year
+  of history is minutes of reading and nothing should wait on it, including that
+  method's reply. Resume needs no new machinery — the outstanding work is a query
+  (`archives.status = 'pending'`, newest first), so a fresh daemon picks up
+  exactly where the last one stopped, and startup reconciliation is the same code
+  path.
+  - **Bug found by a hung test, and it was a genuine deadlock.**
+    `uncatalogued_count` took the catalogue mutex directly on a runtime thread.
+    An ingest in flight holds that mutex in its blocking half while waiting for
+    the next batch of items, and the only thing that can send one is the async
+    half — which cannot run while the runtime thread is parked on the mutex. It
+    is now `async` and goes through `spawn_blocking`, where nothing depends on
+    the wait. The same shape would have deadlocked a multi-thread runtime under
+    load, not only the single-threaded test one.
+  - **Backfill priority:** a running backfill makes the scheduler report `busy`,
+    so a scheduled backup is *skipped* (not queued) and runs on the next tick
+    once the catalogue job ends, woken immediately by the job-completion waker.
+    Borg's own locking means `create` genuinely cannot run beside `list`, so the
+    delay is real but bounded and self-correcting. Real idle priority (nice/
+    ionice on the subprocess) would need `unsafe` `pre_exec` and is not worth it.
+  - **Verified live, and this is the strongest evidence Stage 4 has:** starting
+    from an unconfigured machine, `ImportRepo` against the 30-archive demo repo
+    returned with all 30 archives known and snapshot 30 browsable, 29 pending;
+    the background backfill finished in about 6 seconds. The resulting catalogue
+    is **structurally identical to the forward-built fixture** — the same 16
+    version rows with the same interval boundaries (`report.odt` splitting at 8
+    and 20, `notes.txt` at 25, `old-client-folder` ending at 15). Filling the
+    catalogue backwards produces exactly what filling it forwards does.
+  - **Finding for Stage 6:** Borg archives the source path as a single item and
+    records no entries for the directories above it, so `folder_at("")` — the
+    catalogue's tree root — is legitimately empty for any source that is not `/`.
+    The timeline must open at the backed-up root, not at `/`. Confirmed against a
+    real archive listing.
 - 2026-08-07 (S04-T4): Reconciliation is one job, `start_catalogue`, used for
   three problems that are really the same one: a backup that reached the
   repository but was never catalogued (killed daemon, power cut), an adopted

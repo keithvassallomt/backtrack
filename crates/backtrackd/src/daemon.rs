@@ -196,7 +196,7 @@ pub async fn run() -> Result<Outcome, StartupError> {
     // and catalogues whatever is missing. It runs as a job because it takes only
     // a shared lock and can take minutes on a large repository: a restore, and
     // the next hourly backup, must not wait for it.
-    let outstanding = shared.uncatalogued_count();
+    let outstanding = shared.uncatalogued_count().await;
     if outstanding > 0 {
         warn!(
             count = outstanding,

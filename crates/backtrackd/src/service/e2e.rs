@@ -335,7 +335,7 @@ async fn a_backup_that_was_never_catalogued_is_picked_up_on_the_next_start() {
     );
     assert!(archives.iter().any(|a| a.name == archive));
     assert_eq!(
-        shared.uncatalogued_count(),
+        shared.uncatalogued_count().await,
         0,
         "nothing is left un-browsable"
     );
@@ -418,7 +418,99 @@ async fn borgs_checkpoint_archives_never_reach_the_timeline() {
         !names.iter().any(|n| n.contains(".checkpoint")),
         "no checkpoint rows in the catalogue: {names:?}"
     );
-    assert_eq!(shared.uncatalogued_count(), 0);
+    assert_eq!(shared.uncatalogued_count().await, 0);
+}
+
+#[tokio::test]
+async fn importing_a_repository_leaves_the_newest_snapshot_browsable_at_once() {
+    // The first-run acceptance criterion against a real repository: adopting one
+    // that already holds history must return with something to show, not with an
+    // empty timeline and a promise.
+    let fixture = fixture().await;
+    let shared = Arc::clone(&fixture.shared);
+    let repo = shared.config().storage.repository.clone().unwrap();
+
+    // Three real archives, written straight through the engine rather than
+    // through the pipeline: the pipeline prunes, and Borg's hourly retention
+    // quite correctly collapses three backups taken in the same minute into one.
+    // The catalogue starts empty, which is the state a machine is in when it is
+    // pointed at somebody's existing backups.
+    let sources = shared.config().backup.include.clone();
+    let names = [
+        "bt-host-20260805T000000Z",
+        "bt-host-20260806T000000Z",
+        "bt-host-20260807T000000Z",
+    ];
+    for name in names {
+        let spec = backtrack_core::engine::CreateSpec {
+            archive_name: name.to_string(),
+            sources: sources.clone(),
+            excludes: vec![],
+            compression: Default::default(),
+            one_file_system: true,
+            created_at: SystemTime::now(),
+        };
+        let mut stream = engine(&shared).create(&spec).await.expect("create starts");
+        while let Some(event) = stream.next().await {
+            if let backtrack_core::engine::JobEvent::Finished(r) = event {
+                r.expect("create succeeds");
+            }
+        }
+    }
+    let newest = names[2].to_string();
+
+    let (_server, client) = connect(Arc::clone(&shared)).await;
+    client
+        .call_method(
+            None::<()>,
+            PATH,
+            Some(IFACE),
+            "ImportRepo",
+            &(repo.as_str(), PASS),
+        )
+        .await
+        .expect("ImportRepo accepted");
+
+    // By the time the call has returned, the newest snapshot is readable.
+    let reader = backtrack_core::index::IndexReader::open(&shared.index_path).unwrap();
+    let archives = reader.archives_overview().unwrap();
+    assert_eq!(archives.len(), 3, "the whole history is known about");
+    let top = archives.iter().max_by_key(|a| a.seq).unwrap();
+    assert_eq!(top.name, newest);
+    // Asked through search rather than `folder_at("")`: Borg archives the
+    // source path as a single item and does *not* record the directories above
+    // it, so the catalogue's tree root is legitimately empty for any source that
+    // is not `/`. Stage 6's timeline has to open at the backed-up root for the
+    // same reason.
+    let hits = reader.search("notes").unwrap();
+    assert!(
+        hits.iter().any(|h| h.last_seq == top.seq),
+        "the newest snapshot has contents the moment import returns: {hits:?}"
+    );
+    assert_eq!(
+        shared.uncatalogued_count().await,
+        2,
+        "the older two are queued, not read yet"
+    );
+
+    // And the background job finishes them.
+    for _ in 0..600 {
+        if shared.uncatalogued_count().await == 0 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert_eq!(
+        shared.uncatalogued_count().await,
+        0,
+        "the backfill completes on its own"
+    );
+    let reader = backtrack_core::index::IndexReader::open(&shared.index_path).unwrap();
+    let hits = reader.search("notes").unwrap();
+    assert!(
+        hits.iter().any(|h| h.first_seq == 1),
+        "the oldest snapshot is browsable too, once the backfill has run: {hits:?}"
+    );
 }
 
 /// The engine the fixture installed. Reaching into the private field is fine

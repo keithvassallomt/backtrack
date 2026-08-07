@@ -375,16 +375,54 @@ impl Shared {
         Some(self.jobs.submit(JobKind::Index, factory))
     }
 
+    /// Take on a repository's existing history: newest snapshot now, the rest
+    /// in the background.
+    ///
+    /// The two halves are deliberately different kinds of work. The first is
+    /// synchronous because the caller is a wizard about to show a timeline, and
+    /// one browsable snapshot is the difference between "set up" and "broken".
+    /// The second is a job because a year of history is minutes of reading, and
+    /// nothing should be waiting on it — including this method's reply.
+    pub async fn adopt_catalogue(self: &Arc<Self>) -> Result<()> {
+        let plan = pipeline::CataloguePlan {
+            engine: self.engine()?,
+            index: self.index()?,
+        };
+        let remaining = pipeline::catalogue_newest(&plan).await?;
+        if remaining > 0 {
+            info!(
+                remaining,
+                "cataloguing the rest of the history in the background"
+            );
+            self.reconcile_catalogue();
+        }
+        Ok(())
+    }
+
     /// How many backups exist but cannot be browsed yet.
     ///
     /// health.md's "snapshot taken but indexing failed" row: `DEGRADED`, badged
     /// "1 backup not yet browsable". Stage 10 surfaces it; this is the number.
-    pub fn uncatalogued_count(&self) -> usize {
-        self.index()
-            .ok()
-            .and_then(|index| index.lock().unwrap().pending_archives().ok())
-            .map(|pending| pending.len())
-            .unwrap_or(0)
+    ///
+    /// Asynchronous, and the reason is a deadlock this deliberately cannot have.
+    /// Taking the catalogue lock directly on a runtime thread pairs badly with
+    /// an ingest in flight: the ingest's blocking half holds that lock while
+    /// waiting for the next batch of items, and the only thing that can send one
+    /// is the async half — which cannot run while the runtime thread is parked
+    /// on the lock. Going through `spawn_blocking` puts the wait on the blocking
+    /// pool, where nothing else is depending on it.
+    pub async fn uncatalogued_count(&self) -> usize {
+        let Ok(index) = self.index() else { return 0 };
+        tokio::task::spawn_blocking(move || {
+            index
+                .lock()
+                .unwrap()
+                .pending_archives()
+                .map(|pending| pending.len())
+                .unwrap_or(0)
+        })
+        .await
+        .unwrap_or(0)
     }
 
     /// Run `borg compact` if it is due, on its own daily cadence.
@@ -877,6 +915,12 @@ impl Daemon1 {
     ///
     /// The passphrase is verified against the repository before anything is
     /// written, so a typo fails here rather than silently at the next backup.
+    ///
+    /// Returns once the *newest* snapshot is browsable, with the rest of the
+    /// history filling in behind. A repository holding a year of backups takes
+    /// minutes to catalogue in full, and a wizard that says "you're set up" over
+    /// an empty timeline reads as a failure — so this call waits for exactly the
+    /// one snapshot the user is about to be shown, and no longer.
     async fn import_repo(&self, path: &str, passphrase: &str) -> Result<()> {
         self.shared.secrets.set(path, passphrase).await?;
         let engine = BorgCli::new(
@@ -892,7 +936,8 @@ impl Daemon1 {
         self.shared.store_config(config)?;
         self.shared.set_engine(Arc::new(engine));
         info!(path, archives = info.archive_count, "repository imported");
-        Ok(())
+
+        self.shared.adopt_catalogue().await
     }
 
     /// Progress of a running backup.
