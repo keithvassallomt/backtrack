@@ -20,6 +20,8 @@ futures.workspace = true
 serde.workspace = true
 toml.workspace = true
 tokio-util.workspace = true
+rustix.workspace = true
+async-trait.workspace = true
 
 [features]
 # Enables tests that shell out to a real `borg` (run via `just test-integration`).

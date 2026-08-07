@@ -299,9 +299,11 @@ dependencies = [
 name = "backtrackd"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "backtrack-core",
  "backtrack-testkit",
  "futures",
+ "rustix",
  "serde",
  "tempfile",
  "thiserror",

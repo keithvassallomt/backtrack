@@ -47,6 +47,7 @@ use zbus::object_server::SignalEmitter;
 use zbus::zvariant::OwnedFd;
 
 use crate::jobs::{JobFactory, JobKind, JobRegistry, JobState, JobUpdate, Outcome};
+use crate::preflight::{self, Facts, SystemProbe, UnknownProbe, Verdict};
 use crate::schedule::{self, ScheduleInput};
 
 pub use backtrack_core::dbus::{SearchResult, Status};
@@ -86,6 +87,16 @@ pub struct Shared {
     /// Absent until the scheduler is running, which is why every use goes
     /// through [`Shared::wake_scheduler`].
     waker: Mutex<Option<Arc<Notify>>>,
+    /// Answers questions about the machine — battery, metered connection.
+    /// [`UnknownProbe`] until the system bus is reached, which keeps a daemon
+    /// in a container backing up rather than gated on services it cannot see.
+    probe: Mutex<Arc<dyn SystemProbe>>,
+    /// Something wants eventual attention: today, a local disk low enough to
+    /// mention. Feeds the health model's `DEGRADED`.
+    needs_attention: Mutex<bool>,
+    /// The last preflight skip announced, so a machine that sits on battery all
+    /// afternoon logs the reason once rather than once a minute.
+    last_skip: Mutex<Option<preflight::Skip>>,
 }
 
 impl Shared {
@@ -149,7 +160,15 @@ impl Shared {
             persisted: Mutex::new(RuntimeState::default()),
             state_path,
             waker: Mutex::new(None),
+            probe: Mutex::new(Arc::new(UnknownProbe)),
+            needs_attention: Mutex::new(false),
+            last_skip: Mutex::new(None),
         })
+    }
+
+    /// Adopt a probe that can answer for the machine, once one is available.
+    pub fn set_probe(&self, probe: Arc<dyn SystemProbe>) {
+        *self.probe.lock().unwrap() = probe;
     }
 
     /// Reload the bookkeeping this daemon left behind last time it ran.
@@ -223,12 +242,79 @@ impl Shared {
         self.jobs.list().iter().any(|job| !job.state.is_terminal())
     }
 
+    /// Gather everything preflight decides from.
+    async fn preflight_facts(&self) -> Facts {
+        let config = self.config();
+        let probe = Arc::clone(&*self.probe.lock().unwrap());
+        let repository = config.storage.repository.clone().unwrap_or_default();
+        let (on_battery, metered) = futures::join!(probe.on_battery(), probe.metered());
+        debug!(?on_battery, ?metered, "machine state read for preflight");
+        Facts {
+            paused: self
+                .pause
+                .lock()
+                .unwrap()
+                .until(SystemTime::now())
+                .is_some(),
+            on_battery,
+            allow_on_battery: config.backup.on_battery,
+            metered,
+            allow_on_metered: config.backup.on_metered,
+            destination_is_remote: preflight::destination_is_remote(&repository),
+            destination_reachable: preflight::destination_reachable(&repository),
+            free_local_bytes: preflight::free_bytes(&paths::data_dir()),
+        }
+    }
+
     /// Start the backup the schedule asked for.
     ///
     /// Returns the job id, or `None` if a preflight gate declined the run. A
-    /// decline is not an error: being on battery is a decision, not a fault.
+    /// decline is not an error: being on battery is a decision, not a fault, and
+    /// the attempt clock deliberately does not advance — the backup happens when
+    /// the charger goes in, not at the top of the next hour.
     pub async fn start_scheduled_backup(&self) -> Result<Option<u64>> {
-        Ok(Some(self.submit_backup()?))
+        let facts = self.preflight_facts().await;
+
+        // The reachability probe feeds the status line whether or not it stops
+        // this run: "the drive is not plugged in" is worth saying.
+        if let Some(reachable) = facts.destination_reachable {
+            *self.destination_reachable.lock().unwrap() = reachable;
+        }
+        *self.needs_attention.lock().unwrap() = preflight::local_disk_needs_attention(&facts);
+
+        match preflight::evaluate(&facts) {
+            Verdict::Go => {
+                self.announce_skip(None);
+                Ok(Some(self.submit_backup()?))
+            }
+            Verdict::Skip(reason) => {
+                self.announce_skip(Some(reason));
+                Ok(None)
+            }
+        }
+    }
+
+    /// Log a preflight outcome, but only when it differs from the last one.
+    ///
+    /// A laptop on battery all afternoon would otherwise write the same line to
+    /// the log every minute, burying anything that mattered.
+    fn announce_skip(&self, reason: Option<preflight::Skip>) {
+        let mut last = self.last_skip.lock().unwrap();
+        if *last == reason {
+            return;
+        }
+        match &reason {
+            Some(skip) => info!(
+                reason = skip.as_str(),
+                "scheduled backup skipped: {}",
+                skip.explain()
+            ),
+            None if last.is_some() => {
+                info!("the condition that was holding backups up has cleared")
+            }
+            None => {}
+        }
+        *last = reason;
     }
 
     /// Queue a backup and record the attempt.
@@ -321,7 +407,7 @@ impl Shared {
             offline_protection_active: false,
             last_success: *self.last_backup.lock().unwrap(),
             frequency: config.backup.frequency.interval(),
-            needs_attention: false,
+            needs_attention: *self.needs_attention.lock().unwrap(),
         };
         health::evaluate(&inputs, now)
     }
@@ -924,8 +1010,10 @@ mod tests {
     use backtrack_testkit::{MockEngine, MockSecretStore};
 
     /// A configured daemon with a backup that runs until it is cancelled, and
-    /// every file it writes confined to `dir`.
+    /// every file it writes confined to `dir`. The repository directory exists,
+    /// so preflight's reachability probe passes.
     fn configured(dir: &std::path::Path) -> Arc<Shared> {
+        std::fs::create_dir_all(dir.join("repo")).unwrap();
         let mut config = Config::default();
         config.storage.repository = Some(dir.join("repo").display().to_string());
         config.backup.include = vec![dir.join("src")];
@@ -998,6 +1086,95 @@ mod tests {
             "the attempt clock must reach the disk, not just memory"
         );
         shared.jobs.cancel(job.unwrap()).unwrap();
+    }
+
+    /// A probe with fixed answers, standing in for UPower and NetworkManager.
+    struct FixedProbe {
+        on_battery: Option<bool>,
+        metered: Option<bool>,
+    }
+
+    #[async_trait::async_trait]
+    impl SystemProbe for FixedProbe {
+        async fn on_battery(&self) -> Option<bool> {
+            self.on_battery
+        }
+        async fn metered(&self) -> Option<bool> {
+            self.metered
+        }
+    }
+
+    #[tokio::test]
+    async fn a_scheduled_backup_is_skipped_on_battery_without_burning_the_attempt() {
+        // The whole point of the gate: skipping must not slide the schedule, or
+        // a laptop unplugged for five minutes would lose an hour of protection.
+        let dir = tempfile::tempdir().unwrap();
+        let shared = configured(dir.path());
+        shared.set_probe(Arc::new(FixedProbe {
+            on_battery: Some(true),
+            metered: Some(false),
+        }));
+
+        let job = shared.start_scheduled_backup().await.expect("not an error");
+        assert_eq!(job, None, "a backup on battery is skipped, not attempted");
+        assert_eq!(
+            shared.schedule_input().last_attempt,
+            None,
+            "a skip must not advance the attempt clock"
+        );
+    }
+
+    #[tokio::test]
+    async fn plugging_in_lets_the_next_tick_through() {
+        let dir = tempfile::tempdir().unwrap();
+        let shared = configured(dir.path());
+        shared.set_probe(Arc::new(FixedProbe {
+            on_battery: Some(true),
+            metered: None,
+        }));
+        assert_eq!(shared.start_scheduled_backup().await.unwrap(), None);
+
+        shared.set_probe(Arc::new(FixedProbe {
+            on_battery: Some(false),
+            metered: None,
+        }));
+        let job = shared
+            .start_scheduled_backup()
+            .await
+            .unwrap()
+            .expect("on mains, the backup runs");
+        shared.jobs.cancel(job).unwrap();
+    }
+
+    #[tokio::test]
+    async fn an_absent_destination_is_recorded_and_skipped() {
+        // No repository directory: an unplugged drive, or a share that is not
+        // mounted. Stage 5 turns this into local protection; today it is
+        // reported honestly and the run is deferred.
+        let dir = tempfile::tempdir().unwrap();
+        let shared = configured(dir.path());
+        std::fs::remove_dir_all(dir.path().join("repo")).unwrap();
+        assert_eq!(shared.start_scheduled_backup().await.unwrap(), None);
+        assert!(
+            !*shared.destination_reachable.lock().unwrap(),
+            "the status line has to know the drive is not there"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_manual_backup_ignores_every_preflight_gate() {
+        // Preflight guards the *schedule*. Someone pressing the button on
+        // battery, on a phone tether, has already decided.
+        let dir = tempfile::tempdir().unwrap();
+        let shared = configured(dir.path());
+        shared.set_probe(Arc::new(FixedProbe {
+            on_battery: Some(true),
+            metered: Some(true),
+        }));
+
+        let daemon = Daemon1::new(Arc::clone(&shared));
+        let job = daemon.backup_now().await.expect("runs regardless");
+        shared.jobs.cancel(job).unwrap();
     }
 
     #[tokio::test]

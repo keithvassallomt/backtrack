@@ -50,7 +50,7 @@
 
 ## Stage 4 — Backup pipeline ([stage file](stages/stage-04-backup-pipeline.md))
 - [x] S04-T1 Scheduler (timer, missed-run catch-up, pause/resume)
-- [ ] S04-T2 Preflight: battery (UPower), metered (NetworkManager), pause state
+- [x] S04-T2 Preflight: battery (UPower), metered (NetworkManager), pause state
 - [ ] S04-T3 create → stream-index → prune per retention → scheduled compact
 - [ ] S04-T4 Checkpoint/interrupted-backup handling (hidden from timeline)
 - [ ] S04-T5 First-run backfill indexing (newest-first, background)
@@ -341,6 +341,42 @@
   therefore reported "never backed up" for a machine with 30 archives, while a
   second call reported the truth. Startup now finishes all state assembly before
   claiming the name; verified over 8 consecutive cold starts.
+- 2026-08-07 (S04-T2): Three rules govern every gate. **A skip is a decision,
+  not a failure** — nothing here raises a health banner and nothing here advances
+  the attempt clock, so a backup deferred on battery runs when the charger goes
+  in rather than at the top of the next hour. **Uncertainty never blocks a
+  backup**: battery and metered are three-valued (`Option<bool>`), every test is
+  `== Some(true)` and never `!= Some(false)`, so a desktop with no UPower or a
+  container with no system bus backs up normally instead of quietly stopping
+  because a service the user has never heard of is missing. **`BackupNow` passes
+  every gate** — these are conditions on the *schedule*, and somebody pressing the
+  button on battery has already decided. Properties are read with a plain
+  `Properties.Get` (3 s timeout) rather than a caching zbus proxy: preflight runs
+  once per backup, so caching saves nothing and a stale cache would report "on
+  mains" for a laptop unplugged two minutes ago. NetworkManager's GUESS_YES/
+  GUESS_NO are acted on (protecting an allowance is the point, and being wrong
+  costs one deferred backup) while UNKNOWN stays unknown. The metered gate only
+  applies when the destination is across the network, decided by Borg's remote
+  syntax *and* by `statfs` magic on the path — a mounted NAS share is
+  indistinguishable from a local directory by name alone, and `/mnt/nas` on a
+  phone tether is exactly the case the setting exists for. Disk space is the
+  stage's "soft check", two-tiered per health.md: under 1 GB free is `DEGRADED`
+  (wired to the health model's `needs_attention`, previously hard-coded false),
+  under 100 MB defers the run, since an index that runs out of disk mid
+  transaction is worse than a backup an hour late. UPower and NetworkManager
+  `PropertiesChanged` wake the scheduler, which is what turns "skipped: on
+  battery" into a backup that starts when the charger goes in; failing to
+  subscribe costs latency, not correctness. Skips are logged only when the reason
+  changes — a laptop on battery all afternoon would otherwise bury the log.
+  **Bug found by live checking:** `interval_for` propagated an absent
+  `BACKTRACK_DEV_INTERVAL_SECS` out of the whole function with `?`, so under
+  `BACKTRACK_DEV` *without* the override the interval read as `None` — the
+  encoding for manual-only. Every development daemon silently stopped backing up
+  on schedule, with nothing in the log to say so. The override rule is now a pure
+  function with all four branches tested. Verified live against this machine's
+  real UPower and NetworkManager (`on_battery=Some(false)`, `metered=Some(false)`
+  from `u 4`/GUESS_NO) and against a bogus destination, which skipped with the
+  right message and left no attempt recorded.
 - 2026-08-07 (S04-T1): An internal tokio timer rather than a systemd timer, for
   one reason that settles it: a systemd timer can *start* a backup but cannot
   decline to run one, and every gate that matters (pause, battery, metered,

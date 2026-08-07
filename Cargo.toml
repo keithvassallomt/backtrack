@@ -22,7 +22,7 @@ repository = "https://github.com/keithvassallomt/backtrack"
 # Pinned once here; crates opt in with `<dep>.workspace = true`.
 [workspace.dependencies]
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "sync", "signal", "io-util", "time"] }
-rustix = { version = "1", features = ["process"] }
+rustix = { version = "1", features = ["fs", "process"] }
 zbus = "5"
 # Just the D-Bus type system: core defines the wire payloads both the daemon
 # and its clients marshal, without depending on a D-Bus implementation.

@@ -143,16 +143,27 @@ fn clamp(d: Duration) -> Duration {
 /// leaking into an installed daemon's environment.
 pub fn interval_for(config: &Config) -> Option<Duration> {
     let configured = config.backup.frequency.interval()?;
-    if std::env::var_os("BACKTRACK_DEV").is_none() {
-        return Some(configured);
+    Some(apply_dev_override(
+        configured,
+        std::env::var_os("BACKTRACK_DEV").is_some(),
+        std::env::var("BACKTRACK_DEV_INTERVAL_SECS").ok().as_deref(),
+    ))
+}
+
+/// The override rule, separated from the environment so every branch is
+/// reachable from a test. Anything unusable — absent, unparseable, zero — leaves
+/// the configured interval alone. A development hook that could silently switch
+/// scheduled backups off would be worse than no hook at all.
+fn apply_dev_override(configured: Duration, dev: bool, raw: Option<&str>) -> Duration {
+    if !dev {
+        return configured;
     }
-    match std::env::var("BACKTRACK_DEV_INTERVAL_SECS").ok()?.parse() {
-        Ok(secs) if secs > 0 => {
-            let dev = Duration::from_secs(secs);
+    match raw.map(str::parse::<u64>) {
+        Some(Ok(secs)) if secs > 0 => {
             debug!(seconds = secs, "development backup interval in force");
-            Some(dev)
+            Duration::from_secs(secs)
         }
-        _ => Some(configured),
+        _ => configured,
     }
 }
 
@@ -226,7 +237,12 @@ impl Scheduler {
                     Ok(None) => {}
                     Err(e) => warn!("scheduled backup could not start: {e}"),
                 }
-                MIN_SLEEP.max(Duration::from_secs(5))
+                // A full sleep either way. A started job wakes the loop when it
+                // finishes, and a declined one is woken by the power and
+                // connection watchers — polling faster would only mean a
+                // laptop left on battery reading two D-Bus properties every few
+                // seconds all afternoon.
+                MAX_SLEEP
             }
         }
     }
@@ -442,15 +458,36 @@ mod tests {
     }
 
     #[test]
-    fn the_development_override_is_ignored_outside_development() {
-        // Belt and braces around an environment variable that shortens backup
-        // intervals: it must be inert unless BACKTRACK_DEV is set. The test
-        // reads whatever the environment already has rather than mutating it,
-        // since setting environment variables races other tests in-process.
-        let config = Config::default();
-        if std::env::var_os("BACKTRACK_DEV").is_none() {
-            assert_eq!(interval_for(&config), Some(HOUR));
-        }
+    fn the_development_override_is_inert_outside_development() {
+        // An environment variable that shortens backup intervals must not do
+        // anything on an installed daemon that happens to inherit it.
+        assert_eq!(apply_dev_override(HOUR, false, Some("20")), HOUR);
+    }
+
+    #[test]
+    fn the_development_override_shortens_the_interval() {
+        assert_eq!(
+            apply_dev_override(HOUR, true, Some("20")),
+            Duration::from_secs(20)
+        );
+    }
+
+    #[test]
+    fn development_mode_without_an_override_keeps_the_configured_interval() {
+        // The bug this pins: an early version propagated the absent variable out
+        // of the whole function as "no interval", which is the encoding for
+        // manual-only. Every development daemon silently stopped backing up on
+        // schedule, and did so without a single line in the log.
+        assert_eq!(apply_dev_override(HOUR, true, None), HOUR);
+    }
+
+    #[test]
+    fn an_unusable_override_is_ignored_rather_than_obeyed() {
+        // Zero would mean "back up continuously"; the rest cannot mean anything.
+        assert_eq!(apply_dev_override(HOUR, true, Some("0")), HOUR);
+        assert_eq!(apply_dev_override(HOUR, true, Some("soon")), HOUR);
+        assert_eq!(apply_dev_override(HOUR, true, Some("")), HOUR);
+        assert_eq!(apply_dev_override(HOUR, true, Some("-5")), HOUR);
     }
 
     #[test]

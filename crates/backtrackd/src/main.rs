@@ -9,6 +9,7 @@
 
 mod daemon;
 mod jobs;
+mod preflight;
 mod schedule;
 mod service;
 // Exists only to assert that the packaged units and the code agree.

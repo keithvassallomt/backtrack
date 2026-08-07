@@ -32,6 +32,7 @@ use backtrack_core::index::IndexWriter;
 use backtrack_core::{dbus, paths};
 
 use crate::jobs::JobRegistry;
+use crate::preflight::{self, DbusProbe};
 use crate::schedule::Scheduler;
 use crate::service::{self, Daemon1, Shared};
 use std::sync::Arc;
@@ -154,7 +155,9 @@ pub async fn run() -> Result<Outcome, StartupError> {
     // control. It starts before the name is claimed so a machine that has been
     // off for a week is already catching up by the time anything asks.
     let scheduler = Scheduler::new(Arc::clone(&shared));
-    shared.set_waker(scheduler.waker());
+    let waker = scheduler.waker();
+    shared.set_waker(Arc::clone(&waker));
+    connect_system_probe(&shared, waker).await;
     tokio::spawn(scheduler.run());
 
     // Claiming the name is the readiness announcement, so it goes last. systemd
@@ -204,6 +207,22 @@ async fn claim_name(connection: &zbus::Connection, name: &str) -> Result<bool, S
             source,
         }),
     }
+}
+
+/// Attach the machine probe used by preflight, and start watching for the power
+/// and connection changes that could make a skipped backup runnable.
+///
+/// Every failure here is survivable and none of them stops the daemon: without
+/// UPower the battery gate simply opens, which is the right answer for a desktop
+/// that has no battery to be running on.
+async fn connect_system_probe(shared: &Arc<Shared>, waker: Arc<tokio::sync::Notify>) {
+    let Some(probe) = DbusProbe::connect().await else {
+        return;
+    };
+    let connection = probe.connection().clone();
+    shared.set_probe(Arc::new(probe));
+    preflight::watch_for_changes(connection, waker).await;
+    info!("battery and metered-connection checks are active");
 }
 
 /// Create the data directory if needed and open the index for writing.
