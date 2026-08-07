@@ -12,7 +12,7 @@
 > tasks: add them here + to the stage file, then `just provision-board-apply`.
 > See [../CLAUDE.md](../CLAUDE.md) for the full workflow.
 
-**Current stage:** 5 (in progress)
+**Current stage:** 5 (complete) → next: Stage 6
 **Last updated:** 2026-08-07
 
 ## Stage 0 — Bootstrap ([stage file](stages/stage-00-bootstrap.md))
@@ -367,6 +367,30 @@
   badge a snapshot "cataloguing…" rather than showing it as empty, and
   reconciliation is skipped outright when the destination is not reachable, so an
   unplugged drive does not write an error to the log on every start.
+- 2026-08-07 (Stage 5 — Definition of Done): a live daemon driven through a full
+  offline→online cycle against the demo repository, at a 20-second development
+  cadence. Every claim measured rather than asserted:
+  - **Online → offline → online, and the state reads correctly at each step.**
+    `HEALTHY` (destination reachable, nothing held locally) → destination
+    removed and one file edited → `PROTECTED_LOCALLY`, **1 local snapshot,
+    45.8 kB, 0 expirable** → destination restored → `HEALTHY`, **1 local
+    snapshot, 1 expirable**. The catch-up backup ran on the reconnect itself
+    rather than waiting for the next tick, and dating the local snapshot for
+    expiry followed from it.
+  - **The local snapshot held exactly the one file that changed** —
+    `changes protected on this computer archive="bt-local-…" files=1` — while
+    the primary archives catalogued the full 8-item tree.
+  - **The catalogue agrees:** 31 primary archives, 1 spool, 1 marked expirable.
+  - **Never an error, never a nag: 71 log lines in the cycle window, all INFO.
+    Zero ERROR, zero WARN.** The scan reports the number of lines it read, so
+    the claim cannot be satisfied by reading nothing — which the first version
+    of it did.
+  - The status copy matches offline-strategy.md: "The backup destination isn't
+    reachable — changes are being kept on this computer", and
+    `On this PC  1 snapshot · 45.8 kB`.
+  - Schema v1 → v2 migration verified on the real development index.
+  - Full suite green: **450 tests**, including the real-borg integration set.
+
 - 2026-08-07 (Stage 5 — Offline protection): the design question the stage
   turned on was not "how do we archive locally" but "how do we know what
   changed", and that is where the surprises were.
@@ -434,9 +458,34 @@
     delta is computed against the newest *catalogued* archive of any kind rather
     than the last network one: the union across spool archives is the same set of
     at-risk files, and each hour's archive is smaller for it.
-  - The data directory is now excluded from every backup. A source of `/home/k`
-    contains it, so without that each backup would copy the spool repository into
-    the primary one, hourly, and archive a live SQLite database mid-write.
+  - The volatile parts of the data directory are now excluded from every backup
+    — spool, snapshots, cache, staging, replaced, logs, and the live `index.db`.
+    Not the whole directory: `config.toml` and `state.toml` are small, rarely
+    changed, and exactly what somebody restoring a machine wants back.
+  - **Three defects found by running the daemon rather than by the suite**, which
+    is what the definition-of-done run is for:
+    1. **The catch-up never ran.** A backup overdue by more than one interval is
+       deferred by a jittered delay; the loop slept it and asked again, and
+       because nothing had advanced the attempt clock it was still overdue, so it
+       deferred again — forever. A laptop closed for two hours would never have
+       backed up again, which is exactly the case the catch-up exists for. The
+       tests pinned that a catch-up is *returned*; nothing pinned that it ever
+       resolves into a run.
+    2. **Every archive was empty.** The first version of the data-directory
+       exclusion also excluded any backup source living inside it, which the
+       development fixture's does. The backups "succeeded" holding nothing, with
+       no warning anywhere.
+    3. **Two backups in one second collided.** Borg refuses a duplicate archive
+       name outright (exit 30). This had been latent since Stage 4 and was made
+       reachable by this stage's reconnect catch-up, which can land in the same
+       second as a scheduled tick — it appeared as an ERROR in the log for
+       something nobody did wrong. Both primary and local names now move to the
+       next free second.
+  - **The first "no ERROR logs" check was vacuous** and said so only when
+    challenged: it globbed `*.jsonl` and the rotated log is
+    `backtrackd.jsonl.<date>`, so it read zero lines and reported zero errors.
+    The scan now reports how many lines it read, and the definition-of-done
+    figure below comes from a scan that is not vacuous.
 
 - 2026-08-07 (S04-T5): `ImportRepo` returns once the **newest** snapshot is
   browsable and leaves the rest to the background job, newest to oldest. Two

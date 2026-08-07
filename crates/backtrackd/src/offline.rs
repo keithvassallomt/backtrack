@@ -273,14 +273,7 @@ pub fn local_archive_name(now: SystemTime) -> String {
 /// to the next free second — off by under a second from when it was taken,
 /// against a run that would otherwise not happen at all.
 pub fn next_local_name(now: SystemTime, taken: &[String]) -> (String, SystemTime) {
-    let mut at = now;
-    loop {
-        let name = local_archive_name(at);
-        if !taken.iter().any(|existing| existing == &name) {
-            return (name, at);
-        }
-        at += Duration::from_secs(1);
-    }
+    crate::pipeline::next_free_name(now, taken, local_archive_name)
 }
 
 #[cfg(test)]

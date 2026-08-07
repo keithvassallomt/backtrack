@@ -506,7 +506,7 @@ impl Shared {
         match preflight::evaluate(&facts) {
             Verdict::Go => {
                 self.announce_skip(None);
-                Ok(Some(self.submit_backup()?))
+                Ok(Some(self.submit_backup().await?))
             }
             // The destination is away. This is not a skipped backup, it is the
             // moment local protection takes over — the promise the wizard makes
@@ -565,11 +565,39 @@ impl Shared {
     /// The attempt clock advances here rather than on success, so a destination
     /// that has been unplugged for a week produces one attempt per interval
     /// instead of one per tick.
-    fn submit_backup(&self) -> Result<u64> {
+    async fn submit_backup(&self) -> Result<u64> {
         let engine = self.engine()?;
         let index = self.index()?;
         let config = self.config();
-        let spec = create_spec(&config);
+
+        // A name the repository does not already hold. Two backups starting in
+        // the same second collide, and borg refuses the second outright — which
+        // became reachable the moment reconnecting started an immediate
+        // catch-up that can land in the same second as a scheduled tick.
+        let reading = Arc::clone(&index);
+        let taken: Vec<String> = tokio::task::spawn_blocking(move || {
+            reading
+                .lock()
+                .unwrap()
+                .archives_in(backtrack_core::index::Repo::Primary)
+                .unwrap_or_default()
+        })
+        .await
+        .map_err(|e| DaemonError::InvalidConfig(e.to_string()))?
+        .into_iter()
+        .map(|row| row.name)
+        .collect();
+
+        let host = pipeline::hostname();
+        let (archive_name, created_at) =
+            pipeline::next_free_name(SystemTime::now(), &taken, |at| {
+                pipeline::archive_name(&host, at)
+            });
+        let spec = CreateSpec {
+            archive_name,
+            created_at,
+            ..create_spec(&config)
+        };
         *self.last_archive.lock().unwrap() = Some(spec.archive_name.clone());
         self.update_persisted(|state| {
             state.last_attempt = backtrack_core::state::to_epoch(Some(SystemTime::now()));
@@ -1099,7 +1127,7 @@ impl Daemon1 {
         if paused {
             info!("manual backup requested while paused; running it anyway");
         }
-        self.shared.submit_backup()
+        self.shared.submit_backup().await
     }
 
     /// Pause scheduled backups until `until` (seconds since the epoch).
@@ -2000,7 +2028,7 @@ mod tests {
         let shared = configured(dir.path());
         assert!(!shared.schedule_input().busy);
 
-        let job = shared.submit_backup().expect("submits");
+        let job = shared.submit_backup().await.expect("submits");
         assert!(
             shared.schedule_input().busy,
             "a second backup must not be queued behind the first"

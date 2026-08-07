@@ -1057,6 +1057,34 @@ fn sanitise_hostname(hostname: &str) -> String {
     }
 }
 
+/// An archive name that is not already taken, and the instant it names.
+///
+/// Archive names have one-second resolution, which reads well in a timeline and
+/// is unique for any realistic cadence. It is not unique for two backups
+/// starting inside the same second, and Borg does not forgive that: `create`
+/// refuses with "Archive … already exists" (exit 30) and the run fails outright,
+/// with an error in the log for something nobody did wrong.
+///
+/// That became reachable the moment reconnecting started an immediate catch-up
+/// backup: an unscheduled run can land in the same second as a scheduled tick.
+/// Pressing "Back Up Now" twice does it too. Rather than making every archive
+/// name uglier, a colliding run is dated to the next free second — under a
+/// second out, against a backup that would otherwise not happen at all.
+pub fn next_free_name(
+    now: SystemTime,
+    taken: &[String],
+    name_at: impl Fn(SystemTime) -> String,
+) -> (String, SystemTime) {
+    let mut at = now;
+    loop {
+        let name = name_at(at);
+        if !taken.iter().any(|existing| existing == &name) {
+            return (name, at);
+        }
+        at += Duration::from_secs(1);
+    }
+}
+
 /// This machine's hostname, or `unknown`.
 pub fn hostname() -> String {
     std::fs::read_to_string("/proc/sys/kernel/hostname")
@@ -1894,6 +1922,39 @@ mod tests {
         let earlier = archive_name("h", UNIX_EPOCH + Duration::from_secs(1_000));
         let later = archive_name("h", UNIX_EPOCH + Duration::from_secs(2_000));
         assert!(earlier < later, "{earlier} must sort before {later}");
+    }
+
+    #[test]
+    fn two_backups_in_one_second_do_not_collide() {
+        // Found by the live definition-of-done run, as an ERROR in the log for
+        // something nobody did wrong: reconnecting starts an immediate catch-up
+        // backup, it landed in the same second as a scheduled tick, and borg
+        // refused the second outright ("Archive … already exists", exit 30).
+        let now = UNIX_EPOCH + Duration::from_secs(1_786_085_752);
+        let name_at = |t: SystemTime| archive_name("thinkpad", t);
+
+        let (first, at) = next_free_name(now, &[], name_at);
+        assert_eq!(at, now, "an uncontested name is used as it is");
+
+        let (second, at) = next_free_name(now, std::slice::from_ref(&first), name_at);
+        assert_ne!(second, first);
+        assert_eq!(at, now + Duration::from_secs(1));
+        assert!(
+            first < second,
+            "and the later one still sorts later: {first} then {second}"
+        );
+    }
+
+    #[test]
+    fn a_run_of_collisions_still_finds_a_name() {
+        let now = UNIX_EPOCH + Duration::from_secs(1_000);
+        let name_at = |t: SystemTime| archive_name("h", t);
+        let taken: Vec<String> = (0..4)
+            .map(|i| name_at(now + Duration::from_secs(i)))
+            .collect();
+        let (name, at) = next_free_name(now, &taken, name_at);
+        assert_eq!(at, now + Duration::from_secs(4));
+        assert!(!taken.contains(&name));
     }
 
     #[test]
