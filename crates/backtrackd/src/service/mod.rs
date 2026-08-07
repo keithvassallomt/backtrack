@@ -363,6 +363,15 @@ impl Shared {
     ///
     /// Returns `None` when there is no destination to reconcile against.
     pub fn reconcile_catalogue(&self) -> Option<u64> {
+        // A destination that is not there cannot be reconciled against, and
+        // submitting a job that fails immediately would write an error to the
+        // log on every start — which is how people learn to ignore logs. An
+        // unplugged drive is a status, not a fault.
+        let repository = self.config().storage.repository.clone().unwrap_or_default();
+        if preflight::destination_reachable(&repository) == Some(false) {
+            debug!("destination not reachable; catalogue reconciliation deferred");
+            return None;
+        }
         let engine = self.engine().ok()?;
         let index = self.index().ok()?;
         let factory: JobFactory = Arc::new(move || {

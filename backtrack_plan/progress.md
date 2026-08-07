@@ -12,7 +12,7 @@
 > tasks: add them here + to the stage file, then `just provision-board-apply`.
 > See [../CLAUDE.md](../CLAUDE.md) for the full workflow.
 
-**Current stage:** 4 — Backup pipeline
+**Current stage:** 4 (complete) → next: Stage 5
 **Last updated:** 2026-08-07
 
 ## Stage 0 — Bootstrap ([stage file](stages/stage-00-bootstrap.md))
@@ -341,6 +341,31 @@
   therefore reported "never backed up" for a machine with 30 archives, while a
   second call reported the truth. Startup now finishes all state assembly before
   claiming the name; verified over 8 consecutive cold starts.
+- 2026-08-07 (Stage 4 — Definition of Done): the daemon left running against the
+  demo repo at a 1-minute development frequency for **31 minutes**. Every
+  criterion met, measured rather than asserted:
+  - **32 backups taken, 32 catalogued**, zero warnings and zero errors in the log.
+  - **Repository and catalogue agree exactly** — 32 archives each, none pending.
+  - **Retention is policy-consistent**: `borg prune --dry-run` with the configured
+    policy afterwards reports nothing further to remove, so the surviving set is
+    precisely what the policy specifies rather than merely a plausible number.
+  - **No memory growth.** RSS 24,832 kB at start → 26,676 kB at end. The growth
+    is decelerating rather than linear (+476 kB over the first 4 backups, +220 kB
+    over the last 13), which is allocator warm-up, not a leak. File descriptors
+    steady at 16 throughout, so no subprocess or pipe is being leaked either.
+  - `backtrack status` and `--json` both correct against the live daemon.
+  Two real defects were found and fixed while this ran, both by re-reading the
+  pipeline rather than by a test: **(1)** a failing prune failed the whole backup,
+  and since a failed job records no successful backup, a machine backed up
+  perfectly every hour would have drifted to `AT_RISK` purely because
+  housekeeping kept failing — retention failures are now warnings, while failures
+  the user must act on (full or damaged repository) still fail the job; **(2)** a
+  listing that broke off reported the rollback ("the listing was incomplete", a
+  paraphrase of the question) instead of why Borg stopped talking. Also tidied:
+  `ArchiveSummary` now carries `catalogued`, which Stage 6's sidebar needs to
+  badge a snapshot "cataloguing…" rather than showing it as empty, and
+  reconciliation is skipped outright when the destination is not reachable, so an
+  unplugged drive does not write an error to the log on every start.
 - 2026-08-07 (S04-T5): `ImportRepo` returns once the **newest** snapshot is
   browsable and leaves the rest to the background job, newest to oldest. Two
   different kinds of work on purpose: the first is synchronous because the caller

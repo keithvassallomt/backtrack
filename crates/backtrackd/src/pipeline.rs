@@ -234,10 +234,11 @@ async fn ingest_one(plan: &CataloguePlan, seq: i64, name: &str) -> Result<usize,
     finish(&tx, batch, failure.is_some()).await;
     drop(tx);
 
-    let stats = writer.await.map_err(joined)?.map_err(indexing)?;
+    // Awaited first, reported last — see the note in `catalogue`.
+    let ingest = writer.await.map_err(joined)?;
     match failure {
         Some(e) => Err(e),
-        None => Ok(stats.items),
+        None => Ok(ingest.map_err(indexing)?.items),
     }
 }
 
@@ -299,16 +300,38 @@ async fn run(plan: &BackupPlan, sink: &JobSink) -> Result<JobSummary, EngineErro
     }
 
     // ── Pruning ──
+    //
+    // Applying retention is housekeeping. The backup has already happened, so a
+    // prune that fails must not be reported as a failed backup — and the reason
+    // is not merely cosmetic: a failed job never records a successful backup, so
+    // a repository whose prune kept failing would drift into `AT_RISK` while
+    // being backed up perfectly well every hour.
+    //
+    // The exception is a failure the user has to act on. A full or damaged
+    // repository reaches the health model through the job's outcome, so those
+    // still fail the job.
     if let Some(policy) = &plan.prune {
-        drive(plan.engine.prune(policy).await?, sink, PHASE_PRUNING).await?;
-        // The repository is the authority on what exists. Reconciling after the
-        // prune rather than parsing its output means the catalogue is correct
-        // even if Borg removed something we did not predict — and it repairs
-        // any earlier disagreement for free.
-        match reconcile(plan).await {
-            Ok(removed) if removed > 0 => info!(removed, "pruned archives left the catalogue"),
-            Ok(_) => {}
-            Err(e) => warn!("could not reconcile the catalogue after pruning: {e}"),
+        let pruned = match plan.engine.prune(policy).await {
+            Ok(stream) => drive(stream, sink, PHASE_PRUNING).await.map(|_| ()),
+            Err(e) => Err(e),
+        };
+        match pruned {
+            Ok(()) => {
+                // The repository is the authority on what exists. Reconciling
+                // after the prune rather than parsing its output means the
+                // catalogue is correct even if Borg removed something we did
+                // not predict — and it repairs any earlier disagreement for
+                // free.
+                match reconcile(plan).await {
+                    Ok(removed) if removed > 0 => {
+                        info!(removed, "pruned archives left the catalogue")
+                    }
+                    Ok(_) => {}
+                    Err(e) => warn!("could not reconcile the catalogue after pruning: {e}"),
+                }
+            }
+            Err(e) if e.health_failure().is_some() => return Err(e),
+            Err(e) => warn!(archive, "retention could not be applied this time: {e}"),
         }
     }
 
@@ -431,10 +454,15 @@ async fn catalogue(plan: &BackupPlan, sink: &JobSink, archive: &str) -> Result<u
     finish(&tx, batch, failure.is_some() || sink.is_cancelled()).await;
     drop(tx);
 
-    let stats = writer.await.map_err(joined)?.map_err(indexing)?;
+    // The writer is awaited first so its thread is never left detached, but its
+    // error is reported last. When a listing breaks off, the writer's answer is
+    // always "the listing was incomplete" — true, and a paraphrase of the
+    // question. What the log needs is why Borg stopped talking.
+    let ingest = writer.await.map_err(joined)?;
     if let Some(e) = failure {
         return Err(e);
     }
+    let stats = ingest.map_err(indexing)?;
     if sink.is_cancelled() {
         return Err(EngineError::Cancelled);
     }
@@ -777,6 +805,71 @@ mod tests {
             "the catalogue followed the repository: {catalogue:?}"
         );
         assert!(!catalogue.contains(&"bt-host-0".to_string()));
+    }
+
+    #[tokio::test]
+    async fn a_prune_that_fails_does_not_make_the_backup_a_failure() {
+        // Housekeeping failing is not protection failing. It matters beyond
+        // wording: a failed job records no successful backup, so a repository
+        // whose prune kept failing would drift into AT_RISK while being backed
+        // up perfectly well every hour.
+        let engine = Arc::new(
+            MockEngine::default()
+                .with_create_events(finished())
+                .with_items(vec![item("home/a.txt", 1)])
+                .with_prune_error(EngineError::LockedByOther),
+        );
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("index.db");
+        let index = Arc::new(Mutex::new(IndexWriter::open(&path).unwrap()));
+
+        let (_, result) = drain(start_backup(BackupPlan {
+            engine,
+            index,
+            spec: spec("a"),
+            prune: Some(PrunePolicy {
+                keep_hourly: 1,
+                keep_daily: 0,
+                keep_weekly: 0,
+                keep_monthly: 0,
+            }),
+        }))
+        .await;
+        result.expect("the backup itself succeeded and must be reported as such");
+
+        // And the archive is catalogued, which is the point.
+        let reader = IndexReader::open(&path).unwrap();
+        assert_eq!(reader.archives_overview().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_prune_failure_the_user_must_act_on_still_fails_the_job() {
+        // The exception: a full or damaged repository has to reach the health
+        // model, and the job's outcome is how it gets there.
+        let engine = Arc::new(
+            MockEngine::default()
+                .with_create_events(finished())
+                .with_items(vec![item("home/a.txt", 1)])
+                .with_prune_error(EngineError::DestinationFull),
+        );
+        let dir = tempfile::tempdir().unwrap();
+        let index = Arc::new(Mutex::new(
+            IndexWriter::open(&dir.path().join("index.db")).unwrap(),
+        ));
+
+        let (_, result) = drain(start_backup(BackupPlan {
+            engine,
+            index,
+            spec: spec("a"),
+            prune: Some(PrunePolicy {
+                keep_hourly: 1,
+                keep_daily: 0,
+                keep_weekly: 0,
+                keep_monthly: 0,
+            }),
+        }))
+        .await;
+        assert_eq!(result.unwrap_err(), EngineError::DestinationFull);
     }
 
     #[tokio::test]

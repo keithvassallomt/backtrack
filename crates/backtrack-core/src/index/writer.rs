@@ -75,8 +75,8 @@ struct Neighbour {
     size: i64,
     mtime: i64,
     chunk_hash: Option<String>,
-    #[allow(dead_code)]
-    first_seq: i64,
+    /// Where the interval ends, needed when two intervals are rejoined across
+    /// the archive being ingested.
     last_seq: i64,
 }
 
@@ -288,11 +288,11 @@ impl IndexWriter {
         {
             let mut resolver = PathResolver::new(&tx)?;
             let mut neighbour = tx.prepare(
-                "SELECT rowid, kind, size, mtime, chunk_hash, first_seq, last_seq
+                "SELECT rowid, kind, size, mtime, chunk_hash, last_seq
                  FROM versions WHERE path_id = ?1 AND last_seq = ?2",
             )?;
             let mut successor = tx.prepare(
-                "SELECT rowid, kind, size, mtime, chunk_hash, first_seq, last_seq
+                "SELECT rowid, kind, size, mtime, chunk_hash, last_seq
                  FROM versions WHERE path_id = ?1 AND first_seq = ?2",
             )?;
             let mut set_first =
@@ -312,8 +312,7 @@ impl IndexWriter {
                     size: r.get(2)?,
                     mtime: r.get(3)?,
                     chunk_hash: r.get(4)?,
-                    first_seq: r.get(5)?,
-                    last_seq: r.get(6)?,
+                    last_seq: r.get(5)?,
                 })
             };
 

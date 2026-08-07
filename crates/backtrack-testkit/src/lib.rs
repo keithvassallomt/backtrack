@@ -40,6 +40,9 @@ pub struct MockEngine {
     prune_keeps: Option<usize>,
     /// Fails `list_archive` after its items, mimicking a listing cut short.
     listing_error: Option<EngineError>,
+    /// Fails `prune`, so retention failing can be told apart from backing up
+    /// failing.
+    prune_error: Option<EngineError>,
 }
 
 impl MockEngine {
@@ -82,6 +85,11 @@ impl MockEngine {
     /// a half-read archive can be mistaken for a catalogued one.
     pub fn with_truncated_listing(mut self, err: EngineError) -> Self {
         self.listing_error = Some(err);
+        self
+    }
+    /// Make `prune` fail with `err`, leaving `create` working.
+    pub fn with_prune_error(mut self, err: EngineError) -> Self {
+        self.prune_error = Some(err);
         self
     }
     pub fn with_key(mut self, key: impl Into<String>) -> Self {
@@ -167,6 +175,9 @@ impl BackupEngine for MockEngine {
         Ok(Box::pin(tokio::io::empty()))
     }
     async fn prune(&self, _policy: &PrunePolicy) -> Result<JobStream> {
+        if let Some(err) = self.prune_error.clone() {
+            return self.job(vec![JobEvent::Finished(Err(err))]);
+        }
         let stream = self.job(vec![JobEvent::Finished(Ok(Default::default()))])?;
         if let Some(keep) = self.prune_keeps {
             let mut archives = self.archives.lock().unwrap();

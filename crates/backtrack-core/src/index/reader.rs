@@ -74,6 +74,10 @@ pub struct ArchiveSummary {
     pub name: String,
     pub ts: i64,
     pub repo: String,
+    /// Whether this snapshot's file list has been read yet. A snapshot that
+    /// exists in the repository but is not catalogued cannot be browsed, and the
+    /// sidebar has to say so ("cataloguing…") rather than showing it as empty.
+    pub catalogued: bool,
 }
 
 /// Which way [`IndexReader::next_change`] steps.
@@ -210,7 +214,7 @@ impl IndexReader {
     /// Every archive, newest first, for the snapshot sidebar.
     pub fn archives_overview(&self) -> Result<Vec<ArchiveSummary>> {
         let mut stmt = self.conn.prepare_cached(
-            "SELECT seq, borg_id, name, ts, repo FROM archives ORDER BY seq DESC",
+            "SELECT seq, borg_id, name, ts, repo, status FROM archives ORDER BY seq DESC",
         )?;
         let rows = stmt.query_map([], |r| {
             Ok(ArchiveSummary {
@@ -219,6 +223,7 @@ impl IndexReader {
                 name: r.get(2)?,
                 ts: r.get(3)?,
                 repo: r.get(4)?,
+                catalogued: r.get::<_, Option<String>>(5)?.is_none(),
             })
         })?;
         Ok(rows.collect::<std::result::Result<_, _>>()?)
@@ -600,6 +605,10 @@ mod tests {
         );
         assert_eq!(all[0].ts, 4_000);
         assert!(all.iter().all(|a| a.repo == "primary"));
+        assert!(
+            all.iter().all(|a| a.catalogued),
+            "an ingested archive is browsable"
+        );
     }
 
     #[test]
