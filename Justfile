@@ -213,6 +213,68 @@ run-app:
 demo-repo:
     cargo run --quiet -p xtask
 
+# ─── systemd / D-Bus units (development install) ────────────────────────────
+
+# Install dev-mode user units so the daemon starts on demand. Idempotent.
+install-units:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    root="{{justfile_directory()}}"
+    binary="${root}/target/debug/backtrackd"
+    systemd_dir="${XDG_CONFIG_HOME:-${HOME}/.config}/systemd/user"
+    dbus_dir="${XDG_DATA_HOME:-${HOME}/.local/share}/dbus-1/services"
+
+    echo "Building the daemon so the unit points at something that exists…"
+    cargo build -p backtrackd
+
+    mkdir -p "${systemd_dir}" "${dbus_dir}"
+
+    # The shipped units are the real, packaged ones. The dev install rewrites
+    # them rather than keeping a second copy in the tree, so the thing being
+    # tested here is the file that will actually be packaged.
+    #
+    # Two substitutions: the binary path, and the bus name — dev mode uses
+    # org.backtrack.Daemon1.Dev so a development daemon and an installed one can
+    # never answer each other's clients.
+    sed -e "s|^ExecStart=.*|ExecStart=${binary}|" \
+        -e "s|^BusName=org.backtrack.Daemon1$|BusName=org.backtrack.Daemon1.Dev|" \
+        -e "s|^\[Service\]$|[Service]\nEnvironment=BACKTRACK_DEV=1|" \
+        "${root}/packaging/systemd/backtrackd.service" \
+        > "${systemd_dir}/backtrackd.service"
+
+    sed -e "s|^Exec=.*|Exec=${binary}|" \
+        -e "s|^Name=org.backtrack.Daemon1$|Name=org.backtrack.Daemon1.Dev|" \
+        "${root}/packaging/dbus/org.backtrack.Daemon1.service" \
+        > "${dbus_dir}/org.backtrack.Daemon1.Dev.service"
+
+    systemctl --user daemon-reload
+    # Ask the bus to rescan its service directory, so activation works in this
+    # session rather than only after the next login.
+    busctl --user call org.freedesktop.DBus /org/freedesktop/DBus \
+        org.freedesktop.DBus ReloadConfig >/dev/null 2>&1 || true
+
+    echo "Installed:"
+    echo "  ${systemd_dir}/backtrackd.service"
+    echo "  ${dbus_dir}/org.backtrack.Daemon1.Dev.service"
+    echo
+    echo "The daemon now starts on demand. Try:"
+    echo "  busctl --user call org.backtrack.Daemon1.Dev /org/backtrack/Daemon1 \\"
+    echo "      org.backtrack.Daemon1 GetStatus"
+
+# Remove the dev-mode user units.
+uninstall-units:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    systemd_dir="${XDG_CONFIG_HOME:-${HOME}/.config}/systemd/user"
+    dbus_dir="${XDG_DATA_HOME:-${HOME}/.local/share}/dbus-1/services"
+
+    systemctl --user stop backtrackd.service 2>/dev/null || true
+    systemctl --user disable backtrackd.service 2>/dev/null || true
+    rm -f "${systemd_dir}/backtrackd.service"
+    rm -f "${dbus_dir}/org.backtrack.Daemon1.Dev.service"
+    systemctl --user daemon-reload
+    echo "Dev units removed."
+
 # Remove build artifacts.
 clean:
     cargo clean

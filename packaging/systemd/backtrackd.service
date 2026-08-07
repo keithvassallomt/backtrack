@@ -1,0 +1,33 @@
+[Unit]
+Description=Backtrack backup daemon
+Documentation=https://github.com/keithvassallomt/backtrack
+
+[Service]
+# Type=dbus with BusName means systemd considers the service started only once
+# the daemon owns its name. That is what makes activation reliable: a client's
+# first method call blocks until the daemon is genuinely ready to answer it,
+# rather than racing a process that has not finished starting.
+Type=dbus
+BusName=org.backtrack.Daemon1
+ExecStart=/usr/bin/backtrackd
+
+# Losing the single-instance race exits 0, so a restart here only ever follows a
+# real failure. The delay keeps a daemon that cannot reach its keyring from
+# spinning against the bus.
+Restart=on-failure
+RestartSec=5s
+
+# systemd sends SIGTERM and waits; the daemon finishes or checkpoints whatever
+# it is doing. A backup interrupted mid-archive leaves a Borg checkpoint that
+# the next run resumes, so a hard kill costs work but never integrity.
+KillSignal=SIGTERM
+TimeoutStopSec=90s
+
+# Deliberately light sandboxing. A backup daemon has to read everything its user
+# can read and write wherever they choose to restore, so the usual hardening
+# (ProtectHome, ProtectSystem=strict, ReadOnlyPaths) would break the product's
+# entire purpose. NoNewPrivileges costs nothing and is kept.
+NoNewPrivileges=yes
+
+[Install]
+WantedBy=default.target

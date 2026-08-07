@@ -12,8 +12,8 @@
 > tasks: add them here + to the stage file, then `just provision-board-apply`.
 > See [../CLAUDE.md](../CLAUDE.md) for the full workflow.
 
-**Current stage:** 3 (in progress — T1–T3 done) → next: S03-T4
-**Last updated:** 2026-08-06
+**Current stage:** 3 (in progress — T1–T4 done) → next: S03-T5
+**Last updated:** 2026-08-07
 
 ## Stage 0 — Bootstrap ([stage file](stages/stage-00-bootstrap.md))
 - [x] S00-T1 Git repo, license, .gitignore, README skeleton
@@ -45,7 +45,7 @@
 - [x] S03-T1 backtrackd skeleton: config load, single-instance, D-Bus name
 - [x] S03-T2 Job model (queue, IDs, cancel/pause, progress events)
 - [x] S03-T3 Full org.backtrack.Daemon1 interface + signals
-- [ ] S03-T4 systemd user units + D-Bus activation
+- [x] S03-T4 systemd user units + D-Bus activation
 - [ ] S03-T5 backtrack CLI mapping the interface (incl. status --json, doctor)
 
 ## Stage 4 — Backup pipeline ([stage file](stages/stage-04-backup-pipeline.md))
@@ -322,3 +322,22 @@
   can now raise the flag but never lower it, since only a successful backup
   proves the problem is gone. Health is seeded from the catalogue at startup, or
   the daemon would forget every backup it had ever taken each time it restarted.
+- 2026-08-07 (S03-T4): The shipped units live in `packaging/` and are the real,
+  packaged files; `just install-units` rewrites them on the way into
+  `~/.config/systemd/user/` rather than keeping a second dev copy, so what is
+  tested is what will be packaged. Dev substitutions: the binary path, the
+  `.Dev` bus name, and `Environment=BACKTRACK_DEV=1`. Sandboxing is deliberately
+  light — `ProtectHome`/`ProtectSystem`/`ReadOnlyPaths` would each break a daemon
+  whose whole job is reading everything the user can read and restoring wherever
+  they choose; a test pins their absence so adding one has to be deliberate.
+  `Restart=on-failure`, not `always`: losing the single-instance race exits 0 and
+  must not be relaunched. Activation correctness depends on four separate files
+  agreeing (claimed name, `BusName=`, `Name=`, `SystemdService=`) and nothing in
+  the build checks that, so `units.rs` asserts it against `core::dbus`.
+  **Bug found by the acceptance test:** the daemon claimed its bus name before
+  seeding health from the catalogue, and claiming the name *is* the readiness
+  announcement — systemd marks the unit started and the activating client's
+  queued call arrives immediately. The first `GetStatus` after a cold start
+  therefore reported "never backed up" for a machine with 30 archives, while a
+  second call reported the truth. Startup now finishes all state assembly before
+  claiming the name; verified over 8 consecutive cold starts.

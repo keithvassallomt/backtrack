@@ -10,15 +10,18 @@
 //!    over, while a merely *unknown* key is not.
 //! 2. **Open the index for writing.** The daemon owns the one and only
 //!    [`IndexWriter`]; every other process reads through a read-only connection.
-//! 3. **Export the service object**, then **claim the bus name**. That order
-//!    matters: a client that activated us fires its method call the moment the
-//!    name appears, so owning the name on a connection that serves nothing is a
-//!    race we would lose. Ownership of `org.backtrack.Daemon1` *is* the
-//!    single-instance lock — no PID file, nothing stale to clean up after a
-//!    crash, and the bus arbitrates the race for us.
-//! 4. **Connect the engine.** A destination that is merely unreachable does not
-//!    stop the daemon; reporting that is precisely what the health model is for,
-//!    and a client needs a live daemon to hear it from.
+//! 3. **Connect the engine and read the catalogue.** A destination that is
+//!    merely unreachable does not stop the daemon; reporting that is precisely
+//!    what the health model is for, and a client needs a live daemon to hear it
+//!    from.
+//! 4. **Export the service object and start the signal fan-out.**
+//! 5. **Claim the bus name, last.** Ownership of `org.backtrack.Daemon1` *is*
+//!    the single-instance lock — no PID file, nothing stale to clean up after a
+//!    crash, and the bus arbitrates the race for us. It is also the readiness
+//!    announcement: systemd marks the unit started when the name appears, and an
+//!    activating client's queued call arrives immediately afterwards. **Nothing
+//!    that shapes an answer may happen after this point**, or the first call
+//!    races it.
 //!
 //! Shutdown is driven by SIGTERM (systemd) or SIGINT (a developer's Ctrl-C).
 
@@ -116,9 +119,20 @@ pub async fn run() -> Result<Outcome, StartupError> {
     let secrets = backtrack_core::secret::default_store().map_err(StartupError::Secrets)?;
     let shared = Shared::new(config, Arc::clone(&jobs), secrets);
 
-    // Export the object *before* claiming the name. A client that activated us
-    // sends its method call the instant the name appears, so a name owned by a
-    // connection with nothing on it is a race we would lose.
+    // Everything that shapes an answer happens before the name is claimed.
+    //
+    // A destination that is merely unreachable must not stop the daemon: the
+    // health model exists to report exactly that, and a client needs a live
+    // daemon to hear it from.
+    if let Err(e) = shared.connect_engine().await {
+        warn!("backup engine not available yet: {e}");
+    }
+    // Health must survive a restart: the catalogue remembers when the last
+    // backup landed even though this process does not.
+    shared.seed_last_backup();
+
+    // Export the object, and start turning job updates into signals, before
+    // claiming the name — see below for why the order matters.
     let connection = zbus::connection::Builder::session()
         .map_err(StartupError::Bus)?
         .serve_at(dbus::OBJECT_PATH, Daemon1::new(Arc::clone(&shared)))
@@ -127,6 +141,19 @@ pub async fn run() -> Result<Outcome, StartupError> {
         .await
         .map_err(StartupError::Bus)?;
 
+    let emitter = SignalEmitter::new(&connection, dbus::OBJECT_PATH).map_err(StartupError::Bus)?;
+    tokio::spawn(service::fan_out_signals(
+        Arc::clone(&shared),
+        emitter.to_owned(),
+    ));
+
+    // Claiming the name is the readiness announcement, so it goes last. systemd
+    // reports the unit started the moment the name appears, and an activating
+    // client's queued call is delivered immediately after — so anything still
+    // unfinished at this point is something that call can race. Getting this
+    // wrong is not a crash: it is a daemon that answers `GetStatus` with "never
+    // backed up" for a machine holding a year of archives, because the
+    // catalogue had not been read yet.
     let name = dbus::bus_name();
     if !claim_name(&connection, name).await? {
         // Not an error: this is how a second `systemctl --user start`, or a
@@ -138,23 +165,6 @@ pub async fn run() -> Result<Outcome, StartupError> {
         return Ok(Outcome::AlreadyRunning);
     }
     info!(name, "claimed the bus name");
-
-    // A destination that is merely unreachable must not stop the daemon: the
-    // health model exists to report exactly that, and a GUI needs a live daemon
-    // to hear it from.
-    if let Err(e) = shared.connect_engine().await {
-        warn!("backup engine not available yet: {e}");
-    }
-    // Health must survive a restart: the catalogue remembers when the last
-    // backup landed even though this process does not.
-    shared.seed_last_backup();
-
-    // Turn job updates into signals for as long as we run.
-    let emitter = SignalEmitter::new(&connection, dbus::OBJECT_PATH).map_err(StartupError::Bus)?;
-    tokio::spawn(service::fan_out_signals(
-        Arc::clone(&shared),
-        emitter.to_owned(),
-    ));
 
     let reason = wait_for_shutdown().await?;
     info!(reason, "shutting down");

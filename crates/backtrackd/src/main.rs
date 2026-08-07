@@ -10,6 +10,9 @@
 mod daemon;
 mod jobs;
 mod service;
+// Exists only to assert that the packaged units and the code agree.
+#[cfg(test)]
+mod units;
 
 use std::process::ExitCode;
 
