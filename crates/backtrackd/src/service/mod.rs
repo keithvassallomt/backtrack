@@ -49,6 +49,7 @@ use zbus::zvariant::OwnedFd;
 use crate::jobs::{JobFactory, JobKind, JobRegistry, JobState, JobUpdate, Outcome};
 use crate::pipeline;
 use crate::preflight::{self, Facts, SystemProbe, UnknownProbe, Verdict};
+use crate::reachability::{DestinationProbe, Reach, RealProbe};
 use crate::schedule::{self, ScheduleInput};
 
 pub use backtrack_core::dbus::{SearchResult, Status};
@@ -102,6 +103,14 @@ pub struct Shared {
     /// daemon module because the backup pipeline writes through it too, and
     /// there must never be a second.
     index: Mutex<Option<Arc<Mutex<IndexWriter>>>>,
+    /// Answers "is the destination there?". A field so the flap tests can
+    /// supply a sequence of answers instead of unplugging something.
+    destination_probe: Mutex<Arc<dyn DestinationProbe>>,
+    /// Tripped when something *other than a job* changes what health would
+    /// report — today, the destination coming or going. Without it a machine
+    /// that lost its backup drive would keep announcing its old state until the
+    /// next job happened to finish.
+    health_changed: Arc<Notify>,
 }
 
 impl Shared {
@@ -169,7 +178,63 @@ impl Shared {
             needs_attention: Mutex::new(false),
             last_skip: Mutex::new(None),
             index: Mutex::new(None),
+            destination_probe: Mutex::new(Arc::new(RealProbe)),
+            health_changed: Arc::new(Notify::new()),
         })
+    }
+
+    /// Swap the destination probe. Used by the tests to script a sequence of
+    /// answers, which is the only way to exercise a flapping link.
+    #[cfg(test)]
+    pub(crate) fn set_destination_probe(&self, probe: Arc<dyn DestinationProbe>) {
+        *self.destination_probe.lock().unwrap() = probe;
+    }
+
+    /// Ask the destination whether it is there.
+    pub async fn probe_destination(&self) -> Reach {
+        let repository = self.config().storage.repository.unwrap_or_default();
+        let probe = Arc::clone(&*self.destination_probe.lock().unwrap());
+        let engine = self.engine.lock().unwrap().clone();
+        probe.probe(&repository, engine).await
+    }
+
+    /// What the daemon currently believes about the destination.
+    pub fn destination_reachable(&self) -> bool {
+        *self.destination_reachable.lock().unwrap()
+    }
+
+    /// A handle that makes the signal fan-out re-evaluate health.
+    pub fn health_waker(&self) -> Arc<Notify> {
+        Arc::clone(&self.health_changed)
+    }
+
+    /// Adopt a change in the destination's reachability.
+    ///
+    /// Reported by [`crate::reachability`] only after its hysteresis has been
+    /// satisfied, so this is a real transition rather than a flap, and is worth
+    /// both a log line and a `StatusChanged`.
+    pub async fn destination_changed(&self, reachable: bool) {
+        *self.destination_reachable.lock().unwrap() = reachable;
+        if reachable {
+            info!("the backup destination is reachable again");
+            self.on_reconnected().await;
+        } else {
+            info!("the backup destination is no longer reachable; protecting changes locally");
+            // Bring the schedule round promptly: the next tick is what starts
+            // local protection, and waiting out a full interval would leave a
+            // gap at exactly the moment the user stopped being protected.
+            self.wake_scheduler();
+        }
+        self.health_changed.notify_one();
+    }
+
+    /// What to do the moment the destination comes back.
+    ///
+    /// Filled in by S05-T4, which turns this into an immediate catch-up backup
+    /// and the expiry of everything the local safety net was holding. For now
+    /// the schedule is nudged so the ordinary path picks it up.
+    async fn on_reconnected(&self) {
+        self.wake_scheduler();
     }
 
     /// Adopt a probe that can answer for the machine, once one is available.
@@ -255,19 +320,30 @@ impl Shared {
         let repository = config.storage.repository.clone().unwrap_or_default();
         let (on_battery, metered) = futures::join!(probe.on_battery(), probe.metered());
         debug!(?on_battery, ?metered, "machine state read for preflight");
+        // Read out before the struct literal, not inside it. A lock guard in a
+        // struct expression lives until the whole expression finishes, and this
+        // one now spans an await — which would make the scheduler's future
+        // non-`Send` and, worse, hold a lock across a network probe.
+        let paused = self
+            .pause
+            .lock()
+            .unwrap()
+            .until(SystemTime::now())
+            .is_some();
+        let destination_reachable = self.probe_destination().await.definite();
         Facts {
-            paused: self
-                .pause
-                .lock()
-                .unwrap()
-                .until(SystemTime::now())
-                .is_some(),
+            paused,
             on_battery,
             allow_on_battery: config.backup.on_battery,
             metered,
             allow_on_metered: config.backup.on_metered,
             destination_is_remote: preflight::destination_is_remote(&repository),
-            destination_reachable: preflight::destination_reachable(&repository),
+            // Probed fresh rather than read from the tracked state. The
+            // hysteresis in `reachability` exists to keep the *status* steady;
+            // the question here is "can this backup run right now", and
+            // answering it from a value that is up to a minute old would start
+            // a backup into a drive that has just been unplugged.
+            destination_reachable,
             free_local_bytes: preflight::free_bytes(&paths::data_dir()),
         }
     }
@@ -362,13 +438,12 @@ impl Shared {
     /// systemd it is ready.
     ///
     /// Returns `None` when there is no destination to reconcile against.
-    pub fn reconcile_catalogue(&self) -> Option<u64> {
+    pub async fn reconcile_catalogue(&self) -> Option<u64> {
         // A destination that is not there cannot be reconciled against, and
         // submitting a job that fails immediately would write an error to the
         // log on every start — which is how people learn to ignore logs. An
         // unplugged drive is a status, not a fault.
-        let repository = self.config().storage.repository.clone().unwrap_or_default();
-        if preflight::destination_reachable(&repository) == Some(false) {
+        if self.probe_destination().await == Reach::No {
             debug!("destination not reachable; catalogue reconciliation deferred");
             return None;
         }
@@ -403,7 +478,7 @@ impl Shared {
                 remaining,
                 "cataloguing the rest of the history in the background"
             );
-            self.reconcile_catalogue();
+            self.reconcile_catalogue().await;
         }
         Ok(())
     }
@@ -1019,19 +1094,38 @@ async fn cache_extraction(
 /// job event would make "the state changed" meaningless.
 pub async fn fan_out_signals(shared: Arc<Shared>, emitter: SignalEmitter<'static>) {
     let mut updates = shared.jobs.subscribe();
+    let health_changed = shared.health_waker();
     let mut announced = shared.health();
     let _ = Daemon1::status_changed(&emitter, announced.as_str()).await;
 
     loop {
-        let update = match updates.recv().await {
-            Ok(update) => update,
-            // Lagged: intermediate progress was dropped, which is exactly what
-            // the buffer is allowed to do. Carry on from the current truth.
-            Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
-                debug!(missed = n, "signal fan-out lagged");
-                continue;
+        // Two sources, one destination. Jobs are the usual reason health moves,
+        // but not the only one: the backup destination coming or going changes
+        // the answer with no job involved at all, and a client that only ever
+        // hears about jobs would sit on a stale banner until the next backup.
+        let update = tokio::select! {
+            update = updates.recv() => match update {
+                Ok(update) => Some(update),
+                // Lagged: intermediate progress was dropped, which is exactly
+                // what the buffer is allowed to do. Carry on from the current
+                // truth.
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                    debug!(missed = n, "signal fan-out lagged");
+                    continue;
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
+            },
+            _ = health_changed.notified() => None,
+        };
+
+        let Some(update) = update else {
+            let current = shared.health();
+            if current != announced {
+                announced = current;
+                info!(state = current.as_str(), "health state changed");
+                let _ = Daemon1::status_changed(&emitter, current.as_str()).await;
             }
-            Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
+            continue;
         };
 
         match update {
@@ -1292,6 +1386,86 @@ mod tests {
             .unwrap()
             .expect("on mains, the backup runs");
         shared.jobs.cancel(job).unwrap();
+    }
+
+    /// A probe that answers from a script, so a flapping link is a list rather
+    /// than a router someone has to unplug. The last answer repeats once the
+    /// script runs out.
+    struct ScriptedProbe {
+        answers: Mutex<std::collections::VecDeque<Reach>>,
+        last: Mutex<Reach>,
+    }
+
+    impl ScriptedProbe {
+        fn new(answers: impl IntoIterator<Item = Reach>) -> Arc<ScriptedProbe> {
+            Arc::new(ScriptedProbe {
+                answers: Mutex::new(answers.into_iter().collect()),
+                last: Mutex::new(Reach::Unknown),
+            })
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl DestinationProbe for ScriptedProbe {
+        async fn probe(&self, _repository: &str, _engine: Option<Arc<dyn BackupEngine>>) -> Reach {
+            let next = self.answers.lock().unwrap().pop_front();
+            match next {
+                Some(reach) => {
+                    *self.last.lock().unwrap() = reach;
+                    reach
+                }
+                None => *self.last.lock().unwrap(),
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn the_daemon_asks_the_probe_rather_than_deciding_for_itself() {
+        let dir = tempfile::tempdir().unwrap();
+        let shared = configured(dir.path());
+        shared.set_destination_probe(ScriptedProbe::new([Reach::No, Reach::Yes]));
+
+        assert_eq!(shared.probe_destination().await, Reach::No);
+        assert_eq!(shared.probe_destination().await, Reach::Yes);
+    }
+
+    #[tokio::test]
+    async fn a_probe_that_cannot_tell_does_not_stop_a_backup() {
+        // The gate reads `== Some(false)`, so an unknown has to arrive as
+        // `None` rather than being flattened into "unreachable" on the way.
+        let dir = tempfile::tempdir().unwrap();
+        let shared = configured(dir.path());
+        shared.set_destination_probe(ScriptedProbe::new([Reach::Unknown]));
+
+        let job = shared
+            .start_scheduled_backup()
+            .await
+            .unwrap()
+            .expect("a destination nobody could ask about must not block the backup");
+        shared.jobs.cancel(job).unwrap();
+    }
+
+    #[tokio::test]
+    async fn losing_the_destination_is_reported_and_announced() {
+        let dir = tempfile::tempdir().unwrap();
+        let shared = configured(dir.path());
+        assert!(shared.destination_reachable());
+
+        // Somebody has to be listening, or `notify_one` stores a permit and the
+        // assertion below cannot tell the difference.
+        let health = shared.health_waker();
+        let listener = tokio::spawn(async move { health.notified().await });
+        tokio::task::yield_now().await;
+
+        shared.destination_changed(false).await;
+
+        assert!(!shared.destination_reachable());
+        assert!(
+            tokio::time::timeout(Duration::from_secs(1), listener)
+                .await
+                .is_ok(),
+            "the signal fan-out has to hear about it, or the banner goes stale"
+        );
     }
 
     #[tokio::test]

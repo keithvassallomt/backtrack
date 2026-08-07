@@ -38,6 +38,7 @@ use backtrack_core::{dbus, paths};
 
 use crate::jobs::JobRegistry;
 use crate::preflight::{self, DbusProbe};
+use crate::reachability;
 use crate::schedule::Scheduler;
 use crate::service::{self, Daemon1, Shared};
 use std::sync::Arc;
@@ -187,8 +188,14 @@ pub async fn run() -> Result<Outcome, StartupError> {
     let scheduler = Scheduler::new(Arc::clone(&shared));
     let waker = scheduler.waker();
     shared.set_waker(Arc::clone(&waker));
-    connect_system_probe(&shared, waker).await;
+
+    // The destination watcher and the system probe share one wake-up path:
+    // NetworkManager is what tells us a link came back, and that is the event
+    // that both ends local protection and un-defers a metered backup.
+    let network_changed = Arc::new(tokio::sync::Notify::new());
+    connect_system_probe(&shared, waker, Arc::clone(&network_changed)).await;
     tokio::spawn(scheduler.run());
+    tokio::spawn(reachability::watch(Arc::clone(&shared), network_changed));
 
     // A backup can reach the repository and never be catalogued — the daemon
     // killed mid-ingest, the machine losing power, a listing that broke off. The
@@ -203,7 +210,7 @@ pub async fn run() -> Result<Outcome, StartupError> {
             "backups exist that are not browsable yet; cataloguing them"
         );
     }
-    if let Some(job) = shared.reconcile_catalogue() {
+    if let Some(job) = shared.reconcile_catalogue().await {
         info!(job, "reconciling the catalogue against the repository");
     }
 
@@ -243,13 +250,17 @@ async fn claim_name(connection: &zbus::Connection, name: &str) -> Result<bool, S
 /// Every failure here is survivable and none of them stops the daemon: without
 /// UPower the battery gate simply opens, which is the right answer for a desktop
 /// that has no battery to be running on.
-async fn connect_system_probe(shared: &Arc<Shared>, waker: Arc<tokio::sync::Notify>) {
+async fn connect_system_probe(
+    shared: &Arc<Shared>,
+    waker: Arc<tokio::sync::Notify>,
+    network_changed: Arc<tokio::sync::Notify>,
+) {
     let Some(probe) = DbusProbe::connect().await else {
         return;
     };
     let connection = probe.connection().clone();
     shared.set_probe(Arc::new(probe));
-    preflight::watch_for_changes(connection, waker).await;
+    preflight::watch_for_changes(connection, waker, network_changed).await;
     info!("battery and metered-connection checks are active");
 }
 

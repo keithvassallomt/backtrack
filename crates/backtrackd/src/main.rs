@@ -11,6 +11,7 @@ mod daemon;
 mod jobs;
 mod pipeline;
 mod preflight;
+mod reachability;
 mod schedule;
 mod service;
 // Exists only to assert that the packaged units and the code agree.

@@ -114,9 +114,8 @@ pub struct Facts {
     /// Whether reaching the destination costs network traffic. A local disk over
     /// a metered phone tether is nobody's business but the disk's.
     pub destination_is_remote: bool,
-    /// Whether the destination answered when we looked. `None` when there is
-    /// nothing cheap to look at (an `ssh://` destination is not probed here —
-    /// the run itself is the probe).
+    /// Whether the destination answered when we looked; `None` when nobody
+    /// could say. Supplied by [`crate::reachability`], which owns the question.
     pub destination_reachable: Option<bool>,
     /// Free bytes where the catalogue lives; `None` when the filesystem would
     /// not say.
@@ -341,27 +340,6 @@ fn path_is_network_mounted(path: &Path) -> bool {
     }
 }
 
-/// Whether the destination answers, for destinations cheap enough to ask.
-///
-/// A local path (or a mounted share) is a directory that either exists or does
-/// not, and asking costs a `stat`. An `ssh://` destination cannot be probed
-/// without opening a connection, which is the backup's job — so this reports
-/// `None` and the run itself becomes the probe, classifying the failure properly
-/// through the engine's error taxonomy.
-pub fn destination_reachable(repository: &str) -> Option<bool> {
-    if repository.starts_with("ssh://") {
-        return None;
-    }
-    if let Some((prefix, _)) = repository.split_once(':') {
-        if prefix.contains('@') && !prefix.contains('/') {
-            return None;
-        }
-    }
-    // An unmounted share and an unplugged drive both present as an absent path,
-    // which is exactly the condition worth reporting.
-    Some(Path::new(repository).exists())
-}
-
 /// Free bytes available to this user on the filesystem holding `path`.
 ///
 /// `f_bavail`, not `f_bfree`: the difference is the root reserve, and counting
@@ -382,17 +360,28 @@ pub fn free_bytes(path: &Path) -> Option<u64> {
 /// the charger goes in, rather than at the top of the next hour. Failure to
 /// subscribe is logged and otherwise ignored: without the watcher the schedule
 /// still ticks, so the cost is latency, not correctness.
-pub async fn watch_for_changes(connection: zbus::Connection, wake: Arc<tokio::sync::Notify>) {
+pub async fn watch_for_changes(
+    connection: zbus::Connection,
+    wake: Arc<tokio::sync::Notify>,
+    network_changed: Arc<tokio::sync::Notify>,
+) {
+    // NetworkManager's changes are the ones that can make an unreachable
+    // destination reachable, so they wake the reachability watcher as well as
+    // the scheduler. A battery event cannot bring a NAS back, so UPower's do
+    // not — probing the network every time a charger is plugged in would be
+    // work for nothing.
     let watchers = [
-        ("org.freedesktop.UPower", "/org/freedesktop/UPower"),
+        ("org.freedesktop.UPower", "/org/freedesktop/UPower", false),
         (
             "org.freedesktop.NetworkManager",
             "/org/freedesktop/NetworkManager",
+            true,
         ),
     ];
-    for (service, path) in watchers {
+    for (service, path, is_network) in watchers {
         let connection = connection.clone();
         let wake = Arc::clone(&wake);
+        let network_changed = Arc::clone(&network_changed);
         tokio::spawn(async move {
             let proxy = match zbus::fdo::PropertiesProxy::builder(&connection)
                 .destination(service)
@@ -416,6 +405,9 @@ pub async fn watch_for_changes(connection: zbus::Connection, wake: Arc<tokio::sy
                 // re-reads everything it needs anyway, and a spurious wake-up
                 // costs one cheap re-evaluation.
                 wake.notify_one();
+                if is_network {
+                    network_changed.notify_one();
+                }
             }
         });
     }
@@ -604,27 +596,6 @@ mod tests {
         assert!(!destination_is_remote("/mnt/usb/backups"));
         // A path containing a colon is still a path.
         assert!(!destination_is_remote("/mnt/odd:name/backups"));
-    }
-
-    #[test]
-    fn a_local_destination_is_probed_by_looking_at_it() {
-        let dir = tempfile::tempdir().unwrap();
-        let repo = dir.path().join("repo");
-        assert_eq!(
-            destination_reachable(repo.to_str().unwrap()),
-            Some(false),
-            "an unplugged drive presents as an absent path"
-        );
-        std::fs::create_dir(&repo).unwrap();
-        assert_eq!(destination_reachable(repo.to_str().unwrap()), Some(true));
-    }
-
-    #[test]
-    fn a_remote_destination_is_not_probed_here() {
-        // Opening an SSH connection to answer a preflight question would cost
-        // more than the backup it is guarding.
-        assert_eq!(destination_reachable("ssh://nas.local/./backups"), None);
-        assert_eq!(destination_reachable("keith@nas.local:backups"), None);
     }
 
     #[test]

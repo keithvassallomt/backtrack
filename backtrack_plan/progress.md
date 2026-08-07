@@ -56,7 +56,7 @@
 - [x] S04-T5 First-run backfill indexing (newest-first, background)
 
 ## Stage 5 — Offline protection ([stage file](stages/stage-05-offline-protection.md))
-- [ ] S05-T1 Destination reachability probe + network-change wakeup
+- [x] S05-T1 Destination reachability probe + network-change wakeup
 - [ ] S05-T2 Spool repo: capped, changed-files-only archives
 - [ ] S05-T3 btrfs detection + subvolume snapshot mode
 - [ ] S05-T4 Reconnect: immediate catch-up backup, spool expiry (~30 days)

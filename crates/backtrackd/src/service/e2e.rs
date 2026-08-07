@@ -322,7 +322,10 @@ async fn a_backup_that_was_never_catalogued_is_picked_up_on_the_next_start() {
     wait_for_job(&shared, job).await;
 
     // What the daemon does on every start.
-    let job = shared.reconcile_catalogue().expect("reconciliation starts");
+    let job = shared
+        .reconcile_catalogue()
+        .await
+        .expect("reconciliation starts");
     wait_for_job(&shared, job).await;
 
     let reader = backtrack_core::index::IndexReader::open(&shared.index_path).unwrap();
@@ -403,7 +406,10 @@ async fn borgs_checkpoint_archives_never_reach_the_timeline() {
 
     // Reconciliation therefore drops the row the checkpoint used to occupy,
     // rather than keeping a snapshot the repository will not admit to having.
-    let job = shared.reconcile_catalogue().expect("reconciliation starts");
+    let job = shared
+        .reconcile_catalogue()
+        .await
+        .expect("reconciliation starts");
     wait_for_job(&shared, job).await;
 
     let reader = backtrack_core::index::IndexReader::open(&shared.index_path).unwrap();
