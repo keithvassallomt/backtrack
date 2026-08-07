@@ -18,6 +18,7 @@ pub mod index;
 pub mod logging;
 pub mod paths;
 pub mod secret;
+pub mod state;
 
 /// The crate version, sourced from the workspace package version at build time.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");

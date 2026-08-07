@@ -12,7 +12,7 @@
 > tasks: add them here + to the stage file, then `just provision-board-apply`.
 > See [../CLAUDE.md](../CLAUDE.md) for the full workflow.
 
-**Current stage:** 3 (complete) → next: Stage 4
+**Current stage:** 4 — Backup pipeline
 **Last updated:** 2026-08-07
 
 ## Stage 0 — Bootstrap ([stage file](stages/stage-00-bootstrap.md))
@@ -49,7 +49,7 @@
 - [x] S03-T5 backtrack CLI mapping the interface (incl. status --json, doctor)
 
 ## Stage 4 — Backup pipeline ([stage file](stages/stage-04-backup-pipeline.md))
-- [ ] S04-T1 Scheduler (timer, missed-run catch-up, pause/resume)
+- [x] S04-T1 Scheduler (timer, missed-run catch-up, pause/resume)
 - [ ] S04-T2 Preflight: battery (UPower), metered (NetworkManager), pause state
 - [ ] S04-T3 create → stream-index → prune per retention → scheduled compact
 - [ ] S04-T4 Checkpoint/interrupted-backup handling (hidden from timeline)
@@ -341,6 +341,34 @@
   therefore reported "never backed up" for a machine with 30 archives, while a
   second call reported the truth. Startup now finishes all state assembly before
   claiming the name; verified over 8 consecutive cold starts.
+- 2026-08-07 (S04-T1): An internal tokio timer rather than a systemd timer, for
+  one reason that settles it: a systemd timer can *start* a backup but cannot
+  decline to run one, and every gate that matters (pause, battery, metered,
+  reachability, a job already running) reads state only the daemon holds. The
+  decision is a pure function over injected times, so "the laptop slept through
+  six runs" is a test argument rather than a wait. **The cadence counts from the
+  last *attempt*, not the last success** — counting from successes would turn a
+  destination unplugged for a week into a backup attempt every tick for a week.
+  A run late by more than one whole period is treated as a wake-from-suspend and
+  deferred by a jittered delay of up to 2 minutes: firing the instant a lid opens
+  races the network coming up, and the jitter stops every machine on a site from
+  hitting one NAS at the same second after a power cut. The ordinary cadence is
+  *not* jittered, or every hourly backup would carry up to two minutes of pointless
+  latency. Pause and the attempt clock persist in a new `state.toml`, deliberately
+  separate from `config.toml`: configuration is the user's stated intent and
+  theirs to edit, this is bookkeeping, and "reset my settings" must not also mean
+  "forget that backups are paused". Loading it is forgiving where config loading
+  is strict — a corrupt config could silently disable a setting the user believes
+  is in force, while a corrupt state file costs at worst a forgotten pause, which
+  errs towards backing up. `BackupNow` bypasses a pause rather than refusing (the
+  user pressing the button has said what they want) without lifting it. Added
+  `Frequency::Weekly`, which the stage file listed and the schema lacked.
+  `GetStatus`'s next-backup time now derives from the same input the scheduler
+  decides on, since a promised time nothing will honour is worse than none.
+  `BACKTRACK_DEV_INTERVAL_SECS` shortens the cadence for development only.
+  Verified live: 20-second dev interval, runs at +0/+20/+40s with no drift, the
+  wake-on-job-finish path exercised, three real archives in the demo repo, and
+  the attempt clock on disk.
 - 2026-08-07 (S03-T5): `Status` and `SearchResult` moved from the daemon into
   `core::dbus`, so the payloads have exactly one definition rather than a copy
   per client that can drift silently into a runtime unmarshalling error. Core

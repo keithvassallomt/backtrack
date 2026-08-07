@@ -159,6 +159,7 @@ pub enum Frequency {
     #[default]
     Hourly,
     Daily,
+    Weekly,
     /// Scheduled backups off; manual triggers only.
     Manual,
 }
@@ -169,6 +170,7 @@ impl Frequency {
         match self {
             Frequency::Hourly => Some(std::time::Duration::from_secs(3_600)),
             Frequency::Daily => Some(std::time::Duration::from_secs(86_400)),
+            Frequency::Weekly => Some(std::time::Duration::from_secs(7 * 86_400)),
             Frequency::Manual => None,
         }
     }
@@ -541,6 +543,10 @@ mod tests {
         assert_eq!(
             Frequency::Daily.interval(),
             Some(std::time::Duration::from_secs(86_400))
+        );
+        assert_eq!(
+            Frequency::Weekly.interval(),
+            Some(std::time::Duration::from_secs(604_800))
         );
         assert_eq!(Frequency::Manual.interval(), None);
     }

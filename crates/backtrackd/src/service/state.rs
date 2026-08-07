@@ -100,18 +100,22 @@ pub fn from_epoch(seconds: u64) -> Option<SystemTime> {
     (seconds > 0).then(|| UNIX_EPOCH + Duration::from_secs(seconds))
 }
 
-/// When the next scheduled backup is due, given the last one.
+/// When the next scheduled backup is due, given the last attempt.
+///
+/// Counts from the last *attempt* rather than the last success, because that is
+/// what the scheduler counts from — a status line promising a backup at a time
+/// nothing will happen is worse than no time at all.
 ///
 /// A missed schedule is due immediately rather than at some point in the past,
 /// so a laptop that was asleep for a week reports "now" instead of a date that
 /// has already been and gone.
 pub fn next_due(
-    config: &Config,
-    last_backup: Option<SystemTime>,
+    interval: Option<Duration>,
+    last_attempt: Option<SystemTime>,
     now: SystemTime,
 ) -> Option<SystemTime> {
-    let interval = config.backup.frequency.interval()?;
-    let due = match last_backup {
+    let interval = interval?;
+    let due = match last_attempt {
         Some(last) => last + interval,
         None => now,
     };
@@ -259,32 +263,41 @@ mod tests {
         assert_eq!(from_epoch(to_epoch(Some(t))), Some(t));
     }
 
+    /// The default hourly cadence.
+    fn hourly() -> Option<Duration> {
+        Config::default().backup.frequency.interval()
+    }
+
     #[test]
     fn the_next_backup_is_one_interval_after_the_last() {
-        let config = Config::default();
         let last = now() - Duration::from_secs(600);
         assert_eq!(
-            next_due(&config, Some(last), now()),
+            next_due(hourly(), Some(last), now()),
             Some(last + Duration::from_secs(3_600))
         );
     }
 
     #[test]
     fn a_missed_schedule_is_due_now_not_in_the_past() {
-        let config = Config::default();
         let last = now() - Duration::from_secs(7 * 24 * 3_600);
         assert_eq!(
-            next_due(&config, Some(last), now()),
+            next_due(hourly(), Some(last), now()),
             Some(now()),
             "a laptop that slept for a week is due immediately"
         );
     }
 
     #[test]
+    fn a_machine_that_has_never_run_is_due_now() {
+        assert_eq!(next_due(hourly(), None, now()), Some(now()));
+    }
+
+    #[test]
     fn a_manual_schedule_has_no_next_backup() {
-        let mut config = Config::default();
-        config.backup.frequency = Frequency::Manual;
-        assert_eq!(next_due(&config, Some(now()), now()), None);
+        assert_eq!(
+            next_due(Frequency::Manual.interval(), Some(now()), now()),
+            None
+        );
     }
 
     #[test]

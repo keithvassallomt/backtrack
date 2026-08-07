@@ -74,7 +74,10 @@ async fn fixture() -> Fixture {
     // The default exclusions do not matter here and only slow borg down.
     config.backup.exclude = vec![];
 
-    let shared = Shared::new(config, JobRegistry::new(), secrets);
+    // `in_dir` rather than `new`: this test writes real bookkeeping, and it must
+    // land in the fixture's temporary directory rather than in the data
+    // directory of whoever is running the suite.
+    let shared = Shared::in_dir(config, JobRegistry::new(), secrets, dir.path());
     shared.set_engine(Arc::new(engine));
     Fixture { _dir: dir, shared }
 }

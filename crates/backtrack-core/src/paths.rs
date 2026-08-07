@@ -35,6 +35,12 @@ pub fn index_db() -> PathBuf {
     data_dir().join("index.db")
 }
 
+/// Daemon bookkeeping that outlives the process: `<data_dir>/state.toml`.
+/// Separate from `config.toml` — see [`crate::state`].
+pub fn state_file() -> PathBuf {
+    data_dir().join("state.toml")
+}
+
 /// Rotating JSONL logs: `<data_dir>/logs`.
 pub fn log_dir() -> PathBuf {
     data_dir().join("logs")

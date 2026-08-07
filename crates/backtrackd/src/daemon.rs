@@ -32,6 +32,7 @@ use backtrack_core::index::IndexWriter;
 use backtrack_core::{dbus, paths};
 
 use crate::jobs::JobRegistry;
+use crate::schedule::Scheduler;
 use crate::service::{self, Daemon1, Shared};
 use std::sync::Arc;
 use tokio::signal::unix::{signal, SignalKind};
@@ -130,6 +131,8 @@ pub async fn run() -> Result<Outcome, StartupError> {
     // Health must survive a restart: the catalogue remembers when the last
     // backup landed even though this process does not.
     shared.seed_last_backup();
+    // As must a pause and the attempt clock, which only this daemon records.
+    shared.restore_persisted_state();
 
     // Export the object, and start turning job updates into signals, before
     // claiming the name — see below for why the order matters.
@@ -146,6 +149,13 @@ pub async fn run() -> Result<Outcome, StartupError> {
         Arc::clone(&shared),
         emitter.to_owned(),
     ));
+
+    // The scheduler is what makes this a backup product rather than a remote
+    // control. It starts before the name is claimed so a machine that has been
+    // off for a week is already catching up by the time anything asks.
+    let scheduler = Scheduler::new(Arc::clone(&shared));
+    shared.set_waker(scheduler.waker());
+    tokio::spawn(scheduler.run());
 
     // Claiming the name is the readiness announcement, so it goes last. systemd
     // reports the unit started the moment the name appears, and an activating

@@ -16,6 +16,11 @@ All notable changes to Backtrack are documented here. This project adheres to
 ## [Unreleased]
 
 ### Added
+- Automatic backups on a schedule: hourly by default, with daily, weekly, and
+  manual-only alternatives. A machine that was asleep or switched off catches up
+  shortly after it wakes rather than waiting for the next slot, and a pause set
+  from the menu is honoured for its full duration even if the computer restarts
+  in the meantime. "Back Up Now" always runs, pause or no pause.
 - Project bootstrap: Cargo workspace (core library plus daemon, GTK app, and CLI
   binaries), structured logging with JSONL rotation, developer task runner,
   versioning policy, and continuous integration.

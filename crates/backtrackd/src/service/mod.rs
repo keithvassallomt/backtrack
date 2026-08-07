@@ -38,13 +38,16 @@ use backtrack_core::engine::{
 use backtrack_core::index::{IndexReader, Kind};
 use backtrack_core::paths;
 use backtrack_core::secret::SecretStore;
+use backtrack_core::state::RuntimeState;
 use futures::future::BoxFuture;
 use tokio::io::AsyncWriteExt;
+use tokio::sync::Notify;
 use tracing::{debug, info, warn};
 use zbus::object_server::SignalEmitter;
 use zbus::zvariant::OwnedFd;
 
 use crate::jobs::{JobFactory, JobKind, JobRegistry, JobState, JobUpdate, Outcome};
+use crate::schedule::{self, ScheduleInput};
 
 pub use backtrack_core::dbus::{SearchResult, Status};
 pub use error::{DaemonError, Result};
@@ -72,28 +75,181 @@ pub struct Shared {
     last_backup: Mutex<Option<SystemTime>>,
     blocking_failure: Mutex<bool>,
     destination_reachable: Mutex<bool>,
+    /// Bookkeeping that has to survive a restart: the pause, the attempt clock,
+    /// the compaction clock. See [`backtrack_core::state`].
+    persisted: Mutex<RuntimeState>,
+    /// Where that bookkeeping is written. A field rather than a call to
+    /// [`paths::state_file`] at each use, so tests exercise the real persistence
+    /// path without writing into the developer's own data directory.
+    state_path: PathBuf,
+    /// Nudges the scheduler when something happens that changes its answer.
+    /// Absent until the scheduler is running, which is why every use goes
+    /// through [`Shared::wake_scheduler`].
+    waker: Mutex<Option<Arc<Notify>>>,
 }
 
 impl Shared {
-    /// Assemble from the daemon's own pieces.
+    /// Assemble from the daemon's own pieces, writing to the real data
+    /// directory.
     pub fn new(
         config: Config,
         jobs: Arc<JobRegistry>,
         secrets: Arc<dyn SecretStore>,
+    ) -> Arc<Shared> {
+        Shared::assemble(
+            config,
+            jobs,
+            secrets,
+            paths::index_db(),
+            paths::cache_dir(),
+            paths::state_file(),
+        )
+    }
+
+    /// Assemble with every file this daemon writes kept inside `dir`. Test-only,
+    /// so a test that exercises the real persistence path cannot scribble on the
+    /// developer's own backups.
+    #[cfg(test)]
+    pub(crate) fn in_dir(
+        config: Config,
+        jobs: Arc<JobRegistry>,
+        secrets: Arc<dyn SecretStore>,
+        dir: &std::path::Path,
+    ) -> Arc<Shared> {
+        Shared::assemble(
+            config,
+            jobs,
+            secrets,
+            dir.join("index.db"),
+            dir.join("cache"),
+            dir.join("state.toml"),
+        )
+    }
+
+    fn assemble(
+        config: Config,
+        jobs: Arc<JobRegistry>,
+        secrets: Arc<dyn SecretStore>,
+        index_path: PathBuf,
+        cache_dir: PathBuf,
+        state_path: PathBuf,
     ) -> Arc<Shared> {
         Arc::new(Shared {
             config: Mutex::new(config),
             pause: Mutex::new(PauseState::default()),
             jobs,
             secrets,
-            preview: PreviewCache::new(paths::cache_dir()),
-            index_path: paths::index_db(),
+            preview: PreviewCache::new(cache_dir),
+            index_path,
             engine: Mutex::new(None),
             last_archive: Mutex::new(None),
             last_backup: Mutex::new(None),
             blocking_failure: Mutex::new(false),
             destination_reachable: Mutex::new(true),
+            persisted: Mutex::new(RuntimeState::default()),
+            state_path,
+            waker: Mutex::new(None),
         })
+    }
+
+    /// Reload the bookkeeping this daemon left behind last time it ran.
+    ///
+    /// A pause is the reason this exists: "pause for four hours" must mean four
+    /// hours, not "until something restarts the daemon" — and on a laptop, a
+    /// restart is a lid closing.
+    pub fn restore_persisted_state(&self) {
+        self.adopt_state(RuntimeState::load_from(&self.state_path));
+    }
+
+    /// Take on a previously-saved state. Split from the load so the rules can be
+    /// tested without a filesystem.
+    fn adopt_state(&self, state: RuntimeState) {
+        match backtrack_core::state::from_epoch(state.paused_until) {
+            // A pause that ran out while the daemon was not running has already
+            // expired: honouring it now would extend it by the downtime.
+            Some(until) if until > SystemTime::now() => {
+                self.pause.lock().unwrap().pause_until(until);
+                info!(
+                    until = state.paused_until,
+                    "restored a pause that outlived the daemon"
+                );
+            }
+            _ => {}
+        }
+        *self.persisted.lock().unwrap() = state;
+    }
+
+    /// Apply a change to the persisted bookkeeping and write it out.
+    ///
+    /// A write failure is logged, never propagated: failing a `Pause` call
+    /// because a disk is full would be a worse answer than a pause that is
+    /// honoured now and forgotten after a restart.
+    fn update_persisted(&self, change: impl FnOnce(&mut RuntimeState)) {
+        let mut state = self.persisted.lock().unwrap();
+        change(&mut state);
+        if let Err(e) = state.save_to(&self.state_path) {
+            warn!("could not persist daemon state: {e}");
+        }
+    }
+
+    /// Hand the scheduler's waker over, once it is running.
+    pub fn set_waker(&self, waker: Arc<Notify>) {
+        *self.waker.lock().unwrap() = Some(waker);
+    }
+
+    /// Make the scheduler reconsider now rather than at its next tick.
+    fn wake_scheduler(&self) {
+        if let Some(waker) = self.waker.lock().unwrap().as_ref() {
+            waker.notify_one();
+        }
+    }
+
+    /// The facts the schedule is decided from, assembled fresh.
+    pub fn schedule_input(&self) -> ScheduleInput {
+        let config = self.config();
+        ScheduleInput {
+            interval: schedule::interval_for(&config),
+            last_attempt: backtrack_core::state::from_epoch(
+                self.persisted.lock().unwrap().last_attempt,
+            ),
+            paused_until: self.pause.lock().unwrap().until(SystemTime::now()),
+            configured: config.is_configured(),
+            busy: self.busy(),
+        }
+    }
+
+    /// Whether any job is running or waiting to run.
+    fn busy(&self) -> bool {
+        self.jobs.list().iter().any(|job| !job.state.is_terminal())
+    }
+
+    /// Start the backup the schedule asked for.
+    ///
+    /// Returns the job id, or `None` if a preflight gate declined the run. A
+    /// decline is not an error: being on battery is a decision, not a fault.
+    pub async fn start_scheduled_backup(&self) -> Result<Option<u64>> {
+        Ok(Some(self.submit_backup()?))
+    }
+
+    /// Queue a backup and record the attempt.
+    ///
+    /// The attempt clock advances here rather than on success, so a destination
+    /// that has been unplugged for a week produces one attempt per interval
+    /// instead of one per tick.
+    fn submit_backup(&self) -> Result<u64> {
+        let engine = self.engine()?;
+        let config = self.config();
+        let spec = create_spec(&config);
+        *self.last_archive.lock().unwrap() = Some(spec.archive_name.clone());
+        self.update_persisted(|state| {
+            state.last_attempt = backtrack_core::state::to_epoch(Some(SystemTime::now()));
+        });
+        let factory: JobFactory = Arc::new(move || {
+            let engine = Arc::clone(&engine);
+            let spec = spec.clone();
+            Box::pin(async move { engine.create(&spec).await }) as BoxFuture<'_, _>
+        });
+        Ok(self.jobs.submit(JobKind::Backup, factory))
     }
 
     /// Replace the engine. Used at startup once the configuration is known, and
@@ -206,17 +362,24 @@ impl Daemon1 {
 #[zbus::interface(name = "org.backtrack.Daemon1")]
 impl Daemon1 {
     /// Start a backup now, whatever the schedule says.
+    ///
+    /// Deliberately bypasses the pause rather than refusing: someone who paused
+    /// backups this morning and is now pressing "Back Up Now" has said what they
+    /// want, and it would be perverse to answer "no, you paused it". The pause
+    /// itself is untouched, so the schedule stays paused afterwards — the bypass
+    /// is for this one run.
     async fn backup_now(&self) -> Result<u64> {
-        let engine = self.shared.engine()?;
-        let config = self.shared.config();
-        let spec = create_spec(&config);
-        *self.shared.last_archive.lock().unwrap() = Some(spec.archive_name.clone());
-        let factory: JobFactory = Arc::new(move || {
-            let engine = Arc::clone(&engine);
-            let spec = spec.clone();
-            Box::pin(async move { engine.create(&spec).await }) as BoxFuture<'_, _>
-        });
-        Ok(self.shared.jobs.submit(JobKind::Backup, factory))
+        let paused = self
+            .shared
+            .pause
+            .lock()
+            .unwrap()
+            .until(SystemTime::now())
+            .is_some();
+        if paused {
+            info!("manual backup requested while paused; running it anyway");
+        }
+        self.shared.submit_backup()
     }
 
     /// Pause scheduled backups until `until` (seconds since the epoch).
@@ -233,6 +396,9 @@ impl Daemon1 {
             ));
         }
         self.shared.pause.lock().unwrap().pause_until(until);
+        self.shared
+            .update_persisted(|s| s.paused_until = backtrack_core::state::to_epoch(Some(until)));
+        self.shared.wake_scheduler();
         info!(until = to_epoch(Some(until)), "backups paused");
         Ok(())
     }
@@ -240,6 +406,8 @@ impl Daemon1 {
     /// Resume scheduled backups.
     async fn resume(&self) -> Result<()> {
         self.shared.pause.lock().unwrap().resume();
+        self.shared.update_persisted(|s| s.paused_until = None);
+        self.shared.wake_scheduler();
         info!("backups resumed");
         Ok(())
     }
@@ -250,10 +418,13 @@ impl Daemon1 {
         let config = self.shared.config();
         let last_backup = *self.shared.last_backup.lock().unwrap();
         let paused_until = self.shared.pause.lock().unwrap().until(now);
-        let next = if paused_until.is_some() {
+        // Reported from the same facts the scheduler decides on — a next-backup
+        // time the schedule would not honour is worse than none at all.
+        let schedule = self.shared.schedule_input();
+        let next = if paused_until.is_some() || !schedule.configured {
             None
         } else {
-            next_due(&config, last_backup, now)
+            next_due(schedule.interval, schedule.last_attempt, now)
         };
         Ok(Status {
             state: self.shared.health().as_str().to_string(),
@@ -656,6 +827,10 @@ pub async fn fan_out_signals(shared: Arc<Shared>, emitter: SignalEmitter<'static
             JobUpdate::State { kind, state, .. } => {
                 if state.is_terminal() {
                     update_health(&shared, kind, &state);
+                    // The repository is free again, so a backup the scheduler
+                    // declined to queue while busy can be reconsidered now
+                    // rather than at the next tick.
+                    shared.wake_scheduler();
                 }
                 let current = shared.health();
                 if current != announced {
@@ -745,6 +920,137 @@ fn dirs_home() -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::jobs::JobRegistry;
+    use backtrack_testkit::{MockEngine, MockSecretStore};
+
+    /// A configured daemon with a backup that runs until it is cancelled, and
+    /// every file it writes confined to `dir`.
+    fn configured(dir: &std::path::Path) -> Arc<Shared> {
+        let mut config = Config::default();
+        config.storage.repository = Some(dir.join("repo").display().to_string());
+        config.backup.include = vec![dir.join("src")];
+        let shared = Shared::in_dir(
+            config,
+            JobRegistry::new(),
+            Arc::new(MockSecretStore::default()),
+            dir,
+        );
+        shared.set_engine(Arc::new(MockEngine::default().with_create_pending()));
+        shared
+    }
+
+    #[tokio::test]
+    async fn a_pause_survives_a_restart() {
+        // The acceptance criterion: "pause state persists across daemon
+        // restarts". A pause set for the afternoon must not be undone by a lid
+        // closing, which on a laptop is the most likely thing to happen next.
+        let dir = tempfile::tempdir().unwrap();
+        let until = SystemTime::now() + Duration::from_secs(3_600);
+
+        let first = configured(dir.path());
+        first.pause.lock().unwrap().pause_until(until);
+        first.update_persisted(|s| s.paused_until = backtrack_core::state::to_epoch(Some(until)));
+
+        // A second daemon over the same directory: a restart, as far as the
+        // state on disk is concerned.
+        let second = configured(dir.path());
+        assert_eq!(second.schedule_input().paused_until, None, "not yet loaded");
+        second.restore_persisted_state();
+        assert!(
+            second.schedule_input().paused_until.is_some(),
+            "the pause must come back with the daemon"
+        );
+    }
+
+    #[test]
+    fn a_pause_that_expired_while_the_daemon_was_down_stays_expired() {
+        // Otherwise every restart would silently extend the pause by however
+        // long the machine was off.
+        let dir = tempfile::tempdir().unwrap();
+        let shared = configured(dir.path());
+        let expired = SystemTime::now() - Duration::from_secs(60);
+        shared.adopt_state(RuntimeState {
+            paused_until: backtrack_core::state::to_epoch(Some(expired)),
+            ..Default::default()
+        });
+        assert_eq!(shared.schedule_input().paused_until, None);
+    }
+
+    #[tokio::test]
+    async fn a_scheduled_backup_advances_the_attempt_clock_and_persists_it() {
+        // The clock has to be on disk, or a daemon restarted every few minutes
+        // (by a crash loop, or a user logging in and out) would back up on every
+        // start and never on schedule.
+        let dir = tempfile::tempdir().unwrap();
+        let shared = configured(dir.path());
+        assert_eq!(shared.schedule_input().last_attempt, None);
+
+        let job = shared
+            .start_scheduled_backup()
+            .await
+            .expect("a configured daemon can start a backup");
+        assert!(job.is_some());
+        assert!(shared.schedule_input().last_attempt.is_some());
+
+        let reloaded = RuntimeState::load_from(&shared.state_path);
+        assert!(
+            reloaded.last_attempt.is_some(),
+            "the attempt clock must reach the disk, not just memory"
+        );
+        shared.jobs.cancel(job.unwrap()).unwrap();
+    }
+
+    #[tokio::test]
+    async fn back_up_now_overrides_a_pause_without_lifting_it() {
+        // Someone who paused this morning and is now pressing the button has
+        // said what they want. Refusing would be pedantic; silently cancelling
+        // their pause would be worse.
+        let dir = tempfile::tempdir().unwrap();
+        let shared = configured(dir.path());
+        let until = SystemTime::now() + Duration::from_secs(3_600);
+        shared.pause.lock().unwrap().pause_until(until);
+
+        let daemon = Daemon1::new(Arc::clone(&shared));
+        let job = daemon.backup_now().await.expect("runs despite the pause");
+
+        assert!(
+            shared.schedule_input().paused_until.is_some(),
+            "the pause is bypassed for this run, not cancelled"
+        );
+        shared.jobs.cancel(job).unwrap();
+    }
+
+    #[tokio::test]
+    async fn the_schedule_reports_a_running_job_as_busy() {
+        let dir = tempfile::tempdir().unwrap();
+        let shared = configured(dir.path());
+        assert!(!shared.schedule_input().busy);
+
+        let job = shared.submit_backup().expect("submits");
+        assert!(
+            shared.schedule_input().busy,
+            "a second backup must not be queued behind the first"
+        );
+        shared.jobs.cancel(job).unwrap();
+    }
+
+    #[test]
+    fn an_unconfigured_machine_reports_no_schedule() {
+        let dir = tempfile::tempdir().unwrap();
+        let shared = Shared::in_dir(
+            Config::default(),
+            JobRegistry::new(),
+            Arc::new(MockSecretStore::default()),
+            dir.path(),
+        );
+        let input = shared.schedule_input();
+        assert!(!input.configured);
+        assert_eq!(
+            input.interval,
+            Some(Duration::from_secs(3_600)),
+            "the frequency is still hourly; it is the destination that is missing"
+        );
+    }
 
     #[test]
     fn archive_names_sort_chronologically() {
