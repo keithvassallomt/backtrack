@@ -555,6 +555,14 @@ mod tests {
     async fn a_read_only_destination_does_not_count_as_reachable() {
         // "The NAS came back, but read-only" is a real failure mode, and one a
         // plain existence check reports as fine right up until the backup fails.
+        //
+        // Root is exempt from permission checks, so on a machine running as
+        // root — which is how CI's container runs — a read-only directory is
+        // still writable and there is nothing here to observe.
+        if rustix::process::geteuid().is_root() {
+            eprintln!("skipping: running as root, which bypasses permission checks");
+            return;
+        }
         let dir = tempfile::tempdir().unwrap();
         let repo = dir.path().join("repo");
         std::fs::create_dir(&repo).unwrap();

@@ -26,13 +26,8 @@ jobs:
       - name: Quality gate (fmt, clippy -D warnings, tests, license headers)
         run: just check
 
-      - name: Guard against println!/eprintln!/dbg! outside tests
-        run: |
-          if grep -rn --include='*.rs' -E 'println!|eprintln!|dbg!' crates/ | grep -v -E 'tests?'; then
-            echo "::error::println!/eprintln!/dbg! found outside tests — use tracing instead"
-            exit 1
-          fi
-          echo "No stray println!/eprintln!/dbg! found."
+      - name: Guard against printing where tracing is wanted
+        run: just check-prints
 
       - name: Verify version consistency
         run: just verify-version

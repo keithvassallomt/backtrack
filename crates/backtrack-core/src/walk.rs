@@ -378,8 +378,25 @@ mod tests {
         );
     }
 
+    /// Whether this process can be denied access by file permissions at all.
+    ///
+    /// Root cannot: the kernel skips the permission check for it, so a
+    /// directory with mode `000` is still perfectly readable. CI runs in a
+    /// container as root, so a test that arranges to be refused has nothing to
+    /// observe there and says so rather than failing.
+    fn permissions_are_enforced() -> bool {
+        if rustix::process::geteuid().is_root() {
+            eprintln!("skipping: running as root, which bypasses permission checks");
+            return false;
+        }
+        true
+    }
+
     #[test]
     fn an_unreadable_directory_is_counted_rather_than_fatal() {
+        if !permissions_are_enforced() {
+            return;
+        }
         let dir = tempfile::tempdir().unwrap();
         let locked = dir.path().join("locked");
         std::fs::create_dir(&locked).unwrap();

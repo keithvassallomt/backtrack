@@ -118,6 +118,7 @@ check:
     cargo clippy --workspace --all-targets -- -D warnings
     cargo test --workspace
     just check-license-headers
+    just check-prints
 
 # Fail if any Rust source file under crates/ lacks an SPDX license header.
 check-license-headers:
@@ -134,6 +135,11 @@ check-license-headers:
         exit 1
     fi
     echo "All crate source files carry an SPDX license header."
+
+# Fail if the daemon or the library prints instead of logging through tracing.
+# Test code and backtrack-cli are exempt; see the script for why.
+check-prints:
+    python3 scripts/check_prints.py
 
 # Unit tests only.
 test:
