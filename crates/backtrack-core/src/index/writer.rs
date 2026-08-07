@@ -92,6 +92,15 @@ impl Neighbour {
     }
 }
 
+/// A locally-held snapshot, as the offline paths need it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LocalArchiveRow {
+    pub seq: i64,
+    pub name: String,
+    /// When the snapshot was taken, epoch seconds.
+    pub ts: i64,
+}
+
 /// One `archives` row, as [`IndexWriter::sync_archives`] needs it.
 struct ArchiveRow {
     seq: i64,
@@ -591,16 +600,23 @@ impl IndexWriter {
         Ok(rows)
     }
 
-    /// Archives belonging to `repo`, oldest first, as `(seq, name)`.
+    /// Archives belonging to `repo`, oldest first.
     ///
     /// The order is what the spool's cap eviction needs: when local storage has
-    /// to give, the oldest snapshot is the one to let go of.
-    pub fn archives_in(&self, repo: Repo) -> Result<Vec<(i64, String)>> {
+    /// to give, the oldest snapshot is the one to let go of. The timestamp is
+    /// what snapshot expiry needs, which works on age rather than on size.
+    pub fn archives_in(&self, repo: Repo) -> Result<Vec<LocalArchiveRow>> {
         let mut stmt = self
             .conn
-            .prepare("SELECT seq, name FROM archives WHERE repo = ?1 ORDER BY seq")?;
+            .prepare("SELECT seq, name, ts FROM archives WHERE repo = ?1 ORDER BY seq")?;
         let rows = stmt
-            .query_map([repo.as_str()], |r| Ok((r.get(0)?, r.get(1)?)))?
+            .query_map([repo.as_str()], |r| {
+                Ok(LocalArchiveRow {
+                    seq: r.get(0)?,
+                    name: r.get(1)?,
+                    ts: r.get(2)?,
+                })
+            })?
             .collect::<std::result::Result<_, _>>()?;
         Ok(rows)
     }
@@ -1719,7 +1735,7 @@ mod catalogue_tests {
 
         let spool = w.archives_in(Repo::Spool).unwrap();
         assert_eq!(
-            spool.iter().map(|(_, n)| n.as_str()).collect::<Vec<_>>(),
+            spool.iter().map(|a| a.name.as_str()).collect::<Vec<_>>(),
             vec!["s1", "s2"],
             "oldest first: the one to evict when local storage has to give"
         );

@@ -15,6 +15,7 @@ mod preflight;
 mod reachability;
 mod schedule;
 mod service;
+mod snapshot;
 // Exists only to assert that the packaged units and the code agree.
 #[cfg(test)]
 mod units;

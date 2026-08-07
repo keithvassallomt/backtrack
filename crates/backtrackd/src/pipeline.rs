@@ -595,13 +595,15 @@ async fn run_offline(
         let reader = backtrack_core::index::IndexReader::open(&index_path)?;
         let baseline = reader.latest_catalogued_seq()?;
         let walked = backtrack_core::walk::walk(&walk_spec);
+        let unreadable = walked.unreadable;
+        let live = walked.live_entries();
         let changed = match baseline {
-            Some(seq) => reader.changed_since(seq, walked.entries)?,
+            Some(seq) => reader.changed_since(seq, live)?,
             // Nothing has ever been catalogued, so there is no "since" to speak
             // of. Everything walked is at risk.
-            None => walked.entries.into_iter().map(|e| e.path).collect(),
+            None => live.into_iter().map(|e| e.path).collect(),
         };
-        Ok::<_, backtrack_core::index::IndexError>((changed, walked.unreadable, baseline))
+        Ok::<_, backtrack_core::index::IndexError>((changed, unreadable, baseline))
     })
     .await
     .map_err(joined)?
@@ -638,7 +640,10 @@ async fn run_offline(
             .map_err(indexing)?;
     let existing: Vec<crate::offline::LocalArchive> = existing
         .into_iter()
-        .map(|(seq, name)| crate::offline::LocalArchive { seq, name })
+        .map(|row| crate::offline::LocalArchive {
+            seq: row.seq,
+            name: row.name,
+        })
         .collect();
     let cap = crate::offline::plan_cap(plan.cap_bytes, held, projected, &existing);
 
@@ -749,6 +754,176 @@ async fn evict(
     Ok(())
 }
 
+/// Everything a filesystem-snapshot backup needs.
+pub struct SnapshotPlan {
+    pub index: Arc<Mutex<IndexWriter>>,
+    /// The subvolume that holds the sources.
+    pub subvolume: std::path::PathBuf,
+    pub snapshots_dir: std::path::PathBuf,
+    pub walk: backtrack_core::walk::WalkSpec,
+    pub excludes: Vec<String>,
+    pub created_at: SystemTime,
+}
+
+/// Take a read-only filesystem snapshot and register it in the catalogue.
+///
+/// Unlike the spool this involves no Borg at all: the "archive" is a directory
+/// the kernel produced in constant time, and a restore from it is a file copy.
+/// It is also a **full** listing rather than a delta — a snapshot really does
+/// hold everything — so it catches deletions, which the spool cannot.
+pub fn start_snapshot_backup(plan: SnapshotPlan) -> JobStream {
+    let (sink, stream) = JobStream::channel(EVENT_BUFFER);
+    tokio::spawn(async move {
+        let outcome = run_snapshot(&plan, &sink).await;
+        sink.send(JobEvent::Finished(outcome)).await;
+    });
+    stream
+}
+
+async fn run_snapshot(plan: &SnapshotPlan, sink: &JobSink) -> Result<JobSummary, EngineError> {
+    let name = crate::offline::local_archive_name(plan.created_at);
+    let root = plan.snapshots_dir.join(&name);
+
+    sink.send(JobEvent::Progress {
+        current: 0,
+        total: None,
+        phase: PHASE_ARCHIVING.to_string(),
+    })
+    .await;
+    crate::snapshot::create(&plan.subvolume, &root)
+        .await
+        .map_err(|e| EngineError::BorgFailed {
+            code: -1,
+            stderr: format!("taking a filesystem snapshot: {e}"),
+        })?;
+    info!(snapshot = %root.display(), "changes protected on this computer");
+
+    // Walk the snapshot, not the live tree: the snapshot is the thing that will
+    // still be there when somebody comes to restore from it, and reading the
+    // live tree would record versions the snapshot does not hold.
+    let subvolume = plan.subvolume.clone();
+    let snapshot_root = root.clone();
+    let walk_spec = backtrack_core::walk::WalkSpec {
+        sources: plan
+            .walk
+            .sources
+            .iter()
+            .filter_map(|s| s.strip_prefix(&plan.subvolume).ok())
+            .map(|rel| root.join(rel))
+            .collect(),
+        excludes: backtrack_core::pattern::ExcludeSet::compile(&plan.excludes),
+        one_file_system: false,
+        never: plan.walk.never.clone(),
+        // A full listing: the catalogue needs directory rows to show a folder
+        // inside its parent.
+        include_dirs: true,
+    };
+    let items = tokio::task::spawn_blocking(move || {
+        let mut walked = backtrack_core::walk::walk(&walk_spec);
+        // Record every file where it really lives, not where this snapshot
+        // happens to keep its copy — otherwise a file's history splits into two
+        // unrelated trees and neither tells the whole story.
+        let from = backtrack_core::walk::archive_path(&snapshot_root);
+        let to = backtrack_core::walk::archive_path(&subvolume);
+        walked
+            .items
+            .retain_mut(|item| match relocate(&item.path, &from, &to) {
+                Some(path) => {
+                    item.path = path;
+                    true
+                }
+                None => false,
+            });
+        walked
+    })
+    .await
+    .map_err(joined)?;
+
+    let ts = plan
+        .created_at
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or(Duration::ZERO)
+        .as_secs() as i64;
+    let meta = ArchiveMeta {
+        borg_id: None,
+        name: name.clone(),
+        ts,
+    };
+    let count = items.items.len();
+    let index = Arc::clone(&plan.index);
+    tokio::task::spawn_blocking(move || {
+        let mut index = index.lock().unwrap();
+        let seq = index.append_archive(&meta, Repo::FsSnapshot)?;
+        index.ingest_pending(seq, items.items.into_iter())
+    })
+    .await
+    .map_err(joined)?
+    .map_err(indexing)?;
+
+    debug!(snapshot = %name, files = count, "local snapshot catalogued");
+
+    // Yesterday's hourlies stop being interesting once there are newer ones,
+    // and snapshots are cheap but not free. Expiry runs after the new snapshot
+    // rather than before it, so a failure here can never leave the machine with
+    // nothing held.
+    let index = Arc::clone(&plan.index);
+    let held =
+        tokio::task::spawn_blocking(move || index.lock().unwrap().archives_in(Repo::FsSnapshot))
+            .await
+            .map_err(joined)?
+            .map_err(indexing)?;
+    let now = SystemTime::now();
+    let expired: Vec<(i64, String)> = held
+        .into_iter()
+        .filter(|row| {
+            let created = UNIX_EPOCH + Duration::from_secs(row.ts.max(0) as u64);
+            crate::snapshot::expires_at(created, None) <= now
+        })
+        .map(|row| (row.seq, row.name))
+        .collect();
+    if let Err(e) = expire_snapshots(&plan.index, &plan.snapshots_dir, &expired).await {
+        // Housekeeping, exactly like a failed prune: the user is protected
+        // either way, and reporting this as a failed backup would be false.
+        warn!("expired local snapshots could not be cleared: {e}");
+    }
+
+    Ok(JobSummary::default())
+}
+
+/// Rewrite an archive-relative path from inside a snapshot to where the file
+/// really lives. `None` when the path is not inside the snapshot at all.
+fn relocate(path: &str, from: &str, to: &str) -> Option<String> {
+    let rest = path.strip_prefix(from)?.trim_start_matches('/');
+    if to.is_empty() {
+        return Some(rest.to_string());
+    }
+    Some(format!("{to}/{rest}"))
+}
+
+/// Remove local snapshots that have outlived their retention.
+pub async fn expire_snapshots(
+    index: &Arc<Mutex<IndexWriter>>,
+    snapshots_dir: &std::path::Path,
+    expired: &[(i64, String)],
+) -> Result<(), EngineError> {
+    if expired.is_empty() {
+        return Ok(());
+    }
+    for (_, name) in expired {
+        if let Err(e) = crate::snapshot::remove(&snapshots_dir.join(name)).await {
+            warn!(snapshot = %name, "could not remove an expired local snapshot: {e}");
+        }
+    }
+    let seqs: Vec<i64> = expired.iter().map(|(seq, _)| *seq).collect();
+    let index = Arc::clone(index);
+    tokio::task::spawn_blocking(move || index.lock().unwrap().remove_archives(&seqs))
+        .await
+        .map_err(joined)?
+        .map_err(indexing)?;
+    info!(count = expired.len(), "expired local snapshots removed");
+    Ok(())
+}
+
 /// `WalkSpec` holds a compiled `ExcludeSet`, which is not `Clone` — recompiling
 /// from the patterns is cheap and keeps the plan's ownership simple.
 fn clone_walk_spec(
@@ -760,6 +935,7 @@ fn clone_walk_spec(
         excludes: backtrack_core::pattern::ExcludeSet::compile(excludes),
         one_file_system: spec.one_file_system,
         never: spec.never.clone(),
+        include_dirs: spec.include_dirs,
     }
 }
 
@@ -1554,6 +1730,150 @@ mod tests {
             forward.file_history("home/a.txt").unwrap().len(),
             2,
             "one interval either side of the change"
+        );
+    }
+
+    /// The btrfs acceptance criterion, against a real filesystem: a snapshot is
+    /// taken, indexed, browsable through `folder_at`, restorable by copying a
+    /// file out of it, and removable afterwards.
+    ///
+    /// Skipped with a warning where btrfs is unavailable or subvolumes cannot
+    /// be created, exactly as the stage plan asks. It uses a subvolume the test
+    /// user owns, because that is the only kind an unprivileged process can
+    /// snapshot — which is the same limitation that makes this mode fall back
+    /// to the spool on a stock desktop.
+    #[cfg(feature = "integration")]
+    #[tokio::test]
+    async fn a_filesystem_snapshot_is_taken_indexed_and_browsable() {
+        use backtrack_core::index::IndexReader;
+
+        let base = match std::env::var_os("XDG_CACHE_HOME")
+            .map(std::path::PathBuf::from)
+            .or_else(|| {
+                std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join(".cache"))
+            }) {
+            Some(base) if crate::snapshot::is_btrfs(&base) => base,
+            _ => {
+                eprintln!("skipping: no btrfs filesystem available for snapshot tests");
+                return;
+            }
+        };
+        let scratch = base.join(format!("backtrack-snap-pipeline-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&scratch);
+        std::fs::create_dir_all(&scratch).unwrap();
+
+        let subvolume = scratch.join("home");
+        let made = tokio::process::Command::new("btrfs")
+            .args(["subvolume", "create"])
+            .arg(&subvolume)
+            .output()
+            .await
+            .map(|o| o.status.success())
+            .unwrap_or(false);
+        if !made {
+            eprintln!("skipping: cannot create a subvolume here");
+            let _ = std::fs::remove_dir_all(&scratch);
+            return;
+        }
+
+        let source = subvolume.join("k/Documents");
+        std::fs::create_dir_all(source.join("deep")).unwrap();
+        std::fs::write(source.join("report.odt"), b"the original").unwrap();
+        std::fs::write(source.join("deep/notes.txt"), b"notes").unwrap();
+
+        let index_dir = tempfile::tempdir().unwrap();
+        let index_path = index_dir.path().join("index.db");
+        let index = Arc::new(Mutex::new(IndexWriter::open(&index_path).unwrap()));
+        let snapshots = scratch.join("snapshots");
+
+        let plan = SnapshotPlan {
+            index: Arc::clone(&index),
+            subvolume: subvolume.clone(),
+            snapshots_dir: snapshots.clone(),
+            walk: backtrack_core::walk::WalkSpec {
+                sources: vec![source.clone()],
+                excludes: backtrack_core::pattern::ExcludeSet::default(),
+                one_file_system: true,
+                never: Vec::new(),
+                include_dirs: true,
+            },
+            excludes: Vec::new(),
+            created_at: SystemTime::now(),
+        };
+        let (_, result) = drain(start_snapshot_backup(plan)).await;
+        result.expect("the snapshot succeeds");
+
+        // Indexed as a local snapshot, and browsable.
+        let reader = IndexReader::open(&index_path).unwrap();
+        let archives = reader.archives_overview().unwrap();
+        assert_eq!(archives.len(), 1);
+        assert_eq!(archives[0].repo, "fs-snapshot");
+        assert!(archives[0].name.starts_with("bt-local-"));
+
+        let folder = backtrack_core::walk::archive_path(&source);
+        let entries = reader.folder_at(&folder, archives[0].seq).unwrap();
+        let names: Vec<&str> = entries.iter().map(|e| e.name.as_str()).collect();
+        assert!(
+            names.contains(&"report.odt") && names.contains(&"deep"),
+            "the snapshot browses at the files' real paths, got {names:?}"
+        );
+
+        // Restoring from a filesystem snapshot is a plain file copy.
+        let snapshot_root = snapshots.join(&archives[0].name);
+        let inside = snapshot_root.join("k/Documents/report.odt");
+        assert_eq!(std::fs::read_to_string(&inside).unwrap(), "the original");
+
+        // And it is a point in time: editing the original leaves it alone.
+        std::fs::write(source.join("report.odt"), b"edited later").unwrap();
+        assert_eq!(std::fs::read_to_string(&inside).unwrap(), "the original");
+
+        // Expiry removes it from the filesystem and the catalogue together.
+        expire_snapshots(
+            &index,
+            &snapshots,
+            &[(archives[0].seq, archives[0].name.clone())],
+        )
+        .await
+        .expect("expiry succeeds");
+        assert!(!snapshot_root.exists(), "the snapshot is gone from disk");
+        assert!(
+            IndexReader::open(&index_path)
+                .unwrap()
+                .archives_overview()
+                .unwrap()
+                .is_empty(),
+            "and from the catalogue"
+        );
+
+        let _ = std::fs::remove_dir_all(&subvolume);
+        let _ = std::fs::remove_dir_all(&scratch);
+    }
+
+    #[test]
+    fn a_snapshots_contents_are_recorded_where_the_files_really_live() {
+        // The catalogue has to hold `home/k/Documents/report.odt`, not the copy
+        // inside a snapshot directory. Getting this wrong splits a file's
+        // history into two unrelated trees, neither of which tells the whole
+        // story.
+        let from = "home/k/.local/share/backtrack/snapshots/bt-local-1";
+        let to = "home";
+        assert_eq!(
+            relocate(&format!("{from}/k/Documents/report.odt"), from, to).as_deref(),
+            Some("home/k/Documents/report.odt")
+        );
+        // The snapshot root itself maps to the subvolume root.
+        assert_eq!(relocate(from, from, to).as_deref(), Some("home/"));
+        // Anything outside the snapshot is not ours to relocate.
+        assert_eq!(relocate("etc/passwd", from, to), None);
+    }
+
+    #[test]
+    fn relocating_into_the_filesystem_root_does_not_invent_a_leading_slash() {
+        // A subvolume mounted at `/` has an empty archive-relative prefix, and
+        // the catalogue stores paths without a leading separator.
+        assert_eq!(
+            relocate("snapshots/one/home/k/f", "snapshots/one", "").as_deref(),
+            Some("home/k/f")
         );
     }
 

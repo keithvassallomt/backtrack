@@ -725,6 +725,7 @@ async fn the_storage_cap_drops_the_oldest_local_snapshots_first() {
                     excludes: backtrack_core::pattern::ExcludeSet::compile(&excludes),
                     one_file_system: true,
                     never: vec![shared.spool_dir.clone()],
+                    include_dirs: false,
                 },
                 excludes,
                 compression: Default::default(),

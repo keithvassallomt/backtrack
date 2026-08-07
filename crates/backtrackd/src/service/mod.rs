@@ -117,6 +117,13 @@ pub struct Shared {
     /// `state_path` is one: a test that exercises the real spool must not write
     /// a Borg repository into the developer's own data directory.
     spool_dir: PathBuf,
+    /// Where read-only filesystem snapshots are kept, when this machine can
+    /// take them.
+    snapshots_dir: PathBuf,
+    /// The detected local-protection mode, worked out on first use. `None`
+    /// means "not asked yet", which is also how a configuration change forces
+    /// it to be asked again.
+    offline_mode: Mutex<Option<crate::offline::Mode>>,
     /// Set when local protection could not run at all, which is what turns
     /// "the drive isn't reachable, and that's fine" into something the user
     /// needs to know about.
@@ -142,10 +149,13 @@ impl Shared {
             config,
             jobs,
             secrets,
-            paths::index_db(),
-            paths::cache_dir(),
-            paths::state_file(),
-            paths::spool_dir(),
+            Layout {
+                index_path: paths::index_db(),
+                cache_dir: paths::cache_dir(),
+                state_path: paths::state_file(),
+                spool_dir: paths::spool_dir(),
+                snapshots_dir: paths::snapshots_dir(),
+            },
         )
     }
 
@@ -163,10 +173,13 @@ impl Shared {
             config,
             jobs,
             secrets,
-            dir.join("index.db"),
-            dir.join("cache"),
-            dir.join("state.toml"),
-            dir.join("spool"),
+            Layout {
+                index_path: dir.join("index.db"),
+                cache_dir: dir.join("cache"),
+                state_path: dir.join("state.toml"),
+                spool_dir: dir.join("spool"),
+                snapshots_dir: dir.join("snapshots"),
+            },
         )
     }
 
@@ -174,11 +187,15 @@ impl Shared {
         config: Config,
         jobs: Arc<JobRegistry>,
         secrets: Arc<dyn SecretStore>,
-        index_path: PathBuf,
-        cache_dir: PathBuf,
-        state_path: PathBuf,
-        spool_dir: PathBuf,
+        layout: Layout,
     ) -> Arc<Shared> {
+        let Layout {
+            index_path,
+            cache_dir,
+            state_path,
+            spool_dir,
+            snapshots_dir,
+        } = layout;
         Arc::new(Shared {
             config: Mutex::new(config),
             pause: Mutex::new(PauseState::default()),
@@ -202,6 +219,8 @@ impl Shared {
             health_changed: Arc::new(Notify::new()),
             spool: Mutex::new(None),
             spool_dir,
+            snapshots_dir,
+            offline_mode: Mutex::new(None),
             offline_broken: Mutex::new(false),
             offline_degraded: Mutex::new(false),
             offline_handle: Mutex::new(None),
@@ -538,9 +557,44 @@ impl Shared {
             return Ok(None);
         }
 
-        let engine = self.spool_engine().await?;
         let index = self.index()?;
         let excludes = effective_excludes(&config);
+
+        // Which safety net this machine can actually use. Worked out once and
+        // remembered; re-detected when the sources change, since the answer
+        // depends on which filesystem they live on.
+        let mode = self.offline_mode().await;
+        debug!(mode = mode.as_str(), "protecting changes on this computer");
+        if let crate::offline::Mode::FsSnapshot(subvolume) = &mode {
+            let plan = pipeline::SnapshotPlan {
+                index,
+                subvolume: subvolume.root.clone(),
+                snapshots_dir: self.snapshots_dir.clone(),
+                walk: backtrack_core::walk::WalkSpec {
+                    sources: config.backup.include.clone(),
+                    excludes: backtrack_core::pattern::ExcludeSet::compile(&excludes),
+                    one_file_system: true,
+                    never: vec![paths::data_dir(), self.spool_dir.clone()],
+                    include_dirs: true,
+                },
+                excludes,
+                created_at: SystemTime::now(),
+            };
+            self.update_persisted(|state| {
+                state.last_attempt = backtrack_core::state::to_epoch(Some(SystemTime::now()));
+            });
+            let plan = Arc::new(Mutex::new(Some(plan)));
+            let factory: JobFactory = Arc::new(move || {
+                let plan = plan.lock().unwrap().take();
+                Box::pin(async move {
+                    let plan = plan.ok_or(backtrack_core::engine::EngineError::Cancelled)?;
+                    Ok(pipeline::start_snapshot_backup(plan))
+                }) as BoxFuture<'_, _>
+            });
+            return Ok(Some(self.jobs.submit(JobKind::Backup, factory)));
+        }
+
+        let engine = self.spool_engine().await?;
         let plan = pipeline::OfflinePlan {
             engine,
             index,
@@ -555,6 +609,8 @@ impl Shared {
                 // without bound, and that must hold however the paths are
                 // configured.
                 never: vec![paths::data_dir(), self.spool_dir.clone()],
+                // A delta for borg, so no directory entries — see `WalkSpec`.
+                include_dirs: false,
             },
             excludes,
             compression: create_spec(&config).compression,
@@ -586,6 +642,26 @@ impl Shared {
         let job = self.jobs.submit(JobKind::Backup, factory);
         *self.offline_handle.lock().unwrap() = Some(handle);
         Ok(Some(job))
+    }
+
+    /// How this machine holds changes while the destination is away.
+    ///
+    /// Detected once and remembered, because the probe takes a real snapshot;
+    /// re-detected when the sources change, since the answer depends on which
+    /// filesystem they are on.
+    pub async fn offline_mode(&self) -> crate::offline::Mode {
+        if let Some(mode) = self.offline_mode.lock().unwrap().clone() {
+            return mode;
+        }
+        let sources = self.config().backup.include;
+        let mode = crate::offline::detect(&sources, &self.snapshots_dir).await;
+        *self.offline_mode.lock().unwrap() = Some(mode.clone());
+        mode
+    }
+
+    /// Forget the detected mode, so the next offline tick works it out again.
+    fn forget_offline_mode(&self) {
+        *self.offline_mode.lock().unwrap() = None;
     }
 
     /// Whether the local safety net is in a position to protect anything.
@@ -829,6 +905,20 @@ impl Shared {
     fn record_blocking_failure(&self, blocking: bool) {
         *self.blocking_failure.lock().unwrap() = blocking;
     }
+}
+
+/// Every file and directory the daemon writes.
+///
+/// Grouped rather than passed one by one so a test can redirect the whole lot
+/// into a temporary directory in one move — a suite that scribbled a Borg
+/// repository into the developer's own data directory would be a nasty
+/// surprise.
+struct Layout {
+    index_path: PathBuf,
+    cache_dir: PathBuf,
+    state_path: PathBuf,
+    spool_dir: PathBuf,
+    snapshots_dir: PathBuf,
 }
 
 /// The D-Bus object.
@@ -1134,8 +1224,14 @@ impl Daemon1 {
         let updated = config_set(&self.shared.config(), key, value)?;
         let repository_changed =
             updated.storage.repository != self.shared.config().storage.repository;
+        let sources_changed = updated.backup.include != self.shared.config().backup.include;
         self.shared.store_config(updated)?;
         info!(key, "configuration changed");
+        if sources_changed {
+            // Which local safety net is usable depends on the filesystem the
+            // sources are on, so a new source list is a new question.
+            self.shared.forget_offline_mode();
+        }
         if repository_changed {
             // Best-effort: a destination that cannot be reached yet is a health
             // state, not a reason to reject the edit.

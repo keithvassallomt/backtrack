@@ -30,7 +30,7 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::index::LiveEntry;
+use crate::index::{BorgItem, Kind, LiveEntry};
 use crate::pattern::{is_within, ExcludeSet};
 
 /// What to walk, and what to leave alone.
@@ -45,18 +45,45 @@ pub struct WalkSpec {
     /// own data directory goes here: the spool repository lives in it, and a
     /// walk that picked it up would be feeding the backup its own output.
     pub never: Vec<PathBuf>,
+    /// Emit directory entries as well as descending into them.
+    ///
+    /// Off for the spool, which is producing a *delta* to hand to Borg: a
+    /// directory in that list would make Borg recurse, and a directory's mtime
+    /// changes whenever any child does, so one new file in `Documents` would
+    /// drag every unchanged document into the archive.
+    ///
+    /// On for a filesystem snapshot, which is a *full* listing: the catalogue
+    /// needs directory rows or the timeline cannot list a folder inside its
+    /// parent.
+    pub include_dirs: bool,
 }
 
 /// What a walk found.
 #[derive(Debug, Default)]
 pub struct Walked {
-    /// Every file and symlink in scope.
-    pub entries: Vec<LiveEntry>,
+    /// Everything in scope, in the same shape a Borg listing would arrive in,
+    /// so both consumers — the delta diff and a full snapshot ingest — read the
+    /// same walk.
+    pub items: Vec<BorgItem>,
     /// Paths that could not be read. Not an error — a directory the user cannot
     /// enter is a fact about the machine, not a failure of the backup — but
     /// worth counting so a walk that skipped most of the disk does not look
     /// like a walk that found nothing to do.
     pub unreadable: usize,
+}
+
+impl Walked {
+    /// The walk as change-detection input.
+    pub fn live_entries(self) -> Vec<LiveEntry> {
+        self.items
+            .into_iter()
+            .map(|item| LiveEntry {
+                path: PathBuf::from(item.path),
+                size: item.size,
+                mtime: item.mtime,
+            })
+            .collect()
+    }
 }
 
 /// Walk `spec`'s sources.
@@ -78,7 +105,7 @@ pub fn walk(spec: &WalkSpec) -> Walked {
         };
         walk_from(source, root_device, spec, &mut out);
     }
-    out.entries.sort_by(|a, b| a.path.cmp(&b.path));
+    out.items.sort_by(|a, b| a.path.cmp(&b.path));
     out
 }
 
@@ -120,14 +147,20 @@ fn walk_from(root: &Path, root_device: u64, spec: &WalkSpec, out: &mut Walked) {
                 // costing a walk of every file in it.
                 continue;
             }
-            if meta.is_dir() {
+            let is_dir = meta.is_dir();
+            if is_dir {
                 stack.push(path);
-                continue;
+                if !spec.include_dirs {
+                    continue;
+                }
             }
-            out.entries.push(LiveEntry {
-                path: PathBuf::from(relative),
-                size: meta.len() as i64,
+            out.items.push(BorgItem {
+                path: relative,
+                kind: kind_of(&meta),
+                size: if is_dir { 0 } else { meta.len() as i64 },
                 mtime: mtime_micros(&meta),
+                mode: mode_of(&meta),
+                chunk_hash: None,
             });
         }
     }
@@ -161,6 +194,27 @@ fn mtime_micros(meta: &std::fs::Metadata) -> i64 {
         .saturating_add((nanos + 500) / 1_000)
 }
 
+/// The object type, in the vocabulary the catalogue stores.
+fn kind_of(meta: &std::fs::Metadata) -> Kind {
+    let t = meta.file_type();
+    if t.is_dir() {
+        Kind::Dir
+    } else if t.is_symlink() {
+        Kind::Symlink
+    } else if t.is_file() {
+        Kind::File
+    } else {
+        Kind::Other
+    }
+}
+
+/// Permission and special bits only — the type lives in [`Kind`], exactly as it
+/// does when the same row arrives from a Borg listing.
+fn mode_of(meta: &std::fs::Metadata) -> i64 {
+    use std::os::unix::fs::MetadataExt;
+    i64::from(meta.mode() & 0o7777)
+}
+
 fn device_of(meta: &std::fs::Metadata) -> u64 {
     use std::os::unix::fs::MetadataExt;
     meta.dev()
@@ -178,17 +232,17 @@ mod tests {
             ),
             one_file_system: true,
             never: Vec::new(),
+            include_dirs: false,
         }
     }
 
     fn names(walked: &Walked, root: &Path) -> Vec<String> {
         let prefix = archive_path(root);
         let mut names: Vec<String> = walked
-            .entries
+            .items
             .iter()
             .map(|e| {
                 e.path
-                    .to_string_lossy()
                     .strip_prefix(&prefix)
                     .unwrap_or_default()
                     .trim_start_matches('/')
@@ -251,9 +305,12 @@ mod tests {
         // the index would report every file on the machine as new.
         let dir = tree();
         let walked = walk(&spec(dir.path(), &[]));
-        for entry in &walked.entries {
-            let text = entry.path.to_string_lossy();
-            assert!(!text.starts_with('/'), "{text} kept its leading slash");
+        for item in &walked.items {
+            assert!(
+                !item.path.starts_with('/'),
+                "{} kept its leading slash",
+                item.path
+            );
         }
     }
 
@@ -262,7 +319,7 @@ mod tests {
         let dir = tree();
         let walked = walk(&spec(dir.path(), &[]));
         let top = walked
-            .entries
+            .items
             .iter()
             .find(|e| e.path.ends_with("top.txt"))
             .expect("top.txt was walked");
@@ -350,9 +407,57 @@ mod tests {
             excludes: ExcludeSet::default(),
             one_file_system: true,
             never: Vec::new(),
+            include_dirs: false,
         });
-        assert!(walked.entries.is_empty());
+        assert!(walked.items.is_empty());
         assert_eq!(walked.unreadable, 1);
+    }
+
+    #[test]
+    fn a_full_listing_includes_directories_and_their_kinds() {
+        // What a filesystem snapshot needs: the catalogue cannot list a folder
+        // inside its parent without a row for the folder itself.
+        let dir = tree();
+        let mut spec = spec(dir.path(), &[]);
+        spec.include_dirs = true;
+        let walked = walk(&spec);
+
+        let found = names(&walked, dir.path());
+        assert!(found.contains(&"docs".to_string()), "got {found:?}");
+        assert!(found.contains(&"docs/deep".to_string()));
+        assert!(found.contains(&"empty".to_string()), "even an empty one");
+
+        let kinds: Vec<(&str, Kind)> = walked
+            .items
+            .iter()
+            .map(|i| (i.path.as_str(), i.kind))
+            .collect();
+        assert!(kinds
+            .iter()
+            .any(|(p, k)| p.ends_with("docs") && *k == Kind::Dir));
+        assert!(kinds
+            .iter()
+            .any(|(p, k)| p.ends_with("top.txt") && *k == Kind::File));
+        assert!(kinds
+            .iter()
+            .any(|(p, k)| p.ends_with("link") && *k == Kind::Symlink));
+    }
+
+    #[test]
+    fn modes_carry_permissions_without_the_type_bits() {
+        // The same convention a Borg listing arrives in: `Kind` holds the type,
+        // `mode` holds permissions. Mixing them would make an ingested snapshot
+        // disagree with an ingested archive for the same file.
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("f");
+        std::fs::write(&file, b"x").unwrap();
+        let mut perms = std::fs::metadata(&file).unwrap().permissions();
+        std::os::unix::fs::PermissionsExt::set_mode(&mut perms, 0o640);
+        std::fs::set_permissions(&file, perms).unwrap();
+
+        let walked = walk(&spec(dir.path(), &[]));
+        assert_eq!(walked.items[0].mode, 0o640);
+        assert_eq!(walked.items[0].kind, Kind::File);
     }
 
     #[test]
@@ -361,8 +466,8 @@ mod tests {
         let first = walk(&spec(dir.path(), &[]));
         let second = walk(&spec(dir.path(), &[]));
         assert_eq!(
-            first.entries.iter().map(|e| &e.path).collect::<Vec<_>>(),
-            second.entries.iter().map(|e| &e.path).collect::<Vec<_>>()
+            first.items.iter().map(|e| &e.path).collect::<Vec<_>>(),
+            second.items.iter().map(|e| &e.path).collect::<Vec<_>>()
         );
     }
 }

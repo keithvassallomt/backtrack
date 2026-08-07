@@ -51,6 +51,12 @@ pub fn spool_dir() -> PathBuf {
     data_dir().join("spool")
 }
 
+/// Read-only filesystem snapshots taken while offline: `<data_dir>/snapshots`
+/// (Stage 5, btrfs mode).
+pub fn snapshots_dir() -> PathBuf {
+    data_dir().join("snapshots")
+}
+
 /// The 30-day safety stash written by restores: `<data_dir>/replaced` (Stage 7).
 pub fn replaced_dir() -> PathBuf {
     data_dir().join("replaced")

@@ -157,13 +157,10 @@ fn walked(f: &Fixture) -> BTreeSet<String> {
         excludes: ExcludeSet::compile(&shipped_exclusions()),
         one_file_system: false,
         never: Vec::new(),
+        include_dirs: false,
     });
     assert_eq!(result.unreadable, 0, "nothing in the fixture is unreadable");
-    result
-        .entries
-        .iter()
-        .map(|e| e.path.to_string_lossy().to_string())
-        .collect()
+    result.items.iter().map(|e| e.path.clone()).collect()
 }
 
 #[tokio::test]
@@ -235,8 +232,9 @@ async fn an_unchanged_tree_has_nothing_to_spool() {
         excludes: ExcludeSet::compile(&shipped_exclusions()),
         one_file_system: false,
         never: Vec::new(),
+        include_dirs: false,
     });
-    let changed = reader.changed_since(1, live.entries).unwrap();
+    let changed = reader.changed_since(1, live.live_entries()).unwrap();
     assert!(
         changed.is_empty(),
         "an untouched tree must have nothing to spool, got {changed:?}"
@@ -321,8 +319,9 @@ async fn an_untouched_tree_of_thousands_of_files_still_has_nothing_to_spool() {
         excludes: ExcludeSet::default(),
         one_file_system: false,
         never: Vec::new(),
+        include_dirs: false,
     });
-    let changed = reader.changed_since(1, live.entries).unwrap();
+    let changed = reader.changed_since(1, live.live_entries()).unwrap();
     assert!(
         changed.is_empty(),
         "{} of 3000 untouched files were reported as modified; \
@@ -375,9 +374,10 @@ async fn only_what_actually_changed_is_reported() {
         excludes: ExcludeSet::compile(&shipped_exclusions()),
         one_file_system: false,
         never: Vec::new(),
+        include_dirs: false,
     });
     let changed: Vec<String> = reader
-        .changed_since(1, live.entries)
+        .changed_since(1, live.live_entries())
         .unwrap()
         .iter()
         .map(|p| p.to_string_lossy().to_string())

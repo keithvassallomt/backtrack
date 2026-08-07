@@ -31,7 +31,7 @@
 //!   protecting something beats protecting nothing — and then the spool holds
 //!   rather than quietly growing without limit.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// One local snapshot, as the cap planner sees it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -145,6 +145,69 @@ pub fn directory_bytes(dir: &Path) -> u64 {
         }
     }
     total
+}
+
+/// How changes are held while the destination is away.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Mode {
+    /// A capped Borg repository of changed files. Works everywhere.
+    Spool,
+    /// Read-only btrfs snapshots of the subvolume containing the sources.
+    FsSnapshot(crate::snapshot::Subvolume),
+}
+
+impl Mode {
+    /// The word `GetStatus` reports, and the one the Storage preferences page
+    /// will show beside the local usage figure.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Mode::Spool => "spool",
+            Mode::FsSnapshot(_) => "fs-snapshot",
+        }
+    }
+}
+
+/// Work out how this machine should protect changes locally.
+///
+/// Filesystem snapshots where they genuinely work, the spool otherwise. "Where
+/// they genuinely work" is settled by taking one and removing it again rather
+/// than by inspecting the filesystem type — see [`crate::snapshot`], where the
+/// measured answer on a stock desktop is that a user service cannot snapshot
+/// the subvolume `$HOME` lives in.
+///
+/// Called at startup and whenever the sources change. Cheap enough for that: at
+/// worst one snapshot of a subvolume, created and immediately removed.
+pub async fn detect(sources: &[PathBuf], snapshots_dir: &Path) -> Mode {
+    let Some(first) = sources.first() else {
+        return Mode::Spool;
+    };
+    if !crate::snapshot::is_btrfs(first) {
+        return Mode::Spool;
+    }
+    let Some(subvolume) = crate::snapshot::containing_subvolume(first) else {
+        tracing::debug!(
+            source = %first.display(),
+            "on btrfs, but no containing subvolume was found; using the spool"
+        );
+        return Mode::Spool;
+    };
+    // Every source must live in the same subvolume, or one snapshot cannot
+    // stand for all of them.
+    if !sources
+        .iter()
+        .all(|s| s.starts_with(&subvolume.root) && crate::snapshot::is_btrfs(s))
+    {
+        tracing::debug!("the backup sources span more than one filesystem; using the spool");
+        return Mode::Spool;
+    }
+    if crate::snapshot::probe(&subvolume.root, snapshots_dir).await {
+        tracing::info!(
+            subvolume = %subvolume.root.display(),
+            "filesystem snapshots are available for local protection"
+        );
+        return Mode::FsSnapshot(subvolume);
+    }
+    Mode::Spool
 }
 
 /// The archive name for a local snapshot taken at `now`.
