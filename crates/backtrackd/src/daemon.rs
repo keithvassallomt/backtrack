@@ -197,6 +197,13 @@ pub async fn run() -> Result<Outcome, StartupError> {
     tokio::spawn(scheduler.run());
     tokio::spawn(reachability::watch(Arc::clone(&shared), network_changed));
 
+    // A prepared restore lives in this process's memory, so nothing that was
+    // staged by a previous one is still owned by anybody. Clearing it reclaims
+    // a whole second copy of somebody's folder per abandoned restore — and,
+    // because staging directories are named after job ids and job ids start
+    // again with the daemon, stops the next restore extracting on top of one.
+    crate::restore::sweep_staging(shared.staging_root());
+
     // A backup can reach the repository and never be catalogued — the daemon
     // killed mid-ingest, the machine losing power, a listing that broke off. The
     // repository is the authority, so every start asks it what it actually holds

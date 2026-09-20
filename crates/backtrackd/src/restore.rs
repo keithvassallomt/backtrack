@@ -113,6 +113,47 @@ impl Restores {
     }
 }
 
+/// Begin an extraction from an empty directory, whatever was there before.
+///
+/// Staging is named after the job id, and job ids start again from the
+/// beginning every time the daemon does. So a staging directory outlives the
+/// daemon that made it — killed, crashed, or the machine losing power between
+/// preparing a restore and answering its dialog — and the next daemon's job
+/// with the same number would extract straight into what was left.
+///
+/// That is not a tidiness problem. The leftovers sit outside the path this
+/// restore asked for, so nothing on disk is walked to compare them against:
+/// they classify as "only in the backup", which needs no decision and is
+/// written out without asking. A restore of one folder would quietly deliver
+/// a different folder from a restore somebody abandoned a week ago.
+///
+/// `create_dir_all` alone cannot catch this — it succeeds, silently, on a
+/// directory that already exists with contents.
+fn empty_staging(staging: &std::path::Path) -> std::io::Result<()> {
+    match std::fs::remove_dir_all(staging) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error),
+    }
+    std::fs::create_dir_all(staging)
+}
+
+/// Clear every staging directory at start-up.
+///
+/// Nothing is holding them: the restores that owned them lived in a previous
+/// process's memory, and a prepared restore does not survive the daemon that
+/// prepared it. Leaving them costs a whole second copy of somebody's folder
+/// per abandoned restore, for as long as the machine lasts.
+pub fn sweep_staging(root: &std::path::Path) {
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        info!(path = %entry.path().display(), "clearing an abandoned restore");
+        remove_staging(&entry.path());
+    }
+}
+
 fn remove_staging(staging: &std::path::Path) {
     if let Err(error) = std::fs::remove_dir_all(staging) {
         if error.kind() != std::io::ErrorKind::NotFound {
@@ -217,7 +258,7 @@ async fn prepare(
     plan: &PreparePlan,
     sink: &backtrack_core::engine::JobSink,
 ) -> Result<RestorePlan, EngineError> {
-    std::fs::create_dir_all(&plan.staging).map_err(local)?;
+    empty_staging(&plan.staging).map_err(local)?;
 
     // ── Fetching ──
     let stream = plan
@@ -421,3 +462,59 @@ pub fn start_direct(prepare_plan: PreparePlan, decisions: Decisions, stash: Path
     stream
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The scenario this guards: the daemon is killed holding a prepared
+    /// restore, comes back, and hands job 3 to somebody restoring something
+    /// else entirely. Without the clear, the old extraction is merged into the
+    /// new plan — and merged as "only in the backup", which is the class that
+    /// is written to disk without a dialog.
+    #[test]
+    fn a_reused_job_number_does_not_inherit_the_last_ones_extraction() {
+        let root = tempfile::tempdir().unwrap();
+        let staging = root.path().join("3");
+        std::fs::create_dir_all(staging.join("home/Documents")).unwrap();
+        std::fs::write(staging.join("home/Documents/report.odt"), b"last week").unwrap();
+
+        empty_staging(&staging).unwrap();
+
+        assert!(
+            staging.is_dir(),
+            "the extraction still needs somewhere to go"
+        );
+        assert_eq!(
+            std::fs::read_dir(&staging).unwrap().count(),
+            0,
+            "an extraction must not start on top of an abandoned one"
+        );
+    }
+
+    #[test]
+    fn a_first_restore_is_not_an_error_for_want_of_something_to_clear() {
+        let root = tempfile::tempdir().unwrap();
+        let staging = root.path().join("1");
+        empty_staging(&staging).unwrap();
+        assert!(staging.is_dir());
+    }
+
+    #[test]
+    fn nothing_survives_the_sweep_and_the_root_does() {
+        let root = tempfile::tempdir().unwrap();
+        for job in ["1", "7"] {
+            std::fs::create_dir_all(root.path().join(job).join("deep")).unwrap();
+            std::fs::write(root.path().join(job).join("deep/file"), b"x").unwrap();
+        }
+        sweep_staging(root.path());
+        assert_eq!(std::fs::read_dir(root.path()).unwrap().count(), 0);
+        assert!(root.path().is_dir(), "the staging root itself is kept");
+    }
+
+    #[test]
+    fn a_sweep_of_a_directory_that_was_never_made_is_not_a_failure() {
+        // First run on a new machine: nothing has staged anything yet.
+        let root = tempfile::tempdir().unwrap();
+        sweep_staging(&root.path().join("never-created"));
+    }
+}

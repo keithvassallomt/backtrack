@@ -331,6 +331,12 @@ impl Shared {
         self.jobs.submit(JobKind::Restore, factory)
     }
 
+    /// Where restores stage their extracted copies. Exposed so start-up can
+    /// clear what a previous daemon left behind.
+    pub fn staging_root(&self) -> &std::path::Path {
+        &self.staging_dir
+    }
+
     /// A handle that makes the signal fan-out re-evaluate health.
     pub fn health_waker(&self) -> Arc<Notify> {
         Arc::clone(&self.health_changed)
