@@ -192,11 +192,34 @@ fn schedule(now: i64, count: usize) -> Vec<i64> {
     const DAY: i64 = 86_400;
     let today = [now - 2 * 3_600, now - 3_600, now - 600];
     let dailies = count.saturating_sub(today.len());
-    (0..dailies)
-        .map(|i| now - (dailies - i) as i64 * DAY)
+
+    // Walk back a day at a time, stepping over the gap, until enough days have
+    // been collected.
+    let mut offsets = Vec::with_capacity(dailies);
+    let mut offset = 1i64;
+    while offsets.len() < dailies {
+        if !GAP_DAYS.contains(&offset) {
+            offsets.push(offset);
+        }
+        offset += 1;
+    }
+    offsets.reverse();
+
+    offsets
+        .into_iter()
+        .map(|days| now - days * DAY)
         .chain(today.into_iter().take(count))
         .collect()
 }
+
+/// Days the machine was off, counted back from today.
+///
+/// A fixture with a backup on every single day cannot demonstrate the two
+/// places a hole in the history has to show: the calendar draws those days
+/// plain and refuses to jump to them, and the density strip draws the gap
+/// rather than closing it up. Neither behaviour has anything to stand on
+/// without a hole to draw.
+const GAP_DAYS: [i64; 2] = [9, 10];
 
 /// Now, in seconds since the epoch.
 fn now() -> i64 {
@@ -528,7 +551,11 @@ mod tests {
         assert_eq!(day(when[28]), 0);
         assert_eq!(day(when[27]), 0, "three of them are");
         assert_eq!(day(when[26]), -1, "then yesterday");
-        assert_eq!(day(when[0]), -27, "and back about a month");
+        assert!(
+            (-32..=-25).contains(&day(when[0])),
+            "and back about a month, {} days",
+            day(when[0])
+        );
         assert!(when[29] < now, "nothing is dated in the future");
     }
 
@@ -549,6 +576,27 @@ mod tests {
             assert!(days_ago.iter().any(|d| (2..=7).contains(d)), "the week");
             assert!(days_ago.iter().any(|d| *d > 14), "and something old");
         }
+    }
+
+    #[test]
+    fn the_machine_was_off_for_a_couple_of_days() {
+        // The hole the calendar and the density strip are meant to show.
+        let now = 1_781_092_800;
+        let when = schedule(now, 30);
+        let days_ago: Vec<i64> = when
+            .iter()
+            .map(|ts| now.div_euclid(86_400) - ts.div_euclid(86_400))
+            .collect();
+        for gap in GAP_DAYS {
+            assert!(
+                !days_ago.contains(&gap),
+                "{gap} days ago should have no backup, got {days_ago:?}"
+            );
+        }
+        // And the days either side of it do, so it reads as a hole rather than
+        // as the end of the history.
+        assert!(days_ago.contains(&(GAP_DAYS[0] - 1)));
+        assert!(days_ago.contains(&(GAP_DAYS[1] + 1)));
     }
 
     #[test]
