@@ -178,11 +178,21 @@ impl IndexReader {
     /// List the direct children of `folder` as they existed at archive `seq`,
     /// each carrying its `deleted_after` / `changed_since` badges. An empty or
     /// `/` folder means the tree root.
+    ///
+    /// The badges are measured against the newest archive that has actually
+    /// been catalogued — see the note inside.
     pub fn folder_at(&self, folder: &str, seq: i64) -> Result<Vec<Entry>> {
         let Some(folder_id) = self.folder_id(folder)? else {
             return Ok(Vec::new());
         };
-        let max = self.max_seq()?.unwrap_or(seq);
+        // Deliberately the newest *catalogued* archive, not `MAX(seq)`. An
+        // archive that exists but has not had its file list read yet has no
+        // version rows, so measuring against it would report every file in the
+        // timeline as "deleted after this" — an orange badge on the whole
+        // folder for as long as the ingest takes, which on a first-run backfill
+        // is a very long time. Same reasoning as `latest_catalogued_seq`, which
+        // the offline delta already depends on for the same reason.
+        let max = self.latest_catalogued_seq()?.unwrap_or(seq);
 
         // ?1 folder_id, ?2 selected seq, ?3 latest seq. The two correlated
         // subqueries are indexed lookups on versions(path_id, first_seq, last_seq):
@@ -628,6 +638,38 @@ mod tests {
         let entries = r.folder_at("home/old", 1).unwrap();
         assert_eq!(names(&entries), vec!["data"]);
         assert!(find(&entries, "data").deleted_after);
+    }
+
+    #[test]
+    fn an_archive_that_is_not_catalogued_yet_does_not_flag_the_world_as_deleted() {
+        // The window between a backup finishing and its file list being read.
+        // The archive exists and is the newest, but it has no version rows —
+        // so measuring "still there?" against it would put a "deleted after
+        // this" badge on every file in the timeline. On a first-run backfill,
+        // which indexes newest-first over hours, that badge would be the first
+        // thing a new user ever saw.
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("index.db");
+        {
+            let mut w = IndexWriter::open(&path).unwrap();
+            w.ingest_archive(
+                &meta("a1", 1_000),
+                Repo::Primary,
+                vec![dir("home"), file("home/report", 1)].into_iter(),
+            )
+            .unwrap();
+            // Appended, not yet ingested: exactly what the pipeline does.
+            let pending = w.append_archive(&meta("a2", 2_000), Repo::Primary).unwrap();
+            assert_eq!(pending, 2);
+        }
+        let reader = IndexReader::open(&path).unwrap();
+        let entries = reader.folder_at("home", 1).unwrap();
+        let report = entries.iter().find(|e| e.name == "report").unwrap();
+        assert!(
+            !report.deleted_after,
+            "the file is still there; the newest archive simply has not been read yet"
+        );
+        assert!(!report.changed_since);
     }
 
     #[test]

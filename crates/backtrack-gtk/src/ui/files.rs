@@ -24,7 +24,7 @@ use gtk4::{
     Orientation, ScrolledWindow, SignalListItemFactory, SingleSelection, Stack, Widget,
 };
 use libadwaita as adw;
-use tracing::warn;
+use tracing::{debug, warn};
 
 use crate::index::Index;
 use crate::path;
@@ -181,7 +181,17 @@ impl Files {
                 return;
             }
             match answer {
-                Ok(entries) => this.show(entries, &folder),
+                Ok(entries) => {
+                    debug!(
+                        folder,
+                        seq,
+                        entries = entries.len(),
+                        deleted_after = entries.iter().filter(|e| e.deleted_after).count(),
+                        changed_since = entries.iter().filter(|e| e.changed_since).count(),
+                        "folder loaded"
+                    );
+                    this.show(entries, &folder)
+                }
                 Err(error) => {
                     warn!(%error, folder, seq, "the folder could not be read");
                     this.show_empty("This folder could not be read", &error);
