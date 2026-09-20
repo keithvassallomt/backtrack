@@ -139,10 +139,13 @@ fn row(
             &entry.original,
             entry.size,
             entry.mtime,
+            &glib::home_dir().to_string_lossy(),
             tz,
         ))
         .build();
-    row.set_subtitle_lines(2);
+    // One line, because the path is already shortened to fit on one. Allowing
+    // two invites the prefix back in to fill them.
+    row.set_subtitle_lines(1);
 
     let button = Button::with_label("Put Back");
     button.set_valign(Align::Center);

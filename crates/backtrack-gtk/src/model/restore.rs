@@ -303,9 +303,12 @@ pub fn restored_into_toast(folder: &str) -> String {
 /// them: somebody looking for a file they lost is looking for the moment they
 /// lost it, not for the file's name — they usually remember the restore.
 pub fn stash_group_title(replaced_at: i64, tz: &glib::TimeZone) -> String {
+    // To the second, because two restores a few seconds apart are two restores
+    // and a listing that titles them identically has stopped grouping and
+    // started confusing.
     format!(
         "Replaced {}",
-        format::at(replaced_at, tz, "%e %b %Y, %H:%M")
+        format::at(replaced_at, tz, "%e %b %Y, %H:%M:%S")
     )
 }
 
@@ -314,17 +317,51 @@ pub fn stash_group_title(replaced_at: i64, tz: &glib::TimeZone) -> String {
 /// The folder rather than the full path. A stash listing is read down the
 /// left-hand edge, and a column of identical path prefixes hides the one part
 /// of each line that differs.
-pub fn stash_row_subtitle(original: &str, size: u64, mtime: i64, tz: &glib::TimeZone) -> String {
+pub fn stash_row_subtitle(
+    original: &str,
+    size: u64,
+    mtime: i64,
+    home: &str,
+    tz: &glib::TimeZone,
+) -> String {
     let folder =
         original.rsplit_once('/').map_or(
             "/",
             |(parent, _)| if parent.is_empty() { "/" } else { parent },
         );
     format!(
-        "{folder} · {} · modified {}",
+        "{} · {} · modified {}",
+        short_folder(folder, home),
         bytes(size),
         format::at(mtime, tz, "%e %b %Y, %H:%M")
     )
+}
+
+/// How many components of a folder a row keeps when it elides the middle.
+const PATH_COMPONENTS: usize = 3;
+
+/// A folder as a person reads it: their home as `~`, and a long middle elided
+/// rather than wrapped.
+///
+/// Every row in the stash shares most of its path with every other, so the part
+/// that differs — the end — is the part that has to survive. Written out in
+/// full it wraps to two lines of identical prefix and buries it.
+pub fn short_folder(folder: &str, home: &str) -> String {
+    let shortened = match folder.strip_prefix(home) {
+        Some("") => "~".to_string(),
+        Some(rest) if rest.starts_with('/') => format!("~{rest}"),
+        _ => folder.to_string(),
+    };
+
+    let parts: Vec<&str> = shortened.split('/').collect();
+    if parts.len() <= PATH_COMPONENTS + 1 {
+        return shortened;
+    }
+    // The head says which tree this is, the tail says which folder. What lies
+    // between is the part every row has in common.
+    let head = parts.first().copied().unwrap_or_default();
+    let tail = parts[parts.len() - PATH_COMPONENTS..].join("/");
+    format!("{head}/…/{tail}")
 }
 
 /// What the window says when the stash is empty.
@@ -382,6 +419,44 @@ mod tests {
             backup_kind: "file".to_string(),
             disk_kind: "file".to_string(),
         }
+    }
+
+    #[test]
+    fn a_stash_row_shows_the_end_of_the_path_rather_than_the_start() {
+        // Every row shares the prefix; the part that tells them apart is the
+        // end, and it is the part that must not be the part that gets cut.
+        let home = "/home/keith";
+        assert_eq!(
+            short_folder(
+                "/home/keith/.local/share/backtrack-dev/demo-src/home/Projects/website/content/blog",
+                home
+            ),
+            "~/…/website/content/blog"
+        );
+        // Short enough to say in full is said in full.
+        assert_eq!(short_folder("/home/keith/Documents", home), "~/Documents");
+        assert_eq!(short_folder("/home/keith", home), "~");
+        // Somewhere else entirely keeps its own root.
+        assert_eq!(
+            short_folder("/mnt/tank/media/films", home),
+            "/…/tank/media/films"
+        );
+        // A home directory that merely shares a prefix is not this one.
+        assert_eq!(
+            short_folder("/home/keith2/Documents", home),
+            "/home/keith2/Documents"
+        );
+    }
+
+    #[test]
+    fn two_restores_in_the_same_minute_are_titled_apart() {
+        // 2026-06-28 09:00:00 and 09:00:23 UTC.
+        let first = 1_782_637_200;
+        assert_ne!(
+            stash_group_title(first, &utc()),
+            stash_group_title(first + 23, &utc()),
+            "a heading that cannot tell two restores apart has stopped grouping"
+        );
     }
 
     #[test]
