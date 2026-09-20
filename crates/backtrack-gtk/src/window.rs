@@ -316,7 +316,29 @@ impl Window {
             self.window.add_action(&action);
         }
 
+        // Up a folder, the way every file manager spells it. The breadcrumb
+        // does the same thing with a click; this is the same journey without
+        // one.
+        let parent = gio::SimpleAction::new("parent", None);
+        let climber = Rc::clone(self);
+        parent.connect_activate(move |_, _| climber.go_to_parent());
+        self.window.add_action(&parent);
+        if let Some(app) = self.window.application() {
+            app.set_accels_for_action("win.parent", &["<Alt>Up"]);
+        }
+
         self.install_menu_actions();
+    }
+
+    /// Move to the folder containing the one being viewed.
+    fn go_to_parent(self: &Rc<Self>) {
+        let folder = self.state.view().folder;
+        match crate::path::parent(&folder) {
+            Some(parent) => self.state.set_folder(parent),
+            // The top of what was backed up. There is nowhere above it, and
+            // saying so is better than doing nothing visible.
+            None => self.toast("This is the top of your backup"),
+        }
     }
 
     /// Everything behind the primary menu.
