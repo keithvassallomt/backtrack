@@ -210,7 +210,7 @@ impl Restores {
             };
         }
 
-        match summary::ask(&self.window, preview, name, taken).await {
+        match summary::ask(&self.window, preview, name, target, taken).await {
             summary::Answer::Cancel => None,
             summary::Answer::KeepBoth => Some(("keep-both".to_string(), Vec::new())),
             // A review list answers every path by name, so the blanket has

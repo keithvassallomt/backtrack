@@ -295,13 +295,27 @@ demo-conflicts:
             printf '%s\n' "$1"
         done
     }
+    # Real folders do not have every file modified in the same minute, and a
+    # dialog full of one repeated timestamp reads as a mock-up rather than as a
+    # fixture. Each file steps back a further 4177 seconds — deterministic, so
+    # two runs of this recipe produce the same folder, and small enough that it
+    # never reorders the four dates against each other.
+    step=0
+    dated() {
+        touch -d "@$(( $1 - step * 4177 ))" "${folder}/$2"
+        step=$(( step + 1 ))
+    }
     seed() {
         mkdir -p "${folder}/$(dirname "$1")"
         body "$1" 1 > "${folder}/$1"
     }
+    seed_at() {
+        seed "$2"
+        dated "$1" "$2"
+    }
     revise() {
-        body "$1" 2 > "${folder}/$1"
-        touch -d "@$2" "${folder}/$1"
+        body "$2" 2 > "${folder}/$2"
+        dated "$1" "$2"
     }
 
     # ── The folder as the backup will find it ──
@@ -315,13 +329,12 @@ demo-conflicts:
     written_since=(drafts/newsletter.md css/dark.css js/vendor.js)
 
     rm -rf "${folder}"
-    for file in "${untouched[@]}" "${edited_since[@]}" "${rolled_back[@]}" \
-                "${type_changed[@]}" "${deleted_since[@]}"; do
-        seed "${file}"
+    for file in "${untouched[@]}" "${edited_since[@]}" "${type_changed[@]}" \
+                "${deleted_since[@]}"; do
+        seed_at "${long_ago}" "${file}"
     done
-    find "${folder}" -type f -exec touch -d "@${long_ago}" {} +
     for file in "${rolled_back[@]}"; do
-        touch -d "@${lately}" "${folder}/${file}"
+        seed_at "${lately}" "${file}"
     done
 
     # Counted before anything is disturbed. A directory that exists on both
@@ -350,13 +363,13 @@ demo-conflicts:
     # Worked on since the backup: the copy on disk is the newer side. This is
     # the risky direction, and the one the dialog has to say loudest.
     for file in "${edited_since[@]}"; do
-        revise "${file}" "${yesterday}"
+        revise "${yesterday}" "${file}"
     done
 
     # Pulled back from somewhere older — a stale copy off a memory stick, a sync
     # that went the wrong way. Here the backup is the newer side.
     for file in "${rolled_back[@]}"; do
-        revise "${file}" "${way_back}"
+        revise "${way_back}" "${file}"
     done
 
     # A file in the backup, a directory on disk. Never settled by a blanket
@@ -373,8 +386,7 @@ demo-conflicts:
 
     # Written since. These are kept — the row the summary exists to show.
     for file in "${written_since[@]}"; do
-        seed "${file}"
-        touch -d "@${yesterday}" "${folder}/${file}"
+        seed_at "${yesterday}" "${file}"
     done
 
     # Counted from the lists above rather than written out, so the recipe and

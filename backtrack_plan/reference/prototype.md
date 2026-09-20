@@ -160,8 +160,7 @@ Shown only when the file on disk *actually differs* from the backup version
         │   │    ⚠ newer than the backup               │     │
         │   ├──────────────────────────────────────────┤     │
         │   │ ◷ Backup version                         │     │
-        │   │    From backup of 28 Jun 2026, 09:00     │     │
-        │   │    45 KB                                 │     │
+        │   │    Modified 28 Jun 2026, 09:00 · 45 KB   │     │
         │   └──────────────────────────────────────────┘     │
         │                                                    │
         │   Replaced files are kept as safety copies         │
@@ -179,6 +178,11 @@ Shown only when the file on disk *actually differs* from the backup version
         │  ✓ Restored report.odt          [ Undo ]  │
         └───────────────────────────────────────────┘
 ```
+
+Both rows date the **file**, not the backup. The title already says which
+backup this is, and the newer/older badge is computed from these two
+modification times — so a row that showed the *archive’s* timestamp could
+contradict the badge printed directly above it.
 
 ---
 
@@ -261,6 +265,16 @@ versions side by side, checkbox per row.
         │          [ Back ]        [ 🔴 Replace 5 Files ]      │
         └──────────────────────────────────────────────────────┘
 ```
+
+- Rows are named **relative to the folder being restored**, so two files called
+  `index.md` in different subfolders are told apart — and the list's ordering,
+  which is by path, has a visible reason.
+- A change of type (a file in the backup, a folder on disk) starts unticked,
+  says which side is which, and is **not reached by Select All**. A bulk button
+  that quietly replaced a folder with a file would undo the only safeguard that
+  row has.
+
+---
 
 ## Screen 8 — Compare view
 

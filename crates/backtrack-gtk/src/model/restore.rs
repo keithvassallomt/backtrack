@@ -21,6 +21,13 @@ use super::format;
 /// The line every dialog ends on, and the reason Replace is not frightening.
 pub const SAFETY_NOTE: &str = "Replaced files are kept as safety copies for 30 days.";
 
+/// Shown in the review list when something has changed type.
+///
+/// Those rows start unticked because turning a folder into a file is not a
+/// thing to do by accepting a default — and Select All would undo that in one
+/// click without saying so, which is the same failure wearing a button.
+pub const TYPE_CHANGE_NOTE: &str = "Select All leaves changes of type alone. Tick those yourself.";
+
 /// The single-file dialog's title: `Replace "report.odt"?`
 pub fn conflict_title(name: &str) -> String {
     format!("Replace “{name}”?")
@@ -46,18 +53,60 @@ pub fn conflict_body(folder: &str, disk_newer: bool) -> String {
 }
 
 /// The two rows of the comparison box: what each version is.
+///
+/// Symmetrical, and deliberately so. The backup line used to read "From backup
+/// of 22 Jul 2026" — which dated the *backup* by the file's modification time,
+/// on a screen whose own subtitle said the backup was from 20 September. One
+/// dialog, two dates for the same backup, and the person left to work out
+/// which of them was lying.
+///
+/// The value was never the problem: a file's modification time is exactly what
+/// [`RestoreEntry::disk_newer`] is computed from, so showing the archive's
+/// timestamp instead would put "newer on disk" above two dates that say the
+/// opposite. Only the words needed fixing. Dating the backup is the job of the
+/// title, which has the archive to do it with.
 pub fn version_lines(entry: &RestoreEntry, tz: &glib::TimeZone) -> (String, String) {
-    let disk = format!(
-        "Modified {} · {}",
-        format::modified(entry.disk_mtime, tz),
-        bytes(entry.disk_size)
-    );
-    let backup = format!(
-        "From backup of {} · {}",
-        format::modified(entry.backup_mtime, tz),
-        bytes(entry.backup_size)
-    );
-    (disk, backup)
+    (
+        side(&entry.disk_kind, entry.disk_mtime, entry.disk_size, tz),
+        side(
+            &entry.backup_kind,
+            entry.backup_mtime,
+            entry.backup_size,
+            tz,
+        ),
+    )
+}
+
+/// One side of the comparison.
+///
+/// A folder says it is a folder and carries no size. That is the whole content
+/// of a change of type — "this is a file in the backup and a folder on your
+/// disk" — and a row that shows a size of `—` and leaves the rest to be
+/// inferred has given away the useful half.
+fn side(kind: &str, mtime: i64, size: u64, tz: &glib::TimeZone) -> String {
+    let when = format::modified(mtime, tz);
+    match kind {
+        "dir" => format!("Folder, modified {when}"),
+        "symlink" => format!("Link, modified {when}"),
+        _ => format!("Modified {when} · {}", bytes(size)),
+    }
+}
+
+/// How a review row names a file: relative to the folder being restored.
+///
+/// The list is ordered by path, so basenames alone make it look shuffled —
+/// README, redirects, contact, 2026-06-pricing — and two files of the same name
+/// in different subfolders become two identical rows with different answers.
+pub fn review_name(path: &str, target: &str) -> String {
+    match path.strip_prefix(target).and_then(|r| r.strip_prefix('/')) {
+        Some(rest) if !rest.is_empty() => rest.to_string(),
+        // Restoring a single file: the target *is* the path, and naming it
+        // relative to itself would leave the row blank.
+        _ => path
+            .rsplit_once('/')
+            .map_or(path, |(_, name)| name)
+            .to_string(),
+    }
 }
 
 /// The folder summary's title: `Restore "Projects" from 28 June?`
@@ -228,6 +277,67 @@ mod tests {
             refused: Vec::new(),
             missing: Vec::new(),
         }
+    }
+
+    /// One conflicting file, dated the way the demo fixture dates them.
+    fn entry() -> RestoreEntry {
+        RestoreEntry {
+            path: "home/keith/Projects/website/content/home.md".to_string(),
+            class: "conflict".to_string(),
+            disk_newer: true,
+            backup_size: 228,
+            // 2026-07-22 15:57 UTC and 2026-09-19 15:57 UTC, in microseconds.
+            backup_mtime: 1_784_735_865_000_000,
+            disk_size: 318,
+            disk_mtime: 1_789_833_465_000_000,
+            backup_kind: "file".to_string(),
+            disk_kind: "file".to_string(),
+        }
+    }
+
+    #[test]
+    fn neither_version_line_dates_the_backup() {
+        // The title dates the backup, from the archive. A row that dates it
+        // again, from a file's modification time, gives one screen two answers
+        // and no way to tell which is the lie.
+        let (disk, backup) = version_lines(&entry(), &utc());
+        assert_eq!(disk, "Modified 19 Sep 2026, 15:57 · 318 bytes");
+        assert_eq!(backup, "Modified 22 Jul 2026, 15:57 · 228 bytes");
+        assert!(
+            !backup.contains("backup"),
+            "a row must not date the backup: {backup}"
+        );
+    }
+
+    #[test]
+    fn a_change_of_type_says_which_types() {
+        let mut changed = entry();
+        changed.class = "type-changed".to_string();
+        changed.disk_kind = "dir".to_string();
+        changed.disk_size = 0;
+        let (disk, backup) = version_lines(&changed, &utc());
+        assert_eq!(disk, "Folder, modified 19 Sep 2026, 15:57");
+        assert_eq!(backup, "Modified 22 Jul 2026, 15:57 · 228 bytes");
+        assert!(!disk.contains('—'), "a folder is named, not sized: {disk}");
+    }
+
+    #[test]
+    fn a_review_row_is_named_relative_to_the_folder_being_restored() {
+        let target = "home/keith/Projects/website";
+        assert_eq!(review_name(&entry().path, target), "content/home.md");
+        assert_eq!(
+            review_name("home/keith/Projects/website/README.md", target),
+            "README.md"
+        );
+        // A neighbour that merely shares the prefix is not inside the folder,
+        // and must not be named as though it were.
+        assert_eq!(
+            review_name("home/keith/Projects/website-old/README.md", target),
+            "README.md"
+        );
+        // Restoring a single file: the target is the path itself, and naming
+        // it relative to itself would leave the row blank.
+        assert_eq!(review_name(target, target), "website");
     }
 
     #[test]

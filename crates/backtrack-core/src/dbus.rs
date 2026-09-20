@@ -113,6 +113,15 @@ pub struct RestoreEntry {
     pub backup_mtime: i64,
     pub disk_size: u64,
     pub disk_mtime: i64,
+    /// What each side is: `file`, `dir` or `symlink`, and empty where that
+    /// side has no version.
+    ///
+    /// "Changed type" is not a complete sentence. Which way round it is
+    /// decides whether the person is about to lose a folder or a file, and a
+    /// dialog that shows a size of `—` and leaves them to infer the rest has
+    /// told them the least useful half of it.
+    pub backup_kind: String,
+    pub disk_kind: String,
 }
 
 /// What a prepared restore would do, computed before anything is touched.

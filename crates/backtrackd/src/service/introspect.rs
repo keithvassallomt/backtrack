@@ -26,7 +26,7 @@ pub const METHODS: &[(&str, &str, &str)] = &[
     ("ExecuteRestore", "tsa(ss)", "t"),
     ("GetConfig", "", "s"),
     ("GetConfigKey", "s", "s"),
-    ("GetRestorePreview", "t", "(ssuuuuuua(ssbtxtx)a(ss)as)"),
+    ("GetRestorePreview", "t", "(ssuuuuuua(ssbtxtxss)a(ss)as)"),
     ("GetStatus", "", "(sttbtsuuttb)"),
     ("ImportRepo", "ss", ""),
     ("Pause", "t", ""),

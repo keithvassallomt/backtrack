@@ -23,7 +23,7 @@ use backtrack_core::dbus::{RestoreEntry, RestorePreview};
 use backtrack_core::engine::{
     ArchiveId, BackupEngine, EngineError, JobEvent, JobStream, JobSummary,
 };
-use backtrack_core::restore::{self, Class, Decisions, MoveLog, RestorePlan};
+use backtrack_core::restore::{self, Class, Decisions, Kind, MoveLog, RestorePlan};
 use tracing::{info, warn};
 
 use crate::jobs::JobId;
@@ -130,6 +130,18 @@ fn remove_staging(staging: &std::path::Path) {
 /// Only the paths needing an answer cross the bus: a folder restore may touch
 /// tens of thousands of files and the review list shows the handful that
 /// conflict.
+/// The wire spelling of a kind. Matches the `SearchFiles` vocabulary, so a
+/// client that already knows what "symlink" means here does not have to learn
+/// a second set of words for the same three things.
+fn kind_name(kind: Kind) -> String {
+    match kind {
+        Kind::File => "file",
+        Kind::Dir => "dir",
+        Kind::Symlink => "symlink",
+    }
+    .to_string()
+}
+
 pub fn preview(plan: &RestorePlan) -> RestorePreview {
     let counts = plan.counts();
     let entries = plan
@@ -145,6 +157,8 @@ pub fn preview(plan: &RestorePlan) -> RestorePreview {
             backup_mtime: entry.backup.map_or(0, |f| f.mtime),
             disk_size: entry.disk.map_or(0, |f| f.size),
             disk_mtime: entry.disk.map_or(0, |f| f.mtime),
+            backup_kind: entry.backup.map(|f| kind_name(f.kind)).unwrap_or_default(),
+            disk_kind: entry.disk.map(|f| kind_name(f.kind)).unwrap_or_default(),
         })
         .collect();
 
@@ -406,3 +420,4 @@ pub fn start_direct(prepare_plan: PreparePlan, decisions: Decisions, stash: Path
     });
     stream
 }
+

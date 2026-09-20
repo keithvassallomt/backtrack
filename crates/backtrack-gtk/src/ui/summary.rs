@@ -51,6 +51,7 @@ pub async fn ask(
     parent: &impl IsA<gtk4::Widget>,
     preview: &RestorePreview,
     folder: &str,
+    target: &str,
     taken: i64,
 ) -> Answer {
     loop {
@@ -63,7 +64,7 @@ pub async fn ask(
                 }
             }
             Summary::Review => {
-                if let Some(ticked) = review(parent, preview, folder, taken).await {
+                if let Some(ticked) = review(parent, preview, folder, target, taken).await {
                     // Every path is answered explicitly, so a change of type
                     // that was ticked actually happens — the blanket answer
                     // deliberately does not reach those.
@@ -195,6 +196,7 @@ async fn review(
     parent: &impl IsA<gtk4::Widget>,
     preview: &RestorePreview,
     folder: &str,
+    target: &str,
     taken: i64,
 ) -> Option<BTreeSet<String>> {
     let tz = glib::TimeZone::local();
@@ -224,10 +226,14 @@ async fn review(
     let rows = ListBox::new();
     rows.set_selection_mode(SelectionMode::None);
     rows.add_css_class("boxed-list");
-    let checks: Rc<RefCell<Vec<CheckButton>>> = Rc::new(RefCell::new(Vec::new()));
+    // Paired with whether Select All may tick it. A change of type may not:
+    // that row is unticked because replacing a folder with a file needs a
+    // decision, and a bulk button that made it anyway would be the same
+    // failure wearing a different hat.
+    let checks: Rc<RefCell<Vec<(CheckButton, bool)>>> = Rc::new(RefCell::new(Vec::new()));
 
     for entry in &preview.entries {
-        let (check, row) = review_row(entry, &tz);
+        let (check, row) = review_row(entry, target, &tz);
         let starts_ticked = ticked.borrow().contains(&entry.path);
         let path = entry.path.clone();
         let watched = Rc::clone(&ticked);
@@ -242,7 +248,9 @@ async fn review(
             dialog_for_label.set_response_label("replace", &copy::replace_button_label(count));
         });
         check.set_active(starts_ticked);
-        checks.borrow_mut().push(check);
+        checks
+            .borrow_mut()
+            .push((check, entry.class != "type-changed"));
         rows.append(&row);
     }
 
@@ -258,6 +266,9 @@ async fn review(
     content.append(&select_buttons(&checks));
     content.append(&scroller);
     content.append(&note("Unticked files are left exactly as they are."));
+    if preview.type_changed > 0 {
+        content.append(&note(copy::TYPE_CHANGE_NOTE));
+    }
     content.append(&note(copy::SAFETY_NOTE));
     content.set_size_request(REVIEW_WIDTH - 40, -1);
     dialog.set_extra_child(Some(&content));
@@ -278,15 +289,16 @@ async fn review(
 }
 
 /// One row of the checklist: both versions, and a tag if the disk copy is newer.
-fn review_row(entry: &RestoreEntry, tz: &glib::TimeZone) -> (CheckButton, adw::ActionRow) {
+fn review_row(
+    entry: &RestoreEntry,
+    target: &str,
+    tz: &glib::TimeZone,
+) -> (CheckButton, adw::ActionRow) {
     let (disk, backup) = copy::version_lines(entry, tz);
-    let name = entry
-        .path
-        .rsplit_once('/')
-        .map_or(entry.path.as_str(), |(_, n)| n);
+    let name = copy::review_name(&entry.path, target);
 
     let row = adw::ActionRow::builder()
-        .title(name)
+        .title(&name)
         .subtitle(format!("On disk: {disk}\nBackup: {backup}"))
         .build();
     row.set_subtitle_lines(2);
@@ -313,7 +325,11 @@ fn review_row(entry: &RestoreEntry, tz: &glib::TimeZone) -> (CheckButton, adw::A
 
 /// Select All / Select None, for a list long enough that ticking by hand is a
 /// chore.
-fn select_buttons(checks: &Rc<RefCell<Vec<CheckButton>>>) -> GtkBox {
+///
+/// Select All reaches only the rows it is safe to reach — unticking never
+/// needs a caveat, but ticking a change of type does, and the caption below
+/// the list says so rather than leaving it to be discovered afterwards.
+fn select_buttons(checks: &Rc<RefCell<Vec<(CheckButton, bool)>>>) -> GtkBox {
     let row = GtkBox::new(Orientation::Horizontal, 6);
     row.set_halign(Align::Start);
     for (label, wanted) in [("Select All", true), ("Select None", false)] {
@@ -321,8 +337,10 @@ fn select_buttons(checks: &Rc<RefCell<Vec<CheckButton>>>) -> GtkBox {
         button.add_css_class("flat");
         let checks = Rc::clone(checks);
         button.connect_clicked(move |_| {
-            for check in checks.borrow().iter() {
-                check.set_active(wanted);
+            for (check, may_tick) in checks.borrow().iter() {
+                if !wanted || *may_tick {
+                    check.set_active(wanted);
+                }
             }
         });
         row.append(&button);
