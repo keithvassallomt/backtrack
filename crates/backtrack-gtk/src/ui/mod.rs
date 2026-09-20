@@ -54,6 +54,15 @@ pub fn color_scheme_for(value: Option<&str>) -> adw::ColorScheme {
 
 /// Apply `BACKTRACK_THEME` for this launch.
 ///
+/// This sets libadwaita's colour *scheme*. It does not, and cannot, decide the
+/// colours: a `~/.config/gtk-4.0/gtk.css` that redefines the libadwaita
+/// palette — a common desktop customisation — loads above the theme stylesheet
+/// and wins, so the window stays whatever colour that file says whichever
+/// scheme is selected. That is correct behaviour, and it is why Backtrack's
+/// own stylesheet names colours rather than spelling them out. To see the
+/// window in stock Adwaita, run it with `XDG_CONFIG_HOME` pointed somewhere
+/// empty; `just theme-check` does that.
+///
 /// Read per launch rather than once at startup, and from the environment of
 /// the process that was *run* rather than this one's. The window is
 /// single-instance: launching it a second time hands the arguments to the
@@ -62,8 +71,15 @@ pub fn color_scheme_for(value: Option<&str>) -> adw::ColorScheme {
 /// running the command twice, which is exactly the case that would not work.
 pub fn apply_theme_override(from: Option<&str>) {
     let scheme = color_scheme_for(from);
-    debug!(?scheme, "colour scheme for this launch");
-    adw::StyleManager::default().set_color_scheme(scheme);
+    let manager = adw::StyleManager::default();
+    manager.set_color_scheme(scheme);
+    // The resulting `dark`, not just the scheme asked for: the two are not the
+    // same question, and only the second one is the answer.
+    debug!(
+        ?scheme,
+        dark = manager.is_dark(),
+        "colour scheme for this launch"
+    );
 }
 
 /// The application icon if it is installed, and a stock stand-in if it is not.
