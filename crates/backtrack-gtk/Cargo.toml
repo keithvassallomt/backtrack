@@ -15,3 +15,15 @@ backtrack-core.workspace = true
 gtk4.workspace = true
 libadwaita.workspace = true
 tracing.workspace = true
+clap.workspace = true
+zbus.workspace = true
+# Not for concurrency here — the window is single-threaded. `oo7` turns on
+# zbus's tokio backend for the whole workspace, so zbus expects a Tokio
+# runtime to exist wherever it is called from. See `main`.
+tokio.workspace = true
+# The index worker hands results back to the main loop over this; glib's own
+# channel was removed from the Rust bindings in favour of it.
+async-channel = "2"
+
+[dev-dependencies]
+tempfile = "3"

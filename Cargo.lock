@@ -279,10 +279,15 @@ dependencies = [
 name = "backtrack-gtk"
 version = "0.1.0"
 dependencies = [
+ "async-channel",
  "backtrack-core",
+ "clap",
  "gtk4",
  "libadwaita",
+ "tempfile",
+ "tokio",
  "tracing",
+ "zbus",
 ]
 
 [[package]]

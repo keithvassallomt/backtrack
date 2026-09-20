@@ -12,8 +12,8 @@
 > tasks: add them here + to the stage file, then `just provision-board-apply`.
 > See [../CLAUDE.md](../CLAUDE.md) for the full workflow.
 
-**Current stage:** 5 (complete) → next: Stage 6
-**Last updated:** 2026-08-07
+**Current stage:** 6 (in progress)
+**Last updated:** 2026-09-20
 
 ## Stage 0 — Bootstrap ([stage file](stages/stage-00-bootstrap.md))
 - [x] S00-T1 Git repo, license, .gitignore, README skeleton
@@ -64,12 +64,12 @@
 - [x] S05-T6 Borg warning exits (1, 100–127) are not backup failures
 
 ## Stage 6 — GTK timeline browser ([stage file](stages/stage-06-gtk-timeline.md))
-- [ ] S06-T1 App shell, main window layout, dark/light (mockups 1, 6)
-- [ ] S06-T2 Snapshot sidebar with grouping + badges
-- [ ] S06-T3 File pane bound to index (status badges incl. "deleted after this")
-- [ ] S06-T4 Older/Newer stepping + Ctrl+←/→ (+ "next change to selected file")
-- [ ] S06-T5 Calendar popover (mockup 7)
-- [ ] S06-T6 Timeline density strip (indicator + snap-to-snapshot jump)
+- [/] S06-T1 App shell, main window layout, dark/light (mockups 1, 6)
+- [/] S06-T2 Snapshot sidebar with grouping + badges
+- [/] S06-T3 File pane bound to index (status badges incl. "deleted after this")
+- [/] S06-T4 Older/Newer stepping + Ctrl+←/→ (+ "next change to selected file")
+- [/] S06-T5 Calendar popover (mockup 7)
+- [/] S06-T6 Timeline density strip (indicator + snap-to-snapshot jump)
 - [ ] S06-T7 Preview pane via PreviewFile fd, cancellable, cached
 - [ ] S06-T8 Primary menu (mockup 14) with working Back Up Now / Pause
 
