@@ -35,25 +35,34 @@ pub fn install_stylesheet() {
     );
 }
 
-/// Honour `BACKTRACK_THEME=dark|light`, which forces the colour scheme for one
-/// run.
+/// Which colour scheme `BACKTRACK_THEME` asks for.
 ///
-/// The window has to be right in both themes, and checking that should not mean
-/// changing the whole desktop's appearance and back again. Unset — which is
-/// every real run — the system's own preference is followed, as it must be.
-pub fn apply_theme_override() {
-    let Some(choice) = std::env::var_os("BACKTRACK_THEME") else {
-        return;
-    };
-    let scheme = match choice.to_string_lossy().to_ascii_lowercase().as_str() {
-        "dark" => adw::ColorScheme::ForceDark,
-        "light" => adw::ColorScheme::ForceLight,
-        other => {
+/// Unset — which is every real run — means the system's own preference, as it
+/// must. An unrecognised value means the same, loudly: silently keeping the
+/// last launch's scheme would be worse than ignoring a typo.
+pub fn color_scheme_for(value: Option<&str>) -> adw::ColorScheme {
+    match value.map(str::trim).map(str::to_ascii_lowercase).as_deref() {
+        None | Some("") => adw::ColorScheme::Default,
+        Some("dark") => adw::ColorScheme::ForceDark,
+        Some("light") => adw::ColorScheme::ForceLight,
+        Some(other) => {
             warn!(value = other, "BACKTRACK_THEME must be 'dark' or 'light'");
-            return;
+            adw::ColorScheme::Default
         }
-    };
-    debug!(?scheme, "colour scheme forced for this run");
+    }
+}
+
+/// Apply `BACKTRACK_THEME` for this launch.
+///
+/// Read per launch rather than once at startup, and from the environment of
+/// the process that was *run* rather than this one's. The window is
+/// single-instance: launching it a second time hands the arguments to the
+/// instance already open and never reaches `startup`, so a scheme applied
+/// there could only ever be the first launch's. Checking the two themes means
+/// running the command twice, which is exactly the case that would not work.
+pub fn apply_theme_override(from: Option<&str>) {
+    let scheme = color_scheme_for(from);
+    debug!(?scheme, "colour scheme for this launch");
     adw::StyleManager::default().set_color_scheme(scheme);
 }
 
@@ -78,4 +87,36 @@ pub fn app_icon_name(widget: &impl IsA<gtk4::Widget>) -> &'static str {
 /// site: this is work that must not block the frame, not a background thread.
 pub fn spawn(task: impl std::future::Future<Output = ()> + 'static) {
     glib::spawn_future_local(task);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_theme_override_reads_what_it_is_given() {
+        assert_eq!(color_scheme_for(Some("dark")), adw::ColorScheme::ForceDark);
+        assert_eq!(
+            color_scheme_for(Some("light")),
+            adw::ColorScheme::ForceLight
+        );
+        // Case and stray whitespace come with copying a command out of a README.
+        assert_eq!(
+            color_scheme_for(Some(" Dark ")),
+            adw::ColorScheme::ForceDark
+        );
+    }
+
+    #[test]
+    fn no_override_follows_the_system() {
+        assert_eq!(color_scheme_for(None), adw::ColorScheme::Default);
+        assert_eq!(color_scheme_for(Some("")), adw::ColorScheme::Default);
+    }
+
+    #[test]
+    fn a_typo_falls_back_rather_than_keeping_the_last_launch_s_scheme() {
+        // The bug this whole function exists to avoid is a second launch
+        // silently showing the first launch's theme.
+        assert_eq!(color_scheme_for(Some("drak")), adw::ColorScheme::Default);
+    }
 }

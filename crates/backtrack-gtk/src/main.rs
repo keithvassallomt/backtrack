@@ -24,6 +24,7 @@ mod window;
 use std::path::PathBuf;
 
 use clap::Parser;
+use gtk4::gio::prelude::ApplicationCommandLineExt;
 use gtk4::prelude::*;
 use gtk4::{gio, glib};
 use libadwaita as adw;
@@ -109,13 +110,17 @@ fn main() -> glib::ExitCode {
 
     let app = adw::Application::builder()
         .application_id(APP_ID)
-        .flags(gio::ApplicationFlags::HANDLES_COMMAND_LINE)
+        // SEND_ENVIRONMENT is what makes `command_line.getenv` answer for a
+        // launch that was forwarded to an instance already running. Without it
+        // GApplication sends only the arguments, and the environment a second
+        // `BACKTRACK_THEME=…` was set in never reaches the process that would
+        // act on it.
+        .flags(
+            gio::ApplicationFlags::HANDLES_COMMAND_LINE | gio::ApplicationFlags::SEND_ENVIRONMENT,
+        )
         .build();
 
-    app.connect_startup(|_| {
-        ui::install_stylesheet();
-        ui::apply_theme_override();
-    });
+    app.connect_startup(|_| ui::install_stylesheet());
 
     app.connect_command_line(
         |app: &adw::Application, command_line: &gio::ApplicationCommandLine| -> glib::ExitCode {
@@ -130,6 +135,11 @@ fn main() -> glib::ExitCode {
                     return glib::ExitCode::FAILURE;
                 }
             };
+            // From the shell that ran this, not from the process that answers
+            // it: whenever a window is already open those are two different
+            // processes, and the one with the variable set is the first.
+            ui::apply_theme_override(command_line.getenv("BACKTRACK_THEME").as_deref());
+
             let home = glib::home_dir();
             let target = Target::resolve(&args, &home);
 
