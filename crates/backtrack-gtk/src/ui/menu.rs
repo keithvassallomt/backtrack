@@ -111,62 +111,59 @@ pub fn button() -> MenuButton {
     button
 }
 
-/// The shortcuts window, listing the accelerators that are actually installed.
-pub fn shortcuts_window(parent: &impl IsA<gtk4::Window>) -> gtk4::ShortcutsWindow {
-    let time = gtk4::ShortcutsGroup::builder()
-        .title("Moving through time")
-        .build();
-    for (accel, title) in [
-        ("<Control>Left", "One backup older"),
-        ("<Control>Right", "One backup newer"),
-    ] {
-        time.add_shortcut(
-            &gtk4::ShortcutsShortcut::builder()
-                .accelerator(accel)
-                .title(title)
-                .build(),
-        );
-    }
+/// The shortcuts dialog, listing the accelerators that are actually installed.
+///
+/// Built from the same `win.` action names the accelerators are attached to,
+/// so an entry here cannot drift from what the key does — `AdwShortcutsItem`
+/// takes an action and finds its accelerator itself. The previous version of
+/// this listed a key that was never wired to anything, which is the failure
+/// mode a hand-written list invites.
+pub fn shortcuts_dialog() -> adw::ShortcutsDialog {
+    let dialog = adw::ShortcutsDialog::new();
 
-    let files = gtk4::ShortcutsGroup::builder().title("Files").build();
-    for (accel, title) in [
-        ("Return", "Open the selected folder"),
-        ("<Alt>Up", "Go to the parent folder"),
-        ("<Control>r", "Restore the selected item"),
-    ] {
-        files.add_shortcut(
-            &gtk4::ShortcutsShortcut::builder()
-                .accelerator(accel)
-                .title(title)
-                .build(),
-        );
-    }
+    let time = adw::ShortcutsSection::new(Some("Moving through time"));
+    time.add(adw::ShortcutsItem::from_action(
+        "One backup older",
+        "win.older",
+    ));
+    time.add(adw::ShortcutsItem::from_action(
+        "One backup newer",
+        "win.newer",
+    ));
+    dialog.add(time);
 
-    let general = gtk4::ShortcutsGroup::builder().title("General").build();
-    for (accel, title) in [
-        ("<Control>b", "Back up now"),
-        ("<Control>question", "Keyboard shortcuts"),
-        ("<Control>w", "Close the window"),
-    ] {
-        general.add_shortcut(
-            &gtk4::ShortcutsShortcut::builder()
-                .accelerator(accel)
-                .title(title)
-                .build(),
-        );
-    }
+    let files = adw::ShortcutsSection::new(Some("Files"));
+    files.add(adw::ShortcutsItem::from_action(
+        "Go to the parent folder",
+        "win.parent",
+    ));
+    files.add(adw::ShortcutsItem::from_action(
+        "Restore the selected item",
+        "win.restore",
+    ));
+    // The one key that belongs to the list widget rather than to an action.
+    files.add(adw::ShortcutsItem::new(
+        "Open the selected folder",
+        "Return",
+    ));
+    dialog.add(files);
 
-    let section = gtk4::ShortcutsSection::builder().build();
-    section.add_group(&time);
-    section.add_group(&files);
-    section.add_group(&general);
+    let general = adw::ShortcutsSection::new(Some("General"));
+    general.add(adw::ShortcutsItem::from_action(
+        "Back up now",
+        "win.backup-now",
+    ));
+    general.add(adw::ShortcutsItem::from_action(
+        "Keyboard shortcuts",
+        "win.shortcuts",
+    ));
+    general.add(adw::ShortcutsItem::from_action(
+        "Close the window",
+        "window.close",
+    ));
+    dialog.add(general);
 
-    let window = gtk4::ShortcutsWindow::builder()
-        .modal(true)
-        .transient_for(parent)
-        .build();
-    window.add_section(&section);
-    window
+    dialog
 }
 
 /// The About dialog. The version is read from the crate metadata, never typed

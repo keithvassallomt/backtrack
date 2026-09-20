@@ -409,7 +409,9 @@ impl Window {
 
         let shortcuts = gio::SimpleAction::new("shortcuts", None);
         let owner = self.window.clone();
-        shortcuts.connect_activate(move |_, _| ui::menu::shortcuts_window(&owner).present());
+        shortcuts.connect_activate(move |_, _| {
+            ui::menu::shortcuts_dialog().present(Some(&owner));
+        });
         self.window.add_action(&shortcuts);
 
         let help = gio::SimpleAction::new("help", None);
