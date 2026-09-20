@@ -39,11 +39,19 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 tracing-appender = "0.2"
 clap = { version = "4", features = ["derive"] }
-# Minimum supported platform: GTK 4.14 + libadwaita 1.5 (GNOME 46 / Ubuntu 24.04
-# LTS). The version features gate the bindings to that API level; revisit at
-# packaging time (Stage 13).
-gtk4 = { version = "0.11", features = ["v4_14"] }
-libadwaita = { version = "0.9", features = ["v1_5"] }
+# Minimum supported platform: GTK 4.16 + libadwaita 1.6 (GNOME 47). The version
+# features gate the bindings to that API level, so building is the test of the
+# claim — an API from a later release will not compile.
+#
+# Raised from GNOME 46 during Stage 7. What it costs is Ubuntu 24.04 LTS, whose
+# GNOME 46 stops at libadwaita 1.5. What it buys is that dialogs can ask for
+# their responses in a row rather than a column, which is not decoration:
+# stacked responses lose the left-to-right ordering that puts the safe way out
+# under the hand and the destructive one furthest from it. Working around its
+# absence meant setting a property by name and hoping, which is not a thing to
+# ship for the sake of a distribution two years behind.
+gtk4 = { version = "0.11", features = ["v4_16"] }
+libadwaita = { version = "0.9", features = ["v1_6"] }
 oo7 = "0.6"
 async-trait = "0.1"
 futures = "0.3"

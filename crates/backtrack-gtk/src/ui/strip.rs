@@ -29,6 +29,8 @@ use gtk4::{
     GestureClick, GestureDrag, Label, Orientation, Overlay, Widget,
 };
 
+use libadwaita as adw;
+
 use crate::model::density::{self, Density};
 use crate::model::{day_to_date, format};
 use crate::state::{AppState, Change};
@@ -371,14 +373,23 @@ impl Strip {
             let _ = context.fill();
         }
 
-        // Where you are: a full-height line with a cap, so it is found at a
-        // glance among bars that are otherwise all the same shape.
+        // Where you are: a full-height line with a cap, in the desktop's own
+        // accent colour. The bars stay monochrome on purpose — they have to
+        // survive any palette a user has set — but the one mark that answers
+        // "where am I?" earns a colour of its own, and taking it from the
+        // system means it is a colour the user already chose.
         if let Some(index) = marker {
+            let accent = adw::StyleManager::default().accent_color_rgba();
             let centre = (index as f64 + 0.5) * per_bar;
-            paint(0.85);
-            context.rectangle(centre - 1.0, 0.0, 2.0, height);
+            context.set_source_rgba(
+                accent.red().into(),
+                accent.green().into(),
+                accent.blue().into(),
+                1.0,
+            );
+            context.rectangle(centre - 1.5, 0.0, 3.0, height);
             let _ = context.fill();
-            rounded_bar(context, centre, 8.0, 4.0, 4.0);
+            rounded_bar(context, centre, 10.0, 5.0, 5.0);
             let _ = context.fill();
         }
     }

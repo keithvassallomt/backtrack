@@ -17,6 +17,7 @@ pub mod summary;
 use gtk4::prelude::*;
 use gtk4::{gdk, glib};
 use libadwaita as adw;
+use libadwaita::prelude::AlertDialogExt;
 use tracing::{debug, warn};
 
 /// Load the application stylesheet.
@@ -164,17 +165,8 @@ pub fn app_icon_name(widget: &impl IsA<gtk4::Widget>) -> &'static str {
 /// Stacked responses lose the left-to-right ordering that puts the safe way
 /// out under the hand and the destructive one furthest from it — which is the
 /// part of the GNOME guidance that protects somebody's work, not the styling.
-///
-/// `prefer-wide-layout` arrived in libadwaita 1.6 and this builds against 1.5,
-/// because stack.md sets GNOME 46 as the floor and raising it is a packaging
-/// decision rather than a matter of taste. So the property is set by name
-/// where the runtime has it. Where it does not, the responses stack, which is
-/// libadwaita's own fallback and remains perfectly usable.
 pub fn prefer_wide_responses(dialog: &adw::AlertDialog) {
-    use gtk4::prelude::ObjectExt;
-    if dialog.find_property("prefer-wide-layout").is_some() {
-        dialog.set_property("prefer-wide-layout", true);
-    }
+    dialog.set_prefer_wide_layout(true);
 }
 
 /// Run `task` on the main loop. A thin alias so the intent reads at the call

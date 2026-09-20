@@ -97,6 +97,7 @@ All notable changes to Backtrack are documented here. This project adheres to
   versioning policy, and continuous integration.
 
 ### Changed
+- Backtrack now requires GNOME 47 or newer (GTK 4.16, libadwaita 1.6).
 - The backup service now announces when a job has finished, so an application
   that started one learns the outcome as it happens instead of asking
   repeatedly whether it is done yet.

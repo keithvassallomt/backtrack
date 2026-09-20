@@ -8,7 +8,7 @@
 | Area | Decision |
 |---|---|
 | Core language | **Rust** (Cargo workspace) |
-| UI toolkit | **GTK4 + libadwaita** (gtk4-rs) |
+| UI toolkit | **GTK4 + libadwaita** (gtk4-rs). Minimum GTK 4.16 + libadwaita 1.6 — GNOME 47. |
 | Process model | **Daemon (`backtrackd`) + thin clients over D-Bus** |
 | Backup engine | **Borg 1.2/1.4 CLI subprocess** behind an adapter trait |
 | Index | **SQLite** (WAL), interval-encoded schema, FTS5 filename search |
