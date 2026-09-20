@@ -132,6 +132,7 @@ pub fn shortcuts_window(parent: &impl IsA<gtk4::Window>) -> gtk4::ShortcutsWindo
     for (accel, title) in [
         ("Return", "Open the selected folder"),
         ("<Alt>Up", "Go to the parent folder"),
+        ("<Control>r", "Restore the selected item"),
     ] {
         files.add_shortcut(
             &gtk4::ShortcutsShortcut::builder()

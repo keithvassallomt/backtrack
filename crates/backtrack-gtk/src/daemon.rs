@@ -12,7 +12,7 @@
 //! The connection is made through D-Bus activation, so there is no "is the
 //! daemon running?" check anywhere in the app. Asking for it starts it.
 
-use backtrack_core::dbus::{SearchResult, Status};
+use backtrack_core::dbus::{RestorePreview, SearchResult, Status};
 use tracing::warn;
 
 /// The daemon, as the window calls it.
@@ -29,6 +29,25 @@ pub trait Daemon1 {
     /// archive's name, as the index records it).
     fn preview_file(&self, archive: &str, path: &str) -> zbus::Result<zbus::zvariant::OwnedFd>;
     fn search_files(&self, query: &str) -> zbus::Result<Vec<SearchResult>>;
+
+    /// Work out what restoring `paths` into `dest` would do, without doing any
+    /// of it. Returns the job doing the working out; everything after this is
+    /// addressed with the same id.
+    fn prepare_restore(&self, archive: &str, paths: &[String], dest: &str) -> zbus::Result<u64>;
+    /// What the restore prepared under `job` would do.
+    fn get_restore_preview(&self, job: u64) -> zbus::Result<RestorePreview>;
+    /// Carry it out: `blanket` answers every conflict, `decisions` overrides
+    /// individual paths.
+    fn execute_restore(
+        &self,
+        job: u64,
+        blanket: &str,
+        decisions: &[(String, String)],
+    ) -> zbus::Result<u64>;
+    /// Put back everything that restore moved.
+    fn undo_restore(&self, job: u64) -> zbus::Result<u64>;
+    /// Throw away a prepared restore and the copy it extracted.
+    fn discard_restore(&self, job: u64) -> zbus::Result<()>;
     fn cancel_job(&self, id: u64) -> zbus::Result<()>;
 
     /// Progress of a running backup.

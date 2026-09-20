@@ -91,6 +91,16 @@ fn snapshot(root: &Path) -> BTreeMap<PathBuf, String> {
     found
 }
 
+/// What a test asked for: the top-level names in the staging tree, which is
+/// what "restore everything in this subtree" amounts to.
+fn asked_for(staging: &Path) -> Vec<PathBuf> {
+    std::fs::read_dir(staging)
+        .unwrap()
+        .flatten()
+        .map(|entry| PathBuf::from(entry.file_name()))
+        .collect()
+}
+
 fn class_of<'a>(plan: &'a RestorePlan, relative: &str) -> &'a Entry {
     plan.entries
         .iter()
@@ -129,7 +139,7 @@ fn every_classification_shows_up_in_a_real_tree() {
     write(&f.staging, "Projects/swapped", "now a file", at(0));
     std::fs::create_dir_all(f.dest.join("Projects/swapped")).unwrap();
 
-    let plan = plan("snapshot-01", &f.staging, &f.dest).unwrap();
+    let plan = plan("snapshot-01", &f.staging, &f.dest, &asked_for(&f.staging)).unwrap();
 
     assert_eq!(class_of(&plan, "Projects/same.txt").class, Class::Identical);
     assert_eq!(
@@ -179,7 +189,7 @@ fn restoring_one_file_does_not_claim_the_rest_of_the_folder_was_kept() {
     write(&f.dest, "unrelated.txt", "nothing to do with it", at(0));
     write(&f.dest, "notes/deep.txt", "nor this", at(0));
 
-    let plan = plan("snapshot-01", &f.staging, &f.dest).unwrap();
+    let plan = plan("snapshot-01", &f.staging, &f.dest, &asked_for(&f.staging)).unwrap();
     assert_eq!(plan.entries.len(), 1, "{:?}", plan.entries);
     assert_eq!(plan.counts().only_on_disk, 0);
 }
@@ -193,7 +203,7 @@ fn the_destination_is_only_walked_where_the_restore_reaches() {
     write(&f.dest, "Documents/report.odt", "backup", at(0));
     write(&f.dest, "Pictures/holiday.jpg", "not involved", at(0));
 
-    let plan = plan("snapshot-01", &f.staging, &f.dest).unwrap();
+    let plan = plan("snapshot-01", &f.staging, &f.dest, &asked_for(&f.staging)).unwrap();
     assert!(
         !plan.entries.iter().any(|e| e.path.starts_with("Pictures")),
         "Pictures should not appear in a restore of Documents: {:?}",
@@ -207,9 +217,11 @@ fn a_restore_with_nothing_to_do_says_so() {
     write(&f.staging, "same.txt", "hello", at(0));
     write(&f.dest, "same.txt", "hello", at(0));
     write(&f.dest, "mine.txt", "only on disk", at(0));
-    assert!(plan("snapshot-01", &f.staging, &f.dest)
-        .unwrap()
-        .is_a_no_op());
+    assert!(
+        plan("snapshot-01", &f.staging, &f.dest, &asked_for(&f.staging))
+            .unwrap()
+            .is_a_no_op()
+    );
 }
 
 // ── The three promises ──────────────────────────────────────────────────────
@@ -225,7 +237,7 @@ fn a_file_that_exists_only_on_disk_survives_every_decision() {
         write(&f.dest, "mine.txt", "only on disk", at(0));
         write(&f.dest, "deep/also-mine.txt", "only on disk too", at(0));
 
-        let plan = plan("snapshot-01", &f.staging, &f.dest).unwrap();
+        let plan = plan("snapshot-01", &f.staging, &f.dest, &asked_for(&f.staging)).unwrap();
         execute(&plan, &Decisions::all(decision), &f.stash, at(900)).unwrap();
 
         let after = snapshot(&f.dest);
@@ -250,7 +262,7 @@ fn replace_puts_the_file_it_overwrites_in_the_stash() {
     write(&f.staging, "report.odt", "the backup version", at(0));
     write(&f.dest, "report.odt", "the version on disk", at(500));
 
-    let plan = plan("snapshot-01", &f.staging, &f.dest).unwrap();
+    let plan = plan("snapshot-01", &f.staging, &f.dest, &asked_for(&f.staging)).unwrap();
     let report = execute(&plan, &Decisions::all(Decision::Replace), &f.stash, at(900)).unwrap();
 
     assert_eq!(report.restored, 1);
@@ -276,7 +288,7 @@ fn keep_both_gives_the_backup_the_real_name() {
     write(&f.staging, "report.odt", "the backup version", at(0));
     write(&f.dest, "report.odt", "the version on disk", at(500));
 
-    let plan = plan("snapshot-01", &f.staging, &f.dest).unwrap();
+    let plan = plan("snapshot-01", &f.staging, &f.dest, &asked_for(&f.staging)).unwrap();
     execute(
         &plan,
         &Decisions::all(Decision::KeepBoth),
@@ -330,7 +342,7 @@ fn undo_puts_the_tree_back_exactly_as_it_was() {
 
     let before = snapshot(&f.dest);
 
-    let plan = plan("snapshot-01", &f.staging, &f.dest).unwrap();
+    let plan = plan("snapshot-01", &f.staging, &f.dest, &asked_for(&f.staging)).unwrap();
     let decisions = Decisions::all(Decision::Replace).except("kept/both.txt", Decision::KeepBoth);
     let report = execute(&plan, &decisions, &f.stash, at(900)).unwrap();
     assert_ne!(
@@ -362,7 +374,7 @@ fn a_symlink_in_the_archive_cannot_write_outside_the_destination() {
     link(&f.dest, "data", outside.to_str().unwrap());
     write(&f.staging, "data/passwd", "owned", at(0));
 
-    let plan = plan("snapshot-01", &f.staging, &f.dest).unwrap();
+    let plan = plan("snapshot-01", &f.staging, &f.dest, &asked_for(&f.staging)).unwrap();
     let report = execute(&plan, &Decisions::all(Decision::Replace), &f.stash, at(900)).unwrap();
 
     assert_eq!(
@@ -382,7 +394,7 @@ fn a_symlink_is_restored_as_a_link_and_never_followed() {
     write(&f.dest, "target.txt", "the real file", at(0));
     link(&f.staging, "shortcut", "target.txt");
 
-    let plan = plan("snapshot-01", &f.staging, &f.dest).unwrap();
+    let plan = plan("snapshot-01", &f.staging, &f.dest, &asked_for(&f.staging)).unwrap();
     execute(&plan, &Decisions::all(Decision::Replace), &f.stash, at(900)).unwrap();
 
     let restored = f.dest.join("shortcut");
@@ -413,7 +425,7 @@ fn one_unwritable_file_does_not_abandon_the_rest_of_the_restore() {
     )
     .unwrap();
 
-    let plan = plan("snapshot-01", &f.staging, &f.dest).unwrap();
+    let plan = plan("snapshot-01", &f.staging, &f.dest, &asked_for(&f.staging)).unwrap();
     let report = execute(&plan, &Decisions::all(Decision::Replace), &f.stash, at(900)).unwrap();
 
     // Put it back so the temporary directory can be cleaned up.
@@ -446,7 +458,7 @@ fn a_move_that_fails_leaves_the_file_that_was_there() {
     )
     .unwrap();
 
-    let plan = plan("snapshot-01", &f.staging, &f.dest).unwrap();
+    let plan = plan("snapshot-01", &f.staging, &f.dest, &asked_for(&f.staging)).unwrap();
     execute(&plan, &Decisions::all(Decision::Replace), &f.stash, at(900)).unwrap();
 
     std::fs::set_permissions(
@@ -477,7 +489,7 @@ fn a_type_change_is_never_resolved_by_a_blanket_answer() {
     std::fs::create_dir_all(f.dest.join("swapped")).unwrap();
     write(&f.dest, "swapped/inside.txt", "still here", at(0));
 
-    let plan = plan("snapshot-01", &f.staging, &f.dest).unwrap();
+    let plan = plan("snapshot-01", &f.staging, &f.dest, &asked_for(&f.staging)).unwrap();
     execute(&plan, &Decisions::all(Decision::Replace), &f.stash, at(900)).unwrap();
 
     assert!(
@@ -496,7 +508,7 @@ fn a_type_change_is_carried_out_when_it_is_asked_for_by_name() {
     write(&f.staging, "swapped", "now a file", at(0));
     std::fs::create_dir_all(f.dest.join("swapped")).unwrap();
 
-    let plan = plan("snapshot-01", &f.staging, &f.dest).unwrap();
+    let plan = plan("snapshot-01", &f.staging, &f.dest, &asked_for(&f.staging)).unwrap();
     let decisions = Decisions::all(Decision::Skip).except("swapped", Decision::Replace);
     execute(&plan, &decisions, &f.stash, at(900)).unwrap();
 
@@ -515,7 +527,7 @@ fn the_space_a_restore_needs_is_counted_before_it_starts() {
     write(&f.dest, "big.bin", &"y".repeat(400), at(500));
     write(&f.staging, "new.bin", &"z".repeat(50), at(0));
 
-    let plan = plan("snapshot-01", &f.staging, &f.dest).unwrap();
+    let plan = plan("snapshot-01", &f.staging, &f.dest, &asked_for(&f.staging)).unwrap();
 
     let replacing = plan.space_needed(&Decisions::all(Decision::Replace));
     assert_eq!(replacing.dest, 1050, "both incoming files");
@@ -560,7 +572,8 @@ fn no_combination_of_answers_can_disturb_a_file_that_is_only_on_disk() {
                     write(&f.dest, name, contents, at(0));
                 }
 
-                let plan = plan("snapshot-01", &f.staging, &f.dest).unwrap();
+                let plan =
+                    plan("snapshot-01", &f.staging, &f.dest, &asked_for(&f.staging)).unwrap();
                 let decisions = Decisions::all(Decision::Skip)
                     .except(conflicts[0], first)
                     .except(conflicts[1], second)
@@ -594,4 +607,111 @@ fn no_combination_of_answers_can_disturb_a_file_that_is_only_on_disk() {
             }
         }
     }
+}
+
+#[test]
+fn restoring_one_deep_file_does_not_walk_everything_above_it() {
+    // Extracting `a/b/c/one.txt` recreates every directory above it, so the
+    // staging tree's top-level name is `a` — and taking *that* as the scope
+    // means walking all of `dest/a` to restore one file. On a real machine
+    // that was four million files and ninety seconds, reported as "kept".
+    let f = fixture();
+    write(&f.staging, "a/b/c/one.txt", "from the backup", at(0));
+    write(&f.dest, "a/b/c/one.txt", "on disk", at(500));
+    // Plenty of neighbours at every level, none of them part of the restore.
+    for neighbour in ["a/sibling.txt", "a/b/nephew.txt", "a/b/c/cousin.txt"] {
+        write(&f.dest, neighbour, "nothing to do with it", at(0));
+    }
+
+    let plan = plan(
+        "snapshot-01",
+        &f.staging,
+        &f.dest,
+        &[PathBuf::from("a/b/c/one.txt")],
+    )
+    .unwrap();
+
+    assert_eq!(
+        plan.counts().only_on_disk,
+        0,
+        "neighbours are not part of this restore: {:?}",
+        plan.entries
+            .iter()
+            .filter(|e| e.class == Class::OnlyOnDisk)
+            .map(|e| &e.path)
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(
+        class_of(&plan, "a/b/c/one.txt").class,
+        Class::Conflict { disk_newer: true }
+    );
+}
+
+#[test]
+fn restoring_a_folder_still_covers_everything_inside_it() {
+    // The other half of the same rule: ask for a folder and its whole subtree
+    // is in scope, disk-only files included.
+    let f = fixture();
+    write(&f.staging, "a/b/c/one.txt", "from the backup", at(0));
+    write(&f.dest, "a/b/c/one.txt", "from the backup", at(0));
+    write(&f.dest, "a/b/c/cousin.txt", "only on disk", at(0));
+    write(&f.dest, "a/sibling.txt", "outside the restore", at(0));
+
+    let plan = plan(
+        "snapshot-01",
+        &f.staging,
+        &f.dest,
+        &[PathBuf::from("a/b/c")],
+    )
+    .unwrap();
+    assert_eq!(plan.counts().only_on_disk, 1, "{:?}", plan.entries);
+    assert!(
+        !plan.entries.iter().any(|e| e.path.ends_with("sibling.txt")),
+        "a sibling of the restored folder is not in it"
+    );
+}
+
+#[test]
+fn the_directories_a_file_lives_in_are_not_counted_as_files_being_added() {
+    // Extracting `a/b/c/one.txt` recreates `a`, `a/b` and `a/b/c`. Counting
+    // those would tell someone restoring one file that four were added.
+    let f = fixture();
+    write(&f.staging, "a/b/c/one.txt", "from the backup", at(0));
+
+    let plan = plan(
+        "snapshot-01",
+        &f.staging,
+        &f.dest,
+        &[PathBuf::from("a/b/c/one.txt")],
+    )
+    .unwrap();
+
+    assert_eq!(plan.counts().only_in_backup, 1, "{:?}", plan.entries);
+    assert_eq!(plan.entries.len(), 1);
+
+    // And they are still made, because the file has to land somewhere.
+    execute(&plan, &Decisions::all(Decision::Replace), &f.stash, at(900)).unwrap();
+    assert_eq!(
+        std::fs::read_to_string(f.dest.join("a/b/c/one.txt")).unwrap(),
+        "from the backup"
+    );
+}
+
+#[test]
+fn a_folder_that_was_asked_for_is_not_treated_as_scaffolding() {
+    // The folder itself is the thing being restored, so it counts.
+    let f = fixture();
+    write(&f.staging, "a/b/one.txt", "from the backup", at(0));
+
+    let plan = plan("snapshot-01", &f.staging, &f.dest, &[PathBuf::from("a/b")]).unwrap();
+    let names: Vec<String> = plan
+        .entries
+        .iter()
+        .map(|e| e.path.to_string_lossy().to_string())
+        .collect();
+    assert_eq!(
+        names,
+        ["a/b", "a/b/one.txt"],
+        "`a` is scaffolding; `a/b` is not"
+    );
 }

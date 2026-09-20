@@ -5,11 +5,14 @@
 
 pub mod breadcrumb;
 pub mod calendar;
+pub mod conflict;
 pub mod files;
 pub mod menu;
 pub mod preview;
+pub mod restore;
 pub mod sidebar;
 pub mod strip;
+pub mod summary;
 
 use gtk4::prelude::*;
 use gtk4::{gdk, glib};

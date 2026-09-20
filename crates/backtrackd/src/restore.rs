@@ -224,10 +224,14 @@ async fn prepare(
     let archive = plan.archive.0.clone();
     let staging = plan.staging.clone();
     let dest = plan.dest.clone();
-    let computed = tokio::task::spawn_blocking(move || restore::plan(&archive, &staging, &dest))
-        .await
-        .map_err(|e| EngineError::Local(e.to_string()))?
-        .map_err(|e| EngineError::Local(e.to_string()))?;
+    // What was asked for bounds the comparison. Without it, restoring one file
+    // would walk every sibling of every directory above it.
+    let asked_for: Vec<PathBuf> = plan.paths.iter().map(PathBuf::from).collect();
+    let computed =
+        tokio::task::spawn_blocking(move || restore::plan(&archive, &staging, &dest, &asked_for))
+            .await
+            .map_err(|e| EngineError::Local(e.to_string()))?
+            .map_err(|e| EngineError::Local(e.to_string()))?;
 
     let counts = computed.counts();
     info!(

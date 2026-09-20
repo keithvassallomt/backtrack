@@ -83,6 +83,12 @@ pub struct Shared {
     /// Bookkeeping that has to survive a restart: the pause, the attempt clock,
     /// the compaction clock. See [`backtrack_core::state`].
     persisted: Mutex<RuntimeState>,
+    /// Where the configuration is written. A field rather than a call to
+    /// [`paths::config_file`], for the same reason `state_path` is one: a test
+    /// that exercises `SetupRepo` or `SetConfig` would otherwise rewrite the
+    /// developer's own configuration, pointing their daemon at a temporary
+    /// directory that no longer exists.
+    config_path: PathBuf,
     /// Where that bookkeeping is written. A field rather than a call to
     /// [`paths::state_file`] at each use, so tests exercise the real persistence
     /// path without writing into the developer's own data directory.
@@ -161,6 +167,7 @@ impl Shared {
             jobs,
             secrets,
             Layout {
+                config_path: paths::config_file(),
                 index_path: paths::index_db(),
                 cache_dir: paths::cache_dir(),
                 state_path: paths::state_file(),
@@ -187,6 +194,7 @@ impl Shared {
             jobs,
             secrets,
             Layout {
+                config_path: dir.join("config.toml"),
                 index_path: dir.join("index.db"),
                 cache_dir: dir.join("cache"),
                 state_path: dir.join("state.toml"),
@@ -205,6 +213,7 @@ impl Shared {
         layout: Layout,
     ) -> Arc<Shared> {
         let Layout {
+            config_path,
             index_path,
             cache_dir,
             state_path,
@@ -220,6 +229,7 @@ impl Shared {
             secrets,
             preview: PreviewCache::new(cache_dir),
             index_path,
+            config_path,
             engine: Mutex::new(None),
             last_archive: Mutex::new(None),
             last_backup: Mutex::new(None),
@@ -1102,7 +1112,7 @@ impl Shared {
 
     /// Persist a new configuration and reconnect anything that depends on it.
     fn store_config(&self, config: Config) -> Result<()> {
-        config.save()?;
+        config.save_to(&self.config_path)?;
         *self.config.lock().unwrap() = config;
         Ok(())
     }
@@ -1162,6 +1172,7 @@ struct LocalProtection {
 /// repository into the developer's own data directory would be a nasty
 /// surprise.
 struct Layout {
+    config_path: PathBuf,
     index_path: PathBuf,
     cache_dir: PathBuf,
     state_path: PathBuf,

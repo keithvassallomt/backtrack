@@ -61,6 +61,9 @@ pub struct Window {
     sidebar: RefCell<Option<Rc<ui::sidebar::Sidebar>>>,
     files: RefCell<Option<Rc<ui::files::Files>>>,
     preview: RefCell<Option<Rc<ui::preview::Preview>>>,
+    restores: RefCell<Option<Rc<ui::restore::Restores>>>,
+    /// The one action bar button that does something this stage.
+    restore_button: Button,
     calendar: RefCell<Option<Rc<ui::calendar::Calendar>>>,
     strip: RefCell<Option<Rc<ui::strip::Strip>>>,
 }
@@ -122,6 +125,8 @@ impl Window {
             sidebar: RefCell::new(None),
             files: RefCell::new(None),
             preview: RefCell::new(None),
+            restores: RefCell::new(None),
+            restore_button: Button::builder().build(),
             calendar: RefCell::new(None),
             strip: RefCell::new(None),
         });
@@ -279,11 +284,12 @@ impl Window {
             buttons.append(&button);
         }
 
-        let restore = Button::builder().build();
+        let restore = self.restore_button.clone();
         restore.set_child(Some(&button_content("edit-undo-symbolic", "Restore")));
         restore.add_css_class("suggested-action");
-        restore.set_tooltip_text(Some("Restore the selected item (coming soon)"));
+        restore.set_tooltip_text(Some("Put this version back where it came from"));
         restore.set_sensitive(false);
+        restore.set_action_name(Some("win.restore"));
         buttons.append(&restore);
 
         bar.append(&buttons);
@@ -325,6 +331,23 @@ impl Window {
         self.window.add_action(&parent);
         if let Some(app) = self.window.application() {
             app.set_accels_for_action("win.parent", &["<Alt>Up"]);
+        }
+
+        // Restoring is an action rather than only a button: it belongs in the
+        // shortcuts window, and a button is not reachable by anyone driving
+        // the window from the keyboard alone.
+        let restore = gio::SimpleAction::new("restore", None);
+        restore.set_enabled(false);
+        let restorer = Rc::clone(self);
+        restore.connect_activate(move |_, _| {
+            let driver = restorer.restores.borrow().clone();
+            if let Some(driver) = driver {
+                driver.start();
+            }
+        });
+        self.window.add_action(&restore);
+        if let Some(app) = self.window.application() {
+            app.set_accels_for_action("win.restore", &["<Control>r"]);
         }
 
         self.install_menu_actions();
@@ -501,6 +524,18 @@ impl Window {
         });
     }
 
+    /// Let the Restore action and its button agree about whether there is
+    /// anything to restore.
+    fn refresh_restore_action(self: &Rc<Self>) {
+        let possible = self
+            .restores
+            .borrow()
+            .as_ref()
+            .is_some_and(|driver| driver.can_restore());
+        ui::menu::set_enabled(&self.window, "restore", possible);
+        self.restore_button.set_sensitive(possible);
+    }
+
     /// Re-read the daemon's status and redraw the line at the bottom.
     fn refresh_status(self: &Rc<Self>) {
         let Some(proxy) = self.daemon.borrow().clone() else {
@@ -614,6 +649,15 @@ impl Window {
         self.preview_slot.append(&preview.widget());
         *self.preview.borrow_mut() = Some(preview);
 
+        let restores = ui::restore::build(&self.window, &self.toasts, &self.state, &self.daemon);
+        *self.restores.borrow_mut() = Some(Rc::clone(&restores));
+        let this = Rc::clone(self);
+        self.state.subscribe(move |_, change| {
+            if matches!(change, Change::Selection | Change::Seq | Change::Archives) {
+                this.refresh_restore_action();
+            }
+        });
+
         let strip = ui::strip::build(&self.state);
         self.strip_slot.append(&strip.widget());
         *self.strip.borrow_mut() = Some(strip);
@@ -707,6 +751,7 @@ impl Window {
                     if let Some(preview) = preview {
                         preview.refresh_now();
                     }
+                    this.refresh_restore_action();
                     ui::menu::set_enabled(&this.window, "backup-now", true);
                     ui::menu::set_enabled(&this.window, "pause", true);
                     this.render_status(&status);
