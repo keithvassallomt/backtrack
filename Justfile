@@ -211,8 +211,10 @@ run-daemon:
     RUST_LOG=debug cargo run -p backtrackd
 
 # Run the GTK app with debug logging (talks to the session daemon).
-run-app:
-    RUST_LOG=debug cargo run -p backtrack-gtk
+# Arguments are passed through: `just run-app --path /home` opens the demo
+# fixture's root. BACKTRACK_THEME=dark|light forces a colour scheme for one run.
+run-app *ARGS:
+    RUST_LOG=debug cargo run -p backtrack-gtk -- {{ARGS}}
 
 # Generate a demo Borg repo + index for development (scripted 30-snapshot
 # history under ~/.local/share/backtrack-dev/). Idempotent; rebuilds from scratch.
