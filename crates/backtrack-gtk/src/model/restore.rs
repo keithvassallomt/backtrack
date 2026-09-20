@@ -163,6 +163,13 @@ pub fn replace_button_label(selected: usize) -> String {
     }
 }
 
+/// What the toast says when the chosen backup does not hold what was asked
+/// for — because it was taken before the file existed, or after it was
+/// deleted, or because it simply covers something else.
+pub fn not_in_this_backup(name: &str) -> String {
+    format!("“{name}” isn't in this backup — try a more recent one")
+}
+
 /// What the toast says after a restore.
 pub fn restored_toast(count: usize, name: &str) -> String {
     match count {
@@ -219,6 +226,7 @@ mod tests {
             type_changed: 0,
             entries: Vec::new(),
             refused: Vec::new(),
+            missing: Vec::new(),
         }
     }
 
@@ -320,6 +328,16 @@ mod tests {
         assert_eq!(replace_button_label(0), "Replace Nothing");
         assert_eq!(replace_button_label(1), "Replace 1 File");
         assert_eq!(replace_button_label(5), "Replace 5 Files");
+    }
+
+    #[test]
+    fn a_backup_that_does_not_have_the_file_says_so_rather_than_reassuring() {
+        let said = not_in_this_backup("report.odt");
+        assert!(said.contains("report.odt"));
+        assert!(
+            !said.to_lowercase().contains("up to date"),
+            "the one thing it must never say: {said}"
+        );
     }
 
     #[test]

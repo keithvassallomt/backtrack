@@ -163,6 +163,11 @@ pub fn preview(plan: &RestorePlan) -> RestorePreview {
             .iter()
             .map(|(path, why)| (path.to_string_lossy().to_string(), why.clone()))
             .collect(),
+        missing: plan
+            .missing
+            .iter()
+            .map(|path| path.to_string_lossy().to_string())
+            .collect(),
     }
 }
 

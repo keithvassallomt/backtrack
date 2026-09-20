@@ -174,6 +174,20 @@ impl Restores {
         taken: i64,
         single_file: bool,
     ) -> Option<(String, Vec<(String, String)>)> {
+        // What was asked for is not in this backup. Said plainly and first,
+        // because the alternative reading of an empty plan — "everything is
+        // already up to date" — is the opposite of the truth, and is a backup
+        // tool reassuring somebody about a file it could not find.
+        if !preview.missing.is_empty() {
+            warn!(
+                missing = preview.missing.len(),
+                archive = preview.archive,
+                "the backup does not contain what was asked for"
+            );
+            self.toast(&copy::not_in_this_backup(name));
+            return None;
+        }
+
         // Nothing to ask: no clashes, so the restore is uncontroversial and
         // asking would be noise.
         if preview.conflicts == 0 && preview.type_changed == 0 {

@@ -51,6 +51,13 @@ pub struct RestorePlan {
     /// rather than dropped: a file silently missing from a restore is worse
     /// than one that is explained.
     pub refused: Vec<(PathBuf, String)>,
+    /// Paths that were asked for and are not in this backup at all.
+    ///
+    /// An empty plan has two completely different meanings — "everything is
+    /// already up to date" and "this backup does not contain what you asked
+    /// for" — and telling a person the first when the second is true is a
+    /// backup tool reassuring them about a file it could not find.
+    pub missing: Vec<PathBuf>,
 }
 
 /// The numbers the summary screen is made of.
@@ -282,12 +289,22 @@ pub fn plan(
         });
     }
 
+    // Anything asked for that the extraction did not produce is not in this
+    // backup. Borg reports a pattern that matched nothing as a warning and
+    // carries on, so without this the restore would simply find nothing to do.
+    let missing = asked_for
+        .iter()
+        .filter_map(|requested| super::safety::validate_relative(requested).ok())
+        .filter(|requested| !from_backup.contains_key(requested))
+        .collect();
+
     Ok(RestorePlan {
         archive: archive.to_string(),
         dest: dest.to_path_buf(),
         staging: staging.to_path_buf(),
         entries,
         refused,
+        missing,
     })
 }
 

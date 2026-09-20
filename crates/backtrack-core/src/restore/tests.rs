@@ -715,3 +715,51 @@ fn a_folder_that_was_asked_for_is_not_treated_as_scaffolding() {
         "`a` is scaffolding; `a/b` is not"
     );
 }
+
+#[test]
+fn a_backup_that_does_not_contain_what_was_asked_for_says_which() {
+    // Borg reports a pattern that matched nothing as a warning and carries on,
+    // so the extraction simply produces nothing. Without noticing, the restore
+    // finds no work to do and an empty plan is indistinguishable from
+    // "everything is already up to date" — which is the opposite of the truth
+    // and the most reassuring possible way to be wrong.
+    let f = fixture();
+    write(
+        &f.staging,
+        "Documents/here.txt",
+        "this one was extracted",
+        at(0),
+    );
+
+    let plan = plan(
+        "snapshot-30",
+        &f.staging,
+        &f.dest,
+        &[
+            PathBuf::from("Documents/here.txt"),
+            PathBuf::from("Documents/never-backed-up.txt"),
+        ],
+    )
+    .unwrap();
+
+    assert_eq!(
+        plan.missing,
+        [PathBuf::from("Documents/never-backed-up.txt")]
+    );
+    assert!(!plan.is_a_no_op(), "there is still the one file to restore");
+}
+
+#[test]
+fn a_restore_of_something_entirely_absent_is_all_missing_and_no_work() {
+    let f = fixture();
+    let plan = plan(
+        "snapshot-30",
+        &f.staging,
+        &f.dest,
+        &[PathBuf::from("Documents/gone.txt")],
+    )
+    .unwrap();
+    assert_eq!(plan.missing.len(), 1);
+    assert!(plan.entries.is_empty());
+    assert!(plan.is_a_no_op());
+}

@@ -136,6 +136,13 @@ pub struct RestorePreview {
     /// Paths that will not be restored, and why — an archive member that would
     /// escape the destination, most often. Reported rather than dropped.
     pub refused: Vec<(String, String)>,
+    /// What was asked for and is not in this backup.
+    ///
+    /// Without this an empty plan is ambiguous, and the two things it can mean
+    /// are opposites: everything is already up to date, or the backup does not
+    /// have the file. Saying the first when the second is true is a backup
+    /// tool reassuring somebody about a file it could not find.
+    pub missing: Vec<String>,
 }
 
 /// The well-known bus name of an installed daemon.

@@ -28,6 +28,11 @@ use libadwaita::prelude::*;
 
 use crate::model::restore as copy;
 
+/// Natural widths for the two screens. Not fixed: a narrow window still
+/// shrinks them, which is what `AdwDialog` does with a content width.
+const SUMMARY_WIDTH: i32 = 520;
+const REVIEW_WIDTH: i32 = 580;
+
 /// What the user chose on the summary.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Answer {
@@ -101,6 +106,11 @@ async fn summary(
         Some(&copy::summary_title(folder, taken, &tz)),
         Some(&copy::summary_subtitle(taken, &tz)),
     );
+
+    // Each row is a whole sentence, and "4 files exist only on your disk —
+    // kept. Nothing is deleted." is the one that must not wrap into
+    // illegibility: it is the reassurance the screen exists to give.
+    dialog.set_content_width(SUMMARY_WIDTH);
 
     let reviewing = Rc::new(Cell::new(false));
     dialog.set_extra_child(Some(&summary_rows(preview, &dialog, &reviewing)));
@@ -192,6 +202,9 @@ async fn review(
             crate::model::format::at(taken, &tz, "%e %b %Y, %H:%M")
         )),
     );
+
+    // Wider still: every row carries two dated versions of the same file.
+    dialog.set_content_width(REVIEW_WIDTH);
 
     // A change of type starts unticked: replacing a folder with a file is not
     // something to do by accepting a default.

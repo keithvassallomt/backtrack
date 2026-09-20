@@ -21,6 +21,10 @@ use libadwaita::prelude::*;
 
 use crate::model::restore as copy;
 
+/// How wide the dialog wants to be. Enough for "Modified 20 Sep 2026, 16:18 ·
+/// 76 bytes" on one line, and for the three responses side by side.
+const CONTENT_WIDTH: i32 = 460;
+
 /// What the user chose.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Answer {
@@ -51,6 +55,13 @@ pub async fn ask(
         Some(&copy::conflict_body(folder, entry.disk_newer)),
     );
 
+    // Wide enough that the two dates sit on one line each and the three
+    // buttons sit in a row. Left to itself the dialog takes its natural width,
+    // which for this content is narrow enough to wrap every line and stack the
+    // buttons vertically — and a stacked Cancel/Keep Both/Replace loses the
+    // left-to-right ordering that puts the safe way out under the hand.
+    // It is a natural width, not a fixed one: a narrow window still shrinks it.
+    dialog.set_content_width(CONTENT_WIDTH);
     dialog.set_extra_child(Some(&comparison(entry, name)));
 
     // Cancel first and Replace last, per the GNOME guidelines: the safe way out
