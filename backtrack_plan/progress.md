@@ -12,7 +12,7 @@
 > tasks: add them here + to the stage file, then `just provision-board-apply`.
 > See [../CLAUDE.md](../CLAUDE.md) for the full workflow.
 
-**Current stage:** 6 (complete) → next: Stage 7
+**Current stage:** 7 (in progress)
 **Last updated:** 2026-09-20
 
 ## Stage 0 — Bootstrap ([stage file](stages/stage-00-bootstrap.md))
@@ -76,8 +76,8 @@
 - [x] S06-T10 JobFinished signal, replacing the GUI's completion polling
 
 ## Stage 7 — Restore engine ([stage file](stages/stage-07-restore-engine.md))
-- [ ] S07-T1 Staging→compare→rename pipeline in core
-- [ ] S07-T2 Skip-identical + conflict detection (newer/older cues)
+- [x] S07-T1 Staging→compare→rename pipeline in core
+- [x] S07-T2 Skip-identical + conflict detection (newer/older cues)
 - [ ] S07-T3 Single-file conflict dialog (mockup 4)
 - [ ] S07-T4 Folder summary + review checklist (mockups 5, 8)
 - [ ] S07-T5 replaced/ stash with 30-day expiry + "Recently Replaced Files" view
