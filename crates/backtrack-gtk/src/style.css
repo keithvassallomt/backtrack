@@ -53,11 +53,20 @@
     font-weight: bold;
 }
 
-/* The density strip draws itself; this is only its frame. */
+/* The density strip draws itself; this is its frame and the readout that
+ * names the day under the pointer. */
 .density-strip {
     background-color: @card_bg_color;
     border-radius: 12px;
-    padding: 6px;
+    padding: 6px 10px 4px 10px;
+}
+
+.density-readout {
+    background-color: alpha(currentColor, 0.14);
+    border-radius: 6px;
+    padding: 0 8px;
+    font-size: 0.82em;
+    font-weight: bold;
 }
 
 /* Calendar popover. A day with no backups is drawn plainly and is insensitive,
