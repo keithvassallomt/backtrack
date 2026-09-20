@@ -45,9 +45,15 @@ const REST_HEIGHT: f64 = 0.62;
 const TOP_BAND: f64 = 0.84;
 
 /// Bar widths. A month of backups on a wide window would otherwise be drawn as
-/// slabs, and a year of them as hairlines.
+/// slabs, and a year of them as hairlines — so a bar takes a share of the space
+/// it is given, between these bounds.
+///
+/// The share matters more than it sounds. A fixed 9px bar in a 96px slot is a
+/// tick mark with a lot of nothing either side, and a row of those reads as a
+/// ruler rather than as a history.
 const MIN_BAR_WIDTH: f64 = 2.0;
-const MAX_BAR_WIDTH: f64 = 9.0;
+const MAX_BAR_WIDTH: f64 = 22.0;
+const BAR_SHARE: f64 = 0.6;
 
 /// How many slots either side of the pointer the magnification reaches, and how
 /// much it adds at the centre.
@@ -318,14 +324,15 @@ impl Strip {
         let (width, height) = (f64::from(width), f64::from(height));
         let slots = density.bars.len() as f64;
         let per_bar = width / slots;
-        let rest_width = (per_bar - 2.0).clamp(MIN_BAR_WIDTH, MAX_BAR_WIDTH);
+        let rest_width = (per_bar * BAR_SHARE).clamp(MIN_BAR_WIDTH, MAX_BAR_WIDTH);
         let hover = self.hover.get();
         let marker = *self.marker.borrow();
 
         // A baseline, so the bars read as standing on a timeline rather than
-        // floating in a box.
-        paint(0.12);
-        context.rectangle(0.0, height - 1.0, width, 1.0);
+        // floating in a box. Worth seeing: it is the only thing tying them
+        // together when every day holds the same number of backups.
+        paint(0.22);
+        context.rectangle(0.0, height - 1.5, width, 1.5);
         let _ = context.fill();
 
         for (index, bar) in density.bars.iter().enumerate() {

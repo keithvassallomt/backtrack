@@ -48,6 +48,12 @@
     opacity: 0.4;
 }
 
+/* The folder being viewed. Padded to line up with the flat buttons beside it,
+ * and at full contrast because it is the answer to "where am I?". */
+.breadcrumb .breadcrumb-current {
+    padding: 2px 10px;
+}
+
 /* The position line: the one sentence that always says where you are. */
 .position {
     font-weight: bold;

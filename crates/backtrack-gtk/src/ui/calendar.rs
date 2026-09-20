@@ -45,12 +45,22 @@ pub fn build(state: &Rc<AppState>) -> Rc<Calendar> {
         .build();
     grid.add_css_class("calendar-grid");
 
+    // Icon *and* word. There is no calendar icon in Adwaita's action set —
+    // `x-office-calendar-symbolic` is a mimetype icon, "a calendar file" — so
+    // what it looks like is up to whichever icon theme is installed, and under
+    // some of them it is an anonymous rectangle. The label carries the meaning
+    // regardless.
+    let face = GtkBox::new(Orientation::Horizontal, 6);
+    face.append(&gtk4::Image::from_icon_name("x-office-calendar-symbolic"));
+    face.append(&Label::new(Some("Calendar")));
+
     let popover = Popover::new();
     let button = MenuButton::builder()
-        .icon_name("x-office-calendar-symbolic")
+        .child(&face)
         .tooltip_text("Jump to a date")
         .popover(&popover)
         .build();
+    button.add_css_class("flat");
     button.update_property(&[gtk4::accessible::Property::Label("Jump to a date")]);
 
     let calendar = Rc::new(Calendar {
