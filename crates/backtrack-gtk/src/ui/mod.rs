@@ -159,6 +159,24 @@ pub fn app_icon_name(widget: &impl IsA<gtk4::Widget>) -> &'static str {
     }
 }
 
+/// Ask a dialog to lay its responses out in a row rather than a column.
+///
+/// Stacked responses lose the left-to-right ordering that puts the safe way
+/// out under the hand and the destructive one furthest from it — which is the
+/// part of the GNOME guidance that protects somebody's work, not the styling.
+///
+/// `prefer-wide-layout` arrived in libadwaita 1.6 and this builds against 1.5,
+/// because stack.md sets GNOME 46 as the floor and raising it is a packaging
+/// decision rather than a matter of taste. So the property is set by name
+/// where the runtime has it. Where it does not, the responses stack, which is
+/// libadwaita's own fallback and remains perfectly usable.
+pub fn prefer_wide_responses(dialog: &adw::AlertDialog) {
+    use gtk4::prelude::ObjectExt;
+    if dialog.find_property("prefer-wide-layout").is_some() {
+        dialog.set_property("prefer-wide-layout", true);
+    }
+}
+
 /// Run `task` on the main loop. A thin alias so the intent reads at the call
 /// site: this is work that must not block the frame, not a background thread.
 pub fn spawn(task: impl std::future::Future<Output = ()> + 'static) {

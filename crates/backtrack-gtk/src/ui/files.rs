@@ -270,25 +270,40 @@ fn row_of(item: Option<&glib::Object>) -> Option<RowData> {
 /// Name, Size, Modified, Status — the mockup's columns, in its order.
 fn columns() -> Vec<ColumnViewColumn> {
     vec![
+        // Widths chosen so all four columns fit a pane of about 500 pixels,
+        // which is what the window's natural size leaves after the sidebar and
+        // the preview. Narrower than that and the view scrolls sideways rather
+        // than dropping a column — visibly imperfect, and better than silently
+        // hiding the one that says a file was deleted.
+        //
+        // A fixed width on the Name column as well as `expand`. Expanding
+        // shares out *spare* room; when there is none the expanding column is
+        // the one that gives way, and the name — the only thing on the row
+        // that identifies the file — collapsed to an ellipsis while the date
+        // beside it kept every pixel it asked for.
         ColumnViewColumn::builder()
             .title("Name")
             .expand(true)
             .resizable(true)
+            .fixed_width(160)
             .factory(&name_factory())
             .build(),
         ColumnViewColumn::builder()
             .title("Size")
-            .fixed_width(96)
+            .fixed_width(76)
+            .resizable(true)
             .factory(&text_factory(|row| row.size.clone(), Align::End))
             .build(),
         ColumnViewColumn::builder()
             .title("Modified")
-            .fixed_width(168)
+            .fixed_width(132)
+            .resizable(true)
             .factory(&text_factory(|row| row.modified.clone(), Align::Start))
             .build(),
         ColumnViewColumn::builder()
             .title("Status")
-            .fixed_width(168)
+            .fixed_width(124)
+            .resizable(true)
             .factory(&status_factory())
             .build(),
     ]

@@ -111,9 +111,12 @@ async fn summary(
     // kept. Nothing is deleted." is the one that must not wrap into
     // illegibility: it is the reassurance the screen exists to give.
     dialog.set_content_width(SUMMARY_WIDTH);
+    crate::ui::prefer_wide_responses(&dialog);
 
     let reviewing = Rc::new(Cell::new(false));
-    dialog.set_extra_child(Some(&summary_rows(preview, &dialog, &reviewing)));
+    let rows = summary_rows(preview, &dialog, &reviewing);
+    rows.set_size_request(SUMMARY_WIDTH - 40, -1);
+    dialog.set_extra_child(Some(&rows));
 
     dialog.add_responses(&[
         ("cancel", "Cancel"),
@@ -205,6 +208,7 @@ async fn review(
 
     // Wider still: every row carries two dated versions of the same file.
     dialog.set_content_width(REVIEW_WIDTH);
+    crate::ui::prefer_wide_responses(&dialog);
 
     // A change of type starts unticked: replacing a folder with a file is not
     // something to do by accepting a default.
@@ -255,6 +259,7 @@ async fn review(
     content.append(&scroller);
     content.append(&note("Unticked files are left exactly as they are."));
     content.append(&note(copy::SAFETY_NOTE));
+    content.set_size_request(REVIEW_WIDTH - 40, -1);
     dialog.set_extra_child(Some(&content));
 
     dialog.add_responses(&[("back", "Back"), ("replace", "Replace")]);

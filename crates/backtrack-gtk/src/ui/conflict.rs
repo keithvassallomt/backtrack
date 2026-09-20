@@ -62,7 +62,13 @@ pub async fn ask(
     // left-to-right ordering that puts the safe way out under the hand.
     // It is a natural width, not a fixed one: a narrow window still shrinks it.
     dialog.set_content_width(CONTENT_WIDTH);
-    dialog.set_extra_child(Some(&comparison(entry, name)));
+    crate::ui::prefer_wide_responses(&dialog);
+
+    let comparison = comparison(entry, name);
+    // `content-width` is a natural width, and a dialog whose content asks for
+    // less than that keeps its own counsel. The content has to want the room.
+    comparison.set_size_request(CONTENT_WIDTH - 40, -1);
+    dialog.set_extra_child(Some(&comparison));
 
     // Cancel first and Replace last, per the GNOME guidelines: the safe way out
     // is where the hand lands, and the destructive one is furthest from it.

@@ -202,8 +202,17 @@ impl Window {
         panes.set_margin_end(12);
         self.files_slot.set_hexpand(true);
         panes.append(&self.files_slot);
-        self.preview_slot.set_size_request(280, -1);
-        panes.append(&self.preview_slot);
+        // Clamped, not merely given a minimum. The preview's own content
+        // decides how wide it would like to be — a line of monospace text, or
+        // the "select a file" page — and in a narrow window it was taking that
+        // room from the file list, which is the pane the window is for.
+        self.preview_slot.set_size_request(240, -1);
+        let preview = adw::Clamp::builder()
+            .maximum_size(320)
+            .tightening_threshold(240)
+            .child(&self.preview_slot)
+            .build();
+        panes.append(&preview);
         content.append(&panes);
 
         self.strip_slot.set_margin_start(12);
