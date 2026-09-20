@@ -142,6 +142,7 @@ async fn a_client_drives_a_backup_and_hears_progress_then_healthy() {
 
     let mut progress = 0usize;
     let mut states = Vec::new();
+    let mut finished: Vec<(u64, String, String)> = Vec::new();
     let deadline = tokio::time::Instant::now() + Duration::from_secs(120);
 
     while tokio::time::Instant::now() < deadline {
@@ -160,6 +161,11 @@ async fn a_client_drives_a_backup_and_hears_progress_then_healthy() {
                     message.body().deserialize().expect("progress payload");
                 assert_eq!(id, job, "progress must carry the job it belongs to");
                 progress += 1;
+            }
+            Some("JobFinished") => {
+                let (id, kind, outcome): (u64, String, String) =
+                    message.body().deserialize().expect("job-finished payload");
+                finished.push((id, kind, outcome));
             }
             Some("StatusChanged") => {
                 let state: String = message.body().deserialize().expect("state payload");
@@ -186,6 +192,18 @@ async fn a_client_drives_a_backup_and_hears_progress_then_healthy() {
         progress > 0,
         "a real backup must report progress; heard {progress} progress signals"
     );
+
+    // The signal that exists because `StatusChanged` cannot answer "is the
+    // thing I started done yet?" — a client that starts a backup on an already
+    // healthy machine hears no state change at all.
+    let ours: Vec<&(u64, String, String)> = finished.iter().filter(|(id, ..)| *id == job).collect();
+    assert_eq!(
+        ours.len(),
+        1,
+        "exactly one JobFinished for the backup; heard {finished:?}"
+    );
+    assert_eq!(ours[0].1, "backup");
+    assert_eq!(ours[0].2, "completed");
 
     // And the status the client can ask for agrees with what it was told.
     let reply = client

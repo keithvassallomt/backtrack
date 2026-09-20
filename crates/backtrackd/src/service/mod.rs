@@ -1508,6 +1508,24 @@ impl Daemon1 {
     /// The overall health state changed.
     #[zbus(signal)]
     pub async fn status_changed(emitter: &SignalEmitter<'_>, state: &str) -> zbus::Result<()>;
+
+    /// A job ended, however it ended.
+    ///
+    /// The one thing `StatusChanged` cannot tell a client. Health only moves
+    /// when the *state* changes, so a successful backup on a machine that was
+    /// already healthy announces nothing at all — leaving a client that started
+    /// that backup with no way to learn it had finished except to poll. Every
+    /// kind of job reports here, including the ones with no progress signal of
+    /// their own.
+    ///
+    /// `outcome` is `completed`, `cancelled` or `failed`.
+    #[zbus(signal)]
+    pub async fn job_finished(
+        emitter: &SignalEmitter<'_>,
+        job: u64,
+        kind: &str,
+        outcome: &str,
+    ) -> zbus::Result<()>;
 }
 
 /// Extract one file into the preview cache, replacing any partial attempt.
@@ -1609,7 +1627,10 @@ pub async fn fan_out_signals(shared: Arc<Shared>, emitter: SignalEmitter<'static
                     JobKind::Prune | JobKind::Compact | JobKind::Check => Ok(()),
                 };
             }
-            JobUpdate::State { kind, state, .. } => {
+            JobUpdate::State { id, kind, state } => {
+                if let Some(outcome) = state.outcome_token() {
+                    let _ = Daemon1::job_finished(&emitter, id, kind.as_str(), outcome).await;
+                }
                 if state.is_terminal() {
                     update_health(&shared, kind, &state);
                     // A backup that reached the real destination is what starts

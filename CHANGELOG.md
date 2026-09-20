@@ -96,6 +96,11 @@ All notable changes to Backtrack are documented here. This project adheres to
   binaries), structured logging with JSONL rotation, developer task runner,
   versioning policy, and continuous integration.
 
+### Changed
+- The backup service now announces when a job has finished, so an application
+  that started one learns the outcome as it happens instead of asking
+  repeatedly whether it is done yet.
+
 ### Fixed
 - A file could be shown as "deleted after this" while it still existed, in the
   window between a backup finishing and its file list being read. On a first

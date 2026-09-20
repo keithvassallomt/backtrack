@@ -155,6 +155,18 @@ impl JobState {
         matches!(self, JobState::Done(_) | JobState::Failed(_))
     }
 
+    /// How the job ended, as `JobFinished` reports it, or `None` while it is
+    /// still going. A failure is one word here on purpose: the reason belongs
+    /// in the health state and the log, not in a signal every client has to
+    /// parse.
+    pub fn outcome_token(&self) -> Option<&'static str> {
+        match self {
+            JobState::Done(outcome) => Some(outcome.as_str()),
+            JobState::Failed(_) => Some("failed"),
+            _ => None,
+        }
+    }
+
     /// Whether the job is occupying the repository right now. `Cancelling`
     /// counts: Borg is still winding down and still holding its lock, so
     /// admitting the next job here would hand it a repository that is not free

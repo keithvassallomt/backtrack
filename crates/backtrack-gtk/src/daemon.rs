@@ -42,6 +42,10 @@ pub trait Daemon1 {
     /// The overall health state changed.
     #[zbus(signal)]
     fn status_changed(&self, state: &str) -> zbus::Result<()>;
+
+    /// A job ended. `outcome` is `completed`, `cancelled` or `failed`.
+    #[zbus(signal)]
+    fn job_finished(&self, job: u64, kind: &str, outcome: &str) -> zbus::Result<()>;
 }
 
 /// Connect to the daemon, honoring `BACKTRACK_DEV` for the bus name.

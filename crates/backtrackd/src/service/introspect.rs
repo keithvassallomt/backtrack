@@ -44,6 +44,7 @@ pub const METHODS: &[(&str, &str, &str)] = &[
 pub const SIGNALS: &[(&str, &str)] = &[
     ("BackupProgress", "tstt"),
     ("IndexingProgress", "su"),
+    ("JobFinished", "tss"),
     ("RestoreProgress", "ttt"),
     ("StatusChanged", "s"),
 ];

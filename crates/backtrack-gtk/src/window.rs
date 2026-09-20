@@ -19,7 +19,7 @@ use libadwaita as adw;
 use libadwaita::prelude::*;
 use tracing::{info, warn};
 
-use crate::daemon::Daemon1Proxy;
+use crate::daemon::{Daemon1Proxy, JobFinishedStream};
 use crate::index::Index;
 use crate::model::format;
 use crate::state::{AppState, Change};
@@ -383,7 +383,11 @@ impl Window {
         };
         let this = Rc::clone(self);
         ui::spawn(async move {
-            let before = proxy.get_status().await.map(|s| s.last_backup).unwrap_or(0);
+            // Subscribed before the backup is asked for, not after: a small
+            // backup can finish before a stream opened afterwards would exist,
+            // and the completion would be missed entirely.
+            let finished = proxy.receive_job_finished().await;
+
             let job = match proxy.backup_now().await {
                 Ok(job) => job,
                 Err(error) => {
@@ -395,40 +399,31 @@ impl Window {
             info!(job, "backup started from the menu");
             this.toast("Backup started");
             this.refresh_status();
-            this.watch_backup(proxy, job, before).await;
+
+            match finished {
+                Ok(stream) => this.await_job(stream, job).await,
+                Err(error) => warn!(%error, job, "the backup's outcome will not be reported"),
+            }
         });
     }
 
-    /// Wait for `job` to leave the daemon, then say how it went.
-    ///
-    /// Polled rather than awaited on a signal, because the interface has no
-    /// "job finished" to await: `StatusChanged` fires only when the health
-    /// state moves, which a successful backup on an already-healthy machine
-    /// does not do. Worth a signal in its own right — Stage 7's restores will
-    /// want the same thing — but that is a change to the published interface,
-    /// not to this window.
-    async fn watch_backup(
-        self: &Rc<Self>,
-        proxy: crate::daemon::Daemon1Proxy<'static>,
-        job: u64,
-        last_backup_before: u64,
-    ) {
-        loop {
-            glib::timeout_future_seconds(2).await;
-            let Ok(status) = proxy.get_status().await else {
-                return;
+    /// Wait for `job` to end, and say how it went.
+    async fn await_job(self: &Rc<Self>, mut finished: JobFinishedStream, job: u64) {
+        use futures::StreamExt;
+        while let Some(signal) = StreamExt::next(&mut finished).await {
+            let Ok(args) = signal.args() else {
+                continue;
             };
-            self.render_status(&status);
-            if status.active_job == job {
+            if args.job != job {
                 continue;
             }
-            if status.last_backup > last_backup_before {
-                info!(job, "backup finished");
-                self.toast("Backup complete");
-            } else {
-                warn!(job, "the backup ended without recording a new one");
-                self.toast("The backup did not finish — see the logs for why");
-            }
+            info!(job, outcome = args.outcome, "the backup ended");
+            self.toast(match args.outcome {
+                "completed" => "Backup complete",
+                "cancelled" => "Backup cancelled",
+                _ => "The backup did not finish — see the logs for why",
+            });
+            self.refresh_status();
             return;
         }
     }
