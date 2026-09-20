@@ -32,8 +32,18 @@ struct Summary {
     old_client_deleted_at_10: bool,
 }
 
-fn main() -> Result<()> {
+fn main() {
+    // Printed rather than returned: a `Result` from `main` is rendered with
+    // `Debug`, which turns a multi-line explanation into one line of escapes.
+    if let Err(error) = build() {
+        eprintln!("{error}");
+        std::process::exit(1);
+    }
+}
+
+fn build() -> Result<()> {
     let dir = data_dir();
+    refuse_if_the_daemon_owns_the_index()?;
     println!("Building demo repo + index under {}", dir.display());
     let summary = run(&dir)?;
     println!(
@@ -54,6 +64,47 @@ fn main() -> Result<()> {
     Ok(())
 }
 
+/// Stop, with an explanation, if a daemon is running.
+///
+/// The daemon owns the index — bus-name ownership *is* its single-instance
+/// lock — and this recipe deletes that index and builds a new one underneath
+/// it. A daemon that is up will go on writing to the file it still has open and
+/// will reconcile the rebuilt repository into it, and the result is a fixture
+/// with every snapshot in it twice. That is confusing enough to debug once, and
+/// the check that avoids it is one question to the bus.
+fn refuse_if_the_daemon_owns_the_index() -> Result<()> {
+    let name = backtrack_core::dbus::bus_name();
+    // `NameHasOwner` asks; calling a method on the name would *start* one.
+    let out = Command::new("gdbus")
+        .args([
+            "call",
+            "--session",
+            "--dest",
+            "org.freedesktop.DBus",
+            "--object-path",
+            "/org/freedesktop/DBus",
+            "--method",
+            "org.freedesktop.DBus.NameHasOwner",
+            name,
+        ])
+        .output();
+    let Ok(out) = out else {
+        // No gdbus, or no session bus: nothing to collide with, or nothing that
+        // can be asked. Either way, not a reason to refuse to build a fixture.
+        return Ok(());
+    };
+    if !String::from_utf8_lossy(&out.stdout).contains("true") {
+        return Ok(());
+    }
+    Err(format!(
+        "a Backtrack daemon is running on {name} and holds the index this would rebuild.\n\
+         Stop it first, then re-run:\n  \
+         systemctl --user stop backtrackd.service\n  \
+         pkill backtrackd"
+    )
+    .into())
+}
+
 /// Build (from scratch) a real Borg repo and index at `dir`.
 fn run(dir: &Path) -> Result<Summary> {
     let repo = dir.join("demo-repo");
@@ -71,14 +122,22 @@ fn run(dir: &Path) -> Result<Summary> {
 
     borg(&["init", "-e", "none", &repo.to_string_lossy()])?;
 
+    // Borg's clock has to be measured before anything is dated by it.
+    let skew = calibrate(&repo, &src)?;
+    if skew != 0 {
+        println!("  borg's --timestamp is {skew}s away from the time it reports back");
+    }
+
     // Seed the history: mutate the fake home incrementally (so unchanged files
-    // keep their mtime and Borg dedups), one snapshot per day, dated 1–30 June.
+    // keep their mtime and Borg dedups), one snapshot per entry, on the
+    // schedule below.
     let script = history();
+    let when = schedule(now(), script.len());
     let mut prev = BTreeMap::new();
     for (i, day_files) in script.iter().enumerate() {
         let day = i + 1;
         apply_day(&src.join("home"), &prev, day_files)?;
-        let date = format!("2026-06-{day:02}T12:00:00");
+        let date = utc_stamp(when[i] - skew);
         borg_create(&src, &repo, &format!("snapshot-{day:02}"), &date)?;
         prev = day_files.clone();
         print!("\r  seeded snapshot {day}/{}", script.len());
@@ -111,6 +170,91 @@ fn run(dir: &Path) -> Result<Summary> {
         versions,
         old_client_deleted_at_10,
     })
+}
+
+/// When each snapshot was taken, oldest first.
+///
+/// Dated relative to `now` rather than to a fixed month, and deliberately so:
+/// the sidebar's bands — Today, Yesterday, This week, Last week — are relative
+/// too, and a fixture pinned to June 2026 stopped exercising any of them the
+/// moment June 2026 was over, collapsing the whole history into one closed
+/// month group.
+///
+/// The shape is one snapshot a day going back about a month, then three a
+/// couple of hours apart today, which is close enough to the real retention
+/// (hourly recently, daily for a while, sparser after that) for the grouping to
+/// have something to absorb.
+///
+/// Run within two hours of local midnight, today's three land on either side of
+/// it and the first of them reads as yesterday. That is a real shape too, and
+/// not worth a timezone database to avoid.
+fn schedule(now: i64, count: usize) -> Vec<i64> {
+    const DAY: i64 = 86_400;
+    let today = [now - 2 * 3_600, now - 3_600, now - 600];
+    let dailies = count.saturating_sub(today.len());
+    (0..dailies)
+        .map(|i| now - (dailies - i) as i64 * DAY)
+        .chain(today.into_iter().take(count))
+        .collect()
+}
+
+/// Now, in seconds since the epoch.
+fn now() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
+}
+
+/// How far Borg's `--timestamp` is from the time Borg then reports for it.
+///
+/// The flag is documented (borg 1.4) as taking UTC, and the archive time that
+/// comes back out is the machine's UTC offset away from what was asked for.
+/// Rather than encode a guess about which end is wrong — and have that guess
+/// rot when Borg changes — the generator measures it: one throwaway archive at
+/// a known instant, read back, difference applied to every date in the script.
+/// If a future Borg makes the two agree, the measurement becomes zero and
+/// nothing else here changes.
+fn calibrate(repo: &Path, src: &Path) -> Result<i64> {
+    /// 2020-09-13T12:26:40Z — an arbitrary instant, far from any boundary that
+    /// could round.
+    const PROBE: i64 = 1_600_000_000;
+    const NAME: &str = "bt-calibration";
+
+    borg_create(src, repo, NAME, &utc_stamp(PROBE))?;
+    let recorded = list_archives(repo)?
+        .into_iter()
+        .find(|(name, _, _)| name == NAME)
+        .map(|(_, _, ts)| ts)
+        .ok_or("the calibration archive did not come back from borg list")?;
+    borg(&["delete", &format!("{}::{NAME}", repo.to_string_lossy())])?;
+    Ok(recorded - PROBE)
+}
+
+/// `epoch` as the naive UTC string Borg's `--timestamp` wants.
+fn utc_stamp(epoch: i64) -> String {
+    let (year, month, day) = civil_from_days(epoch.div_euclid(86_400));
+    let seconds = epoch.rem_euclid(86_400);
+    format!(
+        "{year:04}-{month:02}-{day:02}T{:02}:{:02}:{:02}",
+        seconds / 3_600,
+        (seconds % 3_600) / 60,
+        seconds % 60
+    )
+}
+
+/// Gregorian date from a day number (Howard Hinnant's `civil_from_days`).
+fn civil_from_days(days: i64) -> (i64, i64, i64) {
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097);
+    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
+    let year = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 };
+    (if month <= 2 { year + 1 } else { year }, month, day)
 }
 
 /// The scripted 30-day history: for each day (1-based), the file tree relative to
@@ -364,6 +508,55 @@ mod tests {
                 )
                 .unwrap();
         }
+    }
+
+    #[test]
+    fn the_schedule_ends_today_and_reaches_back_about_a_month() {
+        // Midday, so "today" is unambiguous.
+        let now = 1_781_092_800;
+        let when = schedule(now, 30);
+        assert_eq!(when.len(), 30);
+        assert!(
+            when.windows(2).all(|w| w[0] < w[1]),
+            "oldest first, strictly"
+        );
+
+        // Calendar days apart, not raw seconds: a snapshot ten minutes ago is
+        // the same day, and a subtraction would floor it to yesterday.
+        let day = |ts: i64| ts.div_euclid(86_400) - now.div_euclid(86_400);
+        assert_eq!(day(when[29]), 0, "the newest is today");
+        assert_eq!(day(when[28]), 0);
+        assert_eq!(day(when[27]), 0, "three of them are");
+        assert_eq!(day(when[26]), -1, "then yesterday");
+        assert_eq!(day(when[0]), -27, "and back about a month");
+        assert!(when[29] < now, "nothing is dated in the future");
+    }
+
+    #[test]
+    fn the_schedule_fills_every_band_the_sidebar_has() {
+        // The point of dating the fixture relative to now: Today, Yesterday,
+        // This week, Last week and at least one month group all have something
+        // in them, whichever day of the week it is run on.
+        for weekday_offset in 0..7 {
+            let now = 1_781_092_800 + weekday_offset * 86_400;
+            let when = schedule(now, 30);
+            let days_ago: Vec<i64> = when
+                .iter()
+                .map(|ts| now.div_euclid(86_400) - ts.div_euclid(86_400))
+                .collect();
+            assert!(days_ago.contains(&0), "today");
+            assert!(days_ago.contains(&1), "yesterday");
+            assert!(days_ago.iter().any(|d| (2..=7).contains(d)), "the week");
+            assert!(days_ago.iter().any(|d| *d > 14), "and something old");
+        }
+    }
+
+    #[test]
+    fn a_timestamp_is_rendered_the_way_borg_wants_it() {
+        assert_eq!(utc_stamp(0), "1970-01-01T00:00:00");
+        assert_eq!(utc_stamp(1_600_000_000), "2020-09-13T12:26:40");
+        // A leap day, which the calendar arithmetic has to get right.
+        assert_eq!(utc_stamp(1_709_208_000), "2024-02-29T12:00:00");
     }
 
     #[test]

@@ -90,6 +90,32 @@ Keyboard Shortcuts (`GtkShortcutsWindow`, real accels), Help (docs URL), About
 updates status line and self-expires (dev: 1 h option shortened via
 BACKTRACK_DEV to 1 min for testing).
 
+### S06-T9 — Demo fixture dated relative to now
+`xtask` dates its 30 snapshots from fixed calendar dates in June 2026, so the
+sidebar's Today / Yesterday / This week bands are empty on any day after that
+month and the whole history collapses into two month groups. The scripted
+*content* (files appearing, changing, `old-client-folder` deleted after entry
+15) stays exactly as it is; only the timestamps move, ending with a few hours
+apart today so every band has something in it. Borg's `--timestamp` does not
+round-trip through `{time:%s}` unchanged, so the offset is measured rather than
+assumed.
+**Accept:** `just demo-repo` produces a history whose newest snapshots are
+today, and the sidebar renders Today, Yesterday, This week, Last week and at
+least one month group; the existing acceptance check (`old-client-folder`
+flagged deleted at snapshot 10) still passes.
+
+### S06-T10 — JobFinished signal
+The interface has no way to learn that a job ended: `StatusChanged` fires only
+when the health *state* moves, which a successful backup on an already-healthy
+machine does not do, so the window polls `GetStatus` to know when a backup it
+started has finished. Add `JobFinished(job, kind, outcome)` to
+`org.backtrack.Daemon1`, emitted from the signal fan-out on any terminal job
+state, and use it in place of the polling. Stage 7's restores need the same
+thing.
+**Accept:** the introspection snapshot carries the new signal; the GTK app
+toasts on completion without polling; a daemon test asserts the signal is
+emitted once per terminal job with the right outcome.
+
 ## Definition of Done
 The Alice story runs end to end on demo-repo (browse → step back → deleted folder
 reappears → preview) in both themes with keyboard only; screenshots of light+dark
