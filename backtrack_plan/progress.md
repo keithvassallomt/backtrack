@@ -12,7 +12,7 @@
 > tasks: add them here + to the stage file, then `just provision-board-apply`.
 > See [../CLAUDE.md](../CLAUDE.md) for the full workflow.
 
-**Current stage:** 6 (in progress)
+**Current stage:** 6 (complete) → next: Stage 7
 **Last updated:** 2026-09-20
 
 ## Stage 0 — Bootstrap ([stage file](stages/stage-00-bootstrap.md))
@@ -64,16 +64,16 @@
 - [x] S05-T6 Borg warning exits (1, 100–127) are not backup failures
 
 ## Stage 6 — GTK timeline browser ([stage file](stages/stage-06-gtk-timeline.md))
-- [/] S06-T1 App shell, main window layout, dark/light (mockups 1, 6)
-- [/] S06-T2 Snapshot sidebar with grouping + badges
-- [/] S06-T3 File pane bound to index (status badges incl. "deleted after this")
-- [/] S06-T4 Older/Newer stepping + Ctrl+←/→ (+ "next change to selected file")
-- [/] S06-T5 Calendar popover (mockup 7)
-- [/] S06-T6 Timeline density strip (indicator + snap-to-snapshot jump)
-- [/] S06-T7 Preview pane via PreviewFile fd, cancellable, cached
-- [/] S06-T8 Primary menu (mockup 14) with working Back Up Now / Pause
-- [/] S06-T9 Demo fixture dated relative to now (so the sidebar's bands appear)
-- [/] S06-T10 JobFinished signal, replacing the GUI's completion polling
+- [x] S06-T1 App shell, main window layout, dark/light (mockups 1, 6)
+- [x] S06-T2 Snapshot sidebar with grouping + badges
+- [x] S06-T3 File pane bound to index (status badges incl. "deleted after this")
+- [x] S06-T4 Older/Newer stepping + Ctrl+←/→ (+ "next change to selected file")
+- [x] S06-T5 Calendar popover (mockup 7)
+- [x] S06-T6 Timeline density strip (indicator + snap-to-snapshot jump)
+- [x] S06-T7 Preview pane via PreviewFile fd, cancellable, cached
+- [x] S06-T8 Primary menu (mockup 14) with working Back Up Now / Pause
+- [x] S06-T9 Demo fixture dated relative to now (so the sidebar's bands appear)
+- [x] S06-T10 JobFinished signal, replacing the GUI's completion polling
 
 ## Stage 7 — Restore engine ([stage file](stages/stage-07-restore-engine.md))
 - [ ] S07-T1 Staging→compare→rename pipeline in core
@@ -133,6 +133,82 @@
 ## Notes / decisions made during implementation
 
 (append dated entries here; never delete)
+
+- 2026-09-20 (Stage 6 — Definition of Done): the Alice story driven end to end
+  against the demo repository, with the window's own actions fired over
+  `org.gtk.Actions` so each claim is a measurement rather than an impression.
+  - **Deleted folders reappear, and only they are flagged.** Stepping back from
+    snapshot 30, `home` holds 2 entries with no badges at snapshots 16–18 and 3
+    entries with exactly one "deleted after this" from snapshot 15 down — which
+    is where the fixture deletes `old-client-folder`.
+  - **Stepping is not the bottleneck.** Sixteen consecutive steps, each a fresh
+    `folder_at` off the main loop, completed in ~50 ms in total.
+  - **"Next change" lands on the change, not near it.** From the oldest
+    snapshot with `report.odt` selected, `newer-change` jumped to 8 and then
+    20 — exactly the two entries at which the fixture rewrites the file,
+    skipping the 6 and 11 identical snapshots between.
+  - **The preview comes out of the repository.** `PreviewFile` returned a
+    descriptor for `report.odt` at snapshot 30 and 29 bytes of text were read
+    from it, through the daemon's cache.
+  - **Back Up Now completes and says so**, on a machine already `HEALTHY` —
+    the case with no `StatusChanged` to hear, which is why S06-T10 exists.
+    The dev-mode pause was set 58 seconds out and lifted itself on time.
+  - **D-Bus activation works from cold**: the window started a stopped daemon
+    and it answered.
+  - Keyboard-only operation and both colour schemes confirmed by hand.
+    Screenshots of the two schemes are outstanding and will be attached to the
+    S06-T1 issue.
+  - Full suite green: **517 tests**, 544 with the real-borg integration set.
+
+- 2026-09-20 (Stage 6 — GTK timeline browser): the stage is mostly a lesson in
+  how much of a GUI is not the widgets.
+  - **The view models are plain data with no GTK in them** — sidebar grouping,
+    calendar grid, density bars, every formatted string. They are the parts
+    most likely to be wrong and the only parts a test can check without a
+    display. Time is passed in rather than read from the clock, which makes
+    "what does the sidebar look like on a Monday" a question a test can ask.
+  - **Index reads run on their own thread.** The queries are fast; none is
+    guaranteed to be, and a 200 ms stall on the main loop is a visible stutter
+    in the one interaction the whole app is built around.
+  - **The sidebar is a `GtkTreeListModel`, not a section model** (which the
+    stage file suggested). The older groups have to collapse — "May 2026 (31)"
+    is what keeps the sidebar readable over a year of backups — and sections
+    cannot collapse.
+  - **"Previous/next change to this file" is a split-button dropdown, not a
+    long-press.** A long-press is undiscoverable and unreachable from the
+    keyboard, and this is the feature that makes forty identical hourlies
+    navigable.
+  - **The calendar is a grid of buttons, not `GtkCalendar`.** A day with no
+    backup behind it has to be insensitive; GtkCalendar will let you select it,
+    and answering that click with nothing is worse than not offering it. The
+    "stock widget wins" rule covers styling, not behaviour.
+  - **A badge that lied, found by browsing rather than by a test.**
+    `folder_at` measured "deleted after this" against `MAX(seq)`, including
+    archives appended but not yet catalogued — which have no version rows. On a
+    first-run backfill, which indexes newest-first over hours, that would have
+    put an orange badge on every file in the user's home directory. Now
+    measured against the newest *catalogued* archive, which is what
+    `latest_catalogued_seq` already existed for.
+  - **`JobFinished` was missing from the interface** (S06-T10). `StatusChanged`
+    fires only when the health state moves, so a successful backup on an
+    already-healthy machine announces nothing at all, and a client that started
+    it could only poll. Stage 7's restores need the same signal.
+  - **The demo fixture was dated to a fixed month** (S06-T9) and had stopped
+    exercising the sidebar's Today/Yesterday/This week bands the moment that
+    month passed. It is now relative to the run, with a deliberate two-day hole
+    so the calendar's unclickable days and the strip's gap stubs have something
+    to draw. Borg's `--timestamp` does not round-trip through `{time:%s}`, so
+    the generator measures the offset with a throwaway archive rather than
+    encoding a guess that would rot.
+  - **The app enters a Tokio runtime it otherwise has no use for.** `oo7` turns
+    on zbus's Tokio backend for the whole workspace, so zbus panics when called
+    from outside a runtime; the window's own concurrency stays GLib's.
+  - **Forcing a colour scheme cannot outrank a user stylesheet.** A
+    `~/.config/gtk-4.0/gtk.css` that redefines the libadwaita palette loads
+    above the theme's and wins — correct behaviour, and completely silent about
+    itself. `BACKTRACK_THEME` now runs against an empty `XDG_CONFIG_HOME` so
+    the scheme can actually decide the colours, and the application says so
+    when something else will.
 
 - 2026-07-08 (Stage 2 — Borg adapter): landed the `engine` + `secret` modules in
   `backtrack-core` and a new `backtrack-testkit` crate. Key decisions:
