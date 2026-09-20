@@ -67,8 +67,9 @@ pub struct Strip {
     container: GtkBox,
     area: DrawingArea,
     months: Fixed,
-    /// The day named under the pointer.
+    /// The day named under the pointer, and what holds it over the right bar.
     readout: Label,
+    perch: Fixed,
     density: RefCell<Density>,
     /// Which bar the position marker sits on.
     marker: RefCell<Option<usize>>,
@@ -89,17 +90,23 @@ pub fn build(state: &Rc<AppState>) -> Rc<Strip> {
     // The strip is a control, and a bar chart does not look like one.
     area.set_cursor(gdk::Cursor::from_name("pointer", None).as_ref());
 
-    let readout = Label::builder()
-        .halign(Align::Start)
-        .valign(Align::Start)
-        .visible(false)
-        .build();
+    let readout = Label::builder().visible(false).build();
     readout.add_css_class("density-readout");
     readout.add_css_class("accent");
 
+    // The readout is placed in a `GtkFixed` rather than by its own margin.
+    // That is not a stylistic preference: `gtk_widget_measure` includes a
+    // widget's margins in what it returns, so a label positioned by
+    // `margin-start` measures wider the further right it has been put — and a
+    // placement that subtracts half that width drifts further left the further
+    // right the pointer goes, which is exactly what it did.
+    let perch = Fixed::new();
+    perch.set_valign(Align::Start);
+    perch.put(&readout, 0.0, 0.0);
+
     let overlay = Overlay::new();
     overlay.set_child(Some(&area));
-    overlay.add_overlay(&readout);
+    overlay.add_overlay(&perch);
 
     let months = Fixed::builder().height_request(16).build();
 
@@ -113,6 +120,7 @@ pub fn build(state: &Rc<AppState>) -> Rc<Strip> {
         area,
         months,
         readout,
+        perch,
         density: RefCell::new(Density::default()),
         marker: RefCell::new(None),
         hover: Cell::new(None),
@@ -235,23 +243,30 @@ impl Strip {
             self.readout.set_visible(true);
             self.place_readout(index, bars, width);
         }
-        self.area.queue_draw();
+        // The whole strip, not just the canvas: the readout is a sibling of
+        // it, and invalidating only the canvas can leave the label's old
+        // position on screen until something else forces a repaint.
+        self.container.queue_draw();
     }
 
     /// Sit the readout above the bar it names, kept inside the widget.
+    ///
+    /// The bar's centre is computed exactly as `draw` computes it, so the two
+    /// cannot drift apart; the measurement is of a label carrying no margins,
+    /// so it is the width of the words and nothing else.
     fn place_readout(&self, index: usize, bars: usize, width: i32) {
         let per_bar = f64::from(width) / bars as f64;
         let centre = (index as f64 + 0.5) * per_bar;
         let label_width = f64::from(self.readout.measure(Orientation::Horizontal, -1).1);
         let left =
             (centre - label_width / 2.0).clamp(0.0, (f64::from(width) - label_width).max(0.0));
-        self.readout.set_margin_start(left as i32);
+        self.perch.move_(&self.readout, left, 0.0);
     }
 
     fn clear_hover(&self) {
         self.hover.set(None);
         self.readout.set_visible(false);
-        self.area.queue_draw();
+        self.container.queue_draw();
     }
 
     /// Resolve a horizontal position to a snapshot and go there.

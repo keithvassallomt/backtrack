@@ -59,10 +59,36 @@
     font-weight: bold;
 }
 
+/* The window is three panes and a strip, and they have to read as four
+ * separate things.
+ *
+ * A background colour alone will not do that. In the light palette
+ * `view_bg_color` is white against a grey window and the division is obvious;
+ * in a dark one the two are within a few percent of each other, and a desktop
+ * that has redefined the palette — which is a common customisation — can make
+ * them identical. The window then reads as one flat sheet.
+ *
+ * So the division is drawn with a border rather than left to a colour, and the
+ * border is `alpha(currentColor, …)`: a fraction of the *foreground*, which is
+ * by definition the colour that contrasts with whatever the background turned
+ * out to be. It cannot be flattened by a palette, because it is derived from
+ * the same palette's other end. */
+.pane {
+    background-color: @view_bg_color;
+    border: 1px solid alpha(currentColor, 0.13);
+    border-radius: 12px;
+}
+
+/* The edge between the sidebar and everything else, for the same reason. */
+.sidebar-edge {
+    border-right: 1px solid alpha(currentColor, 0.13);
+}
+
 /* The density strip draws itself; this is its frame and the readout that
  * names the day under the pointer. */
 .density-strip {
     background-color: @card_bg_color;
+    border: 1px solid alpha(currentColor, 0.13);
     border-radius: 12px;
     padding: 6px 10px 4px 10px;
 }

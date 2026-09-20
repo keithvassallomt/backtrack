@@ -191,6 +191,7 @@ impl Window {
 
     fn body(self: &Rc<Self>) -> adw::OverlaySplitView {
         let sidebar = GtkBox::new(Orientation::Vertical, 0);
+        sidebar.add_css_class("sidebar-edge");
         sidebar.append(&self.sidebar_header());
         self.sidebar_slot.set_vexpand(true);
         sidebar.append(&self.sidebar_slot);
@@ -202,6 +203,14 @@ impl Window {
         panes.set_vexpand(true);
         panes.set_margin_start(12);
         panes.set_margin_end(12);
+        // Bordered rather than merely coloured, so the panes stay separate
+        // things under a palette that makes their backgrounds the same — see
+        // `.pane` in the stylesheet. Clipped, because a rounded corner with a
+        // list scrolling under it is only rounded until something reaches it.
+        for pane in [&self.files_slot, &self.preview_slot] {
+            pane.add_css_class("pane");
+            pane.set_overflow(gtk4::Overflow::Hidden);
+        }
         self.files_slot.set_hexpand(true);
         panes.append(&self.files_slot);
         // Clamped, not merely given a minimum. The preview's own content
