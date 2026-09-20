@@ -243,9 +243,19 @@ impl Strip {
             self.readout.set_visible(true);
             self.place_readout(index, bars, width);
         }
-        // The whole strip, not just the canvas: the readout is a sibling of
-        // it, and invalidating only the canvas can leave the label's old
-        // position on screen until something else forces a repaint.
+        self.repaint();
+    }
+
+    /// Redraw for a change of hover: both the bars and the strip around them.
+    ///
+    /// Both, and neither alone. GTK4 caches a render node per widget, so
+    /// invalidating the container does not re-run the canvas's draw function —
+    /// the magnification would stop following the pointer. And invalidating
+    /// only the canvas leaves the readout's previous position untouched, so
+    /// the label it has just moved away from stays on screen until something
+    /// else forces a repaint.
+    fn repaint(&self) {
+        self.area.queue_draw();
         self.container.queue_draw();
     }
 
@@ -266,7 +276,7 @@ impl Strip {
     fn clear_hover(&self) {
         self.hover.set(None);
         self.readout.set_visible(false);
-        self.container.queue_draw();
+        self.repaint();
     }
 
     /// Resolve a horizontal position to a snapshot and go there.
