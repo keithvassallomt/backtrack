@@ -214,25 +214,31 @@ run-daemon:
 # Arguments are passed through: `just run-app --path /home` opens the demo
 # fixture's root. BACKTRACK_THEME=dark|light forces a colour scheme for one run.
 run-app *ARGS:
-    RUST_LOG=debug cargo run -p backtrack-gtk -- {{ARGS}}
+    #!/usr/bin/env bash
+    set -euo pipefail
+    # Forcing a colour scheme means wanting to see it, and on a desktop that
+    # has customised its colours the scheme alone cannot deliver that: a
+    # ~/.config/gtk-4.0/gtk.css redefining the libadwaita palette loads above
+    # the theme stylesheet and keeps its own colours whichever scheme is set.
+    # So a run that forces a scheme also runs with an empty config directory.
+    # Backtrack's own data is under XDG_DATA_HOME and is untouched by this.
+    if [[ -n "${BACKTRACK_THEME:-}" ]]; then
+        clean="$(mktemp -d)"
+        trap 'rm -rf "${clean}"' EXIT
+        export XDG_CONFIG_HOME="${clean}"
+    fi
+    RUST_LOG="${RUST_LOG:-debug}" cargo run -p backtrack-gtk -- {{ARGS}}
 
-# Run the app in a forced colour scheme with no user GTK overrides, to check
-# the window in both themes. A ~/.config/gtk-4.0/gtk.css that redefines the
-# libadwaita palette loads above the theme stylesheet and keeps the window its
-# own colours whatever scheme is asked for, so this runs against an empty
-# config directory. Backtrack's own data lives under XDG_DATA_HOME and is
-# unaffected.
+# Check the window in one of the two colour schemes. A thin name for
+# `BACKTRACK_THEME=<scheme> just run-app`, which is what does the work.
 theme-check SCHEME="light" *ARGS:
     #!/usr/bin/env bash
     set -euo pipefail
     case "{{SCHEME}}" in
         dark|light) ;;
-        *) echo "usage: just theme-check dark|light [-- app args]" >&2; exit 2 ;;
+        *) echo "usage: just theme-check dark|light [app args]" >&2; exit 2 ;;
     esac
-    clean="$(mktemp -d)"
-    trap 'rm -rf "${clean}"' EXIT
-    XDG_CONFIG_HOME="${clean}" BACKTRACK_THEME={{SCHEME}} \
-        RUST_LOG=debug cargo run -p backtrack-gtk -- {{ARGS}}
+    BACKTRACK_THEME={{SCHEME}} just run-app {{ARGS}}
 
 # Generate a demo Borg repo + index for development (scripted 30-snapshot
 # history under ~/.local/share/backtrack-dev/). Idempotent; rebuilds from scratch.

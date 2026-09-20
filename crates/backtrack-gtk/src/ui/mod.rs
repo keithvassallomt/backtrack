@@ -80,6 +80,63 @@ pub fn apply_theme_override(from: Option<&str>) {
         dark = manager.is_dark(),
         "colour scheme for this launch"
     );
+
+    // Forcing a scheme is a request to *see* it. If something else will decide
+    // the colours, that is worth a word.
+    if scheme != adw::ColorScheme::Default {
+        warn_if_outranked();
+    }
+}
+
+/// The libadwaita colours the window is built on. A user stylesheet that
+/// redefines any of these outranks whatever colour scheme is selected.
+const PALETTE: &[&str] = &[
+    "window_bg_color",
+    "view_bg_color",
+    "card_bg_color",
+    "headerbar_bg_color",
+];
+
+/// Say so when the scheme just forced will not be what appears on screen.
+///
+/// Silence is the problem being solved here. The scheme changes, the window
+/// does not, and there is nothing anywhere to suggest why — which is a long
+/// way to travel before arriving at "GTK loads the user's stylesheet above the
+/// theme's".
+fn warn_if_outranked() {
+    let path = user_stylesheet();
+    let Ok(stylesheet) = std::fs::read_to_string(&path) else {
+        return;
+    };
+    if !overrides_palette(&stylesheet) {
+        return;
+    }
+    warn!(
+        stylesheet = %path.display(),
+        "the forced colour scheme will not be visible: this stylesheet redefines the \
+         libadwaita palette, and GTK loads it above the theme's. `just run-app` with \
+         BACKTRACK_THEME set runs with an empty XDG_CONFIG_HOME to get around it."
+    );
+}
+
+/// Where GTK looks for the user's own stylesheet.
+fn user_stylesheet() -> std::path::PathBuf {
+    std::env::var_os("XDG_CONFIG_HOME")
+        .filter(|value| !value.is_empty())
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| glib::home_dir().join(".config"))
+        .join("gtk-4.0")
+        .join("gtk.css")
+}
+
+/// Whether a stylesheet redefines any of the colours the window is built on.
+fn overrides_palette(stylesheet: &str) -> bool {
+    stylesheet.lines().any(|line| {
+        line.trim()
+            .strip_prefix("@define-color")
+            .and_then(|rest| rest.split_whitespace().next())
+            .is_some_and(|name| PALETTE.contains(&name))
+    })
 }
 
 /// The application icon if it is installed, and a stock stand-in if it is not.
@@ -127,6 +184,26 @@ mod tests {
     fn no_override_follows_the_system() {
         assert_eq!(color_scheme_for(None), adw::ColorScheme::Default);
         assert_eq!(color_scheme_for(Some("")), adw::ColorScheme::Default);
+    }
+
+    #[test]
+    fn a_stylesheet_that_repaints_the_palette_is_recognised() {
+        assert!(overrides_palette("@define-color window_bg_color #0f0d12;"));
+        assert!(overrides_palette(
+            "  @define-color card_bg_color  @window_bg_color;"
+        ));
+    }
+
+    #[test]
+    fn a_stylesheet_that_leaves_the_palette_alone_is_not_flagged() {
+        // Plenty of people customise GTK without touching these.
+        assert!(!overrides_palette("headerbar { min-height: 32px; }"));
+        assert!(!overrides_palette("@define-color my_own_color #123456;"));
+        // A longer name that merely starts like one of ours.
+        assert!(!overrides_palette(
+            "@define-color window_bg_color_alt #123456;"
+        ));
+        assert!(!overrides_palette(""));
     }
 
     #[test]
