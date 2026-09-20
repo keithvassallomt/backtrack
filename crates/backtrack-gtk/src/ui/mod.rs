@@ -6,6 +6,8 @@
 pub mod breadcrumb;
 pub mod calendar;
 pub mod files;
+pub mod menu;
+pub mod preview;
 pub mod sidebar;
 pub mod strip;
 

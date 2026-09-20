@@ -40,9 +40,11 @@ pub struct Window {
     index: Index,
     /// `None` until the daemon answers, and if it never does. Browsing does not
     /// need it; previewing and backing up do.
-    daemon: RefCell<Option<Daemon1Proxy<'static>>>,
+    daemon: Rc<RefCell<Option<Daemon1Proxy<'static>>>>,
     toasts: adw::ToastOverlay,
     position: Label,
+    /// The line at the bottom that says how backups are doing.
+    status: Label,
     older: adw::SplitButton,
     newer: adw::SplitButton,
     /// The dropdown on each stepping button, rebuilt as the selection changes
@@ -58,6 +60,7 @@ pub struct Window {
     /// The panes, kept alive and reachable for the actions that drive them.
     sidebar: RefCell<Option<Rc<ui::sidebar::Sidebar>>>,
     files: RefCell<Option<Rc<ui::files::Files>>>,
+    preview: RefCell<Option<Rc<ui::preview::Preview>>>,
     calendar: RefCell<Option<Rc<ui::calendar::Calendar>>>,
     strip: RefCell<Option<Rc<ui::strip::Strip>>>,
 }
@@ -76,6 +79,13 @@ impl Window {
             .width_request(480)
             .height_request(440)
             .build();
+
+        let status = Label::builder()
+            .halign(Align::Start)
+            .hexpand(true)
+            .ellipsize(gtk4::pango::EllipsizeMode::End)
+            .build();
+        status.add_css_class("dim-label");
 
         let position = Label::new(Some(format::NO_BACKUPS));
         position.add_css_class("position");
@@ -97,9 +107,10 @@ impl Window {
             window: window.clone(),
             state: Rc::clone(&state),
             index,
-            daemon: RefCell::new(None),
+            daemon: Rc::new(RefCell::new(None)),
             toasts: adw::ToastOverlay::new(),
             position,
+            status,
             older,
             newer,
             older_menu,
@@ -110,6 +121,7 @@ impl Window {
             strip_slot: GtkBox::new(Orientation::Vertical, 0),
             sidebar: RefCell::new(None),
             files: RefCell::new(None),
+            preview: RefCell::new(None),
             calendar: RefCell::new(None),
             strip: RefCell::new(None),
         });
@@ -156,6 +168,8 @@ impl Window {
         header.pack_start(&identity);
 
         header.set_title_widget(Some(&ui::breadcrumb::build(&self.state)));
+
+        header.pack_end(&ui::menu::button());
 
         // Stage 8 fills this in; it is here now because its absence would
         // change the shape of the header bar when it arrives.
@@ -234,10 +248,15 @@ impl Window {
         bar
     }
 
+    /// The bottom bar: how backups are doing on the left, what you can do
+    /// with the selection on the right.
     fn actions(self: &Rc<Self>) -> GtkBox {
         let bar = GtkBox::new(Orientation::Horizontal, 8);
         bar.add_css_class("toolbar");
-        bar.set_halign(Align::End);
+        bar.append(&self.status);
+
+        let buttons = GtkBox::new(Orientation::Horizontal, 8);
+        buttons.set_halign(Align::End);
 
         // All three land in Stages 7 and 8. They are built now, insensitive,
         // because the action bar is part of the frame this stage delivers.
@@ -253,12 +272,11 @@ impl Window {
                 "Restore to a folder you choose (coming soon)",
             ),
         ] {
-            let button = Button::builder().label(label).build();
-            button.set_icon_name(icon);
+            let button = Button::builder().build();
             button.set_child(Some(&button_content(icon, label)));
             button.set_tooltip_text(Some(tooltip));
             button.set_sensitive(false);
-            bar.append(&button);
+            buttons.append(&button);
         }
 
         let restore = Button::builder().build();
@@ -266,7 +284,9 @@ impl Window {
         restore.add_css_class("suggested-action");
         restore.set_tooltip_text(Some("Restore the selected item (coming soon)"));
         restore.set_sensitive(false);
-        bar.append(&restore);
+        buttons.append(&restore);
+
+        bar.append(&buttons);
         bar
     }
 
@@ -294,6 +314,234 @@ impl Window {
             let this = Rc::clone(self);
             action.connect_activate(move |_, _| this.step_to_change(direction));
             self.window.add_action(&action);
+        }
+
+        self.install_menu_actions();
+    }
+
+    /// Everything behind the primary menu.
+    fn install_menu_actions(self: &Rc<Self>) {
+        // The actions that need the daemon start disabled and are enabled when
+        // it answers, so the menu never offers something that cannot happen.
+        let backup = gio::SimpleAction::new("backup-now", None);
+        backup.set_enabled(false);
+        let starter = Rc::clone(self);
+        backup.connect_activate(move |_, _| starter.backup_now());
+        self.window.add_action(&backup);
+
+        let pause = gio::SimpleAction::new("pause", Some(glib::VariantTy::STRING));
+        pause.set_enabled(false);
+        let pauser = Rc::clone(self);
+        pause.connect_activate(move |_, parameter| {
+            if let Some(option) = parameter.and_then(|p| p.str()) {
+                pauser.pause(option);
+            }
+        });
+        self.window.add_action(&pause);
+
+        let resume = gio::SimpleAction::new("resume", None);
+        resume.set_enabled(false);
+        let resumer = Rc::clone(self);
+        resume.connect_activate(move |_, _| resumer.resume());
+        self.window.add_action(&resume);
+
+        // Stage 7 and Stage 9. Present so the menu is the shape it will keep,
+        // and disabled so it cannot promise anything it will not do.
+        for name in ["recently-replaced", "preferences"] {
+            let action = gio::SimpleAction::new(name, None);
+            action.set_enabled(false);
+            self.window.add_action(&action);
+        }
+
+        let shortcuts = gio::SimpleAction::new("shortcuts", None);
+        let owner = self.window.clone();
+        shortcuts.connect_activate(move |_, _| ui::menu::shortcuts_window(&owner).present());
+        self.window.add_action(&shortcuts);
+
+        let help = gio::SimpleAction::new("help", None);
+        let helper = self.window.clone();
+        help.connect_activate(move |_, _| ui::menu::open_help(&helper));
+        self.window.add_action(&help);
+
+        let about = gio::SimpleAction::new("about", None);
+        let parent = self.window.clone();
+        about.connect_activate(move |_, _| ui::menu::about_dialog().present(Some(&parent)));
+        self.window.add_action(&about);
+
+        if let Some(app) = self.window.application() {
+            app.set_accels_for_action("win.backup-now", &["<Control>b"]);
+            app.set_accels_for_action("win.shortcuts", &["<Control>question"]);
+            app.set_accels_for_action("window.close", &["<Control>w"]);
+        }
+    }
+
+    /// Start a backup, whatever the schedule says, and say when it is done.
+    fn backup_now(self: &Rc<Self>) {
+        let Some(proxy) = self.daemon.borrow().clone() else {
+            self.toast(NO_SERVICE);
+            return;
+        };
+        let this = Rc::clone(self);
+        ui::spawn(async move {
+            let before = proxy.get_status().await.map(|s| s.last_backup).unwrap_or(0);
+            let job = match proxy.backup_now().await {
+                Ok(job) => job,
+                Err(error) => {
+                    warn!(%error, "the backup could not be started");
+                    this.toast(&clean(&error.to_string()));
+                    return;
+                }
+            };
+            info!(job, "backup started from the menu");
+            this.toast("Backup started");
+            this.refresh_status();
+            this.watch_backup(proxy, job, before).await;
+        });
+    }
+
+    /// Wait for `job` to leave the daemon, then say how it went.
+    ///
+    /// Polled rather than awaited on a signal, because the interface has no
+    /// "job finished" to await: `StatusChanged` fires only when the health
+    /// state moves, which a successful backup on an already-healthy machine
+    /// does not do. Worth a signal in its own right — Stage 7's restores will
+    /// want the same thing — but that is a change to the published interface,
+    /// not to this window.
+    async fn watch_backup(
+        self: &Rc<Self>,
+        proxy: crate::daemon::Daemon1Proxy<'static>,
+        job: u64,
+        last_backup_before: u64,
+    ) {
+        loop {
+            glib::timeout_future_seconds(2).await;
+            let Ok(status) = proxy.get_status().await else {
+                return;
+            };
+            self.render_status(&status);
+            if status.active_job == job {
+                continue;
+            }
+            if status.last_backup > last_backup_before {
+                info!(job, "backup finished");
+                self.toast("Backup complete");
+            } else {
+                warn!(job, "the backup ended without recording a new one");
+                self.toast("The backup did not finish — see the logs for why");
+            }
+            return;
+        }
+    }
+
+    /// Pause the schedule for one of the menu's self-expiring durations.
+    fn pause(self: &Rc<Self>, option: &str) {
+        let Some(proxy) = self.daemon.borrow().clone() else {
+            self.toast(NO_SERVICE);
+            return;
+        };
+        let now = glib::DateTime::now_utc().map(|d| d.to_unix()).unwrap_or(0);
+        let tz = glib::TimeZone::local();
+        let Some(seconds) = ui::menu::pause_duration(option, now, &tz) else {
+            warn!(option, "unknown pause option");
+            return;
+        };
+        let until = now as u64 + seconds;
+
+        let this = Rc::clone(self);
+        ui::spawn(async move {
+            match proxy.pause(until).await {
+                Ok(()) => {
+                    info!(until, "backups paused");
+                    this.refresh_status();
+                }
+                Err(error) => {
+                    warn!(%error, "backups could not be paused");
+                    this.toast(&clean(&error.to_string()));
+                }
+            }
+        });
+    }
+
+    /// Lift a pause.
+    fn resume(self: &Rc<Self>) {
+        let Some(proxy) = self.daemon.borrow().clone() else {
+            self.toast(NO_SERVICE);
+            return;
+        };
+        let this = Rc::clone(self);
+        ui::spawn(async move {
+            match proxy.resume().await {
+                Ok(()) => {
+                    info!("backups resumed");
+                    this.toast("Backups resumed");
+                    this.refresh_status();
+                }
+                Err(error) => {
+                    warn!(%error, "backups could not be resumed");
+                    this.toast(&clean(&error.to_string()));
+                }
+            }
+        });
+    }
+
+    /// Re-read the daemon's status and redraw the line at the bottom.
+    fn refresh_status(self: &Rc<Self>) {
+        let Some(proxy) = self.daemon.borrow().clone() else {
+            self.status.set_text(NO_SERVICE);
+            return;
+        };
+        let this = Rc::clone(self);
+        ui::spawn(async move {
+            match proxy.get_status().await {
+                Ok(status) => this.render_status(&status),
+                Err(error) => warn!(%error, "the status could not be read"),
+            }
+        });
+    }
+
+    fn render_status(&self, status: &backtrack_core::dbus::Status) {
+        let now = glib::DateTime::now_utc().map(|d| d.to_unix()).unwrap_or(0);
+        let tz = glib::TimeZone::local();
+        self.status
+            .set_text(&crate::model::status::line(status, now, &tz));
+        // Resuming is only an offer when there is something to resume.
+        ui::menu::set_enabled(
+            &self.window,
+            "resume",
+            status.paused_until > now.max(0) as u64,
+        );
+    }
+
+    /// Re-read the status on a slow tick.
+    ///
+    /// Two things go stale on their own, with no announcement to hang a
+    /// refresh off: "2 hours ago" becomes "3 hours ago" by the passage of
+    /// time, and a pause lifts itself when it reaches its end. Neither is
+    /// worth a signal; both are worth not being wrong about.
+    async fn keep_status_fresh(self: &Rc<Self>) {
+        loop {
+            glib::timeout_future_seconds(STATUS_TICK_SECONDS).await;
+            if self.window.is_visible() {
+                self.refresh_status();
+            }
+        }
+    }
+
+    /// Follow the daemon's health announcements, so the status line does not
+    /// go stale while the window sits open.
+    async fn follow_status(self: &Rc<Self>, proxy: crate::daemon::Daemon1Proxy<'static>) {
+        // Fully qualified: GTK's prelude brings its own `next` into scope for
+        // every widget, and the two are indistinguishable at the call site.
+        use futures::StreamExt;
+        let mut announcements = match proxy.receive_status_changed().await {
+            Ok(stream) => stream,
+            Err(error) => {
+                warn!(%error, "status announcements are not being followed");
+                return;
+            }
+        };
+        while StreamExt::next(&mut announcements).await.is_some() {
+            self.refresh_status();
         }
     }
 
@@ -344,6 +592,10 @@ impl Window {
         let files = ui::files::build(&self.state, &self.index);
         self.files_slot.append(&files.widget());
         *self.files.borrow_mut() = Some(files);
+
+        let preview = ui::preview::build(&self.state, &self.daemon);
+        self.preview_slot.append(&preview.widget());
+        *self.preview.borrow_mut() = Some(preview);
 
         let strip = ui::strip::build(&self.state);
         self.strip_slot.append(&strip.widget());
@@ -431,6 +683,23 @@ impl Window {
                 Ok(status) => {
                     info!(state = status.state, "connected to the Backtrack service");
                     *this.daemon.borrow_mut() = Some(proxy);
+                    // The window is usable before the service answers, so a
+                    // file may already be selected with its preview parked on
+                    // "needs the service". Now there is one.
+                    let preview = this.preview.borrow().clone();
+                    if let Some(preview) = preview {
+                        preview.refresh_now();
+                    }
+                    ui::menu::set_enabled(&this.window, "backup-now", true);
+                    ui::menu::set_enabled(&this.window, "pause", true);
+                    this.render_status(&status);
+                    let following = Rc::clone(&this);
+                    let proxy = following.daemon.borrow().clone();
+                    if let Some(proxy) = proxy {
+                        ui::spawn(async move { following.follow_status(proxy).await });
+                    }
+                    let ticking = Rc::clone(&this);
+                    ui::spawn(async move { ticking.keep_status_fresh().await });
                 }
                 Err(error) => {
                     warn!(%error, "the Backtrack service did not answer");
@@ -470,6 +739,10 @@ impl Window {
             path: select.clone(),
             name: crate::path::name(select).to_string(),
             is_dir: false,
+            // Unknown until the folder loads, at which point the pane replaces
+            // this with the real entry.
+            size: -1,
+            mtime: 0,
         }));
     }
 
@@ -491,6 +764,20 @@ pub fn retarget(window: &gtk4::Window, target: &Target) {
             found.retarget(target);
         }
     });
+}
+
+/// How often the status line re-reads what it is saying.
+const STATUS_TICK_SECONDS: u32 = 30;
+
+/// What the window says when something needs the daemon and there isn't one.
+const NO_SERVICE: &str = "The Backtrack service is not running, so this cannot be done from here";
+
+/// Strip the D-Bus error-name prefix, which is addressed to programs.
+fn clean(message: &str) -> String {
+    message
+        .rsplit_once(": ")
+        .map_or(message, |(_, tail)| tail)
+        .to_string()
 }
 
 /// An icon-and-label button, the way the action bar draws them.

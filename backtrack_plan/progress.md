@@ -70,8 +70,8 @@
 - [/] S06-T4 Older/Newer stepping + Ctrl+←/→ (+ "next change to selected file")
 - [/] S06-T5 Calendar popover (mockup 7)
 - [/] S06-T6 Timeline density strip (indicator + snap-to-snapshot jump)
-- [ ] S06-T7 Preview pane via PreviewFile fd, cancellable, cached
-- [ ] S06-T8 Primary menu (mockup 14) with working Back Up Now / Pause
+- [/] S06-T7 Preview pane via PreviewFile fd, cancellable, cached
+- [/] S06-T8 Primary menu (mockup 14) with working Back Up Now / Pause
 
 ## Stage 7 — Restore engine ([stage file](stages/stage-07-restore-engine.md))
 - [ ] S07-T1 Staging→compare→rename pipeline in core

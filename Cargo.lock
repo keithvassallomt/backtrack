@@ -282,6 +282,7 @@ dependencies = [
  "async-channel",
  "backtrack-core",
  "clap",
+ "futures",
  "gtk4",
  "libadwaita",
  "tempfile",

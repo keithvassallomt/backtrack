@@ -119,6 +119,8 @@ pub fn build(state: &Rc<AppState>, index: &Index) -> Rc<Files> {
                     path: path::join(&folder, &row.entry.name),
                     name: row.entry.name.clone(),
                     is_dir: row.entry.kind == Kind::Dir,
+                    size: row.entry.size,
+                    mtime: row.entry.mtime,
                 }
             });
             selector.state.set_selected(selected);

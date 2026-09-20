@@ -21,6 +21,8 @@ zbus.workspace = true
 # zbus's tokio backend for the whole workspace, so zbus expects a Tokio
 # runtime to exist wherever it is called from. See `main`.
 tokio.workspace = true
+# For `StreamExt` over the daemon's signal streams.
+futures.workspace = true
 # The index worker hands results back to the main loop over this; glib's own
 # channel was removed from the Rust bindings in favour of it.
 async-channel = "2"

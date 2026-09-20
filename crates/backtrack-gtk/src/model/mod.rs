@@ -19,6 +19,7 @@ pub mod calendar;
 pub mod density;
 pub mod format;
 pub mod group;
+pub mod status;
 
 use gtk4::glib;
 

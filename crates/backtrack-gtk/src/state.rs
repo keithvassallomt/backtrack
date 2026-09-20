@@ -40,6 +40,11 @@ pub struct Selected {
     pub path: String,
     pub name: String,
     pub is_dir: bool,
+    /// Size in bytes and modification time in epoch microseconds, as the index
+    /// records them. Carried here so the preview can show what it knows about a
+    /// file the instant it is selected, without waiting for anything.
+    pub size: i64,
+    pub mtime: i64,
 }
 
 /// Everything the panes read, as one value they can be handed a copy of.
@@ -306,6 +311,8 @@ mod tests {
             path: "home/keith/Documents/report.odt".to_string(),
             name: "report.odt".to_string(),
             is_dir: false,
+            size: 45_000,
+            mtime: 0,
         }));
         assert_eq!(
             state.view().change_target(),
@@ -324,6 +331,8 @@ mod tests {
             path: "home/notes.txt".to_string(),
             name: "notes.txt".to_string(),
             is_dir: false,
+            size: 12,
+            mtime: 0,
         }));
         state.set_folder("home/Documents");
         assert_eq!(state.view().selected, None);
