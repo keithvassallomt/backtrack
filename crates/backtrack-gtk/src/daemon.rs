@@ -44,6 +44,10 @@ pub trait Daemon1 {
         blanket: &str,
         decisions: &[(String, String)],
     ) -> zbus::Result<u64>;
+    /// Restore one path into `dest`, a directory made for it. No conflicts can
+    /// arise, so there is nothing to ask and no preview to read: the job id
+    /// this returns is the whole of it.
+    fn restore_into(&self, archive: &str, paths: &[String], dest: &str) -> zbus::Result<u64>;
     /// Put back everything that restore moved.
     fn undo_restore(&self, job: u64) -> zbus::Result<u64>;
     /// Throw away a prepared restore and the copy it extracted.

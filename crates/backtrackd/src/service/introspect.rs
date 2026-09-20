@@ -38,6 +38,7 @@ pub const METHODS: &[(&str, &str, &str)] = &[
     ("PutBackReplaced", "s", "s"),
     ("RestoreEverything", "ss", "t"),
     ("RestoreFiles", "sasss", "t"),
+    ("RestoreInto", "sass", "t"),
     ("Resume", "", ""),
     ("ResumeJob", "t", ""),
     ("SearchFiles", "s", "a(sssxxxxub)"),

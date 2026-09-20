@@ -298,6 +298,7 @@ impl Shared {
             archive: ArchiveId(archive.to_string()),
             paths: paths.to_vec(),
             dest: PathBuf::from(dest),
+            into_dest: false,
         })
     }
 
@@ -321,6 +322,7 @@ impl Shared {
                 archive: pending.archive.clone(),
                 paths: pending.paths.clone(),
                 dest: pending.dest.clone(),
+                into_dest: pending.into_dest,
                 staging: staging_root.join(job.to_string()),
                 restores: Arc::clone(&restores),
                 job,
@@ -1200,6 +1202,9 @@ struct PendingRestore {
     archive: ArchiveId,
     paths: Vec<String>,
     dest: PathBuf,
+    /// Whether what was asked for lands inside `dest` rather than at the
+    /// absolute path it came from. See [`crate::restore::PreparePlan`].
+    into_dest: bool,
 }
 
 /// The D-Bus object.
@@ -1402,6 +1407,43 @@ impl Daemon1 {
             }) as BoxFuture<'_, _>
         });
         Ok(self.shared.jobs.submit(JobKind::Restore, factory))
+    }
+
+    /// Restore `paths` into `dest`, which must be a directory made for this.
+    ///
+    /// The whole point is that there is nothing to ask. `dest` is a folder that
+    /// did not exist a moment ago, so nothing in it can clash with anything
+    /// coming out of the backup — no conflicts, no summary, no dialog, and
+    /// nothing on the machine is overwritten. It is the answer to "I want to
+    /// look at the old version before I decide", which in-place restoring
+    /// cannot be.
+    ///
+    /// One path at a time. The contents of what was asked for land directly in
+    /// `dest`, and two folders' contents merged into one directory would be a
+    /// different operation wearing this one's name.
+    async fn restore_into(&self, archive: &str, paths: Vec<String>, dest: &str) -> Result<u64> {
+        if paths.len() != 1 {
+            return Err(DaemonError::InvalidArgument(format!(
+                "RestoreInto takes exactly one path; got {}",
+                paths.len()
+            )));
+        }
+        let mut prepared = self.shared.restore_preflight(archive, &paths, dest)?;
+        prepared.into_dest = true;
+
+        // Made here rather than left to the moves, so a destination that cannot
+        // be created fails now — with nothing extracted and nothing to undo —
+        // rather than per-file halfway through.
+        std::fs::create_dir_all(dest)
+            .map_err(|e| DaemonError::RestoreFailed(format!("{dest} could not be created: {e}")))?;
+        info!(archive, dest, "restoring into a folder of its own");
+
+        // Nothing on disk to clash with, so every answer is the same answer.
+        let decisions = Decisions::all(Decision::Replace);
+        let stash = self.shared.replaced_dir.clone();
+        Ok(self.shared.submit_restore(prepared, move |plan| {
+            crate::restore::start_direct(plan, decisions.clone(), stash.clone())
+        }))
     }
 
     /// The files the safety stash is keeping, newest restore first.

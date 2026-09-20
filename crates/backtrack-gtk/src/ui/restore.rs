@@ -19,7 +19,7 @@ use std::rc::Rc;
 use backtrack_core::dbus::RestorePreview;
 use futures::StreamExt;
 use gtk4::prelude::*;
-use gtk4::{Align, Box as GtkBox, Label, Orientation, Spinner};
+use gtk4::{glib, Align, Box as GtkBox, Label, Orientation, Spinner};
 use libadwaita as adw;
 use libadwaita::prelude::*;
 use tracing::{info, warn};
@@ -78,6 +78,73 @@ impl Restores {
             this.run().await;
             this.busy.set(false);
         });
+    }
+
+    /// Restore what is selected into a folder the user picks.
+    ///
+    /// The other way out of a restore, and the one that costs nothing: the
+    /// files arrive in a directory made for them, so nothing already on the
+    /// machine is touched and there is nothing to decide. No conflict dialog,
+    /// no summary, no Undo needed.
+    pub fn start_elsewhere(self: &Rc<Self>) {
+        if self.busy.get() {
+            return;
+        }
+        let this = Rc::clone(self);
+        crate::ui::spawn(async move {
+            this.busy.set(true);
+            this.run_elsewhere().await;
+            this.busy.set(false);
+        });
+    }
+
+    async fn run_elsewhere(self: &Rc<Self>) {
+        let view = self.state.view();
+        let (Some(proxy), Some((archive, taken)), Some(target)) = (
+            self.daemon.borrow().clone(),
+            view.archive().map(|a| (a.name.clone(), a.ts)),
+            view.change_target(),
+        ) else {
+            self.toast("Backtrack cannot restore without its background service");
+            return;
+        };
+
+        // The portal's own picker under Flatpak, and the toolkit's outside it.
+        // Either way the app never sees a path it was not handed.
+        let dialog = gtk4::FileDialog::builder()
+            .title("Restore into which folder?")
+            .accept_label("Restore Here")
+            .modal(true)
+            .build();
+        let Ok(chosen) = dialog.select_folder_future(Some(&self.window)).await else {
+            info!("restoring elsewhere was cancelled at the folder picker");
+            return;
+        };
+        let Some(chosen) = chosen.path() else {
+            warn!("the chosen folder has no path this side of the portal");
+            self.toast("That folder cannot be written to directly");
+            return;
+        };
+
+        let name = path::name(&target).to_string();
+        let folder = copy::restored_folder_name(&name, taken, &glib::TimeZone::local());
+        let dest = chosen.join(&folder).to_string_lossy().to_string();
+        info!(target, archive, dest, "restoring into a folder of its own");
+
+        let waiting = self.preparing(&name);
+        let done = run_job(&proxy, |p| {
+            p.restore_into(&archive, std::slice::from_ref(&target), &dest)
+        })
+        .await;
+        waiting.close();
+
+        match done {
+            Ok(_) => self.toast(&copy::restored_into_toast(&folder)),
+            Err(error) => {
+                warn!(%error, "the restore into a chosen folder did not finish");
+                self.toast(&error);
+            }
+        }
     }
 
     /// Whether there is anything to restore right now.

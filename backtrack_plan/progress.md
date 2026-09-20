@@ -82,7 +82,7 @@
 - [x] S07-T4 Folder summary + review checklist (mockups 5, 8)
 - [x] S07-T5 replaced/ stash with 30-day expiry + "Recently Replaced Files" view
 - [x] S07-T6 Undo toast wired to stash
-- [ ] S07-T7 Restore To… (choose destination, zero-conflict path)
+- [x] S07-T7 Restore To… (choose destination, zero-conflict path)
 
 ## Stage 8 — Search & compare ([stage file](stages/stage-08-search-compare.md))
 - [ ] S08-T1 SearchFiles D-Bus method over FTS5

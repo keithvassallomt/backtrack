@@ -15,7 +15,7 @@
 //! one id it was given when it asked.
 
 use std::collections::BTreeMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
 
@@ -289,6 +289,16 @@ pub struct PreparePlan {
     pub restores: Arc<Restores>,
     /// The job this is, so the finished plan can be filed under it.
     pub job: JobId,
+    /// Whether what was asked for lands *inside* `dest` rather than at the
+    /// absolute paths it came from.
+    ///
+    /// An archive stores a member by its whole path, so a restore rooted at
+    /// the staging directory reproduces that path under the destination:
+    /// choosing a folder to restore into would give you eight empty
+    /// directories and your files at the bottom of them. Restoring in place
+    /// wants exactly that reproduction; restoring somewhere else wants the
+    /// opposite, and this is which.
+    pub into_dest: bool,
 }
 
 /// Fetch the wanted paths and work out what restoring them would do.
@@ -304,6 +314,44 @@ pub fn start_prepare(plan: PreparePlan) -> JobStream {
             .await;
     });
     stream
+}
+
+/// Where to plan from when the answer goes somewhere the user chose.
+///
+/// A folder's *contents* land in the destination, and a file lands in it
+/// beside nothing — both of which come out of "open the folder and your things
+/// are there". So a directory is planned from itself and a file from the
+/// directory holding it, scoped to the one name.
+///
+/// This is decided after the extraction rather than from the archive listing,
+/// because the staging tree is the thing being planned against: whatever borg
+/// actually produced is the truth, and asking it twice invites the two answers
+/// to differ.
+fn rooted_at_what_was_asked_for(staging: &Path, paths: &[String]) -> (PathBuf, Vec<PathBuf>) {
+    let Some(asked) = paths.first() else {
+        return (staging.to_path_buf(), Vec::new());
+    };
+    let extracted = staging.join(asked);
+    if extracted.is_dir() {
+        let inside = top_level(&extracted);
+        return (extracted, inside);
+    }
+    match (extracted.parent(), extracted.file_name()) {
+        (Some(parent), Some(name)) => (parent.to_path_buf(), vec![PathBuf::from(name)]),
+        _ => (staging.to_path_buf(), Vec::new()),
+    }
+}
+
+/// The names directly inside a directory. What bounds the comparison when the
+/// destination is a folder made for this restore: everything about to be
+/// written, and nothing else.
+fn top_level(dir: &Path) -> Vec<PathBuf> {
+    std::fs::read_dir(dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|entry| PathBuf::from(entry.file_name()))
+        .collect()
 }
 
 async fn prepare(
@@ -334,11 +382,17 @@ async fn prepare(
     .await;
 
     let archive = plan.archive.0.clone();
-    let staging = plan.staging.clone();
     let dest = plan.dest.clone();
     // What was asked for bounds the comparison. Without it, restoring one file
     // would walk every sibling of every directory above it.
-    let asked_for: Vec<PathBuf> = plan.paths.iter().map(PathBuf::from).collect();
+    let (staging, asked_for) = if plan.into_dest {
+        rooted_at_what_was_asked_for(&plan.staging, &plan.paths)
+    } else {
+        (
+            plan.staging.clone(),
+            plan.paths.iter().map(PathBuf::from).collect(),
+        )
+    };
     let computed =
         tokio::task::spawn_blocking(move || restore::plan(&archive, &staging, &dest, &asked_for))
             .await
@@ -523,6 +577,48 @@ mod tests {
     /// else entirely. Without the clear, the old extraction is merged into the
     /// new plan — and merged as "only in the backup", which is the class that
     /// is written to disk without a dialog.
+    /// A staging tree as an extraction leaves it: the archive member at its
+    /// whole path, with every directory above it recreated.
+    fn extracted(root: &std::path::Path, member: &str, files: &[&str]) {
+        for file in files {
+            let path = root.join(member).join(file);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, b"x").unwrap();
+        }
+    }
+
+    #[test]
+    fn a_folder_restored_elsewhere_arrives_as_its_contents() {
+        // Not as the eight empty directories its archive path is made of, with
+        // the files at the bottom — which is what restoring in place wants and
+        // what choosing a destination emphatically does not.
+        let root = tempfile::tempdir().unwrap();
+        let member = "home/keith/Projects/website";
+        extracted(root.path(), member, &["README.md", "css/main.css"]);
+
+        let (staging, asked_for) = rooted_at_what_was_asked_for(root.path(), &[member.to_string()]);
+
+        assert_eq!(staging, root.path().join(member));
+        let mut names: Vec<String> = asked_for
+            .iter()
+            .map(|p| p.to_string_lossy().to_string())
+            .collect();
+        names.sort();
+        assert_eq!(names, ["README.md", "css"]);
+    }
+
+    #[test]
+    fn a_single_file_restored_elsewhere_lands_beside_nothing() {
+        let root = tempfile::tempdir().unwrap();
+        extracted(root.path(), "home/keith/Documents", &["report.odt"]);
+        let member = "home/keith/Documents/report.odt";
+
+        let (staging, asked_for) = rooted_at_what_was_asked_for(root.path(), &[member.to_string()]);
+
+        assert_eq!(staging, root.path().join("home/keith/Documents"));
+        assert_eq!(asked_for, [PathBuf::from("report.odt")]);
+    }
+
     #[test]
     fn a_reused_job_number_does_not_inherit_the_last_ones_extraction() {
         let root = tempfile::tempdir().unwrap();

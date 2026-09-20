@@ -64,6 +64,7 @@ pub struct Window {
     restores: RefCell<Option<Rc<ui::restore::Restores>>>,
     /// The one action bar button that does something this stage.
     restore_button: Button,
+    restore_to_button: Button,
     calendar: RefCell<Option<Rc<ui::calendar::Calendar>>>,
     strip: RefCell<Option<Rc<ui::strip::Strip>>>,
 }
@@ -127,6 +128,7 @@ impl Window {
             preview: RefCell::new(None),
             restores: RefCell::new(None),
             restore_button: Button::builder().build(),
+            restore_to_button: Button::builder().build(),
             calendar: RefCell::new(None),
             strip: RefCell::new(None),
         });
@@ -272,26 +274,30 @@ impl Window {
         let buttons = GtkBox::new(Orientation::Horizontal, 8);
         buttons.set_halign(Align::End);
 
-        // All three land in Stages 7 and 8. They are built now, insensitive,
-        // because the action bar is part of the frame this stage delivers.
-        for (label, icon, tooltip) in [
-            (
-                "Compare with Today",
-                "view-dual-symbolic",
-                "Compare this version with the file on your computer (coming soon)",
-            ),
-            (
-                "Restore To…",
-                "folder-symbolic",
-                "Restore to a folder you choose (coming soon)",
-            ),
-        ] {
-            let button = Button::builder().build();
-            button.set_child(Some(&button_content(icon, label)));
-            button.set_tooltip_text(Some(tooltip));
-            button.set_sensitive(false);
-            buttons.append(&button);
-        }
+        // Stage 8. Built now, insensitive, because the action bar is part of
+        // the frame Stage 6 delivered.
+        let compare = Button::builder().build();
+        compare.set_child(Some(&button_content(
+            "view-dual-symbolic",
+            "Compare with Today",
+        )));
+        compare.set_tooltip_text(Some(
+            "Compare this version with the file on your computer (coming soon)",
+        ));
+        compare.set_sensitive(false);
+        buttons.append(&compare);
+
+        // The way out that costs nothing: the files arrive in a folder of
+        // their own, so nothing already on the computer is touched and there
+        // is nothing to decide.
+        let elsewhere = self.restore_to_button.clone();
+        elsewhere.set_child(Some(&button_content("folder-symbolic", "Restore To…")));
+        elsewhere.set_tooltip_text(Some(
+            "Restore into a folder you choose, leaving everything here as it is",
+        ));
+        elsewhere.set_sensitive(false);
+        elsewhere.set_action_name(Some("win.restore-to"));
+        buttons.append(&elsewhere);
 
         let restore = self.restore_button.clone();
         restore.set_child(Some(&button_content("edit-undo-symbolic", "Restore")));
@@ -357,6 +363,20 @@ impl Window {
         self.window.add_action(&restore);
         if let Some(app) = self.window.application() {
             app.set_accels_for_action("win.restore", &["<Control>r"]);
+        }
+
+        let elsewhere = gio::SimpleAction::new("restore-to", None);
+        elsewhere.set_enabled(false);
+        let chooser = Rc::clone(self);
+        elsewhere.connect_activate(move |_, _| {
+            let driver = chooser.restores.borrow().clone();
+            if let Some(driver) = driver {
+                driver.start_elsewhere();
+            }
+        });
+        self.window.add_action(&elsewhere);
+        if let Some(app) = self.window.application() {
+            app.set_accels_for_action("win.restore-to", &["<Control><Shift>r"]);
         }
 
         self.install_menu_actions();
@@ -552,6 +572,8 @@ impl Window {
             .is_some_and(|driver| driver.can_restore());
         ui::menu::set_enabled(&self.window, "restore", possible);
         self.restore_button.set_sensitive(possible);
+        ui::menu::set_enabled(&self.window, "restore-to", possible);
+        self.restore_to_button.set_sensitive(possible);
     }
 
     /// Re-read the daemon's status and redraw the line at the bottom.

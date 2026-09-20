@@ -274,6 +274,29 @@ fn bytes(size: u64) -> String {
     }
 }
 
+/// The folder a "Restore To…" makes for itself: `Restored website 20 Sep 2026`.
+///
+/// Made rather than chosen, and that is the feature. A directory that did not
+/// exist a moment ago cannot contain anything that clashes with what is coming
+/// out of the backup, so this path has no conflict dialog, no summary and no
+/// decisions on it — and nothing already on the machine is touched. It is the
+/// answer to "let me look at the old one first", which restoring in place
+/// cannot be.
+///
+/// Dated by the backup rather than by today, because which version you have is
+/// the thing you will want to know in a week, and two of these side by side
+/// are told apart by nothing else.
+pub fn restored_folder_name(name: &str, taken: i64, tz: &glib::TimeZone) -> String {
+    let name = name.trim_matches('/');
+    let stem = if name.is_empty() { "backup" } else { name };
+    format!("Restored {stem} {}", format::at(taken, tz, "%e %b %Y")).replace('/', "-")
+}
+
+/// The toast after a restore that went somewhere else.
+pub fn restored_into_toast(folder: &str) -> String {
+    format!("Restored into “{folder}”")
+}
+
 /// The "Recently Replaced Files" window's heading for one restore.
 ///
 /// Every file a single restore displaced shares a time, which is what groups
@@ -359,6 +382,38 @@ mod tests {
             backup_kind: "file".to_string(),
             disk_kind: "file".to_string(),
         }
+    }
+
+    #[test]
+    fn a_restore_to_somewhere_else_names_its_own_folder() {
+        // 2026-06-28 09:00:00 UTC.
+        let taken = 1_782_637_200;
+        assert_eq!(
+            restored_folder_name("website", taken, &utc()),
+            "Restored website 28 Jun 2026"
+        );
+        // Dated by the backup, not by today: which version you have is what
+        // you will want to know in a week.
+        assert_ne!(
+            restored_folder_name("website", taken, &utc()),
+            restored_folder_name("website", taken + 86_400, &utc())
+        );
+    }
+
+    #[test]
+    fn a_restored_folder_name_is_a_name_and_not_a_path() {
+        // It is joined onto a directory the user picked, so a separator in it
+        // would put the restore somewhere they did not choose.
+        let taken = 1_782_637_200;
+        for awkward in ["a/b", "/leading", "trailing/"] {
+            let made = restored_folder_name(awkward, taken, &utc());
+            assert!(!made.contains('/'), "{awkward} produced {made}");
+        }
+        // The top of the tree has no name of its own to use.
+        assert_eq!(
+            restored_folder_name("/", taken, &utc()),
+            "Restored backup 28 Jun 2026"
+        );
     }
 
     #[test]
