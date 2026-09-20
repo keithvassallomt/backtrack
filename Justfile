@@ -245,6 +245,155 @@ theme-check SCHEME="light" *ARGS:
 demo-repo:
     cargo run --quiet -p xtask
 
+# Stage a folder that needs every kind of restore decision, so the folder
+# summary and its review list have something real to show. Idempotent. Run it
+# after `just demo-repo`, which wipes demo-src and takes this with it.
+#
+# The folder is built, backed up for real, and only then edited on disk. That
+# order is the whole point: a conflict is the backup and the disk genuinely
+# disagreeing about a file, so there is no way to write one straight into the
+# fixture — it has to be lived through.
+#
+# `just --list` shows the attribute below, not the last line of this block.
+[doc("Stage a folder that needs every kind of restore decision.")]
+demo-conflicts:
+    #!/usr/bin/env bash
+    set -euo pipefail
+
+    data="${HOME}/.local/share/backtrack-dev"
+    folder="${data}/demo-src/home/Projects/website"
+    cli="{{justfile_directory()}}/target/debug/backtrack"
+
+    # This asks the daemon to back up whatever it is configured to back up, so
+    # it checks first that the answer is the demo fixture and not a real home
+    # directory.
+    if ! grep -q 'demo-src' "${data}/config.toml" 2>/dev/null; then
+        echo "Refusing: ${data}/config.toml does not back up demo-src." >&2
+        echo "Run 'just demo-repo' first, then point the dev config at it." >&2
+        exit 1
+    fi
+
+    cargo build --quiet -p backtrack-cli
+
+    # Four dates, because "newer" has to be unambiguous on screen. Most of the
+    # folder is two months old. The three files the person had just edited when
+    # the backup ran are two days old, and they are what produces a conflict
+    # where the *backup* is the newer side — the case a fixture built only by
+    # editing things afterwards can never reach.
+    long_ago="$(date -d '60 days ago' +%s)"
+    lately="$(date -d '2 days ago' +%s)"
+    yesterday="$(date -d '1 day ago' +%s)"
+    way_back="$(date -d '40 days ago' +%s)"
+
+    # Revision 2 of a file is always longer than revision 1, so a changed file
+    # differs in size as well as in time. That is deliberate: it exercises the
+    # path where the compare settles it from metadata without reading bytes.
+    body() {
+        local line
+        printf 'Acme Tooling website — %s (revision %s)\n' "$1" "$2"
+        for (( line = 0; line < ${#1} + $2 * 9; line++ )); do
+            printf '%s\n' "$1"
+        done
+    }
+    seed() {
+        mkdir -p "${folder}/$(dirname "$1")"
+        body "$1" 1 > "${folder}/$1"
+    }
+    revise() {
+        body "$1" 2 > "${folder}/$1"
+        touch -d "@$2" "${folder}/$1"
+    }
+
+    # ── The folder as the backup will find it ──
+    untouched=(index.html about.html css/print.css js/analytics.js img/hero.jpg
+               content/faq.md content/blog/2026-01-launch.md data/team.json
+               LICENSE deploy.sh config/site.toml)
+    edited_since=(contact.html css/main.css js/app.js content/home.md README.md)
+    rolled_back=(content/pricing.md data/menu.json content/blog/2026-06-pricing.md)
+    type_changed=(config/redirects.txt)
+    deleted_since=(content/blog/2026-03-redesign.md img/team.jpg img/logo.png notes.txt)
+    written_since=(drafts/newsletter.md css/dark.css js/vendor.js)
+
+    rm -rf "${folder}"
+    for file in "${untouched[@]}" "${edited_since[@]}" "${rolled_back[@]}" \
+                "${type_changed[@]}" "${deleted_since[@]}"; do
+        seed "${file}"
+    done
+    find "${folder}" -type f -exec touch -d "@${long_ago}" {} +
+    for file in "${rolled_back[@]}"; do
+        touch -d "@${lately}" "${folder}/${file}"
+    done
+
+    # Counted before anything is disturbed. A directory that exists on both
+    # sides is nothing to restore, but it is still an entry in the plan.
+    folders_in_backup="$(find "${folder}" -type d | wc -l)"
+
+    # ── Back it up, and wait for the archive to be catalogued ──
+    was="$("${cli}" status --json | python3 -c 'import json,sys; print(json.load(sys.stdin)["last_backup"] or 0)')"
+    echo "Backing the folder up…"
+    "${cli}" backup-now > /dev/null
+
+    settled() {
+        "${cli}" status --json | python3 -c 'import json, sys; s = json.load(sys.stdin); sys.exit(0 if s["active_job"] is None and (s["last_backup"] or 0) > int(sys.argv[1]) else 1)' "$1"
+    }
+    deadline=$(( SECONDS + 180 ))
+    until settled "${was}"; do
+        if (( SECONDS > deadline )); then
+            echo "The backup has not finished after three minutes; try 'backtrack status'." >&2
+            exit 1
+        fi
+        sleep 1
+    done
+
+    # ── What happened to the folder afterwards ──
+
+    # Worked on since the backup: the copy on disk is the newer side. This is
+    # the risky direction, and the one the dialog has to say loudest.
+    for file in "${edited_since[@]}"; do
+        revise "${file}" "${yesterday}"
+    done
+
+    # Pulled back from somewhere older — a stale copy off a memory stick, a sync
+    # that went the wrong way. Here the backup is the newer side.
+    for file in "${rolled_back[@]}"; do
+        revise "${file}" "${way_back}"
+    done
+
+    # A file in the backup, a directory on disk. Never settled by a blanket
+    # answer: it starts unticked in the review list and needs its own decision.
+    for file in "${type_changed[@]}"; do
+        rm -f "${folder}/${file}"
+        mkdir -p "${folder}/${file}"
+    done
+
+    # Deleted since. These come back.
+    for file in "${deleted_since[@]}"; do
+        rm -f "${folder}/${file}"
+    done
+
+    # Written since. These are kept — the row the summary exists to show.
+    for file in "${written_since[@]}"; do
+        seed "${file}"
+        touch -d "@${yesterday}" "${folder}/${file}"
+    done
+
+    # Counted from the lists above rather than written out, so the recipe and
+    # the dialog can be held against each other. If they disagree, one of them
+    # is wrong, and that is worth knowing.
+    echo
+    echo "Staged: ${folder}"
+    echo
+    echo "Restoring that folder from the newest backup should report"
+    echo "  $(( ${#untouched[@]} + folders_in_backup )) identical (${#untouched[@]} files and ${folders_in_backup} folders)"
+    echo "  $(( ${#edited_since[@]} + ${#rolled_back[@]} )) to replace, ${#edited_since[@]} of them newer on disk"
+    echo "  ${#deleted_since[@]} only in the backup, to be added"
+    echo "  $(( ${#written_since[@]} + 1 )) only on disk, kept"
+    echo "  ${#type_changed[@]} changed type, which needs its own answer"
+    echo
+    echo "Look at it with"
+    echo "  just run-app --path '${folder}'"
+    echo "and press Ctrl+R with nothing selected."
+
 # ─── systemd / D-Bus units (development install) ────────────────────────────
 
 # Install dev-mode user units so the daemon starts on demand. Idempotent.
