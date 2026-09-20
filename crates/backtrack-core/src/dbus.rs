@@ -93,6 +93,51 @@ pub struct SearchResult {
     pub exists_today: bool,
 }
 
+/// One path a restore needs an answer about, as `GetRestorePreview` reports it.
+///
+/// Only the paths that need a decision cross the bus. A folder restore may
+/// touch tens of thousands of files, and the review list shows the handful
+/// that conflict; sending the rest would be a large message nobody reads.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+pub struct RestoreEntry {
+    /// Relative to the destination.
+    pub path: String,
+    /// `conflict` or `type-changed`.
+    pub class: String,
+    /// Whether the copy on disk is the newer of the two — the risky direction,
+    /// which the dialog says louder.
+    pub disk_newer: bool,
+    /// Size and modification time of each side. `0` where that side has no
+    /// version, which for these two classes does not happen.
+    pub backup_size: u64,
+    pub backup_mtime: i64,
+    pub disk_size: u64,
+    pub disk_mtime: i64,
+}
+
+/// What a prepared restore would do, computed before anything is touched.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+pub struct RestorePreview {
+    /// The archive being restored from, by name.
+    pub archive: String,
+    /// Where the files are going.
+    pub dest: String,
+    /// The summary counts, in the order the summary screen lists them.
+    pub identical: u32,
+    pub conflicts: u32,
+    /// How many of the conflicts are newer on disk.
+    pub disk_newer: u32,
+    pub only_in_backup: u32,
+    /// Always kept. A restore merges and never deletes.
+    pub only_on_disk: u32,
+    pub type_changed: u32,
+    /// Only the paths needing an answer.
+    pub entries: Vec<RestoreEntry>,
+    /// Paths that will not be restored, and why — an archive member that would
+    /// escape the destination, most often. Reported rather than dropped.
+    pub refused: Vec<(String, String)>,
+}
+
 /// The well-known bus name of an installed daemon.
 pub const BUS_NAME: &str = "org.backtrack.Daemon1";
 

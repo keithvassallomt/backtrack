@@ -1095,3 +1095,117 @@ async fn archived_path(shared: &Arc<Shared>, archive: &str, name: &str) -> Strin
     }
     panic!("{name} is not in {archive}");
 }
+
+/// A restore, end to end through the interface: work it out, look at what it
+/// would do, carry it out, then put it back.
+#[tokio::test]
+async fn a_client_works_out_a_restore_looks_at_it_carries_it_out_and_undoes_it() {
+    let fixture = small_fixture().await;
+    let shared = Arc::clone(&fixture.shared);
+    let src = source(&shared);
+
+    // A backup to restore from.
+    let backup = Daemon1::new(Arc::clone(&shared))
+        .backup_now()
+        .await
+        .expect("backup starts");
+    wait_for_job(&shared, backup).await;
+    let archive = shared
+        .last_archive
+        .lock()
+        .unwrap()
+        .clone()
+        .expect("the backup named its archive");
+
+    // Now edit a backed-up file and add one the backup has never seen, which
+    // is the situation the whole conflict design exists for.
+    let edited = src.join("docs/a.txt");
+    std::fs::write(&edited, b"edited after the backup was taken").unwrap();
+    std::fs::write(src.join("docs/mine.txt"), b"never backed up").unwrap();
+
+    let (server, client) = connect(Arc::clone(&shared)).await;
+    let emitter = SignalEmitter::new(&server, PATH).unwrap();
+    tokio::spawn(fan_out_signals(Arc::clone(&shared), emitter.to_owned()));
+
+    // Restore the source tree back over itself, which is what "restore this
+    // folder" means: the member path is the tree, the destination is `/`.
+    let member = src.strip_prefix("/").unwrap().to_string_lossy().to_string();
+
+    // ── Work it out ──
+    let reply = client
+        .call_method(
+            None::<()>,
+            PATH,
+            Some(IFACE),
+            "PrepareRestore",
+            &(archive.as_str(), vec![member], "/"),
+        )
+        .await
+        .expect("PrepareRestore accepted");
+    let job: u64 = reply.body().deserialize().expect("a job id");
+    wait_for_job(&shared, job).await;
+
+    // ── Look at it ──
+    let reply = client
+        .call_method(None::<()>, PATH, Some(IFACE), "GetRestorePreview", &(job,))
+        .await
+        .expect("GetRestorePreview");
+    let preview: backtrack_core::dbus::RestorePreview =
+        reply.body().deserialize().expect("a preview");
+
+    assert_eq!(preview.conflicts, 1, "the edited file, and only it");
+    assert_eq!(preview.disk_newer, 1, "and the disk copy is the newer one");
+    assert!(
+        preview.only_on_disk >= 1,
+        "the file the backup has never seen is counted as kept: {preview:?}"
+    );
+    assert!(
+        preview.entries.iter().any(|e| e.path.ends_with("a.txt")),
+        "the conflicting file belongs in the review list: {:?}",
+        preview.entries
+    );
+    assert_eq!(
+        std::fs::read_to_string(&edited).unwrap(),
+        "edited after the backup was taken",
+        "working out a restore must not touch anything"
+    );
+
+    // ── Carry it out ──
+    let reply = client
+        .call_method(
+            None::<()>,
+            PATH,
+            Some(IFACE),
+            "ExecuteRestore",
+            &(job, "replace", Vec::<(String, String)>::new()),
+        )
+        .await
+        .expect("ExecuteRestore accepted");
+    let run: u64 = reply.body().deserialize().expect("a job id");
+    wait_for_job(&shared, run).await;
+
+    assert_eq!(
+        std::fs::read_to_string(&edited).unwrap(),
+        "original",
+        "the backed-up version should be back"
+    );
+    assert_eq!(
+        std::fs::read_to_string(src.join("docs/mine.txt")).unwrap(),
+        "never backed up",
+        "a restore merges; it never deletes"
+    );
+
+    // ── Put it back ──
+    let reply = client
+        .call_method(None::<()>, PATH, Some(IFACE), "UndoRestore", &(job,))
+        .await
+        .expect("UndoRestore accepted");
+    let undo: u64 = reply.body().deserialize().expect("a job id");
+    wait_for_job(&shared, undo).await;
+
+    assert_eq!(
+        std::fs::read_to_string(&edited).unwrap(),
+        "edited after the backup was taken",
+        "undo should bring back the edit the restore replaced"
+    );
+}

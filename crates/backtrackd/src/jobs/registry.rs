@@ -33,8 +33,14 @@ const UPDATE_BUFFER: usize = 256;
 
 /// Starts the underlying engine work. Called once per run attempt, so a paused
 /// job can be started again on resume.
-pub type JobFactory =
-    Arc<dyn Fn() -> BoxFuture<'static, backtrack_core::engine::Result<JobStream>> + Send + Sync>;
+/// How a job is started, given the id it was admitted under.
+///
+/// The id is passed in because some jobs have to file what they produce under
+/// it — a prepared restore is looked up by the job that computed it — and the
+/// alternative is correlating the two after the fact, which races.
+pub type JobFactory = Arc<
+    dyn Fn(JobId) -> BoxFuture<'static, backtrack_core::engine::Result<JobStream>> + Send + Sync,
+>;
 
 /// What subscribers hear. The D-Bus layer (S03-T3) turns these into
 /// `BackupProgress` / `RestoreProgress` / `IndexingProgress` and
@@ -292,7 +298,7 @@ impl JobRegistry {
                 self.settle(id, kind, JobState::Done(Outcome::Cancelled));
                 return;
             }
-            started = factory() => started,
+            started = factory(id) => started,
         };
 
         let mut stream = match started {
@@ -473,7 +479,7 @@ mod tests {
 
     /// A factory that runs `engine.create`.
     fn backup_factory(engine: Arc<MockEngine>) -> JobFactory {
-        Arc::new(move || {
+        Arc::new(move |_job| {
             let engine = Arc::clone(&engine);
             Box::pin(async move { engine.create(&spec()).await })
         })

@@ -37,6 +37,7 @@ use backtrack_core::engine::{
 };
 use backtrack_core::index::{IndexReader, IndexWriter, Kind};
 use backtrack_core::paths;
+use backtrack_core::restore::{Decision, Decisions};
 use backtrack_core::secret::SecretStore;
 use backtrack_core::state::RuntimeState;
 use futures::future::BoxFuture;
@@ -53,7 +54,7 @@ use crate::preflight::{self, Facts, SystemProbe, UnknownProbe, Verdict};
 use crate::reachability::{DestinationProbe, Reach, RealProbe};
 use crate::schedule::{self, ScheduleInput};
 
-pub use backtrack_core::dbus::{SearchResult, Status};
+pub use backtrack_core::dbus::{RestorePreview, SearchResult, Status};
 pub use error::{DaemonError, Result};
 pub use health::{HealthInputs, HealthState};
 pub use preview::PreviewCache;
@@ -100,6 +101,15 @@ pub struct Shared {
     /// The last preflight skip announced, so a machine that sits on battery all
     /// afternoon logs the reason once rather than once a minute.
     last_skip: Mutex<Option<preflight::Skip>>,
+    /// Restores that have been worked out but not yet carried out, and the
+    /// move logs of ones that have. Held here because a restore is two calls
+    /// with a decision in between, and the plan has to survive the wait.
+    restores: Arc<crate::restore::Restores>,
+    /// Where restores stage their extracted copies, and where the files they
+    /// replace are kept. Fields rather than calls to `paths::` so tests keep
+    /// their filesystem effects inside a temporary directory.
+    staging_dir: PathBuf,
+    replaced_dir: PathBuf,
     /// The one catalogue writer in the process. Shared rather than owned by the
     /// daemon module because the backup pipeline writes through it too, and
     /// there must never be a second.
@@ -156,6 +166,8 @@ impl Shared {
                 state_path: paths::state_file(),
                 spool_dir: paths::spool_dir(),
                 snapshots_dir: paths::snapshots_dir(),
+                staging_dir: paths::staging_dir(),
+                replaced_dir: paths::replaced_dir(),
             },
         )
     }
@@ -180,6 +192,8 @@ impl Shared {
                 state_path: dir.join("state.toml"),
                 spool_dir: dir.join("spool"),
                 snapshots_dir: dir.join("snapshots"),
+                staging_dir: dir.join("staging"),
+                replaced_dir: dir.join("replaced"),
             },
         )
     }
@@ -196,6 +210,8 @@ impl Shared {
             state_path,
             spool_dir,
             snapshots_dir,
+            staging_dir,
+            replaced_dir,
         } = layout;
         Arc::new(Shared {
             config: Mutex::new(config),
@@ -216,6 +232,9 @@ impl Shared {
             needs_attention: Mutex::new(false),
             last_skip: Mutex::new(None),
             index: Mutex::new(None),
+            restores: Arc::new(crate::restore::Restores::default()),
+            staging_dir,
+            replaced_dir,
             destination_probe: Mutex::new(Arc::new(RealProbe)),
             health_changed: Arc::new(Notify::new()),
             spool: Mutex::new(None),
@@ -246,6 +265,60 @@ impl Shared {
     /// What the daemon currently believes about the destination.
     pub fn destination_reachable(&self) -> bool {
         *self.destination_reachable.lock().unwrap()
+    }
+
+    /// Check a restore request and work out where it will stage its copy.
+    ///
+    /// Everything that can be refused before a job exists is refused here, so
+    /// a client hears "that path is empty" as an error to its call rather than
+    /// as a job that fails a moment later.
+    fn restore_preflight(
+        &self,
+        archive: &str,
+        paths: &[String],
+        dest: &str,
+    ) -> Result<PendingRestore> {
+        if paths.is_empty() {
+            return Err(DaemonError::InvalidArgument(
+                "restore needs at least one path".into(),
+            ));
+        }
+        Ok(PendingRestore {
+            engine: self.engine()?,
+            archive: ArchiveId(archive.to_string()),
+            paths: paths.to_vec(),
+            dest: PathBuf::from(dest),
+        })
+    }
+
+    /// Submit a restore job, giving its plan the id it was admitted under.
+    ///
+    /// The staging directory is named for the job, and the prepared plan is
+    /// filed under the same id — which is why the factory needs to know it.
+    fn submit_restore(
+        &self,
+        pending: PendingRestore,
+        start: impl Fn(crate::restore::PreparePlan) -> backtrack_core::engine::JobStream
+            + Send
+            + Sync
+            + 'static,
+    ) -> u64 {
+        let restores = Arc::clone(&self.restores);
+        let staging_root = self.staging_dir.clone();
+        let factory: JobFactory = Arc::new(move |job| {
+            let plan = crate::restore::PreparePlan {
+                engine: Arc::clone(&pending.engine),
+                archive: pending.archive.clone(),
+                paths: pending.paths.clone(),
+                dest: pending.dest.clone(),
+                staging: staging_root.join(job.to_string()),
+                restores: Arc::clone(&restores),
+                job,
+            };
+            let stream = start(plan);
+            Box::pin(async move { Ok(stream) }) as BoxFuture<'_, _>
+        });
+        self.jobs.submit(JobKind::Restore, factory)
     }
 
     /// A handle that makes the signal fan-out re-evaluate health.
@@ -606,7 +679,7 @@ impl Shared {
         // of its own: a repository is only ever over its policy in the moment
         // after a backup, so that is the only moment worth checking.
         let prune = Some(prune_policy(&config));
-        let factory: JobFactory = Arc::new(move || {
+        let factory: JobFactory = Arc::new(move |_job| {
             let plan = pipeline::BackupPlan {
                 engine: Arc::clone(&engine),
                 index: Arc::clone(&index),
@@ -707,7 +780,7 @@ impl Shared {
                 state.last_attempt = backtrack_core::state::to_epoch(Some(SystemTime::now()));
             });
             let plan = Arc::new(Mutex::new(Some(plan)));
-            let factory: JobFactory = Arc::new(move || {
+            let factory: JobFactory = Arc::new(move |_job| {
                 let plan = plan.lock().unwrap().take();
                 Box::pin(async move {
                     let plan = plan.ok_or(backtrack_core::engine::EngineError::Cancelled)?;
@@ -753,7 +826,7 @@ impl Shared {
         let plan = Arc::new(Mutex::new(Some(plan)));
         let handle: Arc<Mutex<Option<pipeline::OfflineHandle>>> = Arc::new(Mutex::new(None));
         let factory_handle = Arc::clone(&handle);
-        let factory: JobFactory = Arc::new(move || {
+        let factory: JobFactory = Arc::new(move |_job| {
             let plan = plan.lock().unwrap().take();
             let handle = Arc::clone(&factory_handle);
             Box::pin(async move {
@@ -872,7 +945,7 @@ impl Shared {
         }
         let engine = self.engine().ok()?;
         let index = self.index().ok()?;
-        let factory: JobFactory = Arc::new(move || {
+        let factory: JobFactory = Arc::new(move |_job| {
             let plan = pipeline::CataloguePlan {
                 engine: Arc::clone(&engine),
                 index: Arc::clone(&index),
@@ -955,7 +1028,7 @@ impl Shared {
         self.update_persisted(|state| {
             state.last_compact = backtrack_core::state::to_epoch(Some(SystemTime::now()));
         });
-        let factory: JobFactory = Arc::new(move || {
+        let factory: JobFactory = Arc::new(move |_job| {
             let engine = Arc::clone(&engine);
             Box::pin(async move { engine.compact().await }) as BoxFuture<'_, _>
         });
@@ -1094,6 +1167,16 @@ struct Layout {
     state_path: PathBuf,
     spool_dir: PathBuf,
     snapshots_dir: PathBuf,
+    staging_dir: PathBuf,
+    replaced_dir: PathBuf,
+}
+
+/// A restore request that has passed its checks but has no job yet.
+struct PendingRestore {
+    engine: Arc<dyn BackupEngine>,
+    archive: ArchiveId,
+    paths: Vec<String>,
+    dest: PathBuf,
 }
 
 /// The D-Bus object.
@@ -1195,6 +1278,14 @@ impl Daemon1 {
     /// The staging-and-compare pipeline, conflict detection and the safety stash
     /// are Stage 7; today this extracts, and the policy is validated and carried
     /// so that callers written now keep working when it starts being honoured.
+    /// Restore `paths` from `archive` into `dest` with no one to ask.
+    ///
+    /// The same pipeline the interactive restore uses — staging, comparison,
+    /// atomic moves, the safety stash — with `policy` standing in for the
+    /// answers a person would give. `ask` means there is nobody to ask, so
+    /// conflicts are left alone and reported rather than guessed at: a
+    /// command-line restore must not overwrite work because it could not put
+    /// the question.
     async fn restore_files(
         &self,
         archive: &str,
@@ -1202,25 +1293,122 @@ impl Daemon1 {
         dest: &str,
         policy: &str,
     ) -> Result<u64> {
-        let engine = self.shared.engine()?;
         let policy = RestorePolicy::parse(policy)?;
-        if paths.is_empty() {
-            return Err(DaemonError::InvalidArgument(
-                "restore needs at least one path".into(),
-            ));
-        }
+        let prepared = self.shared.restore_preflight(archive, &paths, dest)?;
         info!(archive, dest, policy = policy.as_str(), "restore requested");
-        let archive = ArchiveId(archive.to_string());
-        let dest = PathBuf::from(dest);
-        let factory: JobFactory = Arc::new(move || {
-            let engine = Arc::clone(&engine);
-            let archive = archive.clone();
-            let paths = paths.clone();
-            let dest = dest.clone();
-            Box::pin(async move { engine.extract(&archive, &paths, &dest).await })
-                as BoxFuture<'_, _>
+
+        let decisions = Decisions::all(match policy {
+            RestorePolicy::Replace => Decision::Replace,
+            RestorePolicy::KeepBoth => Decision::KeepBoth,
+            RestorePolicy::Ask | RestorePolicy::SkipIdentical => Decision::Skip,
+        });
+        let stash = self.shared.replaced_dir.clone();
+        Ok(self.shared.submit_restore(prepared, move |plan| {
+            crate::restore::start_direct(plan, decisions.clone(), stash.clone())
+        }))
+    }
+
+    /// Work out what restoring `paths` from `archive` into `dest` would do,
+    /// without doing any of it.
+    ///
+    /// Returns the job that is working it out. When that job finishes, the
+    /// answer is read with `GetRestorePreview` using the same id, applied with
+    /// `ExecuteRestore`, and thrown away with `DiscardRestore`.
+    async fn prepare_restore(&self, archive: &str, paths: Vec<String>, dest: &str) -> Result<u64> {
+        let prepared = self.shared.restore_preflight(archive, &paths, dest)?;
+        info!(archive, dest, "working out a restore");
+        Ok(self
+            .shared
+            .submit_restore(prepared, crate::restore::start_prepare))
+    }
+
+    /// What the restore prepared under `job` would do.
+    async fn get_restore_preview(&self, job: u64) -> Result<RestorePreview> {
+        let plan = self.shared.restores.plan(job).ok_or_else(|| {
+            DaemonError::NoSuchJob(format!("no restore is prepared under job {job}"))
+        })?;
+        Ok(crate::restore::preview(&plan))
+    }
+
+    /// Carry out the restore prepared under `job`.
+    ///
+    /// `blanket` answers every conflict the summary screen covered;
+    /// `decisions` overrides individual paths, which is what unticking a row in
+    /// the review list does. A change of type is never covered by the blanket
+    /// answer and must be named here to happen at all.
+    async fn execute_restore(
+        &self,
+        job: u64,
+        blanket: &str,
+        decisions: Vec<(String, String)>,
+    ) -> Result<u64> {
+        if !self.shared.restores.holds(job) {
+            return Err(DaemonError::NoSuchJob(format!(
+                "no restore is prepared under job {job}"
+            )));
+        }
+        let blanket = Decision::parse(blanket).ok_or_else(|| {
+            DaemonError::InvalidArgument(format!(
+                "unknown decision {blanket:?}; expected one of replace, keep-both, skip"
+            ))
+        })?;
+        let mut chosen = Decisions::all(blanket);
+        for (path, decision) in decisions {
+            let decision = Decision::parse(&decision).ok_or_else(|| {
+                DaemonError::InvalidArgument(format!("unknown decision {decision:?} for {path:?}"))
+            })?;
+            chosen = chosen.except(PathBuf::from(path), decision);
+        }
+
+        let plan = crate::restore::ExecutePlan {
+            restores: Arc::clone(&self.shared.restores),
+            prepared: job,
+            decisions: chosen,
+            stash: self.shared.replaced_dir.clone(),
+        };
+        let plan = Arc::new(Mutex::new(Some(plan)));
+        let factory: JobFactory = Arc::new(move |_job| {
+            let plan = Arc::clone(&plan);
+            Box::pin(async move {
+                let plan = plan.lock().unwrap().take().ok_or_else(|| {
+                    backtrack_core::engine::EngineError::Local(
+                        "that restore has already been carried out".to_string(),
+                    )
+                })?;
+                Ok(crate::restore::start_execute(plan))
+            }) as BoxFuture<'_, _>
         });
         Ok(self.shared.jobs.submit(JobKind::Restore, factory))
+    }
+
+    /// Put back everything the restore under `job` moved.
+    ///
+    /// This is what the Undo on the toast does, and it keeps working long after
+    /// the toast has gone — the files it needs are in the stash, not in memory.
+    async fn undo_restore(&self, job: u64) -> Result<u64> {
+        if self.shared.restores.log(job).is_none() {
+            return Err(DaemonError::NoSuchJob(format!(
+                "job {job} has nothing recorded to undo"
+            )));
+        }
+        let restores = Arc::clone(&self.shared.restores);
+        let factory: JobFactory = Arc::new(move |_job| {
+            let plan = crate::restore::UndoPlan {
+                restores: Arc::clone(&restores),
+                prepared: job,
+            };
+            Box::pin(async move { Ok(crate::restore::start_undo(plan)) }) as BoxFuture<'_, _>
+        });
+        Ok(self.shared.jobs.submit(JobKind::Restore, factory))
+    }
+
+    /// Throw away a prepared restore and the copy it extracted.
+    ///
+    /// Cancelling costs nothing because nothing was touched, but the extracted
+    /// copy is real and has to go.
+    async fn discard_restore(&self, job: u64) -> Result<()> {
+        self.shared.restores.discard(job);
+        Ok(())
     }
 
     /// A readable file descriptor for one file's contents as of `archive`.
@@ -1280,7 +1468,7 @@ impl Daemon1 {
         let cache = self.shared.preview.clone();
         let archive = archive.to_string();
         let path = path.to_string();
-        let factory: JobFactory = Arc::new(move || {
+        let factory: JobFactory = Arc::new(move |_job| {
             let engine = Arc::clone(&engine);
             let cache = cache.clone();
             let archive = archive.clone();
@@ -1330,7 +1518,7 @@ impl Daemon1 {
         );
         let archive = ArchiveId(archive.to_string());
         let dest = dirs_home();
-        let factory: JobFactory = Arc::new(move || {
+        let factory: JobFactory = Arc::new(move |_job| {
             let engine = Arc::clone(&engine);
             let archive = archive.clone();
             let dest = dest.clone();
@@ -1343,7 +1531,7 @@ impl Daemon1 {
     async fn prune(&self) -> Result<u64> {
         let engine = self.shared.engine()?;
         let policy = prune_policy(&self.shared.config());
-        let factory: JobFactory = Arc::new(move || {
+        let factory: JobFactory = Arc::new(move |_job| {
             let engine = Arc::clone(&engine);
             let policy = policy.clone();
             Box::pin(async move { engine.prune(&policy).await }) as BoxFuture<'_, _>
@@ -1354,7 +1542,7 @@ impl Daemon1 {
     /// Check the repository's integrity.
     async fn verify(&self) -> Result<u64> {
         let engine = self.shared.engine()?;
-        let factory: JobFactory = Arc::new(move || {
+        let factory: JobFactory = Arc::new(move |_job| {
             let engine = Arc::clone(&engine);
             Box::pin(async move { engine.check(CheckLevel::Full).await }) as BoxFuture<'_, _>
         });
@@ -1364,7 +1552,7 @@ impl Daemon1 {
     /// Reclaim space the repository is no longer using.
     async fn compact(&self) -> Result<u64> {
         let engine = self.shared.engine()?;
-        let factory: JobFactory = Arc::new(move || {
+        let factory: JobFactory = Arc::new(move |_job| {
             let engine = Arc::clone(&engine);
             Box::pin(async move { engine.compact().await }) as BoxFuture<'_, _>
         });

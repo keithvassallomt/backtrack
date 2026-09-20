@@ -51,6 +51,15 @@ pub enum EngineError {
     BorgFailed { code: i32, stderr: String },
     #[error("the job was cancelled")]
     Cancelled,
+    /// A failure on this machine rather than at the repository — a restore that
+    /// could not read its staging directory, say.
+    ///
+    /// The taxonomy above is about Borg and the destination, because that is
+    /// where a backup goes wrong. A restore also writes to the user's own disk,
+    /// and reporting "borg exited with code 0" for a failure Borg had no part in
+    /// would be a lie told in the one place a person goes looking for the truth.
+    #[error("{0}")]
+    Local(String),
 }
 
 /// The engine-relevant rows of health.md's failure catalogue — the failures the
@@ -104,6 +113,10 @@ impl EngineError {
             EngineError::LockedByOther => None,
             EngineError::BorgFailed { .. } => None,
             EngineError::Cancelled => None,
+            // A restore that could not write to the user's disk is a failed
+            // restore, not an unhealthy backup: the banner is about whether
+            // the machine is being protected, and it still is.
+            EngineError::Local(_) => None,
         }
     }
 }

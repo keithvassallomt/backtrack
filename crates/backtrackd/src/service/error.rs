@@ -74,6 +74,13 @@ pub enum DaemonError {
     NotFound(String),
     /// The request itself is malformed (bad policy name, empty path, ...).
     InvalidArgument(String),
+
+    /// A restore could not be carried out on this machine — staging could not
+    /// be read, the destination could not be written. Distinct from the Borg
+    /// failures above because the repository had no part in it, and a person
+    /// reading the message needs to know which side of the operation went
+    /// wrong.
+    RestoreFailed(String),
 }
 
 /// A convenience alias for anything the interface returns.
@@ -94,6 +101,7 @@ impl From<EngineError> for DaemonError {
             EngineError::BorgMissing { .. } => DaemonError::BorgMissing(message),
             EngineError::BorgFailed { .. } => DaemonError::BorgFailed(message),
             EngineError::Cancelled => DaemonError::Cancelled(message),
+            EngineError::Local(_) => DaemonError::RestoreFailed(message),
         }
     }
 }

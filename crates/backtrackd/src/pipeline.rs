@@ -343,7 +343,7 @@ async fn run(plan: &BackupPlan, sink: &JobSink) -> Result<JobSummary, EngineErro
 /// The engine's own terminal event is consumed here rather than forwarded: this
 /// is one phase of a longer job, and a `Finished` in the middle of a stream
 /// would tell the registry the whole backup was over.
-async fn drive(
+pub(crate) async fn drive(
     mut stream: JobStream,
     sink: &JobSink,
     phase: &str,
