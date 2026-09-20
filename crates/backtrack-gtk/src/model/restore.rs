@@ -147,7 +147,7 @@ pub fn summary_rows(preview: &RestorePreview) -> Vec<SummaryRow> {
             icon: "object-select-symbolic",
             text: format!(
                 "{} {} identical — left alone",
-                count_files(preview.identical),
+                count_items(preview.identical),
                 verb(preview.identical, "is", "are")
             ),
             reviewable: false,
@@ -169,7 +169,7 @@ pub fn summary_rows(preview: &RestorePreview) -> Vec<SummaryRow> {
             icon: "list-add-symbolic",
             text: format!(
                 "{} {} only in the backup — will be added",
-                count_files(preview.only_in_backup),
+                count_items(preview.only_in_backup),
                 verb(preview.only_in_backup, "exists", "exist")
             ),
             reviewable: false,
@@ -180,7 +180,7 @@ pub fn summary_rows(preview: &RestorePreview) -> Vec<SummaryRow> {
             icon: "security-high-symbolic",
             text: format!(
                 "{} {} only on your disk — kept. Nothing is deleted.",
-                count_files(preview.only_on_disk),
+                count_items(preview.only_on_disk),
                 verb(preview.only_on_disk, "exists", "exist")
             ),
             reviewable: false,
@@ -194,7 +194,7 @@ pub fn summary_rows(preview: &RestorePreview) -> Vec<SummaryRow> {
             icon: "dialog-warning-symbolic",
             text: format!(
                 "{} {} changed type — review before replacing",
-                count_files(preview.type_changed),
+                count_items(preview.type_changed),
                 verb(preview.type_changed, "has", "have")
             ),
             reviewable: true,
@@ -234,6 +234,25 @@ fn count_files(count: u32) -> String {
         "1 file".to_string()
     } else {
         format!("{count} files")
+    }
+}
+
+/// `"1 item"` / `"214 items"`.
+///
+/// Most of the summary counts plan entries, and a folder that exists on both
+/// sides is an entry — nothing to restore, but counted. "19 files are
+/// identical" over a folder holding eleven was a number that could be checked
+/// and found wrong, which is the worst kind to put on a screen whose whole
+/// claim is that its numbers are the restore itself, counted.
+///
+/// Only the replacements stay "files", because they only ever are: a directory
+/// on both sides is identical, and a directory against a file is a change of
+/// type.
+fn count_items(count: u32) -> String {
+    if count == 1 {
+        "1 item".to_string()
+    } else {
+        format!("{count} items")
     }
 }
 
@@ -369,10 +388,10 @@ mod tests {
         assert_eq!(
             text,
             [
-                "214 files are identical — left alone",
+                "214 items are identical — left alone",
                 "6 files will be replaced (3 newer on your disk)",
-                "2 files exist only in the backup — will be added",
-                "4 files exist only on your disk — kept. Nothing is deleted.",
+                "2 items exist only in the backup — will be added",
+                "4 items exist only on your disk — kept. Nothing is deleted.",
             ]
         );
         assert!(
@@ -394,10 +413,10 @@ mod tests {
         assert_eq!(
             text,
             [
-                "1 file is identical — left alone",
+                "1 item is identical — left alone",
                 "1 file will be replaced",
-                "1 file exists only in the backup — will be added",
-                "1 file exists only on your disk — kept. Nothing is deleted.",
+                "1 item exists only in the backup — will be added",
+                "1 item exists only on your disk — kept. Nothing is deleted.",
             ]
         );
     }
@@ -420,7 +439,7 @@ mod tests {
         let last = rows.last().unwrap();
         assert_eq!(
             last.text,
-            "1 file has changed type — review before replacing"
+            "1 item has changed type — review before replacing"
         );
         assert!(last.reviewable);
     }

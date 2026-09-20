@@ -197,11 +197,11 @@ Bob restores a whole folder: one summary screen, computed before anything is tou
         │                                                      │
         │   Restoring from the backup of 28 Jun 2026, 09:00    │
         │                                                      │
-        │    ✓  214 files are identical — left alone           │
+        │    ✓  214 items are identical — left alone           │
         │    ↺    6 files will be replaced          [Review…]  │
         │         (3 of them are newer on disk)                │
-        │    ＋   2 files exist only in the backup — added     │
-        │    ▣    4 files exist only on your disk — kept.      │
+        │    ＋   2 items exist only in the backup — added     │
+        │    ▣    4 items exist only on your disk — kept.      │
         │         Nothing is ever deleted.                     │
         │                                                      │
         │   Replaced files are kept as safety copies           │
@@ -214,6 +214,10 @@ Bob restores a whole folder: one summary screen, computed before anything is tou
 
 - **Review…** opens a per-file checklist (each row: both versions' dates/sizes, checkbox).
 - Restores merge; they never delete disk-only files — and the dialog says so.
+- "items", not "files": a folder that exists on both sides is an entry in the
+  plan too. Only the replacements are counted as files, because only they ever
+  are — a folder on both sides is identical, and a folder against a file is a
+  change of type.
 
 ---
 
