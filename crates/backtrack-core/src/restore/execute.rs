@@ -266,7 +266,7 @@ fn check_space(plan: &RestorePlan, decisions: &Decisions, stash: &Path) -> Resul
 }
 
 /// Move `from` to `to`, atomically where the filesystem allows it.
-fn move_path(from: &Path, to: &Path) -> Result<()> {
+pub(super) fn move_path(from: &Path, to: &Path) -> Result<()> {
     if let Some(parent) = to.parent() {
         std::fs::create_dir_all(parent).map_err(|e| io_error(parent, e))?;
     }
@@ -337,12 +337,12 @@ fn remove(path: &Path) -> Result<()> {
 
 /// An absolute path in the form the stash stores it under: leading `/` removed,
 /// the same convention Borg uses for archive members.
-fn strip_root(path: &Path) -> PathBuf {
+pub(super) fn strip_root(path: &Path) -> PathBuf {
     PathBuf::from(path.to_string_lossy().trim_start_matches('/').to_string())
 }
 
 /// Seconds since the epoch, which is what a stash directory is named.
-fn stamp(now: SystemTime) -> u64 {
+pub(super) fn stamp(now: SystemTime) -> u64 {
     now.duration_since(SystemTime::UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0)

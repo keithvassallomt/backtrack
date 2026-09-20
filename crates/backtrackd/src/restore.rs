@@ -138,6 +138,58 @@ fn empty_staging(staging: &std::path::Path) -> std::io::Result<()> {
     std::fs::create_dir_all(staging)
 }
 
+/// Keep the stash inside the promises the dialogs make about it: thirty days,
+/// and five gigabytes. Runs now, and once a day for as long as the daemon does.
+///
+/// A daily pass is enough because neither bound is a cliff. Being a few hours
+/// over thirty days costs nothing, and the size cap is there to stop a safety
+/// net filling a disk over weeks — not to hold a line to the megabyte.
+pub async fn keep_the_stash_bounded(root: std::path::PathBuf) {
+    const DAILY: std::time::Duration = std::time::Duration::from_secs(24 * 60 * 60);
+    loop {
+        let root = root.clone();
+        let swept = tokio::task::spawn_blocking(move || {
+            backtrack_core::restore::expire_stash(&root, seconds_now(), MAX_STASH_BYTES)
+        })
+        .await;
+        match swept {
+            Ok(report) if report.batches > 0 => {
+                // Files given up early were promised thirty days and did not
+                // get them. That is the right trade against filling a disk,
+                // but it is not a thing to do silently.
+                if report.given_up_early > 0 {
+                    warn!(
+                        restores = report.given_up_early,
+                        bytes = report.bytes,
+                        "the safety stash is over its size limit; the oldest restores were given up early"
+                    );
+                } else {
+                    info!(
+                        restores = report.batches,
+                        bytes = report.bytes,
+                        "safety copies past thirty days were given up"
+                    );
+                }
+            }
+            Ok(_) => {}
+            Err(error) => warn!(%error, "the stash could not be checked"),
+        }
+        tokio::time::sleep(DAILY).await;
+    }
+}
+
+/// The size the stash is allowed to reach. A constant here rather than a
+/// setting: it is written into the dialogs, and a promise with a knob on it is
+/// not a promise.
+const MAX_STASH_BYTES: u64 = backtrack_core::restore::MAX_BYTES;
+
+fn seconds_now() -> i64 {
+    SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
+}
+
 /// Clear every staging directory at start-up.
 ///
 /// Nothing is holding them: the restores that owned them lived in a previous

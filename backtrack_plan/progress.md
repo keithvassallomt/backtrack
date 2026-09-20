@@ -80,7 +80,7 @@
 - [x] S07-T2 Skip-identical + conflict detection (newer/older cues)
 - [x] S07-T3 Single-file conflict dialog (mockup 4)
 - [x] S07-T4 Folder summary + review checklist (mockups 5, 8)
-- [ ] S07-T5 replaced/ stash with 30-day expiry + "Recently Replaced Files" view
+- [x] S07-T5 replaced/ stash with 30-day expiry + "Recently Replaced Files" view
 - [x] S07-T6 Undo toast wired to stash
 - [ ] S07-T7 Restore To… (choose destination, zero-conflict path)
 

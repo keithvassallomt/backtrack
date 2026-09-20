@@ -12,7 +12,7 @@
 //! The connection is made through D-Bus activation, so there is no "is the
 //! daemon running?" check anywhere in the app. Asking for it starts it.
 
-use backtrack_core::dbus::{RestorePreview, SearchResult, Status};
+use backtrack_core::dbus::{ReplacedFile, RestorePreview, SearchResult, Status};
 use tracing::warn;
 
 /// The daemon, as the window calls it.
@@ -48,6 +48,12 @@ pub trait Daemon1 {
     fn undo_restore(&self, job: u64) -> zbus::Result<u64>;
     /// Throw away a prepared restore and the copy it extracted.
     fn discard_restore(&self, job: u64) -> zbus::Result<()>;
+
+    /// The files the safety stash is keeping, newest restore first.
+    fn list_replaced(&self, limit: u32) -> zbus::Result<Vec<ReplacedFile>>;
+    /// Put one of them back, naming it by where the stash is keeping it.
+    /// Answers with where whatever was in its place went, or "" if nothing was.
+    fn put_back_replaced(&self, stashed: &str) -> zbus::Result<String>;
     fn cancel_job(&self, id: u64) -> zbus::Result<()>;
 
     /// Progress of a running backup.

@@ -274,6 +274,53 @@ fn bytes(size: u64) -> String {
     }
 }
 
+/// The "Recently Replaced Files" window's heading for one restore.
+///
+/// Every file a single restore displaced shares a time, which is what groups
+/// them: somebody looking for a file they lost is looking for the moment they
+/// lost it, not for the file's name — they usually remember the restore.
+pub fn stash_group_title(replaced_at: i64, tz: &glib::TimeZone) -> String {
+    format!(
+        "Replaced {}",
+        format::at(replaced_at, tz, "%e %b %Y, %H:%M")
+    )
+}
+
+/// One row: where the file lived, how big it was, and when it was last edited.
+///
+/// The folder rather than the full path. A stash listing is read down the
+/// left-hand edge, and a column of identical path prefixes hides the one part
+/// of each line that differs.
+pub fn stash_row_subtitle(original: &str, size: u64, mtime: i64, tz: &glib::TimeZone) -> String {
+    let folder =
+        original.rsplit_once('/').map_or(
+            "/",
+            |(parent, _)| if parent.is_empty() { "/" } else { parent },
+        );
+    format!(
+        "{folder} · {} · modified {}",
+        bytes(size),
+        format::at(mtime, tz, "%e %b %Y, %H:%M")
+    )
+}
+
+/// What the window says when the stash is empty.
+///
+/// Not an error and not an apology: an empty stash means nothing has been
+/// overwritten, which is the normal state of affairs.
+pub const NOTHING_REPLACED: &str = "Nothing has been replaced";
+pub const NOTHING_REPLACED_BODY: &str =
+    "When a restore replaces a file, the version it replaced is kept here for 30 days.";
+
+/// The toast after putting a file back.
+pub fn put_back_toast(name: &str) -> String {
+    format!("Put “{name}” back")
+}
+
+/// What the window says under its title, which is the promise it exists to keep.
+pub const STASH_NOTE: &str = "Files replaced by a restore are kept for 30 days, then given up. \
+     Putting one back keeps whatever is in its place, in here.";
+
 #[cfg(test)]
 mod tests {
     use super::*;

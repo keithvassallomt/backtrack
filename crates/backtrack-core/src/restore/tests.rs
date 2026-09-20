@@ -763,3 +763,314 @@ fn a_restore_of_something_entirely_absent_is_all_missing_and_no_work() {
     assert!(plan.entries.is_empty());
     assert!(plan.is_a_no_op());
 }
+
+// ── The stash ───────────────────────────────────────────────────────────────
+
+/// Seconds since the epoch, as the stash names its batches.
+fn epoch(when: SystemTime) -> i64 {
+    when.duration_since(SystemTime::UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64
+}
+
+/// One replaced file, filed under where it came from — which for a put-back
+/// has to be a real path inside the fixture, since that is where it goes back.
+fn stash_one(stash: &Path, when: SystemTime, original: &Path, contents: &str) {
+    write(
+        &stash.join(epoch(when).to_string()),
+        original.to_string_lossy().trim_start_matches('/'),
+        contents,
+        when,
+    );
+}
+
+/// A batch of replaced files as a restore would have left it.
+fn stash_batch(stash: &Path, when: SystemTime, files: &[(&str, &str)]) {
+    for (relative, contents) in files {
+        write(
+            &stash.join(epoch(when).to_string()),
+            relative.trim_start_matches('/'),
+            contents,
+            when,
+        );
+    }
+}
+
+#[test]
+fn a_replaced_file_is_listed_by_where_it_came_from() {
+    // The layout is the index: the path inside the batch is the path the file
+    // had, so nothing has to be written down separately and nothing can fall
+    // out of step with the files themselves.
+    let f = fixture();
+    write(&f.staging, "report.odt", "the backup version", at(0));
+    write(&f.dest, "report.odt", "the version on disk", at(500));
+
+    let plan = plan("snapshot-01", &f.staging, &f.dest, &asked_for(&f.staging)).unwrap();
+    execute(&plan, &Decisions::all(Decision::Replace), &f.stash, at(900)).unwrap();
+
+    let listed = list_stash(&f.stash, 50);
+    assert_eq!(listed.len(), 1, "expected one replaced file: {listed:?}");
+    let entry = &listed[0];
+    assert_eq!(entry.original, f.dest.join("report.odt"));
+    assert_eq!(entry.replaced_at, epoch(at(900)));
+    assert_eq!(entry.size, "the version on disk".len() as u64);
+    assert_eq!(
+        entry.mtime,
+        epoch(at(500)),
+        "the stash preserves the file's own modification time"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&entry.stashed).unwrap(),
+        "the version on disk"
+    );
+}
+
+#[test]
+fn the_newest_restore_is_listed_first_and_the_list_is_bounded() {
+    let f = fixture();
+    stash_batch(&f.stash, at(100), &[("/old/a.txt", "a")]);
+    stash_batch(
+        &f.stash,
+        at(900),
+        &[("/new/b.txt", "b"), ("/new/c.txt", "c")],
+    );
+
+    let listed = list_stash(&f.stash, 50);
+    assert_eq!(listed[0].replaced_at, epoch(at(900)));
+    assert_eq!(listed.last().unwrap().replaced_at, epoch(at(100)));
+
+    // A restore of a large folder replaces as many files as it touches, and
+    // the window wants the recent ones, not all of them across a bus.
+    assert_eq!(list_stash(&f.stash, 2).len(), 2);
+}
+
+#[test]
+fn a_file_past_its_thirty_days_is_given_up_and_the_rest_is_kept() {
+    let f = fixture();
+    let now = epoch(at(0)) + 40 * 86_400;
+    stash_batch(&f.stash, at(0), &[("/long/ago.txt", "expired")]);
+    let recent = SystemTime::UNIX_EPOCH + Duration::from_secs((now - 5 * 86_400) as u64);
+    stash_batch(&f.stash, recent, &[("/still/here.txt", "kept")]);
+
+    let report = expire_stash(&f.stash, now, MAX_BYTES);
+
+    assert_eq!(report.batches, 1);
+    assert_eq!(report.given_up_early, 0, "this one was simply old enough");
+    let left = list_stash(&f.stash, 50);
+    assert_eq!(left.len(), 1);
+    assert_eq!(left[0].original, PathBuf::from("/still/here.txt"));
+}
+
+#[test]
+fn a_stash_over_its_size_gives_up_the_oldest_restore_first() {
+    // Hours apart, and hours ago: the cap leaves the last hour alone, so a
+    // fixture built a few seconds apart would never evict anything.
+    let f = fixture();
+    stash_batch(&f.stash, at(0), &[("/a.txt", "aaaaaaaaaa")]);
+    stash_batch(&f.stash, at(3_600), &[("/b.txt", "bbbbbbbbbb")]);
+    stash_batch(&f.stash, at(7_200), &[("/c.txt", "cccccccccc")]);
+
+    // Room for two batches of ten bytes, so the oldest has to go.
+    let report = expire_stash(&f.stash, epoch(at(20_000)), 25);
+
+    assert_eq!(report.batches, 1);
+    assert_eq!(
+        report.given_up_early, 1,
+        "a file inside its thirty days went early, and that is worth knowing"
+    );
+    let left: Vec<PathBuf> = list_stash(&f.stash, 50)
+        .into_iter()
+        .map(|e| e.original)
+        .collect();
+    assert_eq!(left, [PathBuf::from("/c.txt"), PathBuf::from("/b.txt")]);
+}
+
+#[test]
+fn a_whole_restore_goes_or_none_of_it_does() {
+    // Half a restore in the stash is worse than none of it: the half that is
+    // missing is the half somebody goes looking for.
+    let f = fixture();
+    stash_batch(
+        &f.stash,
+        at(0),
+        &[("/one.txt", "1111111111"), ("/two.txt", "2222222222")],
+    );
+    stash_batch(&f.stash, at(3_600), &[("/three.txt", "3")]);
+
+    expire_stash(&f.stash, epoch(at(20_000)), 5);
+
+    let left = list_stash(&f.stash, 50);
+    assert_eq!(left.len(), 1, "the older batch went entire: {left:?}");
+    assert_eq!(left[0].original, PathBuf::from("/three.txt"));
+}
+
+#[test]
+fn something_the_stash_did_not_write_is_left_where_it_is() {
+    // This code deletes things. The rule that makes that safe is that it only
+    // deletes what it can prove it created, and a batch is named for the
+    // second it ran.
+    let f = fixture();
+    std::fs::create_dir_all(f.stash.join("not-ours")).unwrap();
+    std::fs::write(f.stash.join("not-ours/keep.txt"), "someone else's").unwrap();
+    stash_batch(&f.stash, at(0), &[("/mine.txt", "ours")]);
+
+    expire_stash(&f.stash, epoch(at(0)) + 90 * 86_400, MAX_BYTES);
+
+    assert!(f.stash.join("not-ours/keep.txt").exists());
+    assert!(list_stash(&f.stash, 50).is_empty(), "ours went");
+}
+
+#[test]
+fn putting_a_file_back_gives_back_exactly_what_was_replaced() {
+    let f = fixture();
+    write(&f.staging, "report.odt", "the backup version", at(0));
+    write(&f.dest, "report.odt", "the version on disk", at(500));
+
+    let plan = plan("snapshot-01", &f.staging, &f.dest, &asked_for(&f.staging)).unwrap();
+    execute(&plan, &Decisions::all(Decision::Replace), &f.stash, at(900)).unwrap();
+
+    let entry = list_stash(&f.stash, 50).remove(0);
+    put_back(&entry, &f.stash, at(1000)).unwrap();
+
+    let back = f.dest.join("report.odt");
+    assert_eq!(
+        std::fs::read_to_string(&back).unwrap(),
+        "the version on disk"
+    );
+    assert_eq!(
+        back.metadata().unwrap().modified().unwrap(),
+        at(500),
+        "byte-identical means its modification time too"
+    );
+}
+
+#[test]
+fn putting_a_file_back_stashes_whatever_was_standing_in_its_place() {
+    // Putting a file back is a restore like any other, and the same promise
+    // has to hold: the thing being overwritten survives the overwriting.
+    let f = fixture();
+    write(&f.staging, "report.odt", "the backup version", at(0));
+    write(&f.dest, "report.odt", "the version on disk", at(500));
+
+    let plan = plan("snapshot-01", &f.staging, &f.dest, &asked_for(&f.staging)).unwrap();
+    execute(&plan, &Decisions::all(Decision::Replace), &f.stash, at(900)).unwrap();
+
+    let entry = list_stash(&f.stash, 50).remove(0);
+    let displaced = put_back(&entry, &f.stash, at(1000)).unwrap().unwrap();
+
+    assert_eq!(
+        std::fs::read_to_string(&displaced).unwrap(),
+        "the backup version",
+        "the restored copy was kept, not discarded"
+    );
+    let listed = list_stash(&f.stash, 50);
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0].replaced_at, epoch(at(1000)));
+}
+
+#[test]
+fn a_file_put_back_where_nothing_remains_makes_its_way_there() {
+    // Undo removes a file the restore added; putting back a sibling later must
+    // not fail for want of the directory that went with it.
+    let f = fixture();
+    let original = f.dest.join("since/removed/report.odt");
+    stash_one(&f.stash, at(100), &original, "the old one");
+    let entry = list_stash(&f.stash, 50).remove(0);
+
+    put_back(&entry, &f.stash, at(200)).unwrap();
+
+    assert_eq!(std::fs::read_to_string(&original).unwrap(), "the old one");
+}
+
+#[test]
+fn an_emptied_batch_does_not_linger_as_a_tree_of_empty_directories() {
+    let f = fixture();
+    stash_one(
+        &f.stash,
+        at(100),
+        &f.dest.join("deep/nested/report.odt"),
+        "old",
+    );
+    let entry = list_stash(&f.stash, 50).remove(0);
+
+    put_back(&entry, &f.stash, at(200)).unwrap();
+
+    assert!(
+        !f.stash.join(epoch(at(100)).to_string()).exists(),
+        "the batch should have gone with its last file"
+    );
+    assert!(f.stash.is_dir(), "the stash itself stays");
+}
+
+#[test]
+fn an_entry_is_found_by_where_the_stash_keeps_it() {
+    let f = fixture();
+    let original = f.dest.join("report.odt");
+    stash_one(&f.stash, at(100), &original, "the old one");
+    let listed = list_stash(&f.stash, 50).remove(0);
+
+    let found = find_stashed(&f.stash, &listed.stashed).unwrap();
+    assert_eq!(found, listed);
+}
+
+#[test]
+fn a_path_the_stash_is_not_keeping_is_refused() {
+    // What follows a lookup is a rename onto a path derived from it, so a path
+    // arriving from a client is checked rather than trusted.
+    let f = fixture();
+    stash_one(&f.stash, at(100), &f.dest.join("report.odt"), "ours");
+    let outside = f.dest.join("report.odt");
+
+    assert!(
+        find_stashed(&f.stash, &outside).is_none(),
+        "a file outside the stash is not ours to move"
+    );
+    assert!(
+        find_stashed(&f.stash, &f.stash.join("100/../../dest/report.odt")).is_none(),
+        "nor is one reached by climbing out of it"
+    );
+    assert!(
+        find_stashed(&f.stash, &f.stash.join("100")).is_none(),
+        "a batch is not an entry"
+    );
+    assert!(
+        find_stashed(&f.stash, &f.stash.join("not-a-batch/report.odt")).is_none(),
+        "nor is anything under a directory the stash did not name"
+    );
+}
+
+#[test]
+fn a_stashed_symlink_is_found_rather_than_followed() {
+    // Canonicalising the file itself would resolve the link and check wherever
+    // it points, which is exactly the path that must not be trusted.
+    let f = fixture();
+    let batch = f.stash.join(epoch(at(100)).to_string());
+    let elsewhere = f.dest.join("target.txt");
+    std::fs::write(&elsewhere, "not the stash's business").unwrap();
+    std::fs::create_dir_all(batch.join(f.dest.strip_prefix("/").unwrap_or(&f.dest))).unwrap();
+    let stashed = batch
+        .join(f.dest.to_string_lossy().trim_start_matches('/'))
+        .join("link");
+    std::os::unix::fs::symlink(&elsewhere, &stashed).unwrap();
+
+    let found = find_stashed(&f.stash, &stashed).expect("a stashed symlink is an entry");
+    assert_eq!(found.stashed, stashed);
+    assert_eq!(found.original, f.dest.join("link"));
+}
+
+#[test]
+fn the_size_cap_does_not_reach_into_a_restore_that_is_still_running() {
+    // The cap takes the oldest batch and a running restore writes into the
+    // newest, so the two meet only when one restore is itself over the limit.
+    // Evicting then would delete files out from under the job creating them.
+    let f = fixture();
+    stash_batch(&f.stash, at(0), &[("/being-written.txt", "aaaaaaaaaa")]);
+
+    let report = expire_stash(&f.stash, epoch(at(60)), 1);
+
+    assert_eq!(
+        report.batches, 0,
+        "an hour's grace, and this is a minute old"
+    );
+    assert_eq!(list_stash(&f.stash, 50).len(), 1);
+}

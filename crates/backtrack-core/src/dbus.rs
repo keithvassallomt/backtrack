@@ -154,6 +154,27 @@ pub struct RestorePreview {
     pub missing: Vec<String>,
 }
 
+/// One file the safety stash is keeping, as `ListReplaced` reports it.
+///
+/// The stash has no database: a replaced file is filed under the path it had,
+/// and this is that path read back. So there is nothing to fall out of step
+/// with the files, and a person with a file manager can find theirs without
+/// Backtrack's help.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+pub struct ReplacedFile {
+    /// Where the file was when it was replaced, absolute.
+    pub original: String,
+    /// Where the safety copy is now. Also the handle: `PutBackReplaced` takes
+    /// it, because it is the one thing about an entry that is unique.
+    pub stashed: String,
+    pub size: u64,
+    /// When the restore that displaced it ran. Shared by every file that
+    /// restore replaced, which is what groups them on screen.
+    pub replaced_at: i64,
+    /// The file's own modification time, which the stash preserves.
+    pub mtime: i64,
+}
+
 /// The well-known bus name of an installed daemon.
 pub const BUS_NAME: &str = "org.backtrack.Daemon1";
 

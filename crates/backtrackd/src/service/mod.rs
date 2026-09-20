@@ -37,7 +37,7 @@ use backtrack_core::engine::{
 };
 use backtrack_core::index::{IndexReader, IndexWriter, Kind};
 use backtrack_core::paths;
-use backtrack_core::restore::{Decision, Decisions};
+use backtrack_core::restore::{self, Decision, Decisions};
 use backtrack_core::secret::SecretStore;
 use backtrack_core::state::RuntimeState;
 use futures::future::BoxFuture;
@@ -54,7 +54,7 @@ use crate::preflight::{self, Facts, SystemProbe, UnknownProbe, Verdict};
 use crate::reachability::{DestinationProbe, Reach, RealProbe};
 use crate::schedule::{self, ScheduleInput};
 
-pub use backtrack_core::dbus::{RestorePreview, SearchResult, Status};
+pub use backtrack_core::dbus::{ReplacedFile, RestorePreview, SearchResult, Status};
 pub use error::{DaemonError, Result};
 pub use health::{HealthInputs, HealthState};
 pub use preview::PreviewCache;
@@ -335,6 +335,12 @@ impl Shared {
     /// clear what a previous daemon left behind.
     pub fn staging_root(&self) -> &std::path::Path {
         &self.staging_dir
+    }
+
+    /// Where replaced files are kept. Exposed so the daily expiry pass knows
+    /// which directory it is bounding.
+    pub fn replaced_root(&self) -> &std::path::Path {
+        &self.replaced_dir
     }
 
     /// A handle that makes the signal fan-out re-evaluate health.
@@ -1396,6 +1402,64 @@ impl Daemon1 {
             }) as BoxFuture<'_, _>
         });
         Ok(self.shared.jobs.submit(JobKind::Restore, factory))
+    }
+
+    /// The files the safety stash is keeping, newest restore first.
+    ///
+    /// `limit` bounds the answer: a restore of a large folder replaces as many
+    /// files as it touches, and the window that shows this wants the recent
+    /// ones rather than all of them marshalled across a bus.
+    async fn list_replaced(&self, limit: u32) -> Result<Vec<ReplacedFile>> {
+        let root = self.shared.replaced_dir.clone();
+        let found = tokio::task::spawn_blocking(move || restore::list_stash(&root, limit as usize))
+            .await
+            .map_err(|e| DaemonError::RestoreFailed(e.to_string()))?;
+        Ok(found
+            .into_iter()
+            .map(|entry| ReplacedFile {
+                original: entry.original.to_string_lossy().to_string(),
+                stashed: entry.stashed.to_string_lossy().to_string(),
+                size: entry.size,
+                replaced_at: entry.replaced_at,
+                mtime: entry.mtime,
+            })
+            .collect())
+    }
+
+    /// Put one replaced file back where it came from.
+    ///
+    /// Whatever is standing in its place is stashed in turn rather than thrown
+    /// away: putting a file back is a restore like any other, and the promise
+    /// that the thing being overwritten survives the overwriting does not stop
+    /// applying because the user is going the other way.
+    ///
+    /// Returns where the displaced file went, or an empty string if there was
+    /// nothing in the way.
+    async fn put_back_replaced(&self, stashed: &str) -> Result<String> {
+        let root = self.shared.replaced_dir.clone();
+        let wanted = PathBuf::from(stashed);
+        // Named by its stashed path, which the client got from `ListReplaced`
+        // — and looked up rather than trusted, because what follows is a
+        // `rename` onto a path derived from it.
+        let entry = tokio::task::spawn_blocking({
+            let root = root.clone();
+            move || restore::find_stashed(&root, &wanted)
+        })
+        .await
+        .map_err(|e| DaemonError::RestoreFailed(e.to_string()))?
+        .ok_or_else(|| DaemonError::NotFound(format!("the stash is not keeping {stashed:?}")))?;
+
+        let original = entry.original.clone();
+        let displaced = tokio::task::spawn_blocking(move || {
+            restore::put_back(&entry, &root, SystemTime::now())
+        })
+        .await
+        .map_err(|e| DaemonError::RestoreFailed(e.to_string()))?
+        .map_err(|e| DaemonError::RestoreFailed(e.to_string()))?;
+        info!(path = %original.display(), "a replaced file was put back");
+        Ok(displaced
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_default())
     }
 
     /// Put back everything the restore under `job` moved.

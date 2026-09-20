@@ -27,6 +27,7 @@ mod classify;
 mod execute;
 mod plan;
 mod safety;
+mod stash;
 
 #[cfg(test)]
 mod tests;
@@ -35,6 +36,10 @@ pub use classify::{classify, Class, FileFacts, Kind};
 pub use execute::{execute, keep_both_name, undo, Move, MoveLog, Outcome, Report};
 pub use plan::{plan, Counts, Decision, Decisions, Entry, RestorePlan};
 pub use safety::{free_space, safe_join, SafetyError};
+pub use stash::{
+    expire as expire_stash, find as find_stashed, list as list_stash, put_back, Expiry, Replaced,
+    KEEP_DAYS, MAX_BYTES,
+};
 
 use std::path::PathBuf;
 

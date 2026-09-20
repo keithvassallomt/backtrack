@@ -9,6 +9,7 @@ pub mod conflict;
 pub mod files;
 pub mod menu;
 pub mod preview;
+pub mod replaced;
 pub mod restore;
 pub mod sidebar;
 pub mod strip;

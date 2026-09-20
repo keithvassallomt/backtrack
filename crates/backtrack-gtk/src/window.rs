@@ -399,13 +399,20 @@ impl Window {
         resume.connect_activate(move |_, _| resumer.resume());
         self.window.add_action(&resume);
 
-        // Stage 7 and Stage 9. Present so the menu is the shape it will keep,
-        // and disabled so it cannot promise anything it will not do.
-        for name in ["recently-replaced", "preferences"] {
-            let action = gio::SimpleAction::new(name, None);
-            action.set_enabled(false);
-            self.window.add_action(&action);
-        }
+        // The safety stash, which is what makes Replace a decision rather than
+        // a commitment: the toast's Undo covers ten seconds, this covers
+        // thirty days.
+        let replaced = gio::SimpleAction::new("recently-replaced", None);
+        let owner = self.window.clone();
+        let service = Rc::clone(&self.daemon);
+        replaced.connect_activate(move |_, _| ui::replaced::present(&owner, &service));
+        self.window.add_action(&replaced);
+
+        // Stage 9. Present so the menu is the shape it will keep, and disabled
+        // so it cannot promise anything it will not do.
+        let preferences = gio::SimpleAction::new("preferences", None);
+        preferences.set_enabled(false);
+        self.window.add_action(&preferences);
 
         let shortcuts = gio::SimpleAction::new("shortcuts", None);
         let owner = self.window.clone();

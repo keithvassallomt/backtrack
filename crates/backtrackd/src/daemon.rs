@@ -143,6 +143,21 @@ pub async fn run() -> Result<Outcome, StartupError> {
     // As must a pause and the attempt clock, which only this daemon records.
     shared.restore_persisted_state();
 
+    // Before the name is claimed, and emphatically so: this deletes staging
+    // directories, and the first thing an activating client does is ask for a
+    // restore that makes one. Run afterwards it is a race the daemon loses by
+    // clearing away the extraction of a job already under way — which does not
+    // fail, because an empty staging directory is a valid comparison. It
+    // reports that every file is fine and restores nothing.
+    crate::restore::sweep_staging(shared.staging_root());
+
+    // The stash promises thirty days and five gigabytes; something has to do
+    // the bounding, and it may as well start by catching up on however long
+    // the machine was off.
+    tokio::spawn(crate::restore::keep_the_stash_bounded(
+        shared.replaced_root().to_path_buf(),
+    ));
+
     // Export the object, and start turning job updates into signals, before
     // claiming the name — see below for why the order matters.
     let connection = zbus::connection::Builder::session()
@@ -202,8 +217,6 @@ pub async fn run() -> Result<Outcome, StartupError> {
     // a whole second copy of somebody's folder per abandoned restore — and,
     // because staging directories are named after job ids and job ids start
     // again with the daemon, stops the next restore extracting on top of one.
-    crate::restore::sweep_staging(shared.staging_root());
-
     // A backup can reach the repository and never be catalogued — the daemon
     // killed mid-ingest, the machine losing power, a listing that broke off. The
     // repository is the authority, so every start asks it what it actually holds
