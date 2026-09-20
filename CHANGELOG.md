@@ -92,6 +92,31 @@ All notable changes to Backtrack are documented here. This project adheres to
   most recent snapshot browsable straight away, with the rest of the history
   filling in behind it, newest first. The catalogue picks up where it left off if
   the computer is restarted part way through.
+- Restoring, with the awkward parts answered rather than passed on to you. A
+  file that has not changed is left alone instead of being offered as a
+  decision. A file that has says which of the two versions is newer — yours or
+  the backup's — because that is the thing you actually need to know and it is
+  the one thing this kind of dialog usually omits.
+- Restoring a folder is one screen, not a storm of pop-ups. It says how many
+  files are identical, how many will be replaced and how many of those are
+  newer on your disk, what will be added, and — in words, because it is the
+  first thing anyone fears — that files which exist only on your computer are
+  kept and nothing is deleted. The numbers are not an estimate: the whole
+  restore is worked out before anything is touched, so Cancel costs nothing.
+- A Review list behind that screen, if you want to go file by file. Every
+  clash with both versions' dates and sizes, a tick per file, and a count on
+  the button so you can see what you are about to do. Anything that changed
+  kind — a file where you now have a folder — starts unticked and stays that
+  way unless you say otherwise.
+- Replacing a file is never destructive. The version that was there is kept
+  for 30 days, and "Recently Replaced Files" in the menu lists them grouped by
+  the restore that displaced them, with a button to put any of them back. The
+  toast's Undo puts a whole restore back; this is for when you notice on
+  Friday what went wrong on Tuesday.
+- Restore To… puts the files in a folder you choose instead of over the
+  originals, in a new folder named for the backup they came from. Nothing on
+  your computer is touched and there is nothing to decide, so it is the way to
+  look at an old version before committing to it.
 - Project bootstrap: Cargo workspace (core library plus daemon, GTK app, and CLI
   binaries), structured logging with JSONL rotation, developer task runner,
   versioning policy, and continuous integration.
