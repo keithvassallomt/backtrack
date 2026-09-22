@@ -1728,6 +1728,7 @@ impl Daemon1 {
                 first_ts: hit.first_ts,
                 last_ts: hit.last_ts,
                 versions: hit.version_count.max(0) as u32,
+                size: hit.size,
                 gone_from_disk: presence == on_disk::OnDisk::Absent,
             })
             .collect())

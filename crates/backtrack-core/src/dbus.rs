@@ -88,6 +88,8 @@ pub struct SearchResult {
     pub last_ts: i64,
     /// How many distinct versions the path has had.
     pub versions: u32,
+    /// The size of the newest version, in bytes.
+    pub size: i64,
     /// Whether this path is known to be gone from the computer now.
     ///
     /// True only for a *known* absence. A path the daemon could not check —

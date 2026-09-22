@@ -511,6 +511,7 @@ mod tests {
                 first_ts: 1_700_000_000,
                 last_ts: 1_700_000_000,
                 versions: 2,
+                size: 4_096,
                 gone_from_disk: false,
             },
             SearchResult {
@@ -522,6 +523,7 @@ mod tests {
                 first_ts: 1_700_000_000,
                 last_ts: 1_700_000_000,
                 versions: 1,
+                size: 2_048,
                 gone_from_disk: true,
             },
         ];

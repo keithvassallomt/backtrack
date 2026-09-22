@@ -66,6 +66,11 @@ pub struct Window {
     restore_button: Button,
     restore_to_button: Button,
     compare_button: Button,
+    /// The header's title: the breadcrumb, or the search box.
+    title_slot: gtk4::Stack,
+    /// The window's body: the timeline, or the search results.
+    content_slot: gtk4::Stack,
+    search: RefCell<Option<Rc<ui::search::Search>>>,
     calendar: RefCell<Option<Rc<ui::calendar::Calendar>>>,
     strip: RefCell<Option<Rc<ui::strip::Strip>>>,
 }
@@ -131,6 +136,9 @@ impl Window {
             restore_button: Button::builder().build(),
             restore_to_button: Button::builder().build(),
             compare_button: Button::builder().build(),
+            title_slot: gtk4::Stack::new(),
+            content_slot: gtk4::Stack::new(),
+            search: RefCell::new(None),
             calendar: RefCell::new(None),
             strip: RefCell::new(None),
         });
@@ -176,16 +184,19 @@ impl Window {
         identity.append(&name);
         header.pack_start(&identity);
 
-        header.set_title_widget(Some(&ui::breadcrumb::build(&self.state)));
+        // The title position holds the breadcrumb while browsing and the search
+        // box while searching, because both are the one thing the window is
+        // currently about and neither wants to be beside the other.
+        self.title_slot
+            .add_named(&ui::breadcrumb::build(&self.state), Some("browse"));
+        header.set_title_widget(Some(&self.title_slot));
 
         header.pack_end(&ui::menu::button());
 
-        // Stage 8 fills this in; it is here now because its absence would
-        // change the shape of the header bar when it arrives.
         let search = Button::from_icon_name("system-search-symbolic");
-        search.set_tooltip_text(Some("Search every backup (coming soon)"));
+        search.set_tooltip_text(Some("Search every backup"));
         search.update_property(&[gtk4::accessible::Property::Label("Search every backup")]);
-        search.set_sensitive(false);
+        search.set_action_name(Some("win.search"));
         header.pack_end(&search);
 
         header
@@ -233,9 +244,11 @@ impl Window {
         self.strip_slot.set_margin_top(12);
         content.append(&self.strip_slot);
 
+        self.content_slot.add_named(&content, Some("browse"));
+
         adw::OverlaySplitView::builder()
             .sidebar(&sidebar)
-            .content(&content)
+            .content(&self.content_slot)
             .min_sidebar_width(200.0)
             .max_sidebar_width(280.0)
             .sidebar_width_fraction(0.22)
@@ -385,6 +398,19 @@ impl Window {
         self.window.add_action(&elsewhere);
         if let Some(app) = self.window.application() {
             app.set_accels_for_action("win.restore-to", &["<Control><Shift>r"]);
+        }
+
+        let search = gio::SimpleAction::new("search", None);
+        let searcher = Rc::clone(self);
+        search.connect_activate(move |_, _| {
+            let pane = searcher.search.borrow().clone();
+            if let Some(pane) = pane {
+                pane.toggle();
+            }
+        });
+        self.window.add_action(&search);
+        if let Some(app) = self.window.application() {
+            app.set_accels_for_action("win.search", &["<Control>f"]);
         }
 
         let compare = gio::SimpleAction::new("compare", None);
@@ -606,6 +632,38 @@ impl Window {
         self.compare_button.set_sensitive(comparable);
     }
 
+    /// Leave search and show a result where it lived, at the last backup that
+    /// had it.
+    ///
+    /// The last backup rather than the newest: a file deleted three backups
+    /// ago is not in the newest one, and landing somebody on a folder that
+    /// does not contain the thing they just clicked is the whole failure this
+    /// action exists to avoid.
+    fn go_to_hit(self: &Rc<Self>, hit: &backtrack_core::dbus::SearchResult) {
+        let folder = crate::path::parent(&hit.path).unwrap_or_default();
+        info!(
+            path = hit.path,
+            seq = hit.last_seq,
+            "opening a search result"
+        );
+        self.state.set_seq(hit.last_seq);
+        self.state.set_folder(folder);
+        self.state.set_selected(Some(crate::state::Selected {
+            path: hit.path.clone(),
+            name: hit.name.clone(),
+            is_dir: hit.kind == "dir",
+            size: hit.size,
+            // The catalogue's time for the newest version; the pane replaces
+            // this with the entry's own once the folder has loaded.
+            mtime: hit.last_ts.saturating_mul(1_000_000),
+            on_disk: if hit.gone_from_disk {
+                ON_DISK_ABSENT
+            } else {
+                ON_DISK_PRESENT
+            },
+        }));
+    }
+
     /// Show the selected file's backed-up version beside the one on disk.
     fn open_compare(self: &Rc<Self>) {
         let view = self.state.view();
@@ -748,6 +806,35 @@ impl Window {
                 this.refresh_restore_action();
             }
         });
+
+        // Search mode. Its two halves live in the two stacks the frame set up,
+        // and one callback keeps them swapping together.
+        let navigator = Rc::clone(self);
+        let restorer = Rc::clone(self);
+        let search = ui::search::build(
+            &self.state,
+            &self.daemon,
+            ui::search::Actions {
+                view_in_timeline: Rc::new(move |hit| navigator.go_to_hit(hit)),
+                restore_latest: Rc::new(move |hit| {
+                    restorer.go_to_hit(hit);
+                    let driver = restorer.restores.borrow().clone();
+                    if let Some(driver) = driver {
+                        driver.start();
+                    }
+                }),
+            },
+        );
+        self.title_slot.add_named(&search.entry(), Some("search"));
+        self.content_slot
+            .add_named(&search.widget(), Some("search"));
+        let swapper = Rc::clone(self);
+        search.on_toggle(move |open| {
+            let page = if open { "search" } else { "browse" };
+            swapper.title_slot.set_visible_child_name(page);
+            swapper.content_slot.set_visible_child_name(page);
+        });
+        *self.search.borrow_mut() = Some(search);
 
         let strip = ui::strip::build(&self.state);
         self.strip_slot.append(&strip.widget());
@@ -924,6 +1011,7 @@ pub fn retarget(window: &gtk4::Window, target: &Target) {
 /// The daemon's "this path is on the computer" answer, as `PathsOnDisk`
 /// encodes it. Only a known presence gives the compare view a right-hand side.
 const ON_DISK_PRESENT: u8 = 2;
+const ON_DISK_ABSENT: u8 = 1;
 
 const STATUS_TICK_SECONDS: u32 = 30;
 

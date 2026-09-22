@@ -149,6 +149,10 @@ pub fn shortcuts_dialog() -> adw::ShortcutsDialog {
         "Compare it with the file on your computer",
         "win.compare",
     ));
+    files.add(adw::ShortcutsItem::from_action(
+        "Search every backup",
+        "win.search",
+    ));
     // The one key that belongs to the list widget rather than to an action.
     files.add(adw::ShortcutsItem::new(
         "Open the selected folder",

@@ -62,6 +62,9 @@ pub struct SearchHit {
     pub version_count: i64,
     /// Whether the path is present in the latest archive.
     pub exists_today: bool,
+    /// The size of the newest version, which is what a search result describes
+    /// when it says how big the thing it found is.
+    pub size: i64,
 }
 
 /// A single archive, for the snapshot sidebar. The GUI buckets these by
@@ -401,7 +404,8 @@ impl IndexReader {
         let mut agg = self.conn.prepare_cached(
             "SELECT p.name,
                     MIN(v.first_seq), MAX(v.last_seq), COUNT(*),
-                    (SELECT kind FROM versions WHERE path_id = p.id ORDER BY last_seq DESC LIMIT 1)
+                    (SELECT kind FROM versions WHERE path_id = p.id ORDER BY last_seq DESC LIMIT 1),
+                    (SELECT size FROM versions WHERE path_id = p.id ORDER BY last_seq DESC LIMIT 1)
              FROM paths p JOIN versions v ON v.path_id = p.id
              WHERE p.id = ?1",
         )?;
@@ -418,10 +422,11 @@ impl IndexReader {
                         r.get::<_, i64>(2)?,
                         r.get::<_, i64>(3)?,
                         r.get::<_, String>(4)?,
+                        r.get::<_, i64>(5)?,
                     ))
                 })
                 .optional()?;
-            let Some((name, first_seq, last_seq, version_count, kind)) = row else {
+            let Some((name, first_seq, last_seq, version_count, kind, size)) = row else {
                 continue;
             };
             hits.push((
@@ -437,6 +442,7 @@ impl IndexReader {
                     last_ts: self.archive_ts(last_seq)?,
                     version_count,
                     exists_today: last_seq == global_max,
+                    size,
                 },
             ));
         }

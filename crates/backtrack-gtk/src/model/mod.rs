@@ -21,6 +21,7 @@ pub mod density;
 pub mod format;
 pub mod group;
 pub mod restore;
+pub mod search;
 pub mod status;
 
 use gtk4::glib;

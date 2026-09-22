@@ -12,6 +12,7 @@ pub mod menu;
 pub mod preview;
 pub mod replaced;
 pub mod restore;
+pub mod search;
 pub mod sidebar;
 pub mod strip;
 pub mod summary;
