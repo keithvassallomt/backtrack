@@ -91,6 +91,7 @@
 - [ ] S08-T3 View-in-Timeline + Restore-Latest actions
 - [ ] S08-T4 Compare view: text diff (mockup 9), images side-by-side
 - [x] S08-T5 Real image bytes in the demo fixtures (preview + compare need them)
+- [x] S08-T6 “Not on your disk” as a fact about the disk, not the catalogue
 
 ## Stage 9 — Wizard & preferences ([stage file](stages/stage-09-wizard-preferences.md))
 - [ ] S09-T1 Wizard flow incl. existing-repo import (mockups 10–13)

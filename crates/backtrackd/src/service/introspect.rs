@@ -14,8 +14,8 @@
 
 /// The expected method set: name and D-Bus signature, sorted.
 ///
-/// Signature codes: `s` string, `t` u64, `u` u32, `x` i64, `b` bool,
-/// `h` file descriptor, `as` string array, `()` struct.
+/// Signature codes: `s` string, `t` u64, `u` u32, `x` i64, `b` bool, `y` byte,
+/// `h` file descriptor, `as` string array, `ay` byte array, `()` struct.
 pub const METHODS: &[(&str, &str, &str)] = &[
     // (name, argument signature, return signature)
     ("BackupNow", "", "t"),
@@ -30,6 +30,7 @@ pub const METHODS: &[(&str, &str, &str)] = &[
     ("GetStatus", "", "(sttbtsuuttb)"),
     ("ImportRepo", "ss", ""),
     ("ListReplaced", "u", "a(sstxx)"),
+    ("PathsOnDisk", "as", "ay"),
     ("Pause", "t", ""),
     ("PauseJob", "t", ""),
     ("PrepareRestore", "sass", "t"),

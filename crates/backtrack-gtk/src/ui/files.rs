@@ -14,7 +14,7 @@
 //! "deleted after this" and "changed since then" are columns of the query in
 //! S01-T3, computed in SQL over the interval encoding.
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use backtrack_core::index::{Entry, Kind};
@@ -26,6 +26,7 @@ use gtk4::{
 use libadwaita as adw;
 use tracing::{debug, warn};
 
+use crate::daemon::Daemon1Proxy;
 use crate::index::Index;
 use crate::path;
 use crate::state::{AppState, Change, Selected};
@@ -36,7 +37,16 @@ struct RowData {
     entry: Entry,
     size: String,
     modified: String,
+    /// What the daemon said about this path being on the computer now: 0
+    /// unknown, 1 absent, 2 present. Unknown when the daemon was not there to
+    /// ask, which is why the default says nothing rather than "gone".
+    on_disk: u8,
 }
+
+/// The daemon's answers about a path being on the computer now. Three-valued,
+/// because "the folder could not be read" is not "the file was deleted".
+const UNKNOWN: u8 = 0;
+const ABSENT: u8 = 1;
 
 /// The pane and what it needs to refill itself.
 pub struct Files {
@@ -46,6 +56,10 @@ pub struct Files {
     empty: adw::StatusPage,
     state: Rc<AppState>,
     index: Index,
+    /// `None` until the daemon answers, and if it never does. Browsing works
+    /// without it; only the "not on your disk" status needs it, and the
+    /// absence of an answer is itself an answer the status column can hold.
+    daemon: Rc<RefCell<Option<Daemon1Proxy<'static>>>>,
     /// Which load is current. A load that finishes after a newer one started is
     /// dropped: arrow-keying through time fires these faster than they return,
     /// and the last answer to arrive must not win over the last one asked for.
@@ -54,7 +68,11 @@ pub struct Files {
 }
 
 /// Build the file pane for `state`.
-pub fn build(state: &Rc<AppState>, index: &Index) -> Rc<Files> {
+pub fn build(
+    state: &Rc<AppState>,
+    index: &Index,
+    daemon: &Rc<RefCell<Option<Daemon1Proxy<'static>>>>,
+) -> Rc<Files> {
     let rows = gio::ListStore::new::<glib::BoxedAnyObject>();
     let selection = SingleSelection::builder()
         .model(&rows)
@@ -95,6 +113,7 @@ pub fn build(state: &Rc<AppState>, index: &Index) -> Rc<Files> {
         empty,
         state: Rc::clone(state),
         index: index.clone(),
+        daemon: Rc::clone(daemon),
         generation: Cell::new(0),
         syncing: Cell::new(false),
     });
@@ -182,15 +201,25 @@ impl Files {
             }
             match answer {
                 Ok(entries) => {
+                    // Asked before painting rather than after, so the status
+                    // column is right the first time it is drawn. It is one
+                    // directory read on the other side of a local socket, and
+                    // a column that corrects itself a moment later is worse
+                    // than one that waits.
+                    let on_disk = this.ask_the_disk(&entries, &folder).await;
+                    if this.generation.get() != wanted {
+                        return;
+                    }
                     debug!(
                         folder,
                         seq,
                         entries = entries.len(),
                         deleted_after = entries.iter().filter(|e| e.deleted_after).count(),
                         changed_since = entries.iter().filter(|e| e.changed_since).count(),
+                        gone_from_disk = on_disk.iter().filter(|a| **a == ABSENT).count(),
                         "folder loaded"
                     );
-                    this.show(entries, &folder)
+                    this.show(entries, on_disk, &folder)
                 }
                 Err(error) => {
                     warn!(%error, folder, seq, "the folder could not be read");
@@ -201,7 +230,38 @@ impl Files {
     }
 
     /// Put `entries` on screen, keeping the selection if it survived the change.
-    fn show(self: &Rc<Self>, entries: Vec<Entry>, folder: &str) {
+    /// What the daemon says about each of these entries being on the computer.
+    ///
+    /// An empty answer means nobody was asked — the daemon is not there, or it
+    /// refused — and every entry is then unknown. Browsing has never required
+    /// the daemon and must not start to.
+    async fn ask_the_disk(&self, entries: &[Entry], folder: &str) -> Vec<u8> {
+        let unknown = vec![UNKNOWN; entries.len()];
+        let Some(proxy) = self.daemon.borrow().clone() else {
+            return unknown;
+        };
+        let paths: Vec<String> = entries
+            .iter()
+            .map(|entry| path::join(folder, &entry.name))
+            .collect();
+        match proxy.paths_on_disk(&paths).await {
+            Ok(answers) if answers.len() == entries.len() => answers,
+            Ok(answers) => {
+                warn!(
+                    asked = entries.len(),
+                    answered = answers.len(),
+                    "the daemon answered for a different number of paths than were asked about"
+                );
+                unknown
+            }
+            Err(error) => {
+                debug!(%error, folder, "the daemon could not say what is on disk");
+                unknown
+            }
+        }
+    }
+
+    fn show(self: &Rc<Self>, entries: Vec<Entry>, on_disk: Vec<u8>, folder: &str) {
         if entries.is_empty() {
             let name = path::name(folder);
             self.show_empty(
@@ -216,19 +276,25 @@ impl Files {
         self.syncing.set(true);
         self.rows.remove_all();
         let tz = glib::TimeZone::local();
-        let mut sorted = entries;
+        // Paired before sorting, because the answers came back in the order
+        // the entries were asked about and the sort is about to destroy it.
+        let mut sorted: Vec<(Entry, u8)> = entries
+            .into_iter()
+            .zip(on_disk.into_iter().chain(std::iter::repeat(UNKNOWN)))
+            .collect();
         // Folders first, then by name, the way every file manager does it. The
         // index returns plain name order, which mixes them.
-        sorted.sort_by(|a, b| {
+        sorted.sort_by(|(a, _), (b, _)| {
             (b.kind == Kind::Dir)
                 .cmp(&(a.kind == Kind::Dir))
                 .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
         });
-        for entry in sorted {
+        for (entry, on_disk) in sorted {
             let data = RowData {
                 size: crate::model::format::size(entry.size, entry.kind),
                 modified: crate::model::format::modified(entry.mtime, &tz),
                 entry,
+                on_disk,
             };
             self.rows.append(&glib::BoxedAnyObject::new(data));
         }
@@ -403,6 +469,14 @@ fn status_factory() -> SignalListItemFactory {
         label.remove_css_class("changed");
         if row.entry.deleted_after {
             label.set_text("deleted after this");
+            label.add_css_class("deleted");
+            label.set_visible(true);
+        } else if row.on_disk == ABSENT {
+            // The catalogue believes this file is current and the computer
+            // disagrees, which is the one question the other two badges cannot
+            // answer and the one a person usually arrives with. Only ever
+            // shown for a *known* absence: an unknown says nothing.
+            label.set_text("not on your disk");
             label.add_css_class("deleted");
             label.set_visible(true);
         } else if row.entry.changed_since {

@@ -62,6 +62,32 @@ should say what they are.
 different snapshots, showing different images; S08-T4's image branch draws both
 sides from the fixture.
 
+### S08-T6 — "Not on your disk" has to be a fact about the disk
+Both badges in the file pane are measured inside the catalogue: `deleted_after`
+means "absent from the newest catalogued archive" and `changed_since` means "a
+newer version opens after this one". At the newest backup both are false by
+construction, so the Status column is structurally empty exactly where a person
+spends most of their time — and a file deleted from disk ten minutes ago, which
+is the product's whole reason for existing, is reported as unremarkable.
+
+`SearchFiles` has the same hole under a more confident name: `exists_today` is
+`last_seq == global_max`, "present in the latest archive", and S08-T2's orange
+"no longer on your disk" tag is specified to be driven by it.
+
+Give the daemon a live presence check — one `read_dir` per folder rather than a
+stat per file — and a `PathsOnDisk` method to serve it, because the GUI cannot
+be assumed to reach the user's files under Flatpak. Tri-state: present, absent,
+or unknown, where unknown shows nothing; an archive from another machine, or a
+folder that cannot be read, must never produce a claim that something was
+deleted. One status per row: the new badge fills the case where the catalogue
+believes the file is current and the disk disagrees, leaving Stage 6's
+navigation signals as they are. S08-T1 then consumes the same resolver so
+search's tag and its deleted-first ranking mean what they say.
+**Accept:** a file present in the newest backup and deleted from disk is badged
+in the file pane at that backup; a folder the daemon cannot read yields no
+badge at all rather than a false one; zbus test over `PathsOnDisk` covering
+present, absent and unknown.
+
 ## Definition of Done
 Charlie's story is a <30-second GUI walkthrough on demo data; compare handles
 text/image/binary gracefully; CI green; progress.md + CHANGELOG updated.

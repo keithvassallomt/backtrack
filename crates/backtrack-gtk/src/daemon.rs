@@ -30,6 +30,14 @@ pub trait Daemon1 {
     fn preview_file(&self, archive: &str, path: &str) -> zbus::Result<zbus::zvariant::OwnedFd>;
     fn search_files(&self, query: &str) -> zbus::Result<Vec<SearchResult>>;
 
+    /// Which of these catalogued paths are still on this computer: one byte
+    /// each, in the order asked — 0 unknown, 1 absent, 2 present.
+    ///
+    /// Asked of the daemon rather than answered here, because a sandboxed
+    /// build of this application has no path to the user's files at all. An
+    /// unknown is a real answer and means nothing may be said.
+    fn paths_on_disk(&self, paths: &[String]) -> zbus::Result<Vec<u8>>;
+
     /// Work out what restoring `paths` into `dest` would do, without doing any
     /// of it. Returns the job doing the working out; everything after this is
     /// addressed with the same id.

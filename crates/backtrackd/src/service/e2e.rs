@@ -1209,3 +1209,57 @@ async fn a_client_works_out_a_restore_looks_at_it_carries_it_out_and_undoes_it()
         "undo should bring back the edit the restore replaced"
     );
 }
+
+/// `PathsOnDisk` over the real interface, covering all three answers.
+///
+/// The three-valued part is the point. A caller that treated "I could not read
+/// that folder" as "the file is gone" would paint a deletion badge across every
+/// file in an archive taken on another machine, so the unknown case is tested
+/// as deliberately as the other two.
+#[tokio::test]
+async fn a_client_can_ask_which_catalogued_paths_are_still_on_this_computer() {
+    let fixture = small_fixture().await;
+    let shared = Arc::clone(&fixture.shared);
+    let src = source(&shared);
+
+    let backup = Daemon1::new(Arc::clone(&shared))
+        .backup_now()
+        .await
+        .expect("backup starts");
+    wait_for_job(&shared, backup).await;
+
+    // One file survives, one is deleted after the backup — the case the file
+    // pane has no answer for, since the catalogue still has it in the newest
+    // archive.
+    let kept = src.join("docs/a.txt");
+    let deleted = src.join("docs/b.txt");
+    assert!(kept.exists() && deleted.exists(), "the fixture has both");
+    std::fs::remove_file(&deleted).unwrap();
+
+    let member = |path: &std::path::Path| {
+        path.strip_prefix("/")
+            .unwrap()
+            .to_string_lossy()
+            .to_string()
+    };
+    let asked = vec![
+        member(&kept),
+        member(&deleted),
+        // A folder this machine does not have, as an archive from another
+        // computer would describe.
+        "somewhere/else/entirely/report.odt".to_string(),
+    ];
+
+    let (_server, client) = connect(Arc::clone(&shared)).await;
+    let reply = client
+        .call_method(None::<()>, PATH, Some(IFACE), "PathsOnDisk", &(asked,))
+        .await
+        .expect("PathsOnDisk accepted");
+    let answers: Vec<u8> = reply.body().deserialize().expect("a byte per path");
+
+    assert_eq!(
+        answers,
+        vec![2, 1, 0],
+        "present, absent, unknown — in the order they were asked",
+    );
+}

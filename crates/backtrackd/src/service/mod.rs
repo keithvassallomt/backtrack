@@ -24,6 +24,7 @@ mod error;
 mod health;
 #[cfg(test)]
 mod introspect;
+mod on_disk;
 mod preview;
 mod state;
 
@@ -1604,6 +1605,26 @@ impl Daemon1 {
             }) as BoxFuture<'_, _>
         });
         Ok(self.shared.jobs.submit(JobKind::Restore, factory))
+    }
+
+    /// Which of these catalogued paths are still on this computer.
+    ///
+    /// Answers come back in the order they were asked for, one byte each:
+    /// 0 unknown, 1 absent, 2 present. Three-valued because the honest answer
+    /// to "I could not read that folder" is not "the file is gone" — an
+    /// archive taken on another machine describes paths this one never had,
+    /// and a caller that painted those as deletions would be inventing them.
+    ///
+    /// The daemon answers this rather than the caller because a sandboxed
+    /// application cannot be assumed to reach the user's files at all: it is
+    /// handed archived contents as descriptors for exactly that reason.
+    async fn paths_on_disk(&self, paths: Vec<String>) -> Result<Vec<u8>> {
+        let answers = tokio::task::spawn_blocking(move || on_disk::resolve(&paths))
+            .await
+            .map_err(|error| {
+                DaemonError::IndexUnavailable(format!("the folder listing task failed: {error}"))
+            })?;
+        Ok(answers.into_iter().map(on_disk::OnDisk::as_byte).collect())
     }
 
     /// Filename search across every snapshot, including files that have since

@@ -690,7 +690,7 @@ impl Window {
         self.sidebar_slot.append(&sidebar.widget());
         *self.sidebar.borrow_mut() = Some(sidebar);
 
-        let files = ui::files::build(&self.state, &self.index);
+        let files = ui::files::build(&self.state, &self.index, &self.daemon);
         self.files_slot.append(&files.widget());
         *self.files.borrow_mut() = Some(files);
 
