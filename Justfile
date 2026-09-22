@@ -263,6 +263,7 @@ demo-conflicts:
     data="${HOME}/.local/share/backtrack-dev"
     folder="${data}/demo-src/home/Projects/website"
     cli="{{justfile_directory()}}/target/debug/backtrack"
+    xtask="{{justfile_directory()}}/target/debug/xtask"
 
     # This asks the daemon to back up whatever it is configured to back up, so
     # it checks first that the answer is the demo fixture and not a real home
@@ -273,7 +274,7 @@ demo-conflicts:
         exit 1
     fi
 
-    cargo build --quiet -p backtrack-cli
+    cargo build --quiet -p backtrack-cli -p xtask
 
     # Four dates, because "newer" has to be unambiguous on screen. Most of the
     # folder is two months old. The three files the person had just edited when
@@ -305,27 +306,41 @@ demo-conflicts:
         touch -d "@$(( $1 - step * 4177 ))" "${folder}/$2"
         step=$(( step + 1 ))
     }
-    seed() {
+    # Prose or a picture, decided by the name. The preview pane and the compare
+    # view both work out what they are holding by looking at the bytes, so a
+    # folder with no real images in it cannot exercise either of them — and a
+    # picture is also the case where "this file changed" has to be settled
+    # without a readable diff.
+    write() {
         mkdir -p "${folder}/$(dirname "$1")"
-        body "$1" 1 > "${folder}/$1"
+        case "$1" in
+            *.png) "${xtask}" image "${folder}/$1" "$2" ;;
+            *)     body "$1" "$2" > "${folder}/$1" ;;
+        esac
+    }
+    seed() {
+        write "$1" 1
     }
     seed_at() {
         seed "$2"
         dated "$1" "$2"
     }
     revise() {
-        body "$2" 2 > "${folder}/$2"
+        write "$2" 2
         dated "$1" "$2"
     }
 
     # ── The folder as the backup will find it ──
-    untouched=(index.html about.html css/print.css js/analytics.js img/hero.jpg
+    untouched=(index.html about.html css/print.css js/analytics.js img/hero.png
                content/faq.md content/blog/2026-01-launch.md data/team.json
                LICENSE deploy.sh config/site.toml)
-    edited_since=(contact.html css/main.css js/app.js content/home.md README.md)
+    # img/banner.png is here so the compare view has a picture whose two sides
+    # differ — the case it cannot settle by reading lines.
+    edited_since=(contact.html css/main.css js/app.js content/home.md README.md
+                  img/banner.png)
     rolled_back=(content/pricing.md data/menu.json content/blog/2026-06-pricing.md)
     type_changed=(config/redirects.txt)
-    deleted_since=(content/blog/2026-03-redesign.md img/team.jpg img/logo.png notes.txt)
+    deleted_since=(content/blog/2026-03-redesign.md img/team.png img/logo.png notes.txt)
     written_since=(drafts/newsletter.md css/dark.css js/vendor.js)
 
     rm -rf "${folder}"

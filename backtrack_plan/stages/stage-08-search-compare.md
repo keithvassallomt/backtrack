@@ -55,8 +55,10 @@ has nothing to exercise. Give the `xtask` generator real, small image bytes:
 `Pictures/vacation.jpg` appearing at day 10 and *changing* at least once after
 it, so "an older version of this photo" is something a person can look at, plus
 the `img/` files `just demo-conflicts` stages. Keep the assets small enough that
-the repository stays light (synthesise them, or check in a few KB).
-**Accept:** the preview pane renders `Pictures/vacation.jpg` as a picture at two
+the repository stays light (synthesise them, or check in a few KB). The photo
+is renamed to `.png` as part of this: the bytes are real now, and the name
+should say what they are.
+**Accept:** the preview pane renders `Pictures/vacation.png` as a picture at two
 different snapshots, showing different images; S08-T4's image branch draws both
 sides from the fixture.
 

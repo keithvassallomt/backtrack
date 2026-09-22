@@ -12,7 +12,7 @@
 > tasks: add them here + to the stage file, then `just provision-board-apply`.
 > See [../CLAUDE.md](../CLAUDE.md) for the full workflow.
 
-**Current stage:** 8 (not started)
+**Current stage:** 8 (in progress)
 **Last updated:** 2026-09-22
 
 ## Stage 0 — Bootstrap ([stage file](stages/stage-00-bootstrap.md))
@@ -90,7 +90,7 @@
 - [ ] S08-T2 Search UI grouped by file, deleted-first ranking (mockup 20)
 - [ ] S08-T3 View-in-Timeline + Restore-Latest actions
 - [ ] S08-T4 Compare view: text diff (mockup 9), images side-by-side
-- [ ] S08-T5 Real image bytes in the demo fixtures (preview + compare need them)
+- [x] S08-T5 Real image bytes in the demo fixtures (preview + compare need them)
 
 ## Stage 9 — Wizard & preferences ([stage file](stages/stage-09-wizard-preferences.md))
 - [ ] S09-T1 Wizard flow incl. existing-repo import (mockups 10–13)

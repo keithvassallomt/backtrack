@@ -20,6 +20,8 @@ use std::process::Command;
 
 use backtrack_core::index::{ArchiveMeta, BorgItem, IndexWriter, Repo, ITEM_FORMAT};
 
+mod png;
+
 type Result<T> = std::result::Result<T, Box<dyn Error>>;
 
 /// What a demo build produced, for reporting and testing.
@@ -33,12 +35,110 @@ struct Summary {
 }
 
 fn main() {
+    let args: Vec<String> = std::env::args().skip(1).collect();
     // Printed rather than returned: a `Result` from `main` is rendered with
     // `Debug`, which turns a multi-line explanation into one line of escapes.
-    if let Err(error) = build() {
+    let outcome = match args.first().map(String::as_str) {
+        Some("image") => write_image(&args[1..]),
+        Some(other) => Err(format!("unknown command {other:?}; try `image` or no argument").into()),
+        None => build(),
+    };
+    if let Err(error) = outcome {
         eprintln!("{error}");
         std::process::exit(1);
     }
+}
+
+/// `xtask image <path> <variant>` — write one of the fixture's photographs.
+///
+/// Exists for the shell recipes: `just demo-conflicts` stages a folder full of
+/// files, and some of those have to be pictures for the preview and the compare
+/// view to have anything to show. A recipe cannot synthesise a PNG in bash, and
+/// it should not have to keep one in the repository either.
+fn write_image(args: &[String]) -> Result<()> {
+    let [path, variant] = args else {
+        return Err("usage: xtask image <path> <variant>".into());
+    };
+    let variant: usize = variant
+        .parse()
+        .map_err(|_| format!("variant must be a number, not {variant:?}"))?;
+    if let Some(parent) = Path::new(path).parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::write(path, photo(variant))?;
+    Ok(())
+}
+
+/// A photograph, for a fixture that needs one.
+///
+/// Not a photograph, obviously: a horizon, a sun and a gradient, drawn by
+/// arithmetic. It only has to be a real image — something the preview pane can
+/// decode and draw, and something a person looking at two of them can tell
+/// apart at a glance, which is what "restore the older version of this picture"
+/// needs in order to mean anything on screen.
+///
+/// `variant` picks the palette and moves the sun, and is the whole of what
+/// makes one version of a photo different from the next.
+fn photo(variant: usize) -> Vec<u8> {
+    const WIDTH: u32 = 320;
+    const HEIGHT: u32 = 240;
+    const HORIZON: u32 = HEIGHT * 3 / 5;
+
+    /// (sky top, sky horizon, ground near, ground far), as RGB.
+    const PALETTES: [[[u8; 3]; 4]; 4] = [
+        // Morning: blue above, pale at the horizon, green fields.
+        [[70, 130, 200], [200, 220, 235], [90, 140, 70], [50, 90, 45]],
+        // Evening: the same place, hours later.
+        [[180, 90, 60], [245, 190, 120], [80, 70, 90], [40, 35, 55]],
+        // Overcast.
+        [
+            [150, 155, 165],
+            [205, 208, 212],
+            [95, 110, 85],
+            [55, 65, 50],
+        ],
+        // Night.
+        [[10, 15, 40], [40, 50, 90], [25, 35, 30], [12, 18, 16]],
+    ];
+
+    let palette = PALETTES[variant % PALETTES.len()];
+    let (sun_x, sun_y) = (
+        60 + (variant as i64 * 73) % 200,
+        40 + (variant as i64 * 31) % 60,
+    );
+    let sun = if variant % PALETTES.len() == 3 {
+        [230, 230, 245] // a moon, at night
+    } else {
+        [255, 240, 180]
+    };
+
+    png::encode(WIDTH, HEIGHT, |x, y| {
+        if y < HORIZON {
+            let dx = x as i64 - sun_x;
+            let dy = y as i64 - sun_y;
+            if dx * dx + dy * dy < 26 * 26 {
+                return sun;
+            }
+            blend(palette[0], palette[1], y, HORIZON)
+        } else {
+            // Nearer the bottom is nearer the viewer, so the gradient runs the
+            // other way: a flat field reads as flat, a shaded one reads as
+            // going away from you.
+            blend(palette[3], palette[2], y - HORIZON, HEIGHT - HORIZON)
+        }
+    })
+}
+
+/// `from` at `step` 0, `to` at `step` `span`.
+fn blend(from: [u8; 3], to: [u8; 3], step: u32, span: u32) -> [u8; 3] {
+    let span = span.max(1) as i64;
+    let step = (step as i64).min(span);
+    let mix = |a: u8, b: u8| (a as i64 + (b as i64 - a as i64) * step / span) as u8;
+    [
+        mix(from[0], to[0]),
+        mix(from[1], to[1]),
+        mix(from[2], to[2]),
+    ]
 }
 
 fn build() -> Result<()> {
@@ -300,7 +400,7 @@ fn civil_from_days(days: i64) -> (i64, i64, i64) {
 /// The scripted 30-day history: for each day (1-based), the file tree relative to
 /// `home/`, mapping path to content. Files appear, change, and disappear on known
 /// dates; names echo the mockups.
-fn history() -> Vec<BTreeMap<String, String>> {
+fn history() -> Vec<BTreeMap<String, Vec<u8>>> {
     (1..=30)
         .map(|day| {
             let mut files = BTreeMap::new();
@@ -314,7 +414,10 @@ fn history() -> Vec<BTreeMap<String, String>> {
             } else {
                 "report final signed version!!"
             };
-            files.insert("Documents/report.odt".to_string(), report.to_string());
+            files.insert(
+                "Documents/report.odt".to_string(),
+                report.as_bytes().to_vec(),
+            );
 
             // notes.txt — one change, late.
             let notes = if day < 25 {
@@ -322,31 +425,39 @@ fn history() -> Vec<BTreeMap<String, String>> {
             } else {
                 "meeting notes plus action items"
             };
-            files.insert("Documents/notes.txt".to_string(), notes.to_string());
+            files.insert("Documents/notes.txt".to_string(), notes.as_bytes().to_vec());
 
             // invoice appears mid-month and stays.
             if day >= 5 {
                 files.insert(
                     "Documents/invoice-may.pdf".to_string(),
-                    "invoice may 2026 total due".to_string(),
+                    b"invoice may 2026 total due".to_vec(),
                 );
             }
-            // a photo shows up on day 10.
+            // A photograph shows up on day 10, and a second one taken later
+            // the same day replaces it on day 22 — the same scene in the
+            // evening. Two versions, because "look at the older one and put it
+            // back" is only a demonstrable thing if there are two to look at.
+            //
+            // The two are the *same size*, which is deliberate: it puts a real
+            // change in front of the ingest's size+mtime detection where the
+            // size half cannot help, and it is what a re-edited photo actually
+            // looks like.
             if day >= 10 {
                 files.insert(
-                    "Pictures/vacation.jpg".to_string(),
-                    "JPEG-BINARY".to_string(),
+                    "Pictures/vacation.png".to_string(),
+                    photo(if day < 22 { 0 } else { 1 }),
                 );
             }
             // old-client-folder exists days 1–15, then is deleted.
             if day <= 15 {
                 files.insert(
                     "old-client-folder/contract.pdf".to_string(),
-                    "signed contract".to_string(),
+                    b"signed contract".to_vec(),
                 );
                 files.insert(
                     "old-client-folder/proposal.odt".to_string(),
-                    "project proposal".to_string(),
+                    b"project proposal".to_vec(),
                 );
             }
             files
@@ -374,8 +485,8 @@ fn history() -> Vec<BTreeMap<String, String>> {
 /// and not when a file inside it is rewritten.
 fn apply_day(
     home: &Path,
-    prev: &BTreeMap<String, String>,
-    cur: &BTreeMap<String, String>,
+    prev: &BTreeMap<String, Vec<u8>>,
+    cur: &BTreeMap<String, Vec<u8>>,
     when: i64,
 ) -> Result<()> {
     /// How long before the backup the day's edits were made.
@@ -420,7 +531,7 @@ fn apply_day(
 ///
 /// This is what decides whether a directory's modification time moved: it did
 /// if the set of names inside it is not the one it had yesterday.
-fn entries_by_dir(files: &BTreeMap<String, String>) -> BTreeMap<String, BTreeSet<String>> {
+fn entries_by_dir(files: &BTreeMap<String, Vec<u8>>) -> BTreeMap<String, BTreeSet<String>> {
     let mut dirs: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
     dirs.entry(String::new()).or_default();
     for rel in files.keys() {
@@ -596,7 +707,7 @@ mod tests {
     /// every ancestor (as Borg's listing would). Content-derived mtime means an
     /// unchanged file compares equal across snapshots, so the borg-free build
     /// produces the same interval structure as the real one.
-    fn to_borg_items(files: &BTreeMap<String, String>) -> Vec<BorgItem> {
+    fn to_borg_items(files: &BTreeMap<String, Vec<u8>>) -> Vec<BorgItem> {
         let mut dirs: BTreeSet<String> = BTreeSet::new();
         dirs.insert("home".to_string());
         let mut items = Vec::new();
@@ -606,7 +717,7 @@ mod tests {
             for depth in 1..parts.len() {
                 dirs.insert(parts[..depth].join("/"));
             }
-            let checksum: i64 = content.bytes().map(|b| b as i64).sum();
+            let checksum: i64 = content.iter().map(|b| *b as i64).sum();
             items.push(BorgItem {
                 path: full,
                 kind: Kind::File,
@@ -731,13 +842,13 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let home = tmp.path();
 
-        let day_one: BTreeMap<String, String> = [
+        let day_one: BTreeMap<String, Vec<u8>> = [
             ("Documents/report.odt", "draft"),
             ("Documents/notes.txt", "notes"),
             ("old/contract.pdf", "signed"),
         ]
         .iter()
-        .map(|(k, v)| (k.to_string(), v.to_string()))
+        .map(|(k, v)| (k.to_string(), v.as_bytes().to_vec()))
         .collect();
         apply_day(home, &BTreeMap::new(), &day_one, DAY_ONE).unwrap();
 
@@ -751,7 +862,7 @@ mod tests {
         // Day two rewrites one file, deletes a folder's only file, and touches
         // nothing else.
         let mut day_two = day_one.clone();
-        day_two.insert("Documents/report.odt".to_string(), "reviewed".to_string());
+        day_two.insert("Documents/report.odt".to_string(), b"reviewed".to_vec());
         day_two.remove("old/contract.pdf");
         apply_day(home, &day_one, &day_two, DAY_TWO).unwrap();
 
@@ -772,9 +883,9 @@ mod tests {
 
     #[test]
     fn a_directorys_entries_are_the_names_directly_inside_it() {
-        let files: BTreeMap<String, String> = [("a/b/c.txt", "x"), ("a/d.txt", "y")]
+        let files: BTreeMap<String, Vec<u8>> = [("a/b/c.txt", "x"), ("a/d.txt", "y")]
             .iter()
-            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .map(|(k, v)| (k.to_string(), v.as_bytes().to_vec()))
             .collect();
         let dirs = entries_by_dir(&files);
         assert_eq!(dirs[""], BTreeSet::from(["a".to_string()]));
@@ -783,6 +894,31 @@ mod tests {
             BTreeSet::from(["b".to_string(), "d.txt".to_string()]),
         );
         assert_eq!(dirs["a/b"], BTreeSet::from(["c.txt".to_string()]));
+    }
+
+    /// The fixture has to contain an actual picture, and two of them, or the
+    /// preview pane's picture branch and the compare view's image side both
+    /// have nothing to run against.
+    #[test]
+    fn the_fixture_holds_a_photograph_that_changes() {
+        const SIGNATURE: [u8; 8] = [0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a];
+        let h = history();
+
+        assert!(
+            !h[8].contains_key("Pictures/vacation.png"),
+            "absent on day 9"
+        );
+        let early = &h[9]["Pictures/vacation.png"];
+        let late = &h[29]["Pictures/vacation.png"];
+
+        assert_eq!(early[..8], SIGNATURE, "day 10 holds a PNG");
+        assert_eq!(late[..8], SIGNATURE, "day 30 holds a PNG");
+        assert_ne!(early, late, "two versions, or there is nothing to compare");
+        assert_eq!(
+            early.len(),
+            late.len(),
+            "the same size, so the change is in the pixels and only mtime can find it",
+        );
     }
 
     #[test]
