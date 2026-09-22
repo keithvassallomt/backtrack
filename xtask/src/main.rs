@@ -18,7 +18,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use backtrack_core::index::{parse_borg_mtime, ArchiveMeta, BorgItem, IndexWriter, Repo};
+use backtrack_core::index::{ArchiveMeta, BorgItem, IndexWriter, Repo, ITEM_FORMAT};
 
 type Result<T> = std::result::Result<T, Box<dyn Error>>;
 
@@ -505,33 +505,55 @@ fn borg_create(src: &Path, repo: &Path, name: &str, date: &str) -> Result<()> {
 }
 
 /// (name, borg id, ts-epoch-seconds) for every archive, chronological order.
+///
+/// `{time:%s}` for the same reason [`list_items`] avoids the JSON: the `time`
+/// field in `borg list --json` is local, naive and unlabelled, so reading it
+/// puts every archive in the catalogue the machine's UTC offset away from when
+/// it was actually taken. The name goes last and the fields are separated by
+/// tabs, because an archive name is text somebody chose.
 fn list_archives(repo: &Path) -> Result<Vec<(String, String, i64)>> {
-    let out = borg_output(&["list", "--json", &repo.to_string_lossy()])?;
-    let value: serde_json::Value = serde_json::from_slice(&out)?;
+    let out = borg_output(&[
+        "list",
+        "--format",
+        "{id}\t{time:%s}\t{barchive}{NL}",
+        &repo.to_string_lossy(),
+    ])?;
+    let text = String::from_utf8(out)?;
     let mut archives = Vec::new();
-    for a in value["archives"]
-        .as_array()
-        .ok_or("borg list: no archives")?
-    {
-        let name = a["name"]
-            .as_str()
+    for line in text.lines().filter(|l| !l.trim().is_empty()) {
+        let mut fields = line.splitn(3, '\t');
+        let id = fields.next().ok_or("archive without id")?.to_string();
+        let ts: i64 = fields
+            .next()
+            .ok_or("archive without time")?
+            .trim()
+            .parse()
+            .map_err(|_| format!("archive time is not an epoch: {line:?}"))?;
+        let name = fields
+            .next()
             .ok_or("archive without name")?
+            .trim_end_matches(['\r', '\n'])
             .to_string();
-        let id = a["id"].as_str().unwrap_or_default().to_string();
-        let time = a["time"].as_str().ok_or("archive without time")?;
-        let ts = parse_borg_mtime(time).map_err(|e| e.to_string())? / 1_000_000;
         archives.push((name, id, ts));
     }
     Ok(archives)
 }
 
+/// Read an archive's contents the way the daemon reads one.
+///
+/// `--format ITEM_FORMAT`, not `--json-lines`: Borg's JSON renders `mtime` as a
+/// naive local-time string with no offset on it, so a catalogue built from it
+/// holds every modification time shifted by the machine's UTC offset. The
+/// engine has read listings this way since Stage 2; the fixture did not, which
+/// is why the demo index dated a file an hour later than the file itself and
+/// the Modified column disagreed with the restore dialog beside it.
 fn list_items(repo: &Path, name: &str) -> Result<Vec<BorgItem>> {
     let target = format!("{}::{name}", repo.to_string_lossy());
-    let out = borg_output(&["list", "--json-lines", &target])?;
+    let out = borg_output(&["list", "--format", ITEM_FORMAT, &target])?;
     let text = String::from_utf8(out)?;
     let mut items = Vec::new();
     for line in text.lines().filter(|l| !l.trim().is_empty()) {
-        items.push(BorgItem::from_json_line(line).map_err(|e| e.to_string())?);
+        items.push(BorgItem::from_format_line(line).map_err(|e| e.to_string())?);
     }
     Ok(items)
 }

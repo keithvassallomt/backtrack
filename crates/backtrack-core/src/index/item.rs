@@ -221,9 +221,16 @@ fn parse_epoch_micros(text: &str) -> Option<i64> {
     secs.checked_mul(1_000_000)?.checked_add(micros)
 }
 
-/// Parse Borg's naive-UTC timestamp (`YYYY-MM-DDTHH:MM:SS[.ffffff]`) to epoch
+/// Parse Borg's naive timestamp (`YYYY-MM-DDTHH:MM:SS[.ffffff]`) to epoch
 /// microseconds. Dependency-free and deterministic; the fractional part is
 /// optional and padded/truncated to microseconds.
+///
+/// Reads the string as UTC, which Borg's own timestamps are **not**: they are
+/// rendered in the machine's zone with no offset written down. This is for
+/// reading a timestamp already known to be UTC, and for the fallback in
+/// `parse_archive_line` when Borg declines to give an epoch at all. Anything
+/// ingesting a real listing wants [`ITEM_FORMAT`] and
+/// [`BorgItem::from_format_line`] instead.
 pub fn parse_borg_mtime(s: &str) -> Result<i64, ItemParseError> {
     let err = || ItemParseError::Mtime(s.to_string());
     let (date, rest) = s.split_once('T').ok_or_else(err)?;

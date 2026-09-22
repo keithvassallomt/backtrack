@@ -232,3 +232,75 @@ async fn unreachable_path_yields_repo_unreachable() {
     let err = eng.repo_info().await.unwrap_err();
     assert_eq!(err, EngineError::RepoUnreachable);
 }
+
+/// The modification time Borg reports has to be the one the file actually has.
+///
+/// Borg renders timestamps through Python's local-time conversion and writes
+/// them with no offset attached, so a listing read as UTC is the machine's own
+/// offset away from the truth. The adapter avoids that by asking for
+/// `{mtime:%s.%f}` rather than the JSON, and every comment saying so is a claim
+/// about what comes back from a real Borg — which only a real Borg can settle.
+/// This compares the listed time against what the filesystem says, in seconds,
+/// with nothing in between that could absorb the error.
+///
+/// It can only fail where the machine is not already on UTC, so CI in UTC will
+/// pass it either way. That is worth having anyway: it costs nothing there, and
+/// it fails immediately on any developer machine with a real timezone the day
+/// somebody swaps the listing back to `--json-lines`.
+#[tokio::test]
+async fn a_listed_mtime_is_the_one_the_file_has() {
+    let f = fixture().await;
+    let eng = engine(&f).await;
+    eng.init_repo(&RepoSpec {
+        path: f.repo.clone(),
+        encryption: Encryption::RepokeyBlake2,
+    })
+    .await
+    .unwrap();
+
+    // A time with a deliberate offset from now, so a pass cannot come from the
+    // file happening to have been written this second.
+    let hello = f.src.join("hello.txt");
+    let when = std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_789_376_200);
+    std::fs::File::options()
+        .read(true)
+        .open(&hello)
+        .unwrap()
+        .set_times(std::fs::FileTimes::new().set_modified(when))
+        .unwrap();
+
+    run_to_finish(
+        eng.create(&CreateSpec {
+            archive_name: "arch-1".into(),
+            sources: vec![f.src.clone()],
+            excludes: vec![],
+            compression: Compression::Zstd,
+            one_file_system: false,
+            created_at: std::time::SystemTime::now(),
+            paths: Vec::new(),
+        })
+        .await
+        .unwrap(),
+    )
+    .await
+    .unwrap();
+
+    let rel = hello.strip_prefix("/").unwrap().display().to_string();
+    let items: Vec<_> = eng
+        .list_archive(&ArchiveId("arch-1".into()))
+        .await
+        .unwrap()
+        .collect()
+        .await;
+    let listed = items
+        .into_iter()
+        .map(|i| i.unwrap())
+        .find(|i| i.path == rel)
+        .expect("hello.txt is in the listing");
+
+    assert_eq!(
+        listed.mtime / 1_000_000,
+        1_789_376_200,
+        "the listed mtime is the file's own, not its local rendering read as UTC",
+    );
+}
