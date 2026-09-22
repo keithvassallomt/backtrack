@@ -41,10 +41,10 @@ pub struct Restores {
     toasts: adw::ToastOverlay,
     state: Rc<AppState>,
     daemon: Rc<RefCell<Option<Daemon1Proxy<'static>>>>,
-    /// The prepared restore that was last carried out, which is what the
-    /// toast's Undo reaches for. Kept until the next one, so the offer
-    /// outlives the toast that made it.
-    undoable: Cell<Option<u64>>,
+    /// The prepared restore that was last carried out, and what it was called,
+    /// which is what the toast's Undo reaches for. Kept until the next one, so
+    /// the offer outlives the toast that made it.
+    undoable: RefCell<Option<(u64, String)>>,
     /// One at a time. Two restores of the same folder at once is not a
     /// situation worth having opinions about.
     busy: Cell<bool>,
@@ -61,7 +61,7 @@ pub fn build(
         toasts: toasts.clone(),
         state: Rc::clone(state),
         daemon: Rc::clone(daemon),
-        undoable: Cell::new(None),
+        undoable: RefCell::new(None),
         busy: Cell::new(false),
     })
 }
@@ -217,7 +217,7 @@ impl Restores {
         let done = run_job(&proxy, |p| p.execute_restore(job, &blanket, &decisions)).await;
         match done {
             Ok(_) => {
-                self.undoable.set(Some(job));
+                *self.undoable.borrow_mut() = Some((job, name.clone()));
                 self.offer_undo(&preview, &name);
                 // The pane is showing a folder whose contents just changed.
                 self.state.set_folder(self.state.view().folder.clone());
@@ -304,7 +304,8 @@ impl Restores {
 
     /// Put back the restore that was just carried out.
     fn undo(self: &Rc<Self>) {
-        let (Some(job), Some(proxy)) = (self.undoable.get(), self.daemon.borrow().clone()) else {
+        let undoable = self.undoable.borrow().clone();
+        let (Some((job, name)), Some(proxy)) = (undoable, self.daemon.borrow().clone()) else {
             return;
         };
         let this = Rc::clone(self);
@@ -312,8 +313,8 @@ impl Restores {
             match run_job(&proxy, |p| p.undo_restore(job)).await {
                 Ok(_) => {
                     info!(job, "restore undone");
-                    this.undoable.set(None);
-                    this.toast("Put back");
+                    *this.undoable.borrow_mut() = None;
+                    this.toast(&copy::put_back_toast(&name));
                     this.state.set_folder(this.state.view().folder.clone());
                 }
                 Err(error) => {
