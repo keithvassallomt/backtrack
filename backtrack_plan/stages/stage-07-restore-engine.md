@@ -77,6 +77,21 @@ restoring elsewhere bypasses conflict UI entirely (fresh dir guaranteed by
 creating a subfolder `Restored <name> <date>/`).
 **Accept:** restore-elsewhere of a folder from demo repo; no dialogs; correct tree.
 
+### S07-T8 — The demo fixture has to be restorable
+`just demo-repo` named its source relatively (`borg create … home`, from inside
+the fixture directory), so the archives' members were `home/Documents/…` —
+paths that match nothing on the machine. Browsable, which is all Stage 6 asked
+of them, and impossible to restore: an in-place restore reproduces the member
+path under `/`, so Alice's deleted folder would have been aimed at
+`/home/old-client-folder`. It also made a second, disjoint tree inside one
+index, because the daemon's own backups of those same files are stored under
+their absolute path — stepping from a real backup into the scripted history
+reported "not in this backup" for every folder in it. Name the source
+absolutely so the two halves share a root.
+**Accept:** after `just demo-repo` and one daemon backup the index holds a
+single path root, and the scripted history's paths are the ones the daemon
+itself writes.
+
 ## Definition of Done
 Alice + Bob + Dave stories complete end-to-end in the GUI on demo-repo;
 the property/atomicity/traversal tests green in CI; progress.md + CHANGELOG

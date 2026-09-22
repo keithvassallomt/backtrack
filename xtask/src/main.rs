@@ -61,6 +61,12 @@ fn build() -> Result<()> {
     if !summary.old_client_deleted_at_10 {
         return Err("demo verification failed: old-client-folder not flagged deleted".into());
     }
+    println!();
+    println!("Browse it with");
+    println!(
+        "  just run-app --path '{}'",
+        dir.join("demo-src/home").display()
+    );
     Ok(())
 }
 
@@ -118,7 +124,8 @@ fn run(dir: &Path) -> Result<Summary> {
     for suffix in ["", "-wal", "-shm"] {
         let _ = fs::remove_file(dir.join(format!("index.db{suffix}")));
     }
-    fs::create_dir_all(src.join("home"))?;
+    let home = src.join("home");
+    fs::create_dir_all(&home)?;
 
     borg(&["init", "-e", "none", &repo.to_string_lossy()])?;
 
@@ -136,7 +143,7 @@ fn run(dir: &Path) -> Result<Summary> {
     let mut prev = BTreeMap::new();
     for (i, day_files) in script.iter().enumerate() {
         let day = i + 1;
-        apply_day(&src.join("home"), &prev, day_files)?;
+        apply_day(&home, &prev, day_files)?;
         let date = utc_stamp(when[i] - skew);
         borg_create(&src, &repo, &format!("snapshot-{day:02}"), &date)?;
         prev = day_files.clone();
@@ -164,7 +171,7 @@ fn run(dir: &Path) -> Result<Summary> {
     }
     drop(writer);
 
-    let old_client_deleted_at_10 = verify_old_client_deleted(&index_path)?;
+    let old_client_deleted_at_10 = verify_old_client_deleted(&index_path, &member_path(&home))?;
     Ok(Summary {
         archives: archives.len(),
         versions,
@@ -252,6 +259,16 @@ fn calibrate(repo: &Path, src: &Path) -> Result<i64> {
         .ok_or("the calibration archive did not come back from borg list")?;
     borg(&["delete", &format!("{}::{NAME}", repo.to_string_lossy())])?;
     Ok(recorded - PROBE)
+}
+
+/// The path a Borg archive stores `path` under: absolute, without its leading `/`.
+///
+/// This is the spelling every index query and every restore uses, so the
+/// generator computes it rather than writing it out — the fixture lives
+/// wherever the dev data directory is, which is not the same place on two
+/// machines.
+fn member_path(path: &Path) -> String {
+    path.to_string_lossy().trim_start_matches('/').to_string()
 }
 
 /// `epoch` as the naive UTC string Borg's `--timestamp` wants.
@@ -378,10 +395,10 @@ fn prune_empty_dirs(dir: &Path) -> Result<()> {
 }
 
 /// Open the index and check the acceptance signal.
-fn verify_old_client_deleted(index_path: &Path) -> Result<bool> {
+fn verify_old_client_deleted(index_path: &Path, home: &str) -> Result<bool> {
     use backtrack_core::index::IndexReader;
     let reader = IndexReader::open(index_path)?;
-    let at_10 = reader.folder_at("home", 10)?;
+    let at_10 = reader.folder_at(home, 10)?;
     Ok(at_10
         .iter()
         .any(|e| e.name == "old-client-folder" && e.deleted_after))
@@ -400,11 +417,22 @@ fn borg(args: &[&str]) -> Result<()> {
     Ok(())
 }
 
+/// Archive `src` under the path it actually occupies.
+///
+/// Borg stores a member by the path it was given, with the leading `/`
+/// removed, so *how* the source is named decides what a restore will later
+/// aim at. Naming it relatively — `home`, from inside the fixture directory —
+/// produces archives whose members are `home/Documents/…`, which correspond to
+/// nothing on this machine: browsable, but restorable only to `/home`, and
+/// disjoint from the archives the daemon makes of the same files. Naming it
+/// absolutely puts the fixture's history and the daemon's own backups on the
+/// same paths, which is what makes the fixture restorable and the timeline one
+/// history instead of two.
 fn borg_create(src: &Path, repo: &Path, name: &str, date: &str) -> Result<()> {
     let target = format!("{}::{name}", repo.to_string_lossy());
     let status = Command::new("borg")
-        .current_dir(src)
-        .args(["create", "--timestamp", date, &target, "home"])
+        .args(["create", "--timestamp", date, &target])
+        .arg(src)
         .env("BORG_UNKNOWN_UNENCRYPTED_REPO_ACCESS_IS_OK", "yes")
         .status()?;
     if !status.success() {
