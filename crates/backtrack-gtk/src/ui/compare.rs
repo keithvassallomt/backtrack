@@ -323,6 +323,14 @@ fn lines(rows: &[compare::Line], changed_class: &str) -> Widget {
             .xalign(0.0)
             .wrap(false)
             .selectable(row.mark != Mark::Gap)
+            // A selectable GtkLabel takes keyboard focus, and a focused one
+            // selects the whole of its own text. The first line of the pane
+            // therefore arrived highlighted, in a colour that is not one of the
+            // two the legend explains — which is the worst thing a window whose
+            // entire job is "this bit changed" can do. It also made every line
+            // in a long document its own tab stop. Dragging across the text
+            // with the pointer still selects it.
+            .can_focus(false)
             .build();
         label.add_css_class("compare-line");
         if row.mark == Mark::Changed {
