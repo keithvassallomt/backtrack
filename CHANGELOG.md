@@ -117,6 +117,35 @@ All notable changes to Backtrack are documented here. This project adheres to
   originals, in a new folder named for the backup they came from. Nothing on
   your computer is touched and there is nothing to decide, so it is the way to
   look at an old version before committing to it.
+- Search across every backup at once, from the toolbar or Ctrl+F. Type part of
+  a name and Backtrack looks through its whole history, including the backups
+  where the file no longer exists, which is the case an ordinary file search
+  cannot help you with at all.
+- What you have lost comes first. Results are ordered by what is missing from
+  your computer rather than by what is missing from the last backup, because a
+  file you deleted an hour ago is still in the last backup and is exactly the
+  one you are looking for.
+- Each result says where the file lived and when it existed: "Existed: 26 Jun
+  to 1 Jul, 8 versions, 214 KB". That line is usually how you recognise the
+  thing you are after, long after you have forgotten which folder it was in.
+  Anything no longer on your computer is marked, and only those offer to put
+  themselves back, because a file that is still there does not need restoring
+  over itself.
+- View in Timeline takes a result to the last backup that still had it, with
+  the file picked out, so you land looking at the thing you clicked rather
+  than at the folder it used to be in.
+- Compare with Today shows the backed-up version beside the one on your
+  computer before you decide anything. Text files get the changes marked,
+  green for what has been added since the backup and red for what has gone,
+  with a count of how many separate places differ. Images are shown side by
+  side, because a list of changed pixels is not something anyone can read.
+  Anything else gets its dates and sizes and a straight answer about whether
+  the two are the same. Restore This Version hands over to the usual restore,
+  safety copy and all; Keep Current Version simply closes.
+- Files now show whether they are still on your computer, at every point in
+  the timeline. Previously the newest backup could only ever say nothing,
+  which is the moment you are most likely to be looking at when something has
+  just gone missing.
 - Project bootstrap: Cargo workspace (core library plus daemon, GTK app, and CLI
   binaries), structured logging with JSONL rotation, developer task runner,
   versioning policy, and continuous integration.

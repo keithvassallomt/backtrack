@@ -12,7 +12,7 @@
 > tasks: add them here + to the stage file, then `just provision-board-apply`.
 > See [../CLAUDE.md](../CLAUDE.md) for the full workflow.
 
-**Current stage:** 8 (in progress)
+**Current stage:** 9 (not started)
 **Last updated:** 2026-09-22
 
 ## Stage 0 — Bootstrap ([stage file](stages/stage-00-bootstrap.md))
@@ -136,6 +136,53 @@
 ## Notes / decisions made during implementation
 
 (append dated entries here; never delete)
+
+- 2026-09-22 (Stage 8 — Definition of Done): Charlie's story is Ctrl+F, a word,
+  and a button. Compare handles all three kinds of file. Full suite green:
+  **630 tests**, plus the real-borg integration set.
+  - **The stage found a hole in the product's vocabulary, not a missing
+    widget.** Every status the timeline showed was measured inside the
+    catalogue: "deleted after this" means absent from the newest catalogued
+    archive, and search's `exists_today` was `last_seq == global_max`. Both are
+    false by construction at the newest backup, so the file pane's Status
+    column was structurally empty exactly where a person spends their time,
+    and a file deleted ten minutes ago — the product's entire reason for
+    existing — was reported as unremarkable. S08-T6 makes "on your disk" a fact
+    about the disk, answered by the daemon because a sandboxed application has
+    no path to the user's files.
+  - **It is three-valued, and that is the load-bearing part.** A folder that
+    cannot be read is *unknown*, and an unknown says nothing. Treating it as
+    absence would paint a deletion badge across every file of a repository
+    imported from another machine, and a person acts on that badge.
+  - **Deleted-first ranking means what it says now.** Charlie is looking for
+    what he has lost, so the search sorts by the disk rather than by the
+    catalogue — a stable sort, leaving relevance and recency intact within
+    each group. Proved by removing it: the surviving file ranks above the
+    deleted one.
+  - **A card contradicted itself and only a screenshot could show it.**
+    "Existed: 22 Sep – today" sat three millimetres below "no longer on your
+    disk". Both were true of different things: the range measured against the
+    catalogue, the tag against the computer. They agree almost always and
+    diverge in precisely the case somebody is searching.
+  - **The compare view decides its diff in a model with no GTK in it**, because
+    which lines are coloured is the part most likely to be wrong. A section is
+    what a person would point at and call one edit, so a rewritten paragraph is
+    one difference rather than six, and the panes are padded per section so an
+    edit halfway down a file does not knock the rest of one column out of step.
+  - **Three fixture gaps closed, all found by trying to use the thing.**
+    S08-T5: every "image" was prose under a picture's name, so the preview
+    pane's texture branch had never run on demo data. `content/about.md`: every
+    other file differed in one place, so there was nothing to check "2 sections
+    differ" against. `data/index.bin`: nothing in the fixture was binary, so
+    the compare view's third branch had nothing to exercise it either.
+  - **Two interface methods added**, both for the same reason: the application
+    cannot be assumed to reach the user's files. `PathsOnDisk` answers what is
+    still there, and `LiveFile` hands over the side of a comparison that says
+    "today". `SearchFiles` gained a size, which its card's last field needs.
+  - The stage file says the search is a revealer over the main pane. It is two
+    stacks — the entry in the header bar's title position, the results in the
+    body — which is what mockup 20 shows, and which does not resize the panes
+    underneath as answers arrive.
 
 - 2026-09-22 (Stage 7 — Definition of Done): Alice, Bob and Dave walked end to
   end in the window against the demo repository. Bob's file-manager entry point

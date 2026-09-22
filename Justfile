@@ -335,11 +335,25 @@ demo-conflicts:
         } > "${folder}/$1"
     }
 
+    # Bytes that are neither text nor a picture, so the compare view's third
+    # branch has something to run against. Deterministic, so two runs of this
+    # recipe produce the same folder.
+    blob() {
+        {
+            printf 'BTBLOB\000'
+            local i
+            for (( i = 0; i < 512; i++ )); do
+                printf "\\$(printf '%03o' $(( (i * 7 + $2 * 61) % 256 )) )"
+            done
+        } > "${folder}/$1"
+    }
+
     write() {
         mkdir -p "${folder}/$(dirname "$1")"
         case "$1" in
             content/about.md) two_edits "$1" "$2" ;;
             *.png)            "${xtask}" image "${folder}/$1" "$2" ;;
+            *.bin)            blob "$1" "$2" ;;
             *)                body "$1" "$2" > "${folder}/$1" ;;
         esac
     }
@@ -364,7 +378,7 @@ demo-conflicts:
     # content/about.md differs in two separate places between its revisions, so
     # the compare view has a fixture whose section count is known in advance.
     edited_since=(contact.html css/main.css js/app.js content/home.md README.md
-                  img/banner.png content/about.md)
+                  img/banner.png content/about.md data/index.bin)
     rolled_back=(content/pricing.md data/menu.json content/blog/2026-06-pricing.md)
     type_changed=(config/redirects.txt)
     deleted_since=(content/blog/2026-03-redesign.md img/team.png img/logo.png notes.txt)
