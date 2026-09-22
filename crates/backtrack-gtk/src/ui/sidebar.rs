@@ -13,6 +13,8 @@
 //! Selection runs both ways. Clicking a row moves the timeline; moving the
 //! timeline any other way — the stepping buttons, the calendar, the density
 //! strip — moves the selection here, opening whichever group the backup is in.
+//! Only clicking: the pointer passing over a row must never move the timeline,
+//! which is why the list does not set `single-click-activate`.
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -74,10 +76,16 @@ pub fn build(state: &Rc<AppState>) -> Rc<Sidebar> {
         .can_unselect(true)
         .build();
 
+    // Deliberately *not* `single_click_activate`. In GTK4 that property does
+    // two things, and the second one is fatal here: it activates a row on one
+    // click, and it selects whichever row the pointer is over. Selection is
+    // what moves the timeline, so hovering the sidebar dragged the whole
+    // window through time — and hovering a month heading toggled it open and
+    // shut. A plain ListView already changes the selection on a single click,
+    // which is the whole of what this list needs.
     let list = ListView::builder()
         .model(&selection)
         .factory(&factory())
-        .single_click_activate(true)
         .build();
     list.add_css_class("navigation-sidebar");
 
