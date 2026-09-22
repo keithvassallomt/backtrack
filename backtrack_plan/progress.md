@@ -89,7 +89,7 @@
 - [x] S08-T1 SearchFiles D-Bus method over FTS5
 - [ ] S08-T2 Search UI grouped by file, deleted-first ranking (mockup 20)
 - [ ] S08-T3 View-in-Timeline + Restore-Latest actions
-- [ ] S08-T4 Compare view: text diff (mockup 9), images side-by-side
+- [x] S08-T4 Compare view: text diff (mockup 9), images side-by-side
 - [x] S08-T5 Real image bytes in the demo fixtures (preview + compare need them)
 - [x] S08-T6 “Not on your disk” as a fact about the disk, not the catalogue
 

@@ -145,6 +145,10 @@ pub fn shortcuts_dialog() -> adw::ShortcutsDialog {
         "Restore it into a folder you choose",
         "win.restore-to",
     ));
+    files.add(adw::ShortcutsItem::from_action(
+        "Compare it with the file on your computer",
+        "win.compare",
+    ));
     // The one key that belongs to the list widget rather than to an action.
     files.add(adw::ShortcutsItem::new(
         "Open the selected folder",

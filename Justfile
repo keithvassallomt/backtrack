@@ -311,11 +311,36 @@ demo-conflicts:
     # folder with no real images in it cannot exercise either of them — and a
     # picture is also the case where "this file changed" has to be settled
     # without a readable diff.
+    # One file whose two revisions differ in two separate places, with
+    # untouched text between them. "2 sections differ" is the compare view's
+    # acceptance, and a fixture whose answer is known is the only way to check
+    # a count. Everything else here differs in one place, which a diff quite
+    # correctly reports as one section however many lines it spans.
+    two_edits() {
+        local founded="Founded in 2019, we work with clients across Europe."
+        local hiring=0
+        if [[ "$2" != 1 ]]; then
+            founded="Founded in 2019, we now work with clients worldwide."
+            hiring=1
+        fi
+        {
+            printf '%s\n' "Acme Tooling: about this site" ""
+            printf '%s\n' "We build tooling for small manufacturing teams." "${founded}" ""
+            printf '%s\n' "Our office is open Monday to Friday, 9 until 5."
+            printf '%s\n' "Call us on 2100 0000, or write to hello@example.invalid." ""
+            printf '%s\n' "Thanks for reading."
+            if [[ "${hiring}" == 1 ]]; then
+                printf '%s\n' "We are hiring: see the careers page."
+            fi
+        } > "${folder}/$1"
+    }
+
     write() {
         mkdir -p "${folder}/$(dirname "$1")"
         case "$1" in
-            *.png) "${xtask}" image "${folder}/$1" "$2" ;;
-            *)     body "$1" "$2" > "${folder}/$1" ;;
+            content/about.md) two_edits "$1" "$2" ;;
+            *.png)            "${xtask}" image "${folder}/$1" "$2" ;;
+            *)                body "$1" "$2" > "${folder}/$1" ;;
         esac
     }
     seed() {
@@ -336,8 +361,10 @@ demo-conflicts:
                LICENSE deploy.sh config/site.toml)
     # img/banner.png is here so the compare view has a picture whose two sides
     # differ — the case it cannot settle by reading lines.
+    # content/about.md differs in two separate places between its revisions, so
+    # the compare view has a fixture whose section count is known in advance.
     edited_since=(contact.html css/main.css js/app.js content/home.md README.md
-                  img/banner.png)
+                  img/banner.png content/about.md)
     rolled_back=(content/pricing.md data/menu.json content/blog/2026-06-pricing.md)
     type_changed=(config/redirects.txt)
     deleted_since=(content/blog/2026-03-redesign.md img/team.png img/logo.png notes.txt)

@@ -140,6 +140,7 @@ pub fn build(
                     is_dir: row.entry.kind == Kind::Dir,
                     size: row.entry.size,
                     mtime: row.entry.mtime,
+                    on_disk: row.on_disk,
                 }
             });
             selector.state.set_selected(selected);

@@ -52,6 +52,10 @@ clap = { version = "4", features = ["derive"] }
 gtk4 = { version = "0.11", features = ["v4_22"] }
 libadwaita = { version = "0.9", features = ["v1_9"] }
 oo7 = "0.6"
+# Line diffing for the compare view. Chosen over writing one because the
+# interesting part of a diff is not the LCS, it is the heuristics that stop a
+# rewritten paragraph reading as a hundred unrelated edits.
+similar = "2"
 async-trait = "0.1"
 futures = "0.3"
 tokio-util = "0.7"

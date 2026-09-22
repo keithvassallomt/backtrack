@@ -30,6 +30,7 @@ pub const METHODS: &[(&str, &str, &str)] = &[
     ("GetStatus", "", "(sttbtsuuttb)"),
     ("ImportRepo", "ss", ""),
     ("ListReplaced", "u", "a(sstxx)"),
+    ("LiveFile", "s", "h"),
     ("PathsOnDisk", "as", "ay"),
     ("Pause", "t", ""),
     ("PauseJob", "t", ""),

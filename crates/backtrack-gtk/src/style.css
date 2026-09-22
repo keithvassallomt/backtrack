@@ -125,3 +125,42 @@
     font-weight: bold;
     opacity: 0.6;
 }
+
+/* The compare view. Two panes of lines, some of them coloured, and a key that
+ * says which colour means what — because a colour on its own is not a label,
+ * and half the point of this window is that somebody trusts what it says. */
+.compare-panes {
+    border-top: 1px solid alpha(currentColor, 0.12);
+}
+
+.compare-pane {
+    background-color: @view_bg_color;
+    border: 1px solid alpha(currentColor, 0.12);
+    border-radius: 12px;
+    margin: 0 4px 12px 4px;
+}
+
+.compare-text {
+    padding: 0 14px 14px 14px;
+}
+
+/* A changed line is filled the full width of the pane, so a run of them reads
+ * as one block rather than as a ragged set of highlighted phrases. */
+.compare-line {
+    padding: 1px 6px;
+    border-radius: 4px;
+}
+
+.compare-line.added,
+.compare-swatch.added {
+    background-color: alpha(@success_color, 0.22);
+}
+
+.compare-line.removed,
+.compare-swatch.removed {
+    background-color: alpha(@error_color, 0.18);
+}
+
+.compare-swatch {
+    border-radius: 4px;
+}

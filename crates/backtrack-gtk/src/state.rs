@@ -45,6 +45,10 @@ pub struct Selected {
     /// file the instant it is selected, without waiting for anything.
     pub size: i64,
     pub mtime: i64,
+    /// What the daemon said about this path being on the computer now: 0
+    /// unknown, 1 absent, 2 present. Comparing with today needs a today to
+    /// compare against, and this is how the window knows there is one.
+    pub on_disk: u8,
 }
 
 /// Everything the panes read, as one value they can be handed a copy of.
@@ -313,6 +317,7 @@ mod tests {
             is_dir: false,
             size: 45_000,
             mtime: 0,
+            on_disk: 0,
         }));
         assert_eq!(
             state.view().change_target(),
@@ -333,6 +338,7 @@ mod tests {
             is_dir: false,
             size: 12,
             mtime: 0,
+            on_disk: 0,
         }));
         state.set_folder("home/Documents");
         assert_eq!(state.view().selected, None);

@@ -16,6 +16,7 @@
 //! question a test can ask.
 
 pub mod calendar;
+pub mod compare;
 pub mod density;
 pub mod format;
 pub mod group;

@@ -26,6 +26,8 @@ futures.workspace = true
 # The index worker hands results back to the main loop over this; glib's own
 # channel was removed from the Rust bindings in favour of it.
 async-channel = "2"
+# The line diff behind the compare view.
+similar.workspace = true
 
 [dev-dependencies]
 tempfile = "3"

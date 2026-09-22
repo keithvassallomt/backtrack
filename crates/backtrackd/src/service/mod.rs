@@ -1600,6 +1600,39 @@ impl Daemon1 {
         Ok(OwnedFd::from(std::os::fd::OwnedFd::from(file)))
     }
 
+    /// A readable descriptor onto the *live* copy of a catalogued path.
+    ///
+    /// The other half of `PreviewFile`, and it exists for the same reason: a
+    /// sandboxed application has no path to the user's files, so the side of a
+    /// comparison that says "today" has to be handed over rather than opened.
+    /// Reading the size and modification time is the caller's, from the
+    /// descriptor it is given, so the two can never describe different files.
+    ///
+    /// Only paths the catalogue knows are served. Nothing about this daemon's
+    /// other methods is narrower — a restore writes wherever it is told — but
+    /// the comparison has no business asking about a file that was never
+    /// backed up, and a method that will not answer a question nobody should
+    /// ask is one less thing to reason about later.
+    async fn live_file(&self, path: &str) -> Result<OwnedFd> {
+        let catalogued = {
+            let reader = IndexReader::open(&self.shared.index_path)?;
+            reader
+                .file_history(path)
+                .map(|versions| !versions.is_empty())
+        }?;
+        if !catalogued {
+            return Err(DaemonError::NotFound(format!(
+                "{path} is not in the catalogue"
+            )));
+        }
+
+        let full = std::path::Path::new("/").join(path.trim_start_matches('/'));
+        let file = std::fs::File::open(&full).map_err(|e| {
+            DaemonError::NotFound(format!("{} could not be opened: {e}", full.display()))
+        })?;
+        Ok(OwnedFd::from(std::os::fd::OwnedFd::from(file)))
+    }
+
     /// Prepare the archived copy of `path` so it can be compared with the live
     /// one. The diff view itself is Stage 8; this is the extraction it needs.
     async fn compare_file(&self, archive: &str, path: &str) -> Result<u64> {

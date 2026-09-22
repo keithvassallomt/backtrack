@@ -377,7 +377,7 @@ fn describe(selected: &Selected) -> String {
 }
 
 /// Read at most [`FETCH_LIMIT`] bytes from the descriptor the daemon handed over.
-fn read_capped(descriptor: std::os::fd::OwnedFd) -> Result<Vec<u8>, String> {
+pub(crate) fn read_capped(descriptor: std::os::fd::OwnedFd) -> Result<Vec<u8>, String> {
     use std::io::Read;
     let file = std::fs::File::from(descriptor);
     let mut bytes = Vec::new();
@@ -392,7 +392,7 @@ fn read_capped(descriptor: std::os::fd::OwnedFd) -> Result<Vec<u8>, String> {
 /// A NUL byte anywhere in the sample settles it — that is how `file`, `grep`
 /// and every other tool decides, and it is right far more often than a file
 /// extension is.
-fn as_text(bytes: &[u8]) -> Option<String> {
+pub(crate) fn as_text(bytes: &[u8]) -> Option<String> {
     let sample = &bytes[..bytes.len().min(TEXT_LIMIT)];
     if sample.contains(&0) {
         return None;

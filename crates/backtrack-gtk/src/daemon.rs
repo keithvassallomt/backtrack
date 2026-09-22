@@ -30,6 +30,12 @@ pub trait Daemon1 {
     fn preview_file(&self, archive: &str, path: &str) -> zbus::Result<zbus::zvariant::OwnedFd>;
     fn search_files(&self, query: &str) -> zbus::Result<Vec<SearchResult>>;
 
+    /// A readable descriptor onto the *live* copy of a catalogued path — the
+    /// other half of `preview_file`, for the side of a comparison that says
+    /// "today". Size and modification time come from the descriptor, so the
+    /// header and the content can never describe different files.
+    fn live_file(&self, path: &str) -> zbus::Result<zbus::zvariant::OwnedFd>;
+
     /// Which of these catalogued paths are still on this computer: one byte
     /// each, in the order asked — 0 unknown, 1 absent, 2 present.
     ///

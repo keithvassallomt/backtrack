@@ -5,6 +5,7 @@
 
 pub mod breadcrumb;
 pub mod calendar;
+pub mod compare;
 pub mod conflict;
 pub mod files;
 pub mod menu;

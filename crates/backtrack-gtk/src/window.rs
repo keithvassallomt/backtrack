@@ -65,6 +65,7 @@ pub struct Window {
     /// The one action bar button that does something this stage.
     restore_button: Button,
     restore_to_button: Button,
+    compare_button: Button,
     calendar: RefCell<Option<Rc<ui::calendar::Calendar>>>,
     strip: RefCell<Option<Rc<ui::strip::Strip>>>,
 }
@@ -129,6 +130,7 @@ impl Window {
             restores: RefCell::new(None),
             restore_button: Button::builder().build(),
             restore_to_button: Button::builder().build(),
+            compare_button: Button::builder().build(),
             calendar: RefCell::new(None),
             strip: RefCell::new(None),
         });
@@ -283,17 +285,14 @@ impl Window {
         let buttons = GtkBox::new(Orientation::Horizontal, 8);
         buttons.set_halign(Align::End);
 
-        // Stage 8. Built now, insensitive, because the action bar is part of
-        // the frame Stage 6 delivered.
-        let compare = Button::builder().build();
+        let compare = self.compare_button.clone();
         compare.set_child(Some(&button_content(
             "view-dual-symbolic",
             "Compare with Today",
         )));
-        compare.set_tooltip_text(Some(
-            "Compare this version with the file on your computer (coming soon)",
-        ));
+        compare.set_tooltip_text(Some("Show this version beside the file on your computer"));
         compare.set_sensitive(false);
+        compare.set_action_name(Some("win.compare"));
         buttons.append(&compare);
 
         // The way out that costs nothing: the files arrive in a folder of
@@ -386,6 +385,15 @@ impl Window {
         self.window.add_action(&elsewhere);
         if let Some(app) = self.window.application() {
             app.set_accels_for_action("win.restore-to", &["<Control><Shift>r"]);
+        }
+
+        let compare = gio::SimpleAction::new("compare", None);
+        compare.set_enabled(false);
+        let comparer = Rc::clone(self);
+        compare.connect_activate(move |_, _| comparer.open_compare());
+        self.window.add_action(&compare);
+        if let Some(app) = self.window.application() {
+            app.set_accels_for_action("win.compare", &["<Control>d"]);
         }
 
         self.install_menu_actions();
@@ -583,6 +591,40 @@ impl Window {
         self.restore_button.set_sensitive(possible);
         ui::menu::set_enabled(&self.window, "restore-to", possible);
         self.restore_to_button.set_sensitive(possible);
+
+        // Comparing needs a today to compare against. A folder has no diff
+        // worth showing, and a file that is not on the computer has nothing on
+        // the right-hand side — for that one the answer is Restore, and the
+        // "not on your disk" badge has already said so.
+        let view = self.state.view();
+        let comparable = view
+            .selected
+            .as_ref()
+            .is_some_and(|s| !s.is_dir && s.on_disk == ON_DISK_PRESENT)
+            && view.seq.is_some();
+        ui::menu::set_enabled(&self.window, "compare", comparable);
+        self.compare_button.set_sensitive(comparable);
+    }
+
+    /// Show the selected file's backed-up version beside the one on disk.
+    fn open_compare(self: &Rc<Self>) {
+        let view = self.state.view();
+        let (Some(selected), Some(archive)) = (view.selected.clone(), view.archive()) else {
+            return;
+        };
+        let restorer = Rc::clone(self);
+        ui::compare::present(
+            &self.window,
+            &self.daemon,
+            archive.name.clone(),
+            selected,
+            move || {
+                let driver = restorer.restores.borrow().clone();
+                if let Some(driver) = driver {
+                    driver.start();
+                }
+            },
+        );
     }
 
     /// Re-read the daemon's status and redraw the line at the bottom.
@@ -854,6 +896,7 @@ impl Window {
             // this with the real entry.
             size: -1,
             mtime: 0,
+            on_disk: 0,
         }));
     }
 
@@ -878,6 +921,10 @@ pub fn retarget(window: &gtk4::Window, target: &Target) {
 }
 
 /// How often the status line re-reads what it is saying.
+/// The daemon's "this path is on the computer" answer, as `PathsOnDisk`
+/// encodes it. Only a known presence gives the compare view a right-hand side.
+const ON_DISK_PRESENT: u8 = 2;
+
 const STATUS_TICK_SECONDS: u32 = 30;
 
 /// What the window says when something needs the daemon and there isn't one.
