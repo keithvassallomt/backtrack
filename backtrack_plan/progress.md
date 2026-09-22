@@ -12,8 +12,8 @@
 > tasks: add them here + to the stage file, then `just provision-board-apply`.
 > See [../CLAUDE.md](../CLAUDE.md) for the full workflow.
 
-**Current stage:** 7 (in progress)
-**Last updated:** 2026-09-20
+**Current stage:** 8 (not started)
+**Last updated:** 2026-09-22
 
 ## Stage 0 — Bootstrap ([stage file](stages/stage-00-bootstrap.md))
 - [x] S00-T1 Git repo, license, .gitignore, README skeleton
@@ -135,6 +135,54 @@
 ## Notes / decisions made during implementation
 
 (append dated entries here; never delete)
+
+- 2026-09-22 (Stage 7 — Definition of Done): Alice, Bob and Dave walked end to
+  end in the window against the demo repository. Bob's file-manager entry point
+  and Dave's are Stage 12; what Stage 7 owes them is the restore itself.
+  - **The folder summary agrees with the fixture's own arithmetic.** `just
+    demo-conflicts` prints what a restore of the folder it damages should
+    report, computed from the lists it damaged it with. The dialog said 19
+    identical, 8 to replace (5 newer on disk), 4 only in the backup, 4 only on
+    disk kept, 1 changed type — each one matching. The changed-type row starts
+    unticked and needs its own answer, which is the only sane thing to do with
+    a file that is now a directory.
+  - **Conflicts read correctly in both directions.** `contact.html` (edited
+    since the backup) and `content/pricing.md` (rolled back to something older
+    than the backup) produce opposite dialogs, and Keep Both leaves
+    `contact (current).html` beside the restored file.
+  - **Alice's deleted folder came back with no dialog at all**, because there
+    was nothing on disk to argue with, and nothing was written to the stash —
+    a pure addition should not cost thirty days of disk. Both files were
+    verified to hold what the fixture wrote on the days it existed.
+  - **Dave's three versions are three jumps.** The change-stepping dropdown
+    crossed exactly one change at a time and refused to invent a fourth at the
+    end of the history. Restoring the middle version conflicted (the disk copy
+    being newer), and the Undo on the toast put it back — leaving an *empty*
+    stash batch behind, which is the proof that Undo reaches into the stash
+    rather than merely overwriting.
+  - **Restore To… costs nothing.** One file in `Restored report.odt 8 Sep
+    2026`, not at the bottom of eight empty directories; the original
+    untouched; the restored copy carrying the modification time it had in the
+    archive rather than the time it was written out.
+  - Full suite green: **601 tests**, plus the real-borg integration set.
+  - **Five defects, and three of them were in the fixture.** S07-T8 (archives
+    named relatively, so the scripted history was browsable but could only be
+    restored to `/home`, and sat in the index as a second disjoint tree); a
+    month of history whose every modification time fell inside one minute of
+    the afternoon it was generated; and a catalogue built from `borg list
+    --json-lines`, whose timestamps are local with no offset recorded, so every
+    file was dated an hour later than the file itself. The engine has read
+    listings with `--format {mtime:%s.%f}` since Stage 2 for exactly that
+    reason, with three comments saying so; the generator was not doing it.
+    The remaining two were in the window: `single-click-activate` on the
+    sidebar, which in GTK4 also *selects on hover* — so the pointer crossing
+    the list dragged the whole window through time — and an undo toast that had
+    lost the name of the file it put back.
+  - The lesson worth keeping: **a fixture is not test data, it is the thing the
+    tests trust.** None of those three could be caught by a test, because every
+    test that could have caught them was reading the same fixture. They were
+    found by restoring a real file and looking at what happened, which is the
+    only reason the stage has a walkthrough in its Definition of Done at all.
 
 - 2026-09-20 (Stage 6 — Definition of Done): the Alice story driven end to end
   against the demo repository, with the window's own actions fired over
