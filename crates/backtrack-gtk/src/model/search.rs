@@ -88,22 +88,34 @@ pub fn breadcrumb(path: &str, home: Option<&str>) -> String {
 
 /// "Existed: 26 Jun – 1 Jul · 8 versions · 214 KB".
 ///
-/// The end of the range reads "today" when the file is still in the newest
-/// backup, because a date there invites the reader to work out whether it is
-/// recent, and the answer they want is simply yes.
+/// The end of the range reads "today" when the file is still there, because a
+/// date invites the reader to work out whether it is recent and the answer
+/// they want is simply yes.
+///
+/// "Still there" means on the computer, not merely in the newest backup. A
+/// file deleted an hour ago is in the newest backup — that is the entire point
+/// of having one — and saying it existed until today directly beneath a tag
+/// reading "no longer on your disk" is the card contradicting itself in two
+/// adjacent lines. For those, the range ends on the last backup that held it,
+/// which is the honest answer and the one the person is looking for.
 fn lifespan(hit: &SearchResult, kind: Kind, now: i64, tz: &glib::TimeZone) -> String {
     let day = |ts: i64| format::at(ts, tz, "%-d %b");
-    let ends_today = same_day(hit.last_ts, now, tz);
+    let ends_today = !hit.gone_from_disk && same_day(hit.last_ts, now, tz);
+    let first = day(hit.first_ts);
+    let last = day(hit.last_ts);
 
-    let mut parts = vec![format!(
-        "Existed: {} – {}",
-        day(hit.first_ts),
-        if ends_today {
-            "today".to_string()
-        } else {
-            day(hit.last_ts)
-        }
-    )];
+    // A file that came and went inside one day has no range to give, and
+    // "22 Sep – 22 Sep" is a way of saying one date twice.
+    let range = if ends_today && same_day(hit.first_ts, now, tz) {
+        "today".to_string()
+    } else if !ends_today && first == last {
+        first
+    } else if ends_today {
+        format!("{first} – today")
+    } else {
+        format!("{first} – {last}")
+    };
+    let mut parts = vec![format!("Existed: {range}")];
 
     parts.push(match hit.versions {
         1 => "1 version".to_string(),
@@ -224,6 +236,59 @@ mod tests {
             card.lifespan
         );
         assert!(!card.gone);
+    }
+
+    /// A file still in the newest backup but gone from the computer must not
+    /// claim to have existed until today, three millimetres from a tag saying
+    /// it is no longer there.
+    #[test]
+    fn a_file_deleted_since_the_last_backup_does_not_claim_today() {
+        let mut hit = hit();
+        hit.last_ts = JUL_01;
+        hit.gone_from_disk = true;
+        // "Now" is the same day as the last backup, which is the case that
+        // used to produce the contradiction.
+        let card = card(&hit, HOME, JUL_01 + 3_600, &tz());
+        assert!(
+            !card.lifespan.contains("today"),
+            "a file that is gone does not exist today: {}",
+            card.lifespan,
+        );
+        assert!(
+            card.lifespan.starts_with("Existed: 26 Jun – 1 Jul ·"),
+            "{}",
+            card.lifespan,
+        );
+    }
+
+    /// One day's life is one date, not the same date written twice.
+    #[test]
+    fn a_file_that_lived_for_one_day_gives_one_date() {
+        let mut hit = hit();
+        hit.first_ts = JUL_01;
+        hit.last_ts = JUL_01;
+        hit.gone_from_disk = true;
+        let card = card(&hit, HOME, JUL_01 + 3_600, &tz());
+        assert!(
+            card.lifespan.starts_with("Existed: 1 Jul ·"),
+            "{}",
+            card.lifespan,
+        );
+    }
+
+    /// A file made today and still here says so in one word.
+    #[test]
+    fn a_file_made_today_and_still_here_says_today() {
+        let mut hit = hit();
+        hit.first_ts = JUL_01;
+        hit.last_ts = JUL_01;
+        hit.gone_from_disk = false;
+        let card = card(&hit, HOME, JUL_01 + 3_600, &tz());
+        assert!(
+            card.lifespan.starts_with("Existed: today ·"),
+            "{}",
+            card.lifespan,
+        );
     }
 
     #[test]
