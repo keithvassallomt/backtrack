@@ -47,6 +47,19 @@ flow) / **Keep Current Version** (close). Backup side content via PreviewFile fd
 **Accept:** text fixture with known 2-hunk diff renders 2 highlighted sections and
 the footer count; image and binary fallbacks render; Restore This Version round-trips.
 
+### S08-T5 — Real images in the demo fixtures
+Every "image" in the demo fixtures is ASCII text under a `.jpg`/`.png` name
+(`Pictures/vacation.jpg` is the string `JPEG-BINARY`), so the preview pane's
+texture branch has never rendered against demo data and S08-T4's image compare
+has nothing to exercise. Give the `xtask` generator real, small image bytes:
+`Pictures/vacation.jpg` appearing at day 10 and *changing* at least once after
+it, so "an older version of this photo" is something a person can look at, plus
+the `img/` files `just demo-conflicts` stages. Keep the assets small enough that
+the repository stays light (synthesise them, or check in a few KB).
+**Accept:** the preview pane renders `Pictures/vacation.jpg` as a picture at two
+different snapshots, showing different images; S08-T4's image branch draws both
+sides from the fixture.
+
 ## Definition of Done
 Charlie's story is a <30-second GUI walkthrough on demo data; compare handles
 text/image/binary gracefully; CI green; progress.md + CHANGELOG updated.
