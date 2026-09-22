@@ -154,7 +154,7 @@ pub fn search_json(hits: &[SearchResult]) -> serde_json::Value {
                     "name": hit.name,
                     "kind": hit.kind,
                     "versions": hit.versions,
-                    "exists_today": hit.exists_today,
+                    "gone_from_disk": hit.gone_from_disk,
                     "first_seq": hit.first_seq,
                     "last_seq": hit.last_seq,
                     "first_seen": hit.first_ts,
@@ -177,7 +177,7 @@ pub fn search_human(hits: &[SearchResult]) -> String {
         if hits.len() == 1 { "" } else { "es" }
     );
     for hit in hits {
-        let marker = if hit.exists_today { " " } else { "×" };
+        let marker = if hit.gone_from_disk { "×" } else { " " };
         out.push_str(&format!(
             "{marker} {}\n    {} version{}, last seen {}\n",
             hit.path,
@@ -511,7 +511,7 @@ mod tests {
                 first_ts: 1_700_000_000,
                 last_ts: 1_700_000_000,
                 versions: 2,
-                exists_today: true,
+                gone_from_disk: false,
             },
             SearchResult {
                 path: "home/k/gone.txt".into(),
@@ -522,7 +522,7 @@ mod tests {
                 first_ts: 1_700_000_000,
                 last_ts: 1_700_000_000,
                 versions: 1,
-                exists_today: false,
+                gone_from_disk: true,
             },
         ];
         let text = search_human(&hits);

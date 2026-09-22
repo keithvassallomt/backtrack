@@ -88,9 +88,18 @@ pub struct SearchResult {
     pub last_ts: i64,
     /// How many distinct versions the path has had.
     pub versions: u32,
-    /// Whether the file still exists in the newest archive. A false here is what
-    /// drives the "deleted after this" badge.
-    pub exists_today: bool,
+    /// Whether this path is known to be gone from the computer now.
+    ///
+    /// True only for a *known* absence. A path the daemon could not check —
+    /// an unreadable folder, or an archive taken on another machine — reads as
+    /// false, because the tag this drives ("no longer on your disk") is a
+    /// claim, and a claim nobody verified should not be made.
+    ///
+    /// Deliberately not "is it in the newest archive", which is what this
+    /// field used to hold under the name `exists_today`. The newest backup can
+    /// be an hour old, and the hour since is exactly when the thing a person
+    /// is searching for went missing.
+    pub gone_from_disk: bool,
 }
 
 /// One path a restore needs an answer about, as `GetRestorePreview` reports it.

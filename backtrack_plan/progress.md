@@ -86,7 +86,7 @@
 - [x] S07-T8 Demo fixture stores real paths, so its history can be restored
 
 ## Stage 8 — Search & compare ([stage file](stages/stage-08-search-compare.md))
-- [ ] S08-T1 SearchFiles D-Bus method over FTS5
+- [x] S08-T1 SearchFiles D-Bus method over FTS5
 - [ ] S08-T2 Search UI grouped by file, deleted-first ranking (mockup 20)
 - [ ] S08-T3 View-in-Timeline + Restore-Latest actions
 - [ ] S08-T4 Compare view: text diff (mockup 9), images side-by-side

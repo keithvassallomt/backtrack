@@ -24,7 +24,7 @@ use futures::StreamExt;
 use zbus::object_server::SignalEmitter;
 
 use crate::jobs::JobRegistry;
-use crate::service::{fan_out_signals, Daemon1, Shared};
+use crate::service::{fan_out_signals, Daemon1, Shared, SEARCH_LIMIT};
 
 const PASS: &str = "e2e-passphrase";
 const PATH: &str = "/org/backtrack/Daemon1";
@@ -1262,4 +1262,112 @@ async fn a_client_can_ask_which_catalogued_paths_are_still_on_this_computer() {
         vec![2, 1, 0],
         "present, absent, unknown — in the order they were asked",
     );
+}
+
+/// Charlie's story through the interface: find a file that is gone.
+///
+/// Three things at once, because they only mean anything together — the search
+/// reaches back into snapshots the file no longer appears in, what is gone from
+/// the computer is ranked above what is still on it, and the tag that says so
+/// is a fact about the disk rather than about the newest backup.
+#[tokio::test]
+async fn search_puts_what_is_gone_from_the_computer_first() {
+    let fixture = small_fixture().await;
+    let shared = Arc::clone(&fixture.shared);
+    let src = source(&shared);
+
+    // Two files that will both match "note", one of which does not survive.
+    let docs = src.join("docs");
+    std::fs::write(docs.join("keeper-note.txt"), b"kept").unwrap();
+    std::fs::write(docs.join("lost-note.txt"), b"lost").unwrap();
+
+    let backup = Daemon1::new(Arc::clone(&shared))
+        .backup_now()
+        .await
+        .expect("backup starts");
+    wait_for_job(&shared, backup).await;
+
+    // Deleted after the backup, so the catalogue still has it in its newest
+    // archive: the case the old `exists_today` could not see.
+    std::fs::remove_file(docs.join("lost-note.txt")).unwrap();
+
+    let (_server, client) = connect(Arc::clone(&shared)).await;
+    let reply = client
+        .call_method(None::<()>, PATH, Some(IFACE), "SearchFiles", &("note",))
+        .await
+        .expect("SearchFiles accepted");
+    let hits: Vec<backtrack_core::dbus::SearchResult> =
+        reply.body().deserialize().expect("search results");
+
+    let names: Vec<&str> = hits.iter().map(|h| h.name.as_str()).collect();
+    assert!(
+        names.contains(&"lost-note.txt") && names.contains(&"keeper-note.txt"),
+        "both files match the query: {names:?}",
+    );
+    assert_eq!(
+        names.first(),
+        Some(&"lost-note.txt"),
+        "the one that is gone from the computer ranks first: {names:?}",
+    );
+
+    let gone = |name: &str| {
+        hits.iter()
+            .find(|h| h.name == name)
+            .expect("the hit is present")
+            .gone_from_disk
+    };
+    assert!(gone("lost-note.txt"), "deleted from the computer");
+    assert!(
+        !gone("keeper-note.txt"),
+        "still on the computer, though both are in the same newest archive",
+    );
+}
+
+/// The two limits the daemon keeps because a client cannot be relied on to.
+#[tokio::test]
+async fn search_refuses_a_one_character_query_and_caps_what_it_returns() {
+    let fixture = small_fixture().await;
+    let shared = Arc::clone(&fixture.shared);
+    let src = source(&shared);
+
+    // Comfortably more matches than the cap allows through.
+    let many = src.join("many");
+    std::fs::create_dir_all(&many).unwrap();
+    for i in 0..(SEARCH_LIMIT + 50) {
+        std::fs::write(many.join(format!("plentiful-{i}.txt")), b"x").unwrap();
+    }
+
+    let backup = Daemon1::new(Arc::clone(&shared))
+        .backup_now()
+        .await
+        .expect("backup starts");
+    wait_for_job(&shared, backup).await;
+
+    let (_server, client) = connect(Arc::clone(&shared)).await;
+
+    let capped = client
+        .call_method(
+            None::<()>,
+            PATH,
+            Some(IFACE),
+            "SearchFiles",
+            &("plentiful",),
+        )
+        .await
+        .expect("SearchFiles accepted");
+    let hits: Vec<backtrack_core::dbus::SearchResult> =
+        capped.body().deserialize().expect("search results");
+    assert_eq!(hits.len(), SEARCH_LIMIT, "capped, not merely large");
+
+    // A one-character query is refused rather than answered expensively.
+    let refused = client
+        .call_method(None::<()>, PATH, Some(IFACE), "SearchFiles", &("p",))
+        .await;
+    assert!(refused.is_err(), "a one-character query is refused");
+
+    // Two characters is the floor, and whitespace does not pad it out.
+    let padded = client
+        .call_method(None::<()>, PATH, Some(IFACE), "SearchFiles", &("  p  ",))
+        .await;
+    assert!(padded.is_err(), "trimmed before it is measured");
 }

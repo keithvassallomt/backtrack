@@ -63,6 +63,21 @@ pub use state::{PauseState, RestorePolicy};
 
 use state::{config_document, config_get, config_set, next_due, to_epoch};
 
+/// The most search results the daemon will return.
+///
+/// Far more than anyone reads, and well short of what a two-character query
+/// against a full home directory can match. The client's job is to show the
+/// first screenful; the daemon's is to make sure a careless query cannot cost
+/// a megabyte of D-Bus message and a directory read per row.
+const SEARCH_LIMIT: usize = 200;
+
+/// The shortest query the daemon will answer.
+///
+/// One character matches a large fraction of any real catalogue, and finding
+/// that out is real work for an answer nobody can use. The application
+/// debounces as the person types; this is what stops a client that does not.
+const MIN_QUERY_CHARS: usize = 2;
+
 /// Everything the interface reads and writes, shared with the background tasks
 /// that fan job updates out as signals.
 pub struct Shared {
@@ -1629,12 +1644,49 @@ impl Daemon1 {
 
     /// Filename search across every snapshot, including files that have since
     /// been deleted.
+    ///
+    /// Two limits, both the daemon's to keep because a client cannot be relied
+    /// on to. A query shorter than [`MIN_QUERY_CHARS`] is refused rather than
+    /// answered: one character matches a large fraction of a home directory,
+    /// and the work of finding that out is real even though the answer is
+    /// useless. Results are capped at [`SEARCH_LIMIT`], which is far more than
+    /// anyone reads and well short of what a broad query can produce.
+    ///
+    /// Debouncing is the client's, since only the client knows whether the
+    /// person is still typing.
     async fn search_files(&self, query: &str) -> Result<Vec<SearchResult>> {
+        let trimmed = query.trim();
+        if trimmed.chars().count() < MIN_QUERY_CHARS {
+            return Err(DaemonError::InvalidArgument(format!(
+                "a search needs at least {MIN_QUERY_CHARS} characters"
+            )));
+        }
+
         let reader = IndexReader::open(&self.shared.index_path)?;
-        Ok(reader
-            .search(query)?
+        let mut hits = reader.search(trimmed)?;
+        // Capped before the disk is consulted, so a query matching ten thousand
+        // paths costs ten thousand index rows rather than ten thousand
+        // directory reads. The order it caps on is the catalogue's, which
+        // already puts what the newest backup has lost at the top.
+        hits.truncate(SEARCH_LIMIT);
+
+        let paths: Vec<String> = hits.iter().map(|hit| hit.path.clone()).collect();
+        let presence = tokio::task::spawn_blocking(move || on_disk::resolve(&paths))
+            .await
+            .map_err(|error| {
+                DaemonError::IndexUnavailable(format!("the folder listing task failed: {error}"))
+            })?;
+
+        // What a person searching has lost is what they are looking for, so it
+        // goes first. A *stable* sort, which leaves the catalogue's own
+        // ranking — most recent existence, then relevance — intact inside each
+        // group.
+        let mut ranked: Vec<_> = hits.into_iter().zip(presence).collect();
+        ranked.sort_by_key(|(_, presence)| *presence != on_disk::OnDisk::Absent);
+
+        Ok(ranked
             .into_iter()
-            .map(|hit| SearchResult {
+            .map(|(hit, presence)| SearchResult {
                 path: hit.path,
                 name: hit.name,
                 kind: kind_name(hit.kind).to_string(),
@@ -1643,7 +1695,7 @@ impl Daemon1 {
                 first_ts: hit.first_ts,
                 last_ts: hit.last_ts,
                 versions: hit.version_count.max(0) as u32,
-                exists_today: hit.exists_today,
+                gone_from_disk: presence == on_disk::OnDisk::Absent,
             })
             .collect())
     }
