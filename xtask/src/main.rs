@@ -12,7 +12,7 @@
 //! Run it with `just demo-repo` (which sets `BACKTRACK_DEV=1`, so it writes to
 //! `~/.local/share/backtrack-dev/`).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -143,7 +143,7 @@ fn run(dir: &Path) -> Result<Summary> {
     let mut prev = BTreeMap::new();
     for (i, day_files) in script.iter().enumerate() {
         let day = i + 1;
-        apply_day(&home, &prev, day_files)?;
+        apply_day(&home, &prev, day_files, when[i])?;
         let date = utc_stamp(when[i] - skew);
         borg_create(&src, &repo, &format!("snapshot-{day:02}"), &date)?;
         prev = day_files.clone();
@@ -357,26 +357,89 @@ fn history() -> Vec<BTreeMap<String, String>> {
 /// Apply the difference between `prev` and `cur` to the on-disk `home` tree:
 /// write added/changed files, delete removed ones, then prune emptied
 /// directories so a deleted folder actually disappears from the next snapshot.
+///
+/// Everything written is dated to `when`, the instant the day's snapshot is
+/// taken at, rather than left at the wall clock. The generator runs in about
+/// twelve seconds, so without this every file and folder in a history claiming
+/// to span a month carries a modification time inside the same minute, and the
+/// Modified column reads "today" beside a backup from five weeks ago. Files are
+/// dated a little before the backup that captures them, because that is the
+/// order those two things happen in.
+///
+/// Only what actually changed is dated, which is the point: a file nobody
+/// touched keeps the modification time it had, so Borg dedups it and the index
+/// extends its interval instead of opening a new version. Directories follow
+/// the same rule by the same reasoning as the filesystem's — a directory's
+/// modification time moves when an entry is added to it or removed from it,
+/// and not when a file inside it is rewritten.
 fn apply_day(
     home: &Path,
     prev: &BTreeMap<String, String>,
     cur: &BTreeMap<String, String>,
+    when: i64,
 ) -> Result<()> {
+    /// How long before the backup the day's edits were made.
+    const EDITED_BEFORE_BACKUP: i64 = 40 * 60;
+
     for rel in prev.keys() {
         if !cur.contains_key(rel) {
             let _ = fs::remove_file(home.join(rel));
         }
     }
+    let mut written = Vec::new();
     for (rel, content) in cur {
         if prev.get(rel) != Some(content) {
             let path = home.join(rel);
             if let Some(parent) = path.parent() {
                 fs::create_dir_all(parent)?;
             }
-            fs::write(path, content)?;
+            fs::write(&path, content)?;
+            written.push(path);
         }
     }
     prune_empty_dirs(home)?;
+
+    // Dated after the writing and the pruning, both of which move a
+    // directory's modification time as a side effect.
+    for path in written {
+        set_mtime(&path, when - EDITED_BEFORE_BACKUP)?;
+    }
+    let before = entries_by_dir(prev);
+    let after = entries_by_dir(cur);
+    for (dir, names) in &after {
+        if before.get(dir) != Some(names) {
+            set_mtime(&home.join(dir), when - EDITED_BEFORE_BACKUP)?;
+        }
+    }
+    Ok(())
+}
+
+/// The names directly inside each directory of a day's tree, keyed by the
+/// directory's path relative to the fixture root (the empty string being the
+/// root itself).
+///
+/// This is what decides whether a directory's modification time moved: it did
+/// if the set of names inside it is not the one it had yesterday.
+fn entries_by_dir(files: &BTreeMap<String, String>) -> BTreeMap<String, BTreeSet<String>> {
+    let mut dirs: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    dirs.entry(String::new()).or_default();
+    for rel in files.keys() {
+        let parts: Vec<&str> = rel.split('/').collect();
+        for depth in 0..parts.len() {
+            dirs.entry(parts[..depth].join("/"))
+                .or_default()
+                .insert(parts[depth].to_string());
+        }
+    }
+    dirs
+}
+
+/// Set `path`'s modification time, for a file or a directory alike.
+fn set_mtime(path: &Path, epoch: i64) -> Result<()> {
+    let when = std::time::UNIX_EPOCH + std::time::Duration::from_secs(epoch.max(0) as u64);
+    // Read-only is enough on Linux, and is the only thing a directory allows.
+    let handle = fs::File::options().read(true).open(path)?;
+    handle.set_times(fs::FileTimes::new().set_modified(when))?;
     Ok(())
 }
 
@@ -625,6 +688,79 @@ mod tests {
         // as the end of the history.
         assert!(days_ago.contains(&(GAP_DAYS[0] - 1)));
         assert!(days_ago.contains(&(GAP_DAYS[1] + 1)));
+    }
+
+    /// The modification time `path` carries, in whole seconds.
+    fn mtime_of(path: &Path) -> i64 {
+        fs::metadata(path)
+            .unwrap()
+            .modified()
+            .unwrap()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64
+    }
+
+    #[test]
+    fn a_day_dates_what_it_changed_and_leaves_the_rest_alone() {
+        const DAY_ONE: i64 = 1_600_000_000;
+        const DAY_TWO: i64 = DAY_ONE + 86_400;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path();
+
+        let day_one: BTreeMap<String, String> = [
+            ("Documents/report.odt", "draft"),
+            ("Documents/notes.txt", "notes"),
+            ("old/contract.pdf", "signed"),
+        ]
+        .iter()
+        .map(|(k, v)| (k.to_string(), v.to_string()))
+        .collect();
+        apply_day(home, &BTreeMap::new(), &day_one, DAY_ONE).unwrap();
+
+        // Everything a day writes is dated to that day, not to the wall clock.
+        assert!(mtime_of(&home.join("Documents/report.odt")) < DAY_ONE);
+        assert_eq!(
+            mtime_of(&home.join("Documents/report.odt")),
+            mtime_of(&home.join("Documents")),
+        );
+
+        // Day two rewrites one file, deletes a folder's only file, and touches
+        // nothing else.
+        let mut day_two = day_one.clone();
+        day_two.insert("Documents/report.odt".to_string(), "reviewed".to_string());
+        day_two.remove("old/contract.pdf");
+        apply_day(home, &day_one, &day_two, DAY_TWO).unwrap();
+
+        let rewritten = mtime_of(&home.join("Documents/report.odt"));
+        assert!(rewritten > DAY_ONE, "the rewritten file moved to day two");
+
+        // A file nobody touched keeps its time, which is what lets Borg dedup
+        // it and the index extend its interval rather than open a version.
+        assert!(mtime_of(&home.join("Documents/notes.txt")) < DAY_ONE);
+
+        // Rewriting a file does not move its directory; losing an entry does.
+        assert!(
+            mtime_of(&home.join("Documents")) < DAY_ONE,
+            "a directory whose entries are unchanged keeps its time",
+        );
+        assert!(!home.join("old").exists(), "the emptied folder is gone");
+    }
+
+    #[test]
+    fn a_directorys_entries_are_the_names_directly_inside_it() {
+        let files: BTreeMap<String, String> = [("a/b/c.txt", "x"), ("a/d.txt", "y")]
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect();
+        let dirs = entries_by_dir(&files);
+        assert_eq!(dirs[""], BTreeSet::from(["a".to_string()]));
+        assert_eq!(
+            dirs["a"],
+            BTreeSet::from(["b".to_string(), "d.txt".to_string()]),
+        );
+        assert_eq!(dirs["a/b"], BTreeSet::from(["c.txt".to_string()]));
     }
 
     #[test]
