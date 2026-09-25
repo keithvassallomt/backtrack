@@ -1047,6 +1047,28 @@ impl Window {
     }
 }
 
+/// Where a window opens when it is not told: over the top of the newest
+/// backup. For backups of the usual folders that is the home folder; for one
+/// folder chosen deep in the tree it is that folder's parent; for somebody's
+/// imported backups it may be anywhere at all. With nothing catalogued yet it
+/// is the home folder.
+pub async fn backed_up_target() -> Target {
+    let found = gio::spawn_blocking(|| {
+        let reader =
+            backtrack_core::index::IndexReader::open(&backtrack_core::paths::index_db()).ok()?;
+        let seq = reader.latest_catalogued_seq().ok()??;
+        let roots = reader.backed_up_roots(seq).ok()?;
+        crate::path::common_parent(&roots)
+    })
+    .await
+    .ok()
+    .flatten();
+    Target {
+        folder: found.unwrap_or_else(|| crate::path::to_archive(&glib::home_dir())),
+        select: None,
+    }
+}
+
 /// Point every open window at `target` and re-read what it shows, as after
 /// the wizard has moved the backups somewhere else. Returns whether there
 /// was a window to do it to.

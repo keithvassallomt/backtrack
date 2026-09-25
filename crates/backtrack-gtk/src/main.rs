@@ -57,18 +57,20 @@ pub struct Target {
 }
 
 impl Target {
-    /// Work out the folder and selection from the arguments.
+    /// Work out the folder and selection from the arguments, or `None` when
+    /// they name neither and where to open is the catalogue's to say (see
+    /// `window::backed_up_target`).
     ///
     /// `--select` naming a file implies its folder, so `--select` alone is
     /// enough: a file manager passing a file has already said where it is.
-    fn resolve(args: &Args, home: &std::path::Path) -> Target {
+    fn resolve(args: &Args) -> Option<Target> {
         let select = args.select.as_deref().map(crate::path::to_archive);
         let folder = match (&args.path, &select) {
             (Some(dir), _) => crate::path::to_archive(dir),
             (None, Some(file)) => crate::path::parent(file).unwrap_or_default(),
-            (None, None) => crate::path::to_archive(home),
+            (None, None) => return None,
         };
-        Target { folder, select }
+        Some(Target { folder, select })
     }
 }
 
@@ -140,12 +142,15 @@ fn main() -> glib::ExitCode {
             // processes, and the one with the variable set is the first.
             ui::apply_theme_override(command_line.getenv("BACKTRACK_THEME").as_deref());
 
-            let home = glib::home_dir();
-            let target = Target::resolve(&args, &home);
+            let target = Target::resolve(&args);
 
             match app.active_window() {
                 Some(existing) => {
-                    window::retarget(&existing, &target);
+                    // Launched again with nothing to show: bring the window
+                    // forward as it is, rather than moving it somewhere.
+                    if let Some(target) = &target {
+                        window::retarget(&existing, target);
+                    }
                     existing.present();
                 }
                 None => open_first_window(app, target),
@@ -161,11 +166,14 @@ fn main() -> glib::ExitCode {
 
 /// Open the timeline, or the welcome wizard if nothing is set up yet.
 ///
+/// With no `target`, the timeline opens over the top of the newest backup,
+/// which for backups of the usual folders is the home folder anyway.
+///
 /// Asked of the daemon rather than read from `config.toml`: the daemon is what
 /// backs up, so its answer is the one that counts. With no daemon to ask, the
 /// timeline opens anyway. Browsing needs only the catalogue, and the wizard
 /// could not create anything without the daemon behind it.
-fn open_first_window(app: &adw::Application, target: Target) {
+fn open_first_window(app: &adw::Application, target: Option<Target>) {
     // Nothing is on screen while the daemon is asked, and an application with
     // no window and nothing holding it would quit in the meantime.
     let hold = app.hold();
@@ -181,7 +189,13 @@ fn open_first_window(app: &adw::Application, target: Target) {
                 info!("nothing is set up yet; opening the welcome wizard");
                 ui::wizard::present(&app, daemon, None, None, None);
             }
-            _ => window::Window::build(&app, &target).present(),
+            _ => {
+                let target = match target {
+                    Some(target) => target,
+                    None => window::backed_up_target().await,
+                };
+                window::Window::build(&app, &target).present();
+            }
         }
         drop(hold);
     });
@@ -198,40 +212,35 @@ mod tests {
         }
     }
 
-    fn home() -> PathBuf {
-        PathBuf::from("/home/keith")
-    }
-
     #[test]
-    fn no_arguments_opens_the_home_folder() {
-        let target = Target::resolve(&args(None, None), &home());
-        assert_eq!(target.folder, "home/keith");
-        assert_eq!(target.select, None);
+    fn no_arguments_leave_it_to_the_catalogue() {
+        // Not the home folder: Borg records nothing above the folders it was
+        // asked for, so for a backup of one folder deep in the tree the home
+        // folder is an empty view.
+        assert_eq!(Target::resolve(&args(None, None)), None);
     }
 
     #[test]
     fn a_path_opens_that_folder() {
-        let target = Target::resolve(&args(Some("/srv/data"), None), &home());
+        let target = Target::resolve(&args(Some("/srv/data"), None)).unwrap();
         assert_eq!(target.folder, "srv/data");
     }
 
     #[test]
     fn a_selected_file_implies_the_folder_it_is_in() {
         // "Restore Previous Version…" on a file passes only the file.
-        let target = Target::resolve(&args(None, Some("/home/keith/report.odt")), &home());
+        let target = Target::resolve(&args(None, Some("/home/keith/report.odt"))).unwrap();
         assert_eq!(target.folder, "home/keith");
         assert_eq!(target.select, Some("home/keith/report.odt".to_string()));
     }
 
     #[test]
     fn an_explicit_path_wins_over_the_selected_file_s_own_folder() {
-        let target = Target::resolve(
-            &args(
-                Some("/home/keith/Documents"),
-                Some("/home/keith/report.odt"),
-            ),
-            &home(),
-        );
+        let target = Target::resolve(&args(
+            Some("/home/keith/Documents"),
+            Some("/home/keith/report.odt"),
+        ))
+        .unwrap();
         assert_eq!(target.folder, "home/keith/Documents");
         assert_eq!(target.select, Some("home/keith/report.odt".to_string()));
     }

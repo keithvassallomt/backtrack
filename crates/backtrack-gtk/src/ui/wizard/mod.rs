@@ -32,7 +32,7 @@ use std::sync::Arc;
 
 use backtrack_core::config::Config;
 use gtk4::prelude::*;
-use gtk4::{gio, glib, Align, Box as GtkBox, Button, Label, Orientation};
+use gtk4::{glib, Align, Box as GtkBox, Button, Label, Orientation};
 use libadwaita as adw;
 use libadwaita::prelude::*;
 use tracing::{info, warn};
@@ -350,31 +350,11 @@ impl Wizard {
     /// Leave the wizard for the timeline, opened where the backups can be
     /// seen.
     async fn open_timeline(self: &Rc<Self>) {
-        let target = timeline_target().await;
+        let target = crate::window::backed_up_target().await;
         if !crate::window::refresh_all(&target) {
             crate::window::Window::build(&self.app, &target).present();
         }
         self.window.close();
-    }
-}
-
-/// Where the timeline should open: over the top of the newest backup, which
-/// for a new computer's own backups is the home folder and for somebody's
-/// imported ones may be anywhere at all.
-async fn timeline_target() -> crate::Target {
-    let found = gio::spawn_blocking(|| {
-        let reader =
-            backtrack_core::index::IndexReader::open(&backtrack_core::paths::index_db()).ok()?;
-        let seq = reader.latest_catalogued_seq().ok()??;
-        let roots = reader.backed_up_roots(seq).ok()?;
-        crate::path::common_parent(&roots)
-    })
-    .await
-    .ok()
-    .flatten();
-    crate::Target {
-        folder: found.unwrap_or_else(|| crate::path::to_archive(&glib::home_dir())),
-        select: None,
     }
 }
 
