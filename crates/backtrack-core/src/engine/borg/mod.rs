@@ -20,7 +20,7 @@ use tokio::process::Command;
 
 use crate::engine::{
     ArchiveId, BackupEngine, CheckLevel, CreateSpec, EngineError, JobEvent, JobStream, Presence,
-    PrunePolicy, RepoInfo, RepoSpec, Result,
+    PrunePolicy, RepoInfo, RepoSpec, RepoStats, Result,
 };
 use crate::index::{ArchiveMeta, BorgItem};
 use crate::secret::SecretStore;
@@ -216,6 +216,41 @@ impl BackupEngine for BorgCli {
         run_stdout_string(cmd).await
     }
 
+    async fn change_passphrase(&self, old: &str, new: &str) -> Result<()> {
+        // Both passphrases travel in the child's environment, as the
+        // passphrase always does, and never on its command line, where any
+        // other user of the machine could read them.
+        let mut cmd = base_command(&self.bin, old);
+        cmd.env("BORG_NEW_PASSPHRASE", new)
+            .arg("key")
+            .arg("change-passphrase")
+            .arg(&self.repo);
+        run_to_completion(cmd).await.map(|_| ())
+    }
+
+    async fn repo_stats(&self) -> Result<RepoStats> {
+        let mut cmd = self.cmd().await?;
+        cmd.arg("info").arg("--json").arg(&self.repo);
+        let out = run_json(cmd).await?;
+        let stat = |name: &str| {
+            out.get("cache")
+                .and_then(|c| c.get("stats"))
+                .and_then(|s| s.get(name))
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0)
+        };
+        Ok(RepoStats {
+            encryption: out
+                .get("encryption")
+                .and_then(|e| e.get("mode"))
+                .and_then(|m| m.as_str())
+                .unwrap_or_default()
+                .to_string(),
+            stored_bytes: stat("unique_csize"),
+            original_bytes: stat("total_size"),
+        })
+    }
+
     async fn create(&self, spec: &CreateSpec) -> Result<JobStream> {
         let mut cmd = self.cmd().await?;
         cmd.arg("create")
@@ -231,6 +266,9 @@ impl BackupEngine for BorgCli {
             .arg(spec.compression.as_borg_arg());
         if spec.one_file_system {
             cmd.arg("--one-file-system");
+        }
+        if let Some(limit) = spec.upload_limit_kib.filter(|kib| *kib > 0) {
+            cmd.arg("--upload-ratelimit").arg(limit.to_string());
         }
         for ex in &spec.excludes {
             cmd.arg("--exclude").arg(ex);

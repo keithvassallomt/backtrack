@@ -24,7 +24,7 @@ use futures::StreamExt;
 use zbus::object_server::SignalEmitter;
 
 use crate::jobs::JobRegistry;
-use crate::service::{fan_out_signals, Daemon1, Shared, SEARCH_LIMIT};
+use crate::service::{fan_out_signals, Daemon1, Shared, StorageInfo, SEARCH_LIMIT};
 
 const PASS: &str = "e2e-passphrase";
 const PATH: &str = "/org/backtrack/Daemon1";
@@ -471,6 +471,7 @@ async fn importing_a_repository_leaves_the_newest_snapshot_browsable_at_once() {
             sources: sources.clone(),
             excludes: vec![],
             compression: Default::default(),
+            upload_limit_kib: None,
             one_file_system: true,
             created_at: SystemTime::now(),
             paths: Vec::new(),
@@ -1495,4 +1496,189 @@ async fn the_recovery_key_the_wizard_saves_restores_a_damaged_repository() {
         .await
         .expect("the saved key opens the repository again");
     assert!(!info.repository_id.is_empty());
+}
+
+/// S09-T4, Preferences → Security → Change Passphrase: the repository and the
+/// local safety net both move to the new passphrase, and the stored one with
+/// them, so nothing is left that only the old one opens.
+#[tokio::test]
+async fn changing_the_passphrase_changes_it_everywhere_it_is_used() {
+    let fixture = small_fixture().await;
+    let shared = Arc::clone(&fixture.shared);
+    let repo = shared.config().storage.repository.clone().unwrap();
+    // The local safety net exists once the destination has been away.
+    let spool = shared.spool_engine().await.expect("spool created");
+    assert!(spool.repo_info().await.is_ok());
+
+    let (_server, client) = connect(Arc::clone(&shared)).await;
+    client
+        .call_method(
+            None::<()>,
+            PATH,
+            Some(IFACE),
+            "ChangePassphrase",
+            &("a completely different passphrase",),
+        )
+        .await
+        .expect("ChangePassphrase accepted");
+
+    assert_eq!(
+        shared.secrets.get(&repo).await.unwrap(),
+        "a completely different passphrase"
+    );
+    assert!(
+        engine(&shared).repo_info().await.is_ok(),
+        "the repository opens with the stored passphrase"
+    );
+    assert!(
+        spool.repo_info().await.is_ok(),
+        "and so does the local safety net"
+    );
+
+    let refused = client
+        .call_method(None::<()>, PATH, Some(IFACE), "ChangePassphrase", &("",))
+        .await
+        .unwrap_err();
+    assert!(
+        refused.to_string().contains("InvalidArgument"),
+        "an empty passphrase is refused: {refused}"
+    );
+}
+
+/// S09-T4, the Storage, Security and Advanced pages' daemon calls.
+#[tokio::test]
+async fn preferences_can_describe_rebuild_and_reset_without_touching_the_backups() {
+    let fixture = small_fixture().await;
+    let shared = Arc::clone(&fixture.shared);
+    let repo = shared.config().storage.repository.clone().unwrap();
+    let (_server, client) = connect(Arc::clone(&shared)).await;
+
+    let job: u64 = client
+        .call_method(None::<()>, PATH, Some(IFACE), "BackupNow", &())
+        .await
+        .unwrap()
+        .body()
+        .deserialize()
+        .unwrap();
+    wait_for_job(&shared, job).await;
+
+    let info: StorageInfo = client
+        .call_method(None::<()>, PATH, Some(IFACE), "GetStorageInfo", &())
+        .await
+        .expect("GetStorageInfo answers once the backup is done")
+        .body()
+        .deserialize()
+        .unwrap();
+    assert_eq!(info.encryption, "repokey-blake2");
+    // Not `original >= stored`: for four small files Borg's own metadata
+    // outweighs the data it describes.
+    assert!(info.stored > 0 && info.original > 0, "{info:?}");
+    assert!(info.capacity > 0 && info.free > 0, "{info:?}");
+
+    let before = backtrack_core::index::IndexReader::open(&shared.index_path)
+        .unwrap()
+        .archives_overview()
+        .unwrap()
+        .len();
+    let rebuild: u64 = client
+        .call_method(None::<()>, PATH, Some(IFACE), "RebuildCatalogue", &())
+        .await
+        .expect("RebuildCatalogue starts")
+        .body()
+        .deserialize()
+        .unwrap();
+    wait_for_job(&shared, rebuild).await;
+    let reader = backtrack_core::index::IndexReader::open(&shared.index_path).unwrap();
+    assert_eq!(reader.archives_overview().unwrap().len(), before);
+    assert!(
+        !reader.search("a.txt").unwrap().is_empty(),
+        "the rebuilt catalogue can be searched again"
+    );
+
+    client
+        .call_method(None::<()>, PATH, Some(IFACE), "ResetConfig", &())
+        .await
+        .expect("ResetConfig accepted");
+    assert_eq!(shared.config(), Config::default());
+    assert!(
+        std::path::Path::new(&repo).join("config").exists(),
+        "the repository is where it was"
+    );
+    assert_eq!(
+        shared.secrets.get(&repo).await.unwrap(),
+        PASS,
+        "and so is its passphrase, for the Import that follows"
+    );
+    assert!(
+        !backtrack_core::index::IndexReader::open(&shared.index_path)
+            .unwrap()
+            .archives_overview()
+            .unwrap()
+            .is_empty(),
+        "and the catalogue"
+    );
+}
+
+/// S09-T5: running the wizard again and choosing a new destination. The new
+/// place starts empty; the old repository is left exactly as it was, and
+/// still opens with its own passphrase; and the snapshots on this computer
+/// move to the new passphrase instead of becoming unreadable.
+#[tokio::test]
+async fn moving_to_a_new_destination_leaves_the_old_one_intact() {
+    let fixture = small_fixture().await;
+    let shared = Arc::clone(&fixture.shared);
+    let old_repo = shared.config().storage.repository.clone().unwrap();
+    let spool = shared.spool_engine().await.expect("spool created");
+    assert!(spool.repo_info().await.is_ok());
+    let (_server, client) = connect(Arc::clone(&shared)).await;
+
+    let job: u64 = client
+        .call_method(None::<()>, PATH, Some(IFACE), "BackupNow", &())
+        .await
+        .unwrap()
+        .body()
+        .deserialize()
+        .unwrap();
+    wait_for_job(&shared, job).await;
+    let old_archives = engine(&shared).repo_info().await.unwrap().archive_count;
+    assert_eq!(old_archives, 1);
+
+    let new_repo = std::path::Path::new(&old_repo)
+        .with_file_name("elsewhere/Backtrack/host")
+        .to_str()
+        .unwrap()
+        .to_string();
+    client
+        .call_method(
+            None::<()>,
+            PATH,
+            Some(IFACE),
+            "SetupRepo",
+            &(new_repo.as_str(), "the new destination's passphrase"),
+        )
+        .await
+        .expect("SetupRepo at the new destination");
+    assert_eq!(
+        shared.config().storage.repository.as_deref(),
+        Some(new_repo.as_str())
+    );
+    assert_eq!(engine(&shared).repo_info().await.unwrap().archive_count, 0);
+
+    // The old repository, opened the way Import would open it.
+    let old = BorgCli::new(old_repo.clone(), old_repo.clone(), shared.secrets.clone())
+        .await
+        .unwrap();
+    assert_eq!(
+        old.repo_info().await.unwrap().archive_count,
+        old_archives,
+        "the old backups are where they were, and open with their passphrase"
+    );
+
+    // A fresh start of the daemon would build the spool's engine anew,
+    // looking its passphrase up under the new destination's name.
+    let spool = shared.spool_engine().await.expect("spool reopened");
+    assert!(
+        spool.repo_info().await.is_ok(),
+        "the local snapshots open with the new passphrase"
+    );
 }

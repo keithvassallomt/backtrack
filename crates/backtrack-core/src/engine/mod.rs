@@ -24,7 +24,7 @@ pub use error::{EngineError, HealthFailure, Result};
 pub use job::{JobEvent, JobSink, JobStream, JobSummary, LogLevel};
 pub use spec::{
     ArchiveId, CheckLevel, Compression, CreateSpec, Encryption, Presence, PrunePolicy, RepoInfo,
-    RepoSpec,
+    RepoSpec, RepoStats,
 };
 
 /// The one interface every backup engine implements. The daemon holds an
@@ -41,6 +41,17 @@ pub trait BackupEngine: Send + Sync {
 
     /// Export the text recovery key (`borg key export`).
     async fn key_export(&self) -> Result<String>;
+
+    /// Re-encrypt the repository key under a new passphrase (`borg key
+    /// change-passphrase`).
+    ///
+    /// Both are given rather than the old one being looked up, because the
+    /// caller may be undoing a change it has just made, when the stored
+    /// passphrase and the repository briefly disagree.
+    async fn change_passphrase(&self, old: &str, new: &str) -> Result<()>;
+
+    /// The repository's encryption mode and size (`borg info`).
+    async fn repo_stats(&self) -> Result<RepoStats>;
 
     /// Create an archive (`borg create`).
     async fn create(&self, spec: &CreateSpec) -> Result<JobStream>;

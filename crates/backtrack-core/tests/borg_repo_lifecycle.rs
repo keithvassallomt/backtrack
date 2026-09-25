@@ -157,3 +157,46 @@ async fn presence_refuses_a_folder_that_cannot_be_written() {
     std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755)).unwrap();
     assert_eq!(presence, Ok(Presence::Unwritable));
 }
+
+/// S09-T4: Preferences → Security's Change Passphrase, and the figures the
+/// Storage and Security pages show, against real Borg.
+#[tokio::test]
+async fn the_passphrase_changes_and_the_repository_describes_itself() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = dir.path().join("repo").to_str().unwrap().to_string();
+    let secrets = store(dir.path()).await;
+    let eng = BorgCli::new(repo.clone(), "test".into(), secrets.clone())
+        .await
+        .unwrap();
+    eng.init_repo(&RepoSpec {
+        path: repo.clone(),
+        encryption: Encryption::RepokeyBlake2,
+    })
+    .await
+    .unwrap();
+
+    let stats = eng.repo_stats().await.expect("borg info answers");
+    assert_eq!(stats.encryption, "repokey-blake2");
+    assert_eq!(stats.stored_bytes, 0, "nothing is backed up yet");
+
+    eng.change_passphrase(PASS, "a completely new passphrase")
+        .await
+        .expect("borg accepts the change");
+    assert_eq!(
+        eng.repo_info().await.unwrap_err(),
+        EngineError::PassphraseWrong,
+        "the old passphrase no longer opens it"
+    );
+    secrets
+        .set("test", "a completely new passphrase")
+        .await
+        .unwrap();
+    assert!(eng.repo_info().await.is_ok(), "the new one does");
+
+    // And back, which is how a half-finished change is undone.
+    eng.change_passphrase("a completely new passphrase", PASS)
+        .await
+        .unwrap();
+    secrets.set("test", PASS).await.unwrap();
+    assert!(eng.repo_info().await.is_ok());
+}

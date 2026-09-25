@@ -689,6 +689,7 @@ async fn run_offline(
             .collect(),
         excludes: plan.excludes.clone(),
         compression: plan.compression,
+        upload_limit_kib: None,
         one_file_system: plan.walk.one_file_system,
         created_at,
     };
@@ -1158,6 +1159,7 @@ mod tests {
             sources: vec!["/home/k".into()],
             excludes: vec![],
             compression: Default::default(),
+            upload_limit_kib: None,
             one_file_system: true,
             created_at: UNIX_EPOCH + Duration::from_secs(1_000),
             paths: vec![],

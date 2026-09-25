@@ -21,6 +21,7 @@ pub mod density;
 pub mod exclusions;
 pub mod format;
 pub mod group;
+pub mod prefs;
 pub mod restore;
 pub mod search;
 pub mod status;

@@ -55,7 +55,7 @@ use crate::preflight::{self, Facts, SystemProbe, UnknownProbe, Verdict};
 use crate::reachability::{DestinationProbe, Reach, RealProbe};
 use crate::schedule::{self, ScheduleInput};
 
-pub use backtrack_core::dbus::{ReplacedFile, RestorePreview, SearchResult, Status};
+pub use backtrack_core::dbus::{ReplacedFile, RestorePreview, SearchResult, Status, StorageInfo};
 pub use error::{DaemonError, Result};
 pub use health::{HealthInputs, HealthState};
 pub use preview::PreviewCache;
@@ -810,6 +810,51 @@ impl Shared {
         let engine: Arc<dyn BackupEngine> = Arc::new(engine);
         *self.spool.lock().unwrap() = Some(Arc::clone(&engine));
         Ok(engine)
+    }
+
+    /// Carry the local safety net over to a new destination.
+    ///
+    /// The spool is encrypted with the passphrase of the destination it
+    /// stands in for, and that passphrase is looked up under the
+    /// destination's name. A new destination brings a new passphrase under a
+    /// new name, so without this the snapshots already on this computer would
+    /// open until the daemon next restarted and never again after. They are
+    /// re-keyed rather than thrown away because they may hold versions of
+    /// files that nothing else has.
+    async fn rekey_spool(&self, previous: Option<&str>, passphrase: &str) {
+        // Whatever happens next, the engine built for the old name is done.
+        *self.spool.lock().unwrap() = None;
+        let Some(previous) = previous else { return };
+        if !self.spool_dir.join("config").exists() {
+            return;
+        }
+        let old = match self.secrets.get(previous).await {
+            Ok(old) => old,
+            Err(e) => {
+                warn!("the local snapshots cannot be carried over to the new destination: {e}");
+                return;
+            }
+        };
+        if old == passphrase {
+            return;
+        }
+        let spool = match BorgCli::new(
+            self.spool_dir.display().to_string(),
+            previous.to_string(),
+            self.secrets.clone(),
+        )
+        .await
+        {
+            Ok(spool) => spool,
+            Err(e) => {
+                warn!("the local snapshots cannot be carried over to the new destination: {e}");
+                return;
+            }
+        };
+        match spool.change_passphrase(&old, passphrase).await {
+            Ok(()) => info!("the local snapshots now open with the new destination's passphrase"),
+            Err(e) => warn!("the local snapshots could not be moved to the new passphrase: {e}"),
+        }
     }
 
     /// Protect what has changed since the last snapshot, on this computer.
@@ -1950,6 +1995,7 @@ impl Daemon1 {
         passphrase: &str,
         #[zbus(connection)] connection: &zbus::Connection,
     ) -> Result<()> {
+        let previous = self.shared.config().storage.repository;
         self.shared.secrets.set(path, passphrase).await?;
         let engine = BorgCli::new(
             path.to_string(),
@@ -1972,6 +2018,11 @@ impl Daemon1 {
             state.last_attempt = backtrack_core::state::to_epoch(Some(SystemTime::now()));
         });
         info!(path, "repository created");
+        if previous.as_deref() != Some(path) {
+            self.shared
+                .rekey_spool(previous.as_deref(), passphrase)
+                .await;
+        }
 
         // A new repository holds nothing, so a catalogue still describing
         // the previous destination's backups would offer restores from
@@ -2012,6 +2063,133 @@ impl Daemon1 {
         .to_string())
     }
 
+    /// Change the repository's passphrase.
+    ///
+    /// The local safety net is encrypted with the same passphrase, so it
+    /// changes too, and the two never disagree: if the second change fails
+    /// the first is undone. The recovery key saved earlier still opens the
+    /// backups, but with the old passphrase, which the window says.
+    async fn change_passphrase(&self, new: &str) -> Result<()> {
+        if new.is_empty() {
+            return Err(DaemonError::InvalidArgument(
+                "a passphrase cannot be empty".into(),
+            ));
+        }
+        let repository = self.shared.config().storage.repository.ok_or_else(|| {
+            DaemonError::NotConfigured("no backup destination is configured yet".into())
+        })?;
+        let old = self.shared.secrets.get(&repository).await?;
+        let engine = self.shared.engine()?;
+        engine.change_passphrase(&old, new).await?;
+
+        let undo = |error: DaemonError| async {
+            if let Err(undo) = engine.change_passphrase(new, &old).await {
+                warn!("the passphrase change could not be undone: {undo}");
+            }
+            error
+        };
+        if self.shared.spool_dir.join("config").exists() {
+            let spool = match self.shared.spool_engine().await {
+                Ok(spool) => spool,
+                Err(error) => return Err(undo(error).await),
+            };
+            if let Err(error) = spool.change_passphrase(&old, new).await {
+                return Err(undo(error.into()).await);
+            }
+        }
+        if let Err(error) = self.shared.secrets.set(&repository, new).await {
+            return Err(undo(error.into()).await);
+        }
+        info!("passphrase changed");
+        Ok(())
+    }
+
+    /// The figures Preferences shows about the repository.
+    ///
+    /// Asked of Borg, which has to take the repository's lock to answer, so it
+    /// is refused while a job is using the repository rather than risking the
+    /// backup losing a race for that lock to a window being opened.
+    async fn get_storage_info(&self) -> Result<StorageInfo> {
+        let engine = self.shared.engine()?;
+        if !self.shared.idle() {
+            return Err(DaemonError::LockedByOther(
+                "the backups are in use; ask again when the current job has finished".into(),
+            ));
+        }
+        let stats = engine.repo_stats().await?;
+        let repository = self.shared.config().storage.repository.unwrap_or_default();
+        let (capacity, free) = filesystem_space(&repository);
+        Ok(StorageInfo {
+            encryption: stats.encryption,
+            stored: stats.stored_bytes,
+            original: stats.original_bytes,
+            capacity,
+            free,
+        })
+    }
+
+    /// Throw the catalogue's record of the backups away and read it again
+    /// from the repository. Returns the job doing the reading.
+    ///
+    /// Refused unless the repository is there to read from, since clearing
+    /// the catalogue of a destination that is not plugged in would leave an
+    /// empty timeline and nothing to fill it; and refused while a job is
+    /// running, which may be writing to the catalogue at that moment. Local
+    /// snapshots are left alone: they are not in the repository, so reading
+    /// it again could not bring them back.
+    async fn rebuild_catalogue(&self) -> Result<u64> {
+        self.shared.engine()?;
+        if !self.shared.idle() {
+            return Err(DaemonError::LockedByOther(
+                "wait for the current job to finish, then rebuild the catalogue".into(),
+            ));
+        }
+        if self.shared.probe_destination().await == Reach::No {
+            return Err(DaemonError::RepoUnreachable(
+                "the backup destination is not reachable, so there is nothing to rebuild from"
+                    .into(),
+            ));
+        }
+        let index = self.shared.index()?;
+        tokio::task::spawn_blocking(move || {
+            let mut writer = index.lock().unwrap();
+            let seqs: Vec<i64> = writer
+                .archives_in(backtrack_core::index::Repo::Primary)?
+                .into_iter()
+                .map(|row| row.seq)
+                .collect();
+            writer.remove_archives(&seqs)
+        })
+        .await
+        .map_err(|e| DaemonError::IndexUnavailable(e.to_string()))??;
+        info!("catalogue cleared for a rebuild");
+        self.shared
+            .reconcile_catalogue()
+            .await
+            .ok_or_else(|| DaemonError::RepoUnreachable("the backup destination went away".into()))
+    }
+
+    /// Put every setting back to its default, as before the wizard ran.
+    ///
+    /// Touches nothing else. The repository, the catalogue, the safety stash
+    /// and the passphrase in the keyring are all left exactly where they are,
+    /// so the wizard that follows can open the same backups again with
+    /// Import.
+    async fn reset_config(&self, #[zbus(connection)] connection: &zbus::Connection) -> Result<()> {
+        let config = Config::default();
+        self.shared
+            .secrets
+            .set_remember(config.security.remember_passphrase, None)
+            .await?;
+        self.shared.store_config(config)?;
+        *self.shared.engine.lock().unwrap() = None;
+        self.shared.forget_offline_mode();
+        self.shared.wake_scheduler();
+        crate::background::apply(connection, self.shared.wants_background()).await;
+        info!("settings reset; backups and the catalogue are as they were");
+        Ok(())
+    }
+
     /// The configured repository's recovery key, exactly as `borg key export`
     /// writes it, so that the file a person saves is one `borg key import`
     /// reads back without editing.
@@ -2037,6 +2215,7 @@ impl Daemon1 {
         passphrase: &str,
         #[zbus(connection)] connection: &zbus::Connection,
     ) -> Result<()> {
+        let previous = self.shared.config().storage.repository;
         self.shared.secrets.set(path, passphrase).await?;
         let engine = BorgCli::new(
             path.to_string(),
@@ -2051,6 +2230,11 @@ impl Daemon1 {
         self.shared.store_config(config)?;
         self.shared.set_engine(Arc::new(engine));
         info!(path, archives = info.archive_count, "repository imported");
+        if previous.as_deref() != Some(path) {
+            self.shared
+                .rekey_spool(previous.as_deref(), passphrase)
+                .await;
+        }
         crate::background::apply(connection, self.shared.wants_background()).await;
 
         self.shared.adopt_catalogue().await
@@ -2325,12 +2509,44 @@ fn create_spec(config: &Config) -> CreateSpec {
             backtrack_core::config::Compression::Lz4 => backtrack_core::engine::Compression::Lz4,
             backtrack_core::config::Compression::None => backtrack_core::engine::Compression::None,
         },
+        upload_limit_kib: config.advanced.upload_limit_mbps.map(megabytes_to_kib),
         one_file_system: true,
     }
 }
 
+/// Preferences' upload limit, in the KiB/s Borg counts in.
+fn megabytes_to_kib(megabytes: u32) -> u32 {
+    (u64::from(megabytes) * 1_000_000 / 1024).min(u64::from(u32::MAX)) as u32
+}
+
+/// The size and free space of the filesystem holding `repository`, or zeros
+/// where it is not on this computer.
+fn filesystem_space(repository: &str) -> (u64, u64) {
+    let path = std::path::Path::new(repository);
+    if !path.is_absolute() {
+        return (0, 0);
+    }
+    let Some(existing) = path.ancestors().find(|p| p.exists()) else {
+        return (0, 0);
+    };
+    match rustix::fs::statvfs(existing) {
+        Ok(stat) => (
+            stat.f_blocks.saturating_mul(stat.f_frsize),
+            stat.f_bavail.saturating_mul(stat.f_frsize),
+        ),
+        Err(_) => (0, 0),
+    }
+}
+
+/// The retention policy in force. "Automatic" means the recommended ladder,
+/// whatever counts are stored beside it: those are kept only so that turning
+/// automatic off again brings back what the person had set.
 fn prune_policy(config: &Config) -> PrunePolicy {
-    let r = config.storage.retention;
+    let r = if config.storage.retention.automatic {
+        backtrack_core::config::Retention::default()
+    } else {
+        config.storage.retention
+    };
     PrunePolicy {
         keep_hourly: r.keep_hourly,
         keep_daily: r.keep_daily,
@@ -2670,11 +2886,30 @@ mod tests {
     #[test]
     fn the_prune_policy_comes_from_the_configured_retention() {
         let mut config = Config::default();
+        config.storage.retention.automatic = false;
         config.storage.retention.keep_daily = 14;
         let policy = prune_policy(&config);
         assert_eq!(policy.keep_hourly, 24);
         assert_eq!(policy.keep_daily, 14);
         assert_eq!(policy.keep_monthly, 6);
+    }
+
+    #[test]
+    fn automatic_retention_is_the_recommended_ladder_whatever_is_stored() {
+        // The custom counts survive turning automatic on, so that turning it
+        // off again gives them back, but they are not what prune applies.
+        let mut config = Config::default();
+        config.storage.retention.keep_daily = 14;
+        assert!(config.storage.retention.automatic);
+        assert_eq!(prune_policy(&config).keep_daily, 7);
+    }
+
+    #[test]
+    fn the_upload_limit_reaches_borg_in_its_own_units() {
+        let mut config = Config::default();
+        assert_eq!(create_spec(&config).upload_limit_kib, None);
+        config.advanced.upload_limit_mbps = Some(10);
+        assert_eq!(create_spec(&config).upload_limit_kib, Some(9_765));
     }
 
     #[test]

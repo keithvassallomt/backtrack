@@ -12,7 +12,7 @@
 //! The connection is made through D-Bus activation, so there is no "is the
 //! daemon running?" check anywhere in the app. Asking for it starts it.
 
-use backtrack_core::dbus::{ReplacedFile, RestorePreview, SearchResult, Status};
+use backtrack_core::dbus::{ReplacedFile, RestorePreview, SearchResult, Status, StorageInfo};
 use tracing::warn;
 
 /// The daemon, as the window calls it.
@@ -89,6 +89,20 @@ pub trait Daemon1 {
     /// The configured repository's recovery key, as `borg key export` writes
     /// it.
     fn export_recovery_key(&self) -> zbus::Result<String>;
+    /// Change the passphrase, everywhere it is used.
+    fn change_passphrase(&self, new: &str) -> zbus::Result<()>;
+    /// The figures Preferences shows about the repository. Refused while a
+    /// job is using it.
+    fn get_storage_info(&self) -> zbus::Result<StorageInfo>;
+    /// Read the catalogue again from the repository; the job doing it.
+    fn rebuild_catalogue(&self) -> zbus::Result<u64>;
+    /// Every setting back to its default. Backups, catalogue and passphrase
+    /// are left alone.
+    fn reset_config(&self) -> zbus::Result<()>;
+    /// Check the repository's integrity; the job doing it.
+    fn verify(&self) -> zbus::Result<u64>;
+    /// Reclaim the space deleted backups were using; the job doing it.
+    fn compact(&self) -> zbus::Result<u64>;
 
     /// Progress of a running backup.
     #[zbus(signal)]

@@ -133,6 +133,17 @@ impl BackupEngine for MockEngine {
         self.check_fail()?;
         Ok(self.key.clone())
     }
+    async fn change_passphrase(&self, _old: &str, _new: &str) -> Result<()> {
+        self.check_fail()
+    }
+    async fn repo_stats(&self) -> Result<backtrack_core::engine::RepoStats> {
+        self.check_fail()?;
+        Ok(backtrack_core::engine::RepoStats {
+            encryption: "repokey-blake2".into(),
+            stored_bytes: 0,
+            original_bytes: 0,
+        })
+    }
     async fn create(&self, spec: &CreateSpec) -> Result<JobStream> {
         if self.create_pending {
             self.check_fail()?;
@@ -261,6 +272,7 @@ mod tests {
             sources: vec!["/tmp".into()],
             excludes: vec![],
             compression: Default::default(),
+            upload_limit_kib: None,
             one_file_system: true,
             created_at: std::time::SystemTime::UNIX_EPOCH,
             paths: vec![],

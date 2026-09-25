@@ -471,10 +471,21 @@ impl Window {
         replaced.connect_activate(move |_, _| ui::replaced::present(&owner, &service));
         self.window.add_action(&replaced);
 
-        // Stage 9. Present so the menu is the shape it will keep, and disabled
-        // so it cannot promise anything it will not do.
+        // Enabled once the daemon answers: every setting is read from it and
+        // written through it.
         let preferences = gio::SimpleAction::new("preferences", None);
         preferences.set_enabled(false);
+        let opener = Rc::clone(self);
+        preferences.connect_activate(move |_, _| {
+            let (Some(app), Some(proxy)) =
+                (opener.window.application(), opener.daemon.borrow().clone())
+            else {
+                return;
+            };
+            if let Ok(app) = app.downcast::<adw::Application>() {
+                ui::prefs::present(&app, &opener.window, proxy);
+            }
+        });
         self.window.add_action(&preferences);
 
         let shortcuts = gio::SimpleAction::new("shortcuts", None);
@@ -497,6 +508,7 @@ impl Window {
         if let Some(app) = self.window.application() {
             app.set_accels_for_action("win.backup-now", &["<Control>b"]);
             app.set_accels_for_action("win.shortcuts", &["<Control>question"]);
+            app.set_accels_for_action("win.preferences", &["<Control>comma"]);
             app.set_accels_for_action("window.close", &["<Control>w"]);
         }
     }
@@ -968,6 +980,7 @@ impl Window {
                     this.refresh_restore_action();
                     ui::menu::set_enabled(&this.window, "backup-now", true);
                     ui::menu::set_enabled(&this.window, "pause", true);
+                    ui::menu::set_enabled(&this.window, "preferences", true);
                     this.render_status(&status);
                     let following = Rc::clone(&this);
                     let proxy = following.daemon.borrow().clone();

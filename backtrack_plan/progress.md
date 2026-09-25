@@ -97,8 +97,8 @@
 - [/] S09-T1 Wizard flow incl. existing-repo import (mockups 10–13)
 - [x] S09-T2 Recovery-key export gate (cannot continue without save/print)
 - [x] S09-T3 First-backup kickoff + expectation copy
-- [ ] S09-T4 Preferences: General/Backup/Storage/Security/Advanced (mockups 15–19)
-- [ ] S09-T5 Run-wizard-again path (non-destructive)
+- [/] S09-T4 Preferences: General/Backup/Storage/Security/Advanced (mockups 15–19)
+- [/] S09-T5 Run-wizard-again path (non-destructive)
 
 ## Stage 10 — Health ([stage file](stages/stage-10-health.md))
 - [ ] S10-T1 Health state machine + escalation timers per health.md

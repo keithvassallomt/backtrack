@@ -179,7 +179,7 @@ fn open_first_window(app: &adw::Application, target: Target) {
         match (daemon, status) {
             (Some(daemon), Some(status)) if !status.configured => {
                 info!("nothing is set up yet; opening the welcome wizard");
-                ui::wizard::present(&app, daemon, None, None);
+                ui::wizard::present(&app, daemon, None, None, None);
             }
             _ => window::Window::build(&app, &target).present(),
         }

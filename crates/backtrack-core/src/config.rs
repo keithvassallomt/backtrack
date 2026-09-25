@@ -259,7 +259,9 @@ impl Default for Security {
 #[serde(default)]
 pub struct Advanced {
     pub compression: Compression,
-    /// Upload ceiling in megabytes per second; `None` is unlimited.
+    /// Upload ceiling in megabytes per second. `None` and `0` are both
+    /// unlimited: TOML has no way to write "absent" as a value, so switching
+    /// the limit off through `SetConfig` writes the `0`.
     pub upload_limit_mbps: Option<u32>,
 }
 
@@ -367,6 +369,35 @@ impl Config {
         })
     }
 
+    /// Every key this configuration writes, dotted (`backup.frequency`), in
+    /// the order the file lists them.
+    ///
+    /// A key whose value is absent (an `Option` that is `None`) is not
+    /// written, so it is not listed either; a caller that wants every key
+    /// the schema has sets those first.
+    pub fn keys(&self) -> Result<Vec<String>> {
+        fn walk(prefix: &str, value: &toml::Value, out: &mut Vec<String>) {
+            match value.as_table() {
+                Some(table) => {
+                    for (name, child) in table {
+                        let key = if prefix.is_empty() {
+                            name.clone()
+                        } else {
+                            format!("{prefix}.{name}")
+                        };
+                        walk(&key, child, out);
+                    }
+                }
+                None => out.push(prefix.to_string()),
+            }
+        }
+        let document =
+            toml::Value::try_from(self).map_err(|e| ConfigError::Serialise(e.to_string()))?;
+        let mut keys = Vec::new();
+        walk("", &document, &mut keys);
+        Ok(keys)
+    }
+
     /// Whether the wizard has run: a destination is the one setting without a
     /// sensible default, so its presence is what distinguishes a configured
     /// machine from a fresh one.
@@ -381,9 +412,9 @@ impl Config {
 ///
 /// TOML has no syntax for a bare value, so the value is written as the only
 /// key of a one-line document and the key is taken off again.
-pub fn toml_literal<T: Serialize>(value: &T) -> Result<String> {
+pub fn toml_literal<T: Serialize + ?Sized>(value: &T) -> Result<String> {
     #[derive(Serialize)]
-    struct Wrapped<'a, T: Serialize> {
+    struct Wrapped<'a, T: Serialize + ?Sized> {
         v: &'a T,
     }
     let text = toml::to_string(&Wrapped { v: value })
@@ -412,6 +443,23 @@ mod tests {
         ))
         .unwrap();
         assert_eq!(parsed.backup.frequency, Frequency::Weekly);
+    }
+
+    #[test]
+    fn every_key_is_listed_by_its_dotted_name() {
+        let mut config = Config::default();
+        let keys = config.keys().unwrap();
+        assert!(keys.contains(&"backup.frequency".to_string()));
+        assert!(keys.contains(&"storage.retention.keep_daily".to_string()));
+        assert!(
+            !keys.contains(&"storage.repository".to_string()),
+            "an absent value is not written, so not listed"
+        );
+        config.storage.repository = Some("/mnt/backups".into());
+        assert!(config
+            .keys()
+            .unwrap()
+            .contains(&"storage.repository".to_string()));
     }
 
     #[test]

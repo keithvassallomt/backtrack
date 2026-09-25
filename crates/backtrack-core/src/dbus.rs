@@ -186,6 +186,22 @@ pub struct ReplacedFile {
     pub mtime: i64,
 }
 
+/// What `GetStorageInfo` answers with: the figures Preferences shows about
+/// where the backups are.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+pub struct StorageInfo {
+    /// Borg's encryption mode, as it names it (`repokey-blake2`, `none`, ...).
+    pub encryption: String,
+    /// What the backups occupy, after compression and deduplication.
+    pub stored: u64,
+    /// What they add up to before either.
+    pub original: u64,
+    /// The size of the filesystem holding them, and how much of it is free.
+    /// `0` where that cannot be found out from here, as for an SSH server.
+    pub capacity: u64,
+    pub free: u64,
+}
+
 /// Phase names carried on `BackupProgress`. Defined here because a client
 /// reads them to decide what to say, and a phase renamed on one side only
 /// would leave a progress page silent.

@@ -471,6 +471,7 @@ mod tests {
             sources: vec!["/tmp".into()],
             excludes: vec![],
             compression: Default::default(),
+            upload_limit_kib: None,
             one_file_system: true,
             created_at: std::time::SystemTime::UNIX_EPOCH,
             paths: vec![],

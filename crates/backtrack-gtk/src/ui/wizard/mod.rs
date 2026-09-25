@@ -17,6 +17,8 @@
 
 mod destination;
 mod first_backup;
+
+pub use destination::display;
 mod import;
 mod protect;
 mod welcome;
@@ -77,12 +79,14 @@ type EstimateWatcher = Box<dyn Fn(Option<u64>)>;
 ///
 /// `before` is the configuration a second run starts from (Preferences → Run
 /// Welcome Wizard Again), and `parent` the window it was opened from; a
-/// first run has neither.
+/// first run has neither. `start` opens it at one of its pages rather than
+/// at the Welcome page, as Storage → Change… does with "where".
 pub fn present(
     app: &adw::Application,
     daemon: Daemon1Proxy<'static>,
     before: Option<Config>,
     parent: Option<&gtk4::Window>,
+    start: Option<&'static str>,
 ) {
     let window = adw::ApplicationWindow::builder()
         .application(app)
@@ -136,6 +140,9 @@ pub fn present(
     nav.add(&protect::build(&wizard));
     for page in import::build(&wizard) {
         nav.add(&page);
+    }
+    if let Some(tag) = start {
+        nav.push_by_tag(tag);
     }
 
     // Stop measuring when the window goes: a walk of somebody's home folder
@@ -375,7 +382,7 @@ async fn timeline_target() -> crate::Target {
 ///
 /// Matched on the error's name, which is the contract; the daemon's own
 /// message, meant for logs and bug reports, is the fallback.
-fn explain(error: &zbus::Error) -> String {
+pub fn explain(error: &zbus::Error) -> String {
     let (name, message) = match error {
         zbus::Error::MethodError(name, message, _) => (
             name.as_str()

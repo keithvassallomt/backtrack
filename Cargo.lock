@@ -294,6 +294,7 @@ dependencies = [
  "futures",
  "gtk4",
  "libadwaita",
+ "serde",
  "similar",
  "tempfile",
  "tokio",

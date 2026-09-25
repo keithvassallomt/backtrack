@@ -26,9 +26,6 @@ use super::{explain, Wizard};
 use crate::model::wizard::{self as model, Protect, Strength};
 use crate::ui::schedule;
 
-const WARNING: &str =
-    "Without the passphrase or the recovery key, backups cannot be read — by anyone, ever.";
-
 /// How the key is kept.
 #[derive(Debug, Clone, Copy)]
 enum Keep {
@@ -86,7 +83,7 @@ pub fn build(wizard: &Rc<Wizard>) -> adw::NavigationPage {
     secrets.append(&remember);
     step.body.append(&secrets);
 
-    step.body.append(&warning_card());
+    step.body.append(&crate::ui::recovery::warning_card());
 
     let buttons = GtkBox::new(Orientation::Horizontal, 12);
     buttons.set_homogeneous(true);
@@ -147,24 +144,6 @@ pub fn build(wizard: &Rc<Wizard>) -> adw::NavigationPage {
     step.page.connect_showing(move |_| this.refresh());
 
     step.page
-}
-
-fn warning_card() -> GtkBox {
-    let card = GtkBox::new(Orientation::Horizontal, 18);
-    card.add_css_class("warning-card");
-    let icon = gtk4::Image::from_icon_name("dialog-warning-symbolic");
-    icon.set_pixel_size(32);
-    icon.set_valign(Align::Center);
-    card.append(&icon);
-    let text = Label::builder()
-        .label(WARNING)
-        .wrap(true)
-        .xalign(0.0)
-        .hexpand(true)
-        .build();
-    text.add_css_class("heading");
-    card.append(&text);
-    card
 }
 
 fn icon_button(icon: &str, label: &str) -> Button {

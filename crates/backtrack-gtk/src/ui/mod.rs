@@ -10,6 +10,7 @@ pub mod conflict;
 pub mod exclusions;
 pub mod files;
 pub mod menu;
+pub mod prefs;
 pub mod preview;
 pub mod recovery;
 pub mod replaced;

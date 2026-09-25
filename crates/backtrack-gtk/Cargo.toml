@@ -28,6 +28,9 @@ futures.workspace = true
 async-channel = "2"
 # The line diff behind the compare view.
 similar.workspace = true
+# Preferences hands settings to the daemon as TOML literals, which core
+# renders from anything serialisable.
+serde.workspace = true
 # The wizard's passphrase strength meter. A port of Dropbox's estimator rather
 # than a length-and-character-classes count, which rates "Password1!" strong.
 # The derive-builder feature is only for constructing its options, which the

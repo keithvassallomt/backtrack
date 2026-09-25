@@ -16,7 +16,7 @@ use tracing::info;
 
 use super::Wizard;
 use crate::model::wizard::Sources;
-use crate::ui::exclusions::Editor;
+use crate::ui::exclusions::{Container, Editor};
 
 /// The mockup's description of "My personal files".
 const PERSONAL: &str = "Documents, pictures, music, downloads, desktop";
@@ -76,7 +76,7 @@ pub fn build(wizard: &Rc<Wizard>) -> adw::NavigationPage {
     step.body.append(&advanced);
     let editing = Rc::clone(wizard);
     Editor::new(
-        expander,
+        Container::Expander(expander),
         wizard.choices.borrow().exclude.clone(),
         move |patterns| {
             editing.choices.borrow_mut().exclude = patterns.to_vec();

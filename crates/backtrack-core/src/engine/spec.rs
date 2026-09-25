@@ -15,6 +15,9 @@ pub struct CreateSpec {
     pub sources: Vec<PathBuf>,
     pub excludes: Vec<String>,
     pub compression: Compression,
+    /// Borg's `--upload-ratelimit`, in KiB/s; `None` is unlimited. Only a
+    /// repository reached over SSH has an upload for this to limit.
+    pub upload_limit_kib: Option<u32>,
     pub one_file_system: bool,
     /// Archive exactly these paths instead of walking [`CreateSpec::sources`].
     /// Empty for an ordinary backup.
@@ -115,6 +118,18 @@ pub enum Presence {
     /// Nothing is there, and nothing can be put there: a folder on this
     /// computer that the user is not allowed to write into.
     Unwritable,
+}
+
+/// What `repo_stats` reports: the figures Preferences shows about a
+/// repository.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RepoStats {
+    /// Borg's encryption mode, as it names it (`repokey-blake2`, `none`, ...).
+    pub encryption: String,
+    /// What the repository occupies: after compression and deduplication.
+    pub stored_bytes: u64,
+    /// What every backup in it adds up to before either.
+    pub original_bytes: u64,
 }
 
 /// What `repo_info` reports.

@@ -17,6 +17,30 @@ use tracing::{info, warn};
 
 use crate::model::wizard::{recovery_file_name, recovery_sheet, Sheet};
 
+/// The standing warning, in the mockups' words, on the wizard's last page and
+/// on Preferences → Security.
+const WARNING: &str =
+    "Without the passphrase or the recovery key, backups cannot be read — by anyone, ever.";
+
+/// The amber card that carries [`WARNING`].
+pub fn warning_card() -> gtk4::Box {
+    let card = gtk4::Box::new(gtk4::Orientation::Horizontal, 18);
+    card.add_css_class("warning-card");
+    let icon = gtk4::Image::from_icon_name("dialog-warning-symbolic");
+    icon.set_pixel_size(32);
+    icon.set_valign(gtk4::Align::Center);
+    card.append(&icon);
+    let text = gtk4::Label::builder()
+        .label(WARNING)
+        .wrap(true)
+        .xalign(0.0)
+        .hexpand(true)
+        .build();
+    text.add_css_class("heading");
+    card.append(&text);
+    card
+}
+
 /// Offer the key as a file. The file is exactly what `borg key export`
 /// wrote, so `borg key import` reads it back without editing: anything added
 /// to it, even a friendly first line, would break that.

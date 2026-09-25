@@ -3,8 +3,10 @@
 
 //! The exclusion list, as rows that can be removed and a row that adds one.
 //!
-//! Lives in the wizard's "Advanced: exclusions" expander. What happens to a
-//! change is the caller's; the editor only reports the new list.
+//! One editor for two places: the wizard's "Advanced: exclusions" expander,
+//! which edits the wizard's own choices, and Preferences → Backup, which
+//! writes each change straight to the daemon. What happens to a change is the
+//! caller's; the editor only reports the new list.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -16,9 +18,32 @@ use libadwaita::prelude::*;
 
 use crate::model::exclusions::{self, Row};
 
+/// Where the rows go.
+#[derive(Clone)]
+pub enum Container {
+    Expander(adw::ExpanderRow),
+    Group(adw::PreferencesGroup),
+}
+
+impl Container {
+    fn add(&self, row: &impl IsA<gtk4::Widget>) {
+        match self {
+            Container::Expander(expander) => expander.add_row(row),
+            Container::Group(group) => group.add(row),
+        }
+    }
+
+    fn remove(&self, row: &impl IsA<gtk4::Widget>) {
+        match self {
+            Container::Expander(expander) => expander.remove(row),
+            Container::Group(group) => group.remove(row),
+        }
+    }
+}
+
 /// The list and its rows.
 pub struct Editor {
-    container: adw::ExpanderRow,
+    container: Container,
     patterns: RefCell<Vec<String>>,
     shown: RefCell<Vec<adw::ActionRow>>,
     add: adw::ButtonRow,
@@ -32,7 +57,7 @@ impl Editor {
     /// Fill `container` with `patterns`, and call `changed` with the whole
     /// new list whenever a row is added or removed.
     pub fn new(
-        container: adw::ExpanderRow,
+        container: Container,
         patterns: Vec<String>,
         changed: impl Fn(&[String]) + 'static,
     ) -> Rc<Editor> {
@@ -53,6 +78,12 @@ impl Editor {
         editor
     }
 
+    /// Show a different list, as when the daemon's copy is re-read.
+    pub fn set(self: &Rc<Self>, patterns: Vec<String>) {
+        *self.patterns.borrow_mut() = patterns;
+        self.render();
+    }
+
     fn render(self: &Rc<Self>) {
         for row in self.shown.borrow_mut().drain(..) {
             self.container.remove(&row);
@@ -63,10 +94,10 @@ impl Editor {
         let patterns = self.patterns.borrow().clone();
         for entry in exclusions::rows(&patterns) {
             let row = self.row(entry);
-            self.container.add_row(&row);
+            self.container.add(&row);
             self.shown.borrow_mut().push(row);
         }
-        self.container.add_row(&self.add);
+        self.container.add(&self.add);
     }
 
     fn row(self: &Rc<Self>, entry: Row) -> adw::ActionRow {
