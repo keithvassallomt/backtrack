@@ -137,6 +137,69 @@
 
 (append dated entries here; never delete)
 
+- 2026-09-25 (Stage 9: wizard and preferences): what the stage decided, and
+  what it found. The walkthrough and screenshots are Keith's and follow.
+  - **Three decisions were Keith's.** The strength meter is zxcvbn, with
+    "strong" at its top score, because a length and character-class count
+    rates "Password1!" strong. The mockup's warning card keeps its wording,
+    and the printed recovery sheet says what the card does not: Borg exports
+    the key encrypted with the passphrase, so the key works with the
+    passphrase and not instead of it (Borg says as much itself on `init`).
+    Copy the mockups dictate is used verbatim, dashes included; nothing
+    written for this stage adds one.
+  - **The repository is created when the recovery key is first asked for.**
+    The key is the repository's key, so it cannot exist earlier, and the
+    wizard writes every choice made so far before creating it: a wizard
+    abandoned from then on leaves a working setup rather than half of one.
+    `SetupRepo` starts the schedule's clock, so the first backup is the one
+    the person starts with the button, not one the scheduler slips in while
+    they read the page. The gate itself is a model (`Protect`) with its own
+    test; the page only draws it, so the UI test the acceptance asks for is
+    at that level.
+  - **Preferences is a split view with libadwaita's view-switcher sidebar,
+    not `AdwPreferencesWindow`,** which was deprecated in 1.6 and fails the
+    build under `-D warnings`. Its replacement puts pages in a top switcher;
+    the mockups have a sidebar. The settings cross-check is two halves: a
+    test compares `Setting` with the keys the schema writes, and the window
+    asserts on every build that each setting has exactly one control.
+  - **What "run in background" means.** On, the systemd user unit is enabled
+    so the daemon starts at login; off, it is disabled and a daemon started
+    by the window leaves once no window is open and no job is running.
+    Checked on every start, so a unit changed by hand drifts back to what was
+    chosen. Under Flatpak there is no unit; the Background portal is S12-T4.
+  - **"Remember passphrase" off keeps it in the daemon's memory.** Backups
+    run until the daemon stops and not after, which is what the wizard's
+    wording promises; the prompt that follows is Stage 10's.
+  - **A destination with nothing chosen to back up has no schedule.** That
+    is what an import from the Welcome page leaves a new computer with, and
+    it is deliberate: backing up a nearly empty home into somebody's old
+    repository would put a snapshot of "everything deleted" at the top of
+    their history, and retention would eventually prune the real one away.
+    Stage 11's restore is what turns backups on there.
+  - **Moving to a new destination re-keys the local safety net.** The spool
+    is encrypted with the old destination's passphrase and looked up under
+    its name, so without this its snapshots open until the next restart and
+    never again. Proved by removing the re-key, which fails the test.
+  - **Four defects found by using it, not by the suite.** The first-backup
+    notification was awaited inside the loop that turns job updates into
+    signals, so a notification service that did not answer stalled every
+    signal after it (found by a hung end-to-end test). An expander title
+    containing "&" rendered blank, because rows and toasts read markup by
+    default, and the same fault was waiting in five Stage 7 places that show
+    file names (found by a headless run). The upload limit was saved and
+    never passed to Borg. "Automatic" retention pruned with the custom counts
+    stored beside it, against what config.rs promised.
+  - **Known limits, left for the stages that own them.** Whether each file
+    manager plugin is installed, and the Install… hint, is S12-T5. The Storage
+    and Security figures come from `borg info`, which takes the repository
+    lock; they are refused while a job runs, but a backup starting during the
+    second or so `info` takes can still lose the lock and retry an hour later.
+    A network folder is not remounted after a reboot, so until it is opened
+    in the file manager it reads as unreachable and the safety net covers it.
+    The SSH connection test tells "cannot sign in" from "cannot reach" by
+    reading ssh's own warnings; scheduled backups still classify both as
+    unreachable, which Stage 10's reauthentication flow will need to revisit.
+
 - 2026-09-22 (Stage 8 — Definition of Done): Charlie's story is Ctrl+F, a word,
   and a button. Compare handles all three kinds of file. Full suite green:
   **630 tests**, plus the real-borg integration set.

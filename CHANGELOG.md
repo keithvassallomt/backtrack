@@ -146,6 +146,34 @@ All notable changes to Backtrack are documented here. This project adheres to
   the timeline. Previously the newest backup could only ever say nothing,
   which is the moment you are most likely to be looking at when something has
   just gone missing.
+- A welcome wizard for a new computer. Choose what to back up (your personal
+  folders, measured as you choose, or folders you pick yourself), where it goes
+  (an external drive Backtrack finds for you, a network folder, or an SSH
+  server), and a passphrase. Backtrack checks there is room, creates the backup
+  there, and asks you to save or print its recovery key before it will go any
+  further. The first backup then starts, and you can close the window while it
+  runs: a notification says when it has finished.
+- Already have backups? The wizard opens existing Backtrack or Borg backups from
+  a folder or an SSH server and takes you straight to browsing them, starting
+  with the newest while the older ones are read in behind it. A drive that
+  already holds backups is offered to you rather than written over.
+- Preferences, with every setting Backtrack has, on five pages: General,
+  Backup, Storage, Security and Advanced. Changes take effect as you make them;
+  there is nothing to apply or save.
+- Choose the folders to back up and the things to leave out, the schedule, how
+  long backups are kept, and how much room local snapshots may take while the
+  backup destination is away. The Storage page shows how much space the
+  backups take, before and after deduplication, and when the last one ran.
+- Change your passphrase, and save or print the recovery key again, from
+  Preferences → Security. The printed key says plainly that it works together
+  with your passphrase, not instead of it.
+- Check your backups for damage, free up the space deleted backups were using,
+  rebuild the catalogue, and open the logs, from Preferences → Advanced.
+  Reset All Settings starts the setup again and never deletes a backup.
+- Run the welcome wizard again from Preferences to change how Backtrack is set
+  up. Only what you change is changed. Moving to a new destination asks first,
+  starts the new one fresh, and leaves the backups you already have where they
+  are, ready to open again with Import.
 - Project bootstrap: Cargo workspace (core library plus daemon, GTK app, and CLI
   binaries), structured logging with JSONL rotation, developer task runner,
   versioning policy, and continuous integration.
@@ -155,6 +183,13 @@ All notable changes to Backtrack are documented here. This project adheres to
 - The backup service now announces when a job has finished, so an application
   that started one learns the outcome as it happens instead of asking
   repeatedly whether it is done yet.
+
+- "Run in background" now does what it says. On, Backtrack starts when you log
+  in; off, it stops once its window is closed and nothing is running.
+- With "Remember passphrase" off, the passphrase is kept only while Backtrack
+  is running, and is not stored in the system keyring.
+- The timeline now updates as backups finish and as imported history is read
+  in, rather than showing what was there when the window was opened.
 
 ### Fixed
 - A file could be shown as "deleted after this" while it still existed, in the
@@ -167,6 +202,13 @@ All notable changes to Backtrack are documented here. This project adheres to
   needing attention.
 - File modification times shown in Backtrack are now correct rather than offset
   by your timezone.
+- The upload speed limit now applies to backups to an SSH server. Previously
+  it was saved but had no effect.
+- Automatic retention now always keeps the recommended set of backups. Custom
+  numbers set earlier were being used instead, even with Automatic switched on.
+- A file whose name contains an ampersand no longer shows as a blank line in
+  Recently Replaced Files, the restore summary and its review list, the
+  conflict dialog, or the messages that say what was restored.
 
 ## [0.1.0] - TBD
 
