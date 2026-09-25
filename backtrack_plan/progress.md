@@ -12,7 +12,7 @@
 > tasks: add them here + to the stage file, then `just provision-board-apply`.
 > See [../CLAUDE.md](../CLAUDE.md) for the full workflow.
 
-**Current stage:** 9 (in progress)
+**Current stage:** 10 (not started)
 **Last updated:** 2026-09-25
 
 ## Stage 0 — Bootstrap ([stage file](stages/stage-00-bootstrap.md))
@@ -94,11 +94,11 @@
 - [x] S08-T6 “Not on your disk” as a fact about the disk, not the catalogue
 
 ## Stage 9 — Wizard & preferences ([stage file](stages/stage-09-wizard-preferences.md))
-- [/] S09-T1 Wizard flow incl. existing-repo import (mockups 10–13)
+- [x] S09-T1 Wizard flow incl. existing-repo import (mockups 10–13)
 - [x] S09-T2 Recovery-key export gate (cannot continue without save/print)
 - [x] S09-T3 First-backup kickoff + expectation copy
-- [/] S09-T4 Preferences: General/Backup/Storage/Security/Advanced (mockups 15–19)
-- [/] S09-T5 Run-wizard-again path (non-destructive)
+- [x] S09-T4 Preferences: General/Backup/Storage/Security/Advanced (mockups 15–19)
+- [x] S09-T5 Run-wizard-again path (non-destructive)
 
 ## Stage 10 — Health ([stage file](stages/stage-10-health.md))
 - [ ] S10-T1 Health state machine + escalation timers per health.md
@@ -136,6 +136,45 @@
 ## Notes / decisions made during implementation
 
 (append dated entries here; never delete)
+
+- 2026-09-25 (Stage 9: Definition of Done): Keith walked the whole stage on a
+  clean development home and it passed end to end.
+  - **Zero to protected, under three minutes.** Welcome, a chosen folder
+    measured as it was picked, a local folder given as the network location,
+    the passphrase meter reading "weak" and then "strong", the key saved,
+    the first backup, its notification, and Browse Backups onto the new
+    backup. The time was reported as inside the limit rather than recorded to
+    the second; the selection was small, as the stage's "dev-mode small
+    dataset" intends.
+  - **The recovery key round trip is proven twice.** An end-to-end test
+    destroys a repository's own key and restores it with `borg key import`
+    from the exported file, and the file Keith saved in the walkthrough is
+    mode 600, names the repository's id, and holds byte for byte the key the
+    repository stores.
+  - **Units enabled.** The development unit was disabled before the run; the
+    wizard enabled it.
+  - **Preferences** matched mockups 15 to 19 in both colour schemes, and a
+    changed setting reached `config.toml` as it was changed.
+  - **The second run** changed only the frequency and the configuration
+    diff was that one line. Moving to a new destination asked first, named
+    the old one, and afterwards the old repository still listed its backup
+    under its own passphrase.
+  - **Import** of the demo repository opened a browsable timeline over
+    `demo-src`, with no backup scheduled, as intended until Stage 11.
+  - Suite: **723 tests** including the real-Borg integration set, `just
+    check` green. CI runs when the branch is pushed.
+  - **The walkthrough found one real defect, and one of its own making.**
+    The window and the daemon were started with different data folders, so
+    Browse Backups opened a catalogue the wizard had never touched; that was
+    the walkthrough's setup, which exported a variable in two terminals. What
+    it uncovered was real: a launch with no `--path` opened the home folder,
+    which is empty for a backup of one folder deep in the tree because Borg
+    records nothing above what it was asked for. Launches now open over the
+    top of the newest backup, as Browse Backups does.
+  - Not exercised: an SSH server, since none was to hand. The connection
+    test's classification is covered by real-Borg tests against a port that
+    refuses; signing-in failures are covered by reading ssh's own words,
+    which a unit of classification cannot prove against a live server.
 
 - 2026-09-25 (Stage 9: wizard and preferences): what the stage decided, and
   what it found. The walkthrough and screenshots are Keith's and follow.
