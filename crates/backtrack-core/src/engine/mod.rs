@@ -23,7 +23,8 @@ pub use borg::{is_checkpoint, BorgCli};
 pub use error::{EngineError, HealthFailure, Result};
 pub use job::{JobEvent, JobSink, JobStream, JobSummary, LogLevel};
 pub use spec::{
-    ArchiveId, CheckLevel, Compression, CreateSpec, Encryption, PrunePolicy, RepoInfo, RepoSpec,
+    ArchiveId, CheckLevel, Compression, CreateSpec, Encryption, Presence, PrunePolicy, RepoInfo,
+    RepoSpec,
 };
 
 /// The one interface every backup engine implements. The daemon holds an

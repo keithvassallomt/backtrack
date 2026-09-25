@@ -7,8 +7,10 @@
 //! runs the daemon, and maps its outcome to an exit code. Keeping the two apart
 //! means the startup path can be reasoned about without a process around it.
 
+mod background;
 mod daemon;
 mod jobs;
+mod notify;
 mod offline;
 mod pipeline;
 mod preflight;

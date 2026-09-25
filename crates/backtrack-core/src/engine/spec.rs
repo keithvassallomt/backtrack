@@ -98,6 +98,25 @@ impl Encryption {
     }
 }
 
+/// What is at a destination before anything is created there.
+///
+/// Three answers rather than a yes or no, because the wizard does something
+/// different for each: an empty place gets a new repository, an existing
+/// repository is offered for import, and a folder holding something else is
+/// refused rather than written into.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Presence {
+    /// Nothing there yet, or an empty folder: a repository can be created.
+    Empty,
+    /// A Borg repository is already there.
+    Existing,
+    /// Something that is not a repository is there.
+    Occupied,
+    /// Nothing is there, and nothing can be put there: a folder on this
+    /// computer that the user is not allowed to write into.
+    Unwritable,
+}
+
 /// What `repo_info` reports.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RepoInfo {

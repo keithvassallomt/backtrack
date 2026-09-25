@@ -40,11 +40,7 @@ const EVENT_BUFFER: usize = 64;
 /// 500,000-file archive never exists in memory at once.
 const INGEST_BATCH: usize = 4_096;
 
-/// Phase names carried on progress events. They reach the user interface, so
-/// they are the words the user reads.
-pub const PHASE_ARCHIVING: &str = "archiving";
-pub const PHASE_CATALOGUING: &str = "cataloguing";
-pub const PHASE_PRUNING: &str = "pruning";
+pub use backtrack_core::dbus::{PHASE_ARCHIVING, PHASE_CATALOGUING, PHASE_PRUNING};
 
 /// Everything a backup needs to run. Assembled by the service layer so this
 /// module knows nothing about D-Bus, configuration files, or health.

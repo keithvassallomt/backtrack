@@ -234,7 +234,18 @@ pub async fn run() -> Result<Outcome, StartupError> {
         info!(job, "reconciling the catalogue against the repository");
     }
 
-    let reason = wait_for_shutdown().await?;
+    // Starting at login follows the "Run in background" setting. Checked on
+    // every start as well as when the setting changes, so a unit enabled or
+    // disabled by hand drifts back to what the person chose in the window.
+    crate::background::apply(&connection, shared.wants_background()).await;
+    let leave = Arc::new(tokio::sync::Notify::new());
+    tokio::spawn(crate::background::watch_for_idle(
+        Arc::clone(&shared),
+        connection.clone(),
+        Arc::clone(&leave),
+    ));
+
+    let reason = wait_for_shutdown(&leave).await?;
     info!(reason, "shutting down");
     Ok(Outcome::ShutDown)
 }
@@ -301,12 +312,13 @@ fn open_index() -> Result<IndexWriter, StartupError> {
     Ok(writer)
 }
 
-/// Block until SIGTERM or SIGINT, returning which arrived.
+/// Block until SIGTERM or SIGINT, or until the daemon is no longer needed,
+/// returning which.
 ///
 /// Once the job model lands (S03-T2) this is where a running job is given its
 /// chance to checkpoint; while the daemon is idle it returns immediately, which
 /// is what keeps the stop well inside systemd's patience.
-async fn wait_for_shutdown() -> Result<&'static str, StartupError> {
+async fn wait_for_shutdown(leave: &tokio::sync::Notify) -> Result<&'static str, StartupError> {
     let mut sigterm = signal(SignalKind::terminate()).map_err(|source| StartupError::Signals {
         signal: "SIGTERM",
         source,
@@ -318,6 +330,7 @@ async fn wait_for_shutdown() -> Result<&'static str, StartupError> {
     tokio::select! {
         _ = sigterm.recv() => Ok("SIGTERM"),
         _ = sigint.recv() => Ok("SIGINT"),
+        _ = leave.notified() => Ok("not needed in the background"),
     }
 }
 

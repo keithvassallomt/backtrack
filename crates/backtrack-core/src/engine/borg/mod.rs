@@ -19,8 +19,8 @@ use tokio::io::{AsyncBufReadExt, AsyncRead, BufReader};
 use tokio::process::Command;
 
 use crate::engine::{
-    ArchiveId, BackupEngine, CheckLevel, CreateSpec, EngineError, JobEvent, JobStream, PrunePolicy,
-    RepoInfo, RepoSpec, Result,
+    ArchiveId, BackupEngine, CheckLevel, CreateSpec, EngineError, JobEvent, JobStream, Presence,
+    PrunePolicy, RepoInfo, RepoSpec, Result,
 };
 use crate::index::{ArchiveMeta, BorgItem};
 use crate::secret::SecretStore;
@@ -63,13 +63,121 @@ impl BorgCli {
     fn archive_ref(&self, id: &ArchiveId) -> String {
         format!("{}::{}", self.repo, id.0)
     }
+
+    /// What is at this repository's location, before anything is created there.
+    ///
+    /// Asked of Borg rather than worked out from the filesystem, because the
+    /// same question has to be answered for an SSH server, where there is no
+    /// filesystem to look at, and some hosts (BorgBase among them) run nothing
+    /// but `borg serve`.
+    ///
+    /// No passphrase is offered. An encrypted repository then refuses with
+    /// `PassphraseWrong`, and that refusal is the answer: something is there.
+    pub async fn presence(&self) -> Result<Presence> {
+        let local = Path::new(&self.repo);
+        if local.is_absolute() {
+            if let Some(presence) = local_presence(local) {
+                return Ok(presence);
+            }
+        }
+
+        let mut cmd = base_command(&self.bin, "");
+        // Nobody is at a terminal to answer a password or host-key question,
+        // and ssh asks on the terminal rather than on stdin, so without this a
+        // connection test from a shell would hang on a prompt nobody can see.
+        // A person who has set their own BORG_RSH has already made this choice.
+        if std::env::var_os("BORG_RSH").is_none() {
+            cmd.env("BORG_RSH", "ssh -o BatchMode=yes -o ConnectTimeout=15");
+        }
+        cmd.arg("list").arg("--json").arg(&self.repo);
+        cmd.stdout(Stdio::null()).stderr(Stdio::piped());
+        let out = cmd.output().await.map_err(|e| EngineError::BorgFailed {
+            code: -1,
+            stderr: format!("running borg: {e}"),
+        })?;
+        let code = out.status.code().unwrap_or(-1);
+        if classify::classify_exit(code) != classify::ExitClass::Error {
+            // An unencrypted repository opens without a passphrase.
+            return Ok(Presence::Existing);
+        }
+
+        let errors = collect_json_errors(&out.stderr);
+        let said = |msgid: &str| errors.iter().any(|e| e.msgid.as_deref() == Some(msgid));
+        if said("PassphraseWrong") {
+            return Ok(Presence::Existing);
+        }
+        if said("Repository.DoesNotExist") {
+            return Ok(Presence::Empty);
+        }
+        if said("Repository.InvalidRepository") {
+            return Ok(Presence::Occupied);
+        }
+        // Whether the server refused us or could not be reached at all is in
+        // ssh's own words, which Borg passes on as warnings rather than errors.
+        let mut evidence = errors;
+        evidence.extend(remote_warnings(&out.stderr));
+        Err(classify::classify(code, &evidence))
+    }
+}
+
+/// The answers about a local path that Borg gets wrong or cannot give.
+///
+/// Borg calls an empty folder "not a valid repository", which is true, but
+/// `borg init` is perfectly happy to create one there, so for the question
+/// being asked it is empty. And a folder nobody may write into is worth
+/// refusing now rather than when the repository is created, which is several
+/// questions later in the wizard.
+fn local_presence(path: &Path) -> Option<Presence> {
+    if let Ok(mut listing) = std::fs::read_dir(path) {
+        if listing.next().is_none() {
+            return Some(if writable(path) {
+                Presence::Empty
+            } else {
+                Presence::Unwritable
+            });
+        }
+        return None;
+    }
+    if path.exists() {
+        return None;
+    }
+    // `borg init --make-parent-dirs` creates whatever is missing, so what
+    // matters is the nearest folder that already exists.
+    let existing = path.ancestors().skip(1).find(|p| p.is_dir())?;
+    (!writable(existing)).then_some(Presence::Unwritable)
+}
+
+fn writable(dir: &Path) -> bool {
+    rustix::fs::access(dir, rustix::fs::Access::WRITE_OK).is_ok()
+}
+
+/// The `Remote:` warnings in captured `--log-json` stderr: ssh speaking,
+/// relayed by Borg, and the only place that says "Permission denied".
+fn remote_warnings(stderr: &[u8]) -> Vec<classify::ErrLine> {
+    use crate::engine::LogLevel;
+    use logjson::{parse_log_line, Parsed};
+    String::from_utf8_lossy(stderr)
+        .lines()
+        .filter_map(|l| match parse_log_line(l) {
+            Parsed::Log {
+                level: LogLevel::Warning,
+                msgid,
+                message,
+            } if message.starts_with("Remote:") => Some(classify::ErrLine { msgid, message }),
+            _ => None,
+        })
+        .collect()
 }
 
 #[async_trait]
 impl BackupEngine for BorgCli {
     async fn init_repo(&self, spec: &RepoSpec) -> Result<()> {
         let mut cmd = self.cmd().await?;
+        // --make-parent-dirs because the wizard places a repository in a
+        // folder of its own on the chosen drive, and that folder is not
+        // there yet the first time.
         cmd.arg("init")
+            .arg("--make-parent-dirs")
             .arg("--encryption")
             .arg(spec.encryption.as_borg_arg())
             .arg(&spec.path);

@@ -10,6 +10,7 @@
 
 mod file;
 mod keyring;
+mod session;
 
 use std::sync::Arc;
 
@@ -19,6 +20,7 @@ use crate::engine::{EngineError, Result};
 
 pub use file::FileSecretStore;
 pub use keyring::KeyringSecretStore;
+pub use session::SessionSecretStore;
 
 /// Stable Secret Service attribute: the application id.
 pub const APP_ID: &str = "io.github.keithvassallomt.Backtrack";

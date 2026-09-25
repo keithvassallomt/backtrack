@@ -1371,3 +1371,128 @@ async fn search_refuses_a_one_character_query_and_caps_what_it_returns() {
         .await;
     assert!(padded.is_err(), "trimmed before it is measured");
 }
+
+/// S09-T1 and S09-T2 through the calls the wizard makes: inspect a fresh
+/// destination, create a repository there, save its recovery key, and prove
+/// the saved file brings back a repository whose own key has been destroyed.
+#[tokio::test]
+async fn the_recovery_key_the_wizard_saves_restores_a_damaged_repository() {
+    let dir = tempfile::tempdir().unwrap();
+    // Where the wizard puts a repository on a drive: a folder of its own that
+    // does not exist yet, inside another that does not either.
+    let repo = dir.path().join("drive/Backtrack/host");
+    let repo = repo.to_str().unwrap().to_string();
+    let secrets: Arc<dyn SecretStore> = Arc::new(FileSecretStore::new(dir.path().join("s.json")));
+    let shared = Shared::in_dir(
+        Config::default(),
+        JobRegistry::new(),
+        Arc::clone(&secrets),
+        dir.path(),
+    );
+    shared.set_index(Arc::new(std::sync::Mutex::new(
+        backtrack_core::index::IndexWriter::open(&dir.path().join("index.db")).unwrap(),
+    )));
+    let (_server, client) = connect(Arc::clone(&shared)).await;
+    let presence: String = client
+        .call_method(
+            None::<()>,
+            PATH,
+            Some(IFACE),
+            "InspectDestination",
+            &(repo.as_str(),),
+        )
+        .await
+        .expect("InspectDestination answers")
+        .body()
+        .deserialize()
+        .unwrap();
+    assert_eq!(presence, "empty");
+
+    client
+        .call_method(
+            None::<()>,
+            PATH,
+            Some(IFACE),
+            "SetupRepo",
+            &(repo.as_str(), PASS),
+        )
+        .await
+        .expect("SetupRepo creates the repository");
+    assert_eq!(
+        shared.config().storage.repository.as_deref(),
+        Some(repo.as_str())
+    );
+    // The schedule's clock started with the repository, so the first backup
+    // is the one the wizard starts, not one the scheduler slips in while the
+    // person is still reading the page.
+    assert!(shared.schedule_input().last_attempt.is_some());
+
+    let presence: String = client
+        .call_method(
+            None::<()>,
+            PATH,
+            Some(IFACE),
+            "InspectDestination",
+            &(repo.as_str(),),
+        )
+        .await
+        .unwrap()
+        .body()
+        .deserialize()
+        .unwrap();
+    assert_eq!(presence, "existing", "a second wizard run would find it");
+
+    let key: String = client
+        .call_method(None::<()>, PATH, Some(IFACE), "ExportRecoveryKey", &())
+        .await
+        .expect("ExportRecoveryKey answers")
+        .body()
+        .deserialize()
+        .unwrap();
+    let saved = dir.path().join("backtrack-recovery-key-host.txt");
+    std::fs::write(&saved, &key).unwrap();
+
+    // Destroy the repository's own copy of the key, which is the thing a
+    // recovery key exists to survive. The key is one INI value continued over
+    // several indented lines, and all of them go.
+    let config_file = std::path::Path::new(&repo).join("config");
+    let original = std::fs::read_to_string(&config_file).unwrap();
+    let mut in_key = false;
+    let damaged: String = original
+        .lines()
+        .filter(|line| {
+            if line.starts_with("key = ") {
+                in_key = true;
+            } else if !line.starts_with('\t') && !line.starts_with(' ') {
+                in_key = false;
+            }
+            !in_key
+        })
+        .map(|line| format!("{line}\n"))
+        .collect();
+    assert_ne!(
+        damaged, original,
+        "the repository's key was found and removed"
+    );
+    std::fs::write(&config_file, damaged).unwrap();
+    assert!(
+        engine(&shared).repo_info().await.is_err(),
+        "without its key the repository cannot be opened"
+    );
+
+    let imported = std::process::Command::new("borg")
+        .args(["key", "import", &repo, saved.to_str().unwrap()])
+        .env("BORG_PASSPHRASE", PASS)
+        .output()
+        .expect("borg runs");
+    assert!(
+        imported.status.success(),
+        "borg key import read the saved file: {}",
+        String::from_utf8_lossy(&imported.stderr)
+    );
+    let info = engine(&shared)
+        .repo_info()
+        .await
+        .expect("the saved key opens the repository again");
+    assert!(!info.repository_id.is_empty());
+}

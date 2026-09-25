@@ -12,8 +12,8 @@
 > tasks: add them here + to the stage file, then `just provision-board-apply`.
 > See [../CLAUDE.md](../CLAUDE.md) for the full workflow.
 
-**Current stage:** 9 (not started)
-**Last updated:** 2026-09-22
+**Current stage:** 9 (in progress)
+**Last updated:** 2026-09-25
 
 ## Stage 0 — Bootstrap ([stage file](stages/stage-00-bootstrap.md))
 - [x] S00-T1 Git repo, license, .gitignore, README skeleton
@@ -94,9 +94,9 @@
 - [x] S08-T6 “Not on your disk” as a fact about the disk, not the catalogue
 
 ## Stage 9 — Wizard & preferences ([stage file](stages/stage-09-wizard-preferences.md))
-- [ ] S09-T1 Wizard flow incl. existing-repo import (mockups 10–13)
-- [ ] S09-T2 Recovery-key export gate (cannot continue without save/print)
-- [ ] S09-T3 First-backup kickoff + expectation copy
+- [/] S09-T1 Wizard flow incl. existing-repo import (mockups 10–13)
+- [/] S09-T2 Recovery-key export gate (cannot continue without save/print)
+- [/] S09-T3 First-backup kickoff + expectation copy
 - [ ] S09-T4 Preferences: General/Backup/Storage/Security/Advanced (mockups 15–19)
 - [ ] S09-T5 Run-wizard-again path (non-destructive)
 

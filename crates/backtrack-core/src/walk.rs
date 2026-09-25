@@ -28,7 +28,9 @@
 //! - **Pruned at exclusions**, using the same patterns Borg is given. See
 //!   [`crate::pattern`] for why that matching has to happen here at all.
 
+use std::ops::ControlFlow;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::index::{BorgItem, Kind, LiveEntry};
 use crate::pattern::{is_within, ExcludeSet};
@@ -95,36 +97,99 @@ impl Walked {
 /// would archive the same files under two names.
 pub fn walk(spec: &WalkSpec) -> Walked {
     let mut out = Walked::default();
+    let mut items = Vec::new();
+    let _ = visit(spec, &mut out.unreadable, &mut |relative, meta| {
+        let is_dir = meta.is_dir();
+        items.push(BorgItem {
+            path: relative,
+            kind: kind_of(meta),
+            size: if is_dir { 0 } else { meta.len() as i64 },
+            mtime: mtime_micros(meta),
+            mode: mode_of(meta),
+            chunk_hash: None,
+        });
+        ControlFlow::Continue(())
+    });
+    items.sort_by(|a, b| a.path.cmp(&b.path));
+    out.items = items;
+    out
+}
+
+/// What a set of sources holds, as far as a backup of them is concerned.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Measured {
+    pub bytes: u64,
+    pub files: u64,
+}
+
+/// Add up the files `spec` would back up, or `None` once `cancelled` is set.
+///
+/// The wizard's size estimate. It walks exactly as [`walk`] does, with the
+/// same exclusions pruning the same subtrees, so the number shown is the size
+/// of what would be backed up rather than of the folders as a file manager
+/// would report them; a home directory's caches alone can be the difference
+/// between "fits" and "does not". Symlinks count for nothing, as Borg stores
+/// the link rather than what it points at.
+///
+/// Checked for cancellation at every entry: a home directory can take half a
+/// minute to walk, and the person may change their mind a second in.
+pub fn measure(spec: &WalkSpec, cancelled: &AtomicBool) -> Option<Measured> {
+    let mut measured = Measured::default();
+    let mut unreadable = 0;
+    let flow = visit(spec, &mut unreadable, &mut |_, meta| {
+        if cancelled.load(Ordering::Relaxed) {
+            return ControlFlow::Break(());
+        }
+        if meta.is_file() {
+            measured.bytes += meta.len();
+            measured.files += 1;
+        }
+        ControlFlow::Continue(())
+    });
+    flow.is_continue().then_some(measured)
+}
+
+/// Every source in turn, handing each entry in scope to `found`.
+fn visit(
+    spec: &WalkSpec,
+    unreadable: &mut usize,
+    found: &mut dyn FnMut(String, &std::fs::Metadata) -> ControlFlow<()>,
+) -> ControlFlow<()> {
     for source in &spec.sources {
         let root_device = match std::fs::symlink_metadata(source) {
             Ok(meta) => device_of(&meta),
             Err(_) => {
-                out.unreadable += 1;
+                *unreadable += 1;
                 continue;
             }
         };
-        walk_from(source, root_device, spec, &mut out);
+        walk_from(source, root_device, spec, unreadable, found)?;
     }
-    out.items.sort_by(|a, b| a.path.cmp(&b.path));
-    out
+    ControlFlow::Continue(())
 }
 
 /// Depth-first, iteratively. Recursion would put the directory tree's depth on
 /// the stack, and a deep enough tree — or a pathological one — would take the
 /// daemon down.
-fn walk_from(root: &Path, root_device: u64, spec: &WalkSpec, out: &mut Walked) {
+fn walk_from(
+    root: &Path,
+    root_device: u64,
+    spec: &WalkSpec,
+    unreadable: &mut usize,
+    found: &mut dyn FnMut(String, &std::fs::Metadata) -> ControlFlow<()>,
+) -> ControlFlow<()> {
     let mut stack = vec![root.to_path_buf()];
     while let Some(dir) = stack.pop() {
         let listing = match std::fs::read_dir(&dir) {
             Ok(listing) => listing,
             Err(_) => {
-                out.unreadable += 1;
+                *unreadable += 1;
                 continue;
             }
         };
         for entry in listing {
             let Ok(entry) = entry else {
-                out.unreadable += 1;
+                *unreadable += 1;
                 continue;
             };
             let path = entry.path();
@@ -134,7 +199,7 @@ fn walk_from(root: &Path, root_device: u64, spec: &WalkSpec, out: &mut Walked) {
             let Ok(meta) = std::fs::symlink_metadata(&path) else {
                 // Vanished between the listing and the stat. Nothing to do: it
                 // is not there to protect.
-                out.unreadable += 1;
+                *unreadable += 1;
                 continue;
             };
             if spec.one_file_system && device_of(&meta) != root_device {
@@ -147,23 +212,16 @@ fn walk_from(root: &Path, root_device: u64, spec: &WalkSpec, out: &mut Walked) {
                 // costing a walk of every file in it.
                 continue;
             }
-            let is_dir = meta.is_dir();
-            if is_dir {
+            if meta.is_dir() {
                 stack.push(path);
                 if !spec.include_dirs {
                     continue;
                 }
             }
-            out.items.push(BorgItem {
-                path: relative,
-                kind: kind_of(&meta),
-                size: if is_dir { 0 } else { meta.len() as i64 },
-                mtime: mtime_micros(&meta),
-                mode: mode_of(&meta),
-                chunk_hash: None,
-            });
+            found(relative, &meta)?;
         }
     }
+    ControlFlow::Continue(())
 }
 
 /// A path in the form Borg stores it and the index holds it: absolute, with the
@@ -285,6 +343,33 @@ mod tests {
                 "top.txt",
             ]
         );
+    }
+
+    #[test]
+    fn measuring_counts_what_would_be_backed_up() {
+        // The same tree, measured: four files of 3, 3, 2 and 4 bytes plus the
+        // cache's 4 and 4. The symlink is a link, not a copy of its target.
+        let dir = tree();
+        let never = AtomicBool::new(false);
+        assert_eq!(
+            measure(&spec(dir.path(), &[]), &never),
+            Some(Measured {
+                bytes: 3 + 3 + 2 + 4 + 4,
+                files: 5
+            })
+        );
+        // And with the cache excluded, as the default exclusions would.
+        assert_eq!(
+            measure(&spec(dir.path(), &["**/.cache"]), &never),
+            Some(Measured { bytes: 8, files: 3 })
+        );
+    }
+
+    #[test]
+    fn a_cancelled_measurement_gives_no_answer_rather_than_a_wrong_one() {
+        let dir = tree();
+        let cancelled = AtomicBool::new(true);
+        assert_eq!(measure(&spec(dir.path(), &[]), &cancelled), None);
     }
 
     #[test]

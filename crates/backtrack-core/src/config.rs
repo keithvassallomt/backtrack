@@ -375,9 +375,44 @@ impl Config {
     }
 }
 
+/// A setting's value as it would appear to the right of `key = ` in
+/// `config.toml`, which is the form `SetConfig` takes it in: `true`, `24`,
+/// `"daily"`, `["/home/k/Documents"]`.
+///
+/// TOML has no syntax for a bare value, so the value is written as the only
+/// key of a one-line document and the key is taken off again.
+pub fn toml_literal<T: Serialize>(value: &T) -> Result<String> {
+    #[derive(Serialize)]
+    struct Wrapped<'a, T: Serialize> {
+        v: &'a T,
+    }
+    let text = toml::to_string(&Wrapped { v: value })
+        .map_err(|e| ConfigError::Serialise(e.to_string()))?;
+    Ok(text.trim_start_matches("v = ").trim_end().to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn values_render_as_the_literals_set_config_expects() {
+        assert_eq!(toml_literal(&true).unwrap(), "true");
+        assert_eq!(toml_literal(&24u32).unwrap(), "24");
+        assert_eq!(toml_literal(&Frequency::Daily).unwrap(), "\"daily\"");
+        assert_eq!(
+            toml_literal(&vec![PathBuf::from("/home/k/Documents")]).unwrap(),
+            "[\"/home/k/Documents\"]"
+        );
+        // And each one parses back into the schema through the same route the
+        // daemon uses.
+        let (parsed, _) = Config::parse(&format!(
+            "[backup]\nfrequency = {}\n",
+            toml_literal(&Frequency::Weekly).unwrap()
+        ))
+        .unwrap();
+        assert_eq!(parsed.backup.frequency, Frequency::Weekly);
+    }
 
     #[test]
     fn empty_input_yields_defaults() {

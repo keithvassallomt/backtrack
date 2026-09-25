@@ -254,6 +254,34 @@ impl IndexReader {
         Ok(rows.collect::<std::result::Result<_, _>>()?)
     }
 
+    /// The top of what archive `seq` holds: every path with a version there
+    /// whose parent has none, in path order.
+    ///
+    /// Borg records the folders a backup was asked for and not the ones above
+    /// them, so a backup of `/home/k/Documents` has nothing at `/home` or at
+    /// `/home/k`. A window opened on the home folder of a computer whose
+    /// backups start deeper, or were taken on another machine altogether,
+    /// would be looking at an empty folder above everything there is to see.
+    /// This is where it should open instead.
+    pub fn backed_up_roots(&self, seq: i64) -> Result<Vec<String>> {
+        let mut stmt = self.conn.prepare_cached(
+            "SELECT p.id FROM versions v JOIN paths p ON p.id = v.path_id
+             WHERE v.first_seq <= ?1 AND v.last_seq >= ?1
+               AND NOT EXISTS (SELECT 1 FROM versions vp
+                               WHERE vp.path_id = p.parent_id
+                                 AND vp.first_seq <= ?1 AND vp.last_seq >= ?1)",
+        )?;
+        let ids = stmt
+            .query_map(params![seq], |r| r.get::<_, i64>(0))?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        let mut roots = ids
+            .into_iter()
+            .map(|id| self.full_path(id))
+            .collect::<Result<Vec<_>>>()?;
+        roots.sort();
+        Ok(roots)
+    }
+
     /// Every archive, newest first, for the snapshot sidebar.
     pub fn archives_overview(&self) -> Result<Vec<ArchiveSummary>> {
         let mut stmt = self.conn.prepare_cached(
@@ -597,6 +625,45 @@ mod tests {
     }
     fn find<'a>(entries: &'a [Entry], name: &str) -> &'a Entry {
         entries.iter().find(|e| e.name == name).unwrap()
+    }
+
+    #[test]
+    fn the_roots_of_a_backup_are_what_borg_was_asked_for() {
+        // Borg records `/home/k/Documents` and `/home/k/Pictures`, not `/home`
+        // or `/home/k`, so those two are the top of the backup.
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("index.db");
+        {
+            let mut w = IndexWriter::open(&path).unwrap();
+            w.ingest_archive(
+                &meta("a1", 1_000),
+                Repo::Primary,
+                vec![
+                    dir("home/k/Documents"),
+                    file("home/k/Documents/report.odt", 1),
+                    dir("home/k/Pictures"),
+                    dir("home/k/Pictures/2026"),
+                    file("home/k/Pictures/2026/beach.jpg", 1),
+                ]
+                .into_iter(),
+            )
+            .unwrap();
+        }
+        let r = IndexReader::open(&path).unwrap();
+        assert_eq!(
+            r.backed_up_roots(1).unwrap(),
+            vec!["home/k/Documents", "home/k/Pictures"]
+        );
+        assert!(
+            r.folder_at("home/k", 1).unwrap().len() == 2,
+            "and their parent is where a window shows both"
+        );
+    }
+
+    #[test]
+    fn a_backup_of_the_whole_tree_has_one_root() {
+        let (_t, r) = scripted();
+        assert_eq!(r.backed_up_roots(4).unwrap(), vec!["home"]);
     }
 
     #[test]

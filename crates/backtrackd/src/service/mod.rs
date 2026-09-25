@@ -39,7 +39,7 @@ use backtrack_core::engine::{
 use backtrack_core::index::{IndexReader, IndexWriter, Kind};
 use backtrack_core::paths;
 use backtrack_core::restore::{self, Decision, Decisions};
-use backtrack_core::secret::SecretStore;
+use backtrack_core::secret::{SecretStore, SessionSecretStore};
 use backtrack_core::state::RuntimeState;
 use futures::future::BoxFuture;
 use futures::StreamExt;
@@ -84,7 +84,9 @@ pub struct Shared {
     config: Mutex<Config>,
     pause: Mutex<PauseState>,
     jobs: Arc<JobRegistry>,
-    secrets: Arc<dyn SecretStore>,
+    /// Passphrases, in the keyring or only in memory as "Remember passphrase"
+    /// says. See [`SessionSecretStore`].
+    secrets: Arc<SessionSecretStore>,
     preview: PreviewCache,
     index_path: PathBuf,
     /// The engine, absent until a repository is configured.
@@ -168,6 +170,10 @@ pub struct Shared {
     /// factory only learns the handle once the job actually starts.
     #[allow(clippy::type_complexity)]
     offline_handle: Mutex<Option<Arc<Mutex<Option<pipeline::OfflineHandle>>>>>,
+    /// The backup that will be this machine's first, if one is under way.
+    /// Its end is announced, because the wizard told the person they could
+    /// close the window and wait for it.
+    first_backup: Mutex<Option<u64>>,
 }
 
 impl Shared {
@@ -228,6 +234,10 @@ impl Shared {
         secrets: Arc<dyn SecretStore>,
         layout: Layout,
     ) -> Arc<Shared> {
+        let secrets = Arc::new(SessionSecretStore::new(
+            secrets,
+            config.security.remember_passphrase,
+        ));
         let Layout {
             config_path,
             index_path,
@@ -270,6 +280,7 @@ impl Shared {
             offline_broken: Mutex::new(false),
             offline_degraded: Mutex::new(false),
             offline_handle: Mutex::new(None),
+            first_backup: Mutex::new(None),
         })
     }
 
@@ -552,7 +563,11 @@ impl Shared {
                 self.persisted.lock().unwrap().last_attempt,
             ),
             paused_until: self.pause.lock().unwrap().until(SystemTime::now()),
-            configured: config.is_configured(),
+            // A destination with nothing chosen to put in it has no schedule.
+            // That is the state an import leaves a new computer in until the
+            // person decides what to back up there, and a backup of nothing
+            // would only fail, hourly.
+            configured: config.is_configured() && !config.backup.include.is_empty(),
             busy: self.busy(),
             // Owned by the scheduler loop, which is the only thing that knows
             // whether it has already served a catch-up delay.
@@ -563,6 +578,23 @@ impl Shared {
     /// Whether any job is running or waiting to run.
     fn busy(&self) -> bool {
         self.jobs.list().iter().any(|job| !job.state.is_terminal())
+    }
+
+    /// Whether nothing is running or waiting to run.
+    pub fn idle(&self) -> bool {
+        !self.busy()
+    }
+
+    /// Whether backups are meant to carry on with no window open.
+    pub fn run_in_background(&self) -> bool {
+        self.config().general.run_in_background
+    }
+
+    /// Whether this daemon should start at login: there is something to back
+    /// up to, and the person has not said to stop when the window closes.
+    pub fn wants_background(&self) -> bool {
+        let config = self.config();
+        config.is_configured() && config.general.run_in_background
     }
 
     /// Gather everything preflight decides from.
@@ -712,6 +744,7 @@ impl Shared {
             ..create_spec(&config)
         };
         *self.last_archive.lock().unwrap() = Some(spec.archive_name.clone());
+        let first = self.last_backup.lock().unwrap().is_none();
         self.update_persisted(|state| {
             state.last_attempt = backtrack_core::state::to_epoch(Some(SystemTime::now()));
         });
@@ -728,7 +761,11 @@ impl Shared {
             };
             Box::pin(async move { Ok(pipeline::start_backup(plan)) }) as BoxFuture<'_, _>
         });
-        Ok(self.jobs.submit(JobKind::Backup, factory))
+        let job = self.jobs.submit(JobKind::Backup, factory);
+        if first {
+            *self.first_backup.lock().unwrap() = Some(job);
+        }
+        Ok(job)
     }
 
     /// The engine for the local spool repository, creating the repository on
@@ -752,12 +789,8 @@ impl Shared {
         std::fs::create_dir_all(&path)
             .map_err(|e| DaemonError::LocalDiskFull(format!("cannot create the spool: {e}")))?;
 
-        let engine = BorgCli::new(
-            path.display().to_string(),
-            repository,
-            Arc::clone(&self.secrets),
-        )
-        .await?;
+        let engine =
+            BorgCli::new(path.display().to_string(), repository, self.secrets.clone()).await?;
         // An empty directory is not yet a repository. Decided by looking for
         // Borg's own `config` file rather than by asking Borg and reading the
         // error: an empty directory reports "not a valid repository" (exit 15),
@@ -1122,8 +1155,7 @@ impl Shared {
             debug!("no repository configured; engine not connected");
             return Ok(());
         };
-        let engine =
-            BorgCli::new(repository.clone(), repository, Arc::clone(&self.secrets)).await?;
+        let engine = BorgCli::new(repository.clone(), repository, self.secrets.clone()).await?;
         self.set_engine(Arc::new(engine));
         Ok(())
     }
@@ -1183,6 +1215,32 @@ impl Shared {
     /// Record a failure that stops backups until the user acts.
     fn record_blocking_failure(&self, blocking: bool) {
         *self.blocking_failure.lock().unwrap() = blocking;
+    }
+
+    /// Say how the first backup went, if `job` was it.
+    ///
+    /// Only a job that has ended counts, and the record is cleared either way:
+    /// a first backup that failed leaves the next one as the first.
+    ///
+    /// Sent from a task of its own. This is called from the loop that turns
+    /// job updates into signals, and a notification service that is slow to
+    /// answer must not hold up every signal behind it.
+    fn announce_first_backup(&self, job: u64, state: &JobState, bus: &zbus::Connection) {
+        {
+            let mut first = self.first_backup.lock().unwrap();
+            if *first != Some(job) {
+                return;
+            }
+            *first = None;
+        }
+        let Some(outcome) = state.outcome_token() else {
+            return;
+        };
+        let policy = self.config().general.notifications;
+        if let Some((summary, body)) = crate::notify::first_backup(policy, outcome) {
+            let bus = bus.clone();
+            tokio::spawn(async move { crate::notify::send(&bus, summary, body).await });
+        }
     }
 }
 
@@ -1253,6 +1311,14 @@ impl Daemon1 {
             .is_some();
         if paused {
             info!("manual backup requested while paused; running it anyway");
+        }
+        // Refused here rather than left to Borg, which would fail with an
+        // error about arguments that means nothing to the person who pressed
+        // the button.
+        if self.shared.config().backup.include.is_empty() {
+            return Err(DaemonError::NotConfigured(
+                "nothing has been chosen to back up yet".into(),
+            ));
         }
         self.shared.submit_backup().await
     }
@@ -1816,13 +1882,40 @@ impl Daemon1 {
 
     /// Set one configuration key. `key` is a dotted path (`backup.frequency`)
     /// and `value` a TOML literal (`"daily"`, `24`, `["/home/k/Documents"]`).
-    async fn set_config(&self, key: &str, value: &str) -> Result<()> {
-        let updated = config_set(&self.shared.config(), key, value)?;
-        let repository_changed =
-            updated.storage.repository != self.shared.config().storage.repository;
-        let sources_changed = updated.backup.include != self.shared.config().backup.include;
+    async fn set_config(
+        &self,
+        key: &str,
+        value: &str,
+        #[zbus(connection)] connection: &zbus::Connection,
+    ) -> Result<()> {
+        let before = self.shared.config();
+        let updated = config_set(&before, key, value)?;
+        let repository_changed = updated.storage.repository != before.storage.repository;
+        let sources_changed = updated.backup.include != before.backup.include;
+        let remember_changed =
+            updated.security.remember_passphrase != before.security.remember_passphrase;
+        let background_changed =
+            updated.general.run_in_background != before.general.run_in_background;
+
+        // The passphrase moves before the setting is written, so a keyring
+        // that refuses leaves both saying what they said before.
+        if remember_changed {
+            self.shared
+                .secrets
+                .set_remember(
+                    updated.security.remember_passphrase,
+                    updated.storage.repository.as_deref(),
+                )
+                .await?;
+        }
         self.shared.store_config(updated)?;
         info!(key, "configuration changed");
+        // The schedule reads the configuration fresh each time it decides, so
+        // a new frequency or source list only needs it to decide again now.
+        self.shared.wake_scheduler();
+        if background_changed {
+            crate::background::apply(connection, self.shared.wants_background()).await;
+        }
         if sources_changed {
             // Which local safety net is usable depends on the filesystem the
             // sources are on, so a new source list is a new question.
@@ -1844,12 +1937,24 @@ impl Daemon1 {
     }
 
     /// Create a repository at `path` and adopt it as the destination.
-    async fn setup_repo(&self, path: &str, passphrase: &str) -> Result<()> {
+    ///
+    /// The schedule's clock starts here rather than the first backup being
+    /// due at once. The wizard creates the repository partway through its
+    /// last page, because the recovery key cannot be saved until there is a
+    /// key, and takes the first backup itself when the person presses Start.
+    /// A schedule that fired in between would start that backup while they
+    /// were still reading the page.
+    async fn setup_repo(
+        &self,
+        path: &str,
+        passphrase: &str,
+        #[zbus(connection)] connection: &zbus::Connection,
+    ) -> Result<()> {
         self.shared.secrets.set(path, passphrase).await?;
         let engine = BorgCli::new(
             path.to_string(),
             path.to_string(),
-            Arc::clone(&self.shared.secrets),
+            self.shared.secrets.clone(),
         )
         .await?;
         engine
@@ -1863,8 +1968,57 @@ impl Daemon1 {
         config.storage.repository = Some(path.to_string());
         self.shared.store_config(config)?;
         self.shared.set_engine(Arc::new(engine));
+        self.shared.update_persisted(|state| {
+            state.last_attempt = backtrack_core::state::to_epoch(Some(SystemTime::now()));
+        });
         info!(path, "repository created");
+
+        // A new repository holds nothing, so a catalogue still describing
+        // the previous destination's backups would offer restores from
+        // archives this one does not have. They stay in the old repository,
+        // which is where Import finds them.
+        self.shared.reconcile_catalogue().await;
+        crate::background::apply(connection, self.shared.wants_background()).await;
         Ok(())
+    }
+
+    /// What is at `repository` before anything is created there: `empty`,
+    /// `existing` (a Borg repository), `occupied` (something else), or
+    /// `unwritable`. Connection problems are errors, named as usual.
+    ///
+    /// The wizard asks before it offers to create anything, so that choosing a
+    /// drive that already holds this computer's backups leads to them rather
+    /// than to a failed attempt to create a second repository on top.
+    async fn inspect_destination(&self, repository: &str) -> Result<String> {
+        if repository.trim().is_empty() {
+            return Err(DaemonError::InvalidArgument(
+                "no destination was given".into(),
+            ));
+        }
+        let engine = BorgCli::new(
+            repository.to_string(),
+            repository.to_string(),
+            self.shared.secrets.clone(),
+        )
+        .await?;
+        let presence = engine.presence().await?;
+        debug!(repository, ?presence, "destination inspected");
+        Ok(match presence {
+            backtrack_core::engine::Presence::Empty => "empty",
+            backtrack_core::engine::Presence::Existing => "existing",
+            backtrack_core::engine::Presence::Occupied => "occupied",
+            backtrack_core::engine::Presence::Unwritable => "unwritable",
+        }
+        .to_string())
+    }
+
+    /// The configured repository's recovery key, exactly as `borg key export`
+    /// writes it, so that the file a person saves is one `borg key import`
+    /// reads back without editing.
+    async fn export_recovery_key(&self) -> Result<String> {
+        let key = self.shared.engine()?.key_export().await?;
+        info!("recovery key exported");
+        Ok(key)
     }
 
     /// Adopt an existing repository at `path`.
@@ -1877,12 +2031,17 @@ impl Daemon1 {
     /// minutes to catalogue in full, and a wizard that says "you're set up" over
     /// an empty timeline reads as a failure — so this call waits for exactly the
     /// one snapshot the user is about to be shown, and no longer.
-    async fn import_repo(&self, path: &str, passphrase: &str) -> Result<()> {
+    async fn import_repo(
+        &self,
+        path: &str,
+        passphrase: &str,
+        #[zbus(connection)] connection: &zbus::Connection,
+    ) -> Result<()> {
         self.shared.secrets.set(path, passphrase).await?;
         let engine = BorgCli::new(
             path.to_string(),
             path.to_string(),
-            Arc::clone(&self.shared.secrets),
+            self.shared.secrets.clone(),
         )
         .await?;
         let info = engine.repo_info().await?;
@@ -1892,6 +2051,7 @@ impl Daemon1 {
         self.shared.store_config(config)?;
         self.shared.set_engine(Arc::new(engine));
         info!(path, archives = info.archive_count, "repository imported");
+        crate::background::apply(connection, self.shared.wants_background()).await;
 
         self.shared.adopt_catalogue().await
     }
@@ -2051,6 +2211,7 @@ pub async fn fan_out_signals(shared: Arc<Shared>, emitter: SignalEmitter<'static
                 }
                 if state.is_terminal() {
                     update_health(&shared, kind, &state);
+                    shared.announce_first_backup(id, &state, emitter.connection());
                     // A backup that reached the real destination is what starts
                     // the local safety net's clock. Awaited here rather than
                     // spawned so the marking cannot race the next backup.

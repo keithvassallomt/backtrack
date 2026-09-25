@@ -186,6 +186,13 @@ pub struct ReplacedFile {
     pub mtime: i64,
 }
 
+/// Phase names carried on `BackupProgress`. Defined here because a client
+/// reads them to decide what to say, and a phase renamed on one side only
+/// would leave a progress page silent.
+pub const PHASE_ARCHIVING: &str = "archiving";
+pub const PHASE_CATALOGUING: &str = "cataloguing";
+pub const PHASE_PRUNING: &str = "pruning";
+
 /// The well-known bus name of an installed daemon.
 pub const BUS_NAME: &str = "org.backtrack.Daemon1";
 
