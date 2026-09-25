@@ -8,6 +8,8 @@
 //! the moves land where they should, and that the three promises the engine
 //! makes hold when something goes wrong.
 
+#![cfg(test)]
+
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
@@ -411,9 +413,26 @@ fn a_symlink_is_restored_as_a_link_and_never_followed() {
     );
 }
 
+/// Whether this process can be denied access by file permissions at all.
+///
+/// Root cannot: the kernel skips the permission check for it, so a directory
+/// with mode `500` is still writable. CI runs in a container as root, so a test
+/// that arranges to be refused has nothing to observe there and says so rather
+/// than failing. The same guard as `walk`'s tests, for the same reason.
+fn permissions_are_enforced() -> bool {
+    if rustix::process::geteuid().is_root() {
+        eprintln!("skipping: running as root, which bypasses permission checks");
+        return false;
+    }
+    true
+}
+
 #[test]
 fn one_unwritable_file_does_not_abandon_the_rest_of_the_restore() {
     use std::os::unix::fs::PermissionsExt;
+    if !permissions_are_enforced() {
+        return;
+    }
     let f = fixture();
     write(&f.staging, "locked/report.odt", "the backup version", at(0));
     write(&f.staging, "fine.txt", "also from the backup", at(0));
@@ -449,6 +468,9 @@ fn a_move_that_fails_leaves_the_file_that_was_there() {
     // Atomicity as it is actually experienced: whatever goes wrong, the path
     // holds a whole file — the old one or the new one, never a piece of either.
     use std::os::unix::fs::PermissionsExt;
+    if !permissions_are_enforced() {
+        return;
+    }
     let f = fixture();
     write(&f.staging, "locked/report.odt", "the backup version", at(0));
     write(&f.dest, "locked/report.odt", "the version on disk", at(500));
