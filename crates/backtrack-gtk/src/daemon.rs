@@ -74,6 +74,22 @@ pub trait Daemon1 {
     fn put_back_replaced(&self, stashed: &str) -> zbus::Result<String>;
     fn cancel_job(&self, id: u64) -> zbus::Result<()>;
 
+    /// The whole configuration, as the TOML `config.toml` holds.
+    fn get_config(&self) -> zbus::Result<String>;
+    /// Change one setting: a dotted key and a TOML literal.
+    fn set_config(&self, key: &str, value: &str) -> zbus::Result<()>;
+    /// What is at a destination before anything is created there: `empty`,
+    /// `existing`, `occupied` or `unwritable`.
+    fn inspect_destination(&self, repository: &str) -> zbus::Result<String>;
+    /// Create a repository and make it the destination.
+    fn setup_repo(&self, path: &str, passphrase: &str) -> zbus::Result<()>;
+    /// Adopt an existing repository. Returns once its newest backup can be
+    /// browsed; the rest are catalogued behind.
+    fn import_repo(&self, path: &str, passphrase: &str) -> zbus::Result<()>;
+    /// The configured repository's recovery key, as `borg key export` writes
+    /// it.
+    fn export_recovery_key(&self) -> zbus::Result<String>;
+
     /// Progress of a running backup.
     #[zbus(signal)]
     fn backup_progress(&self, job: u64, phase: &str, current: u64, total: u64) -> zbus::Result<()>;

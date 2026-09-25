@@ -53,6 +53,27 @@ pub fn is_within(path: &str, folder: &str) -> bool {
     path == folder || path.starts_with(&format!("{folder}/"))
 }
 
+/// The folder a window should open on to show every one of `roots`: the
+/// deepest folder that contains them all. `None` for no roots at all.
+///
+/// Used after adopting somebody's existing backups, whose top may be nowhere
+/// near this computer's home folder. See `IndexReader::backed_up_roots`.
+pub fn common_parent(roots: &[String]) -> Option<String> {
+    let mut parents = roots.iter().map(|root| parent(root).unwrap_or_default());
+    let first = parents.next()?;
+    let mut shared: Vec<&str> = first.split('/').filter(|c| !c.is_empty()).collect();
+    for other in parents {
+        let components: Vec<&str> = other.split('/').filter(|c| !c.is_empty()).collect();
+        let same = shared
+            .iter()
+            .zip(&components)
+            .take_while(|(a, b)| a == b)
+            .count();
+        shared.truncate(same);
+    }
+    Some(shared.join("/"))
+}
+
 /// One step of the breadcrumb.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Crumb {
@@ -106,6 +127,26 @@ fn trail(base: &str, rest: &str) -> Vec<Crumb> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_window_opens_where_every_backed_up_folder_can_be_seen() {
+        let roots = |list: &[&str]| list.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert_eq!(
+            common_parent(&roots(&["home/k/Documents", "home/k/Pictures"])).as_deref(),
+            Some("home/k")
+        );
+        assert_eq!(
+            common_parent(&roots(&["home/k/.local/share/demo-src"])).as_deref(),
+            Some("home/k/.local/share"),
+            "one folder is shown inside its parent, not opened into"
+        );
+        assert_eq!(
+            common_parent(&roots(&["home/k/Documents", "srv/data"])).as_deref(),
+            Some("")
+        );
+        assert_eq!(common_parent(&roots(&["home"])).as_deref(), Some(""));
+        assert_eq!(common_parent(&[]), None);
+    }
 
     #[test]
     fn an_absolute_path_loses_its_leading_slash() {

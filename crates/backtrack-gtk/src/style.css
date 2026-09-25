@@ -164,3 +164,66 @@
 .compare-swatch {
     border-radius: 4px;
 }
+
+/* The wizard's row icons sit in a rounded tile, as mockups 11 and 12 draw
+ * them. */
+.wizard-tile {
+    background-color: alpha(currentColor, 0.07);
+    border-radius: 12px;
+    padding: 10px;
+}
+
+/* The Welcome page's promises: an accent-coloured icon in a softer tile. */
+.wizard-promise {
+    background-color: alpha(@accent_color, 0.12);
+    color: @accent_color;
+    border-radius: 10px;
+    padding: 10px;
+    -gtk-icon-size: 22px;
+}
+
+/* "Recommended" and "Detected" read as good news, like "on this computer". */
+.badge.recommended {
+    background-color: alpha(@success_color, 0.15);
+    color: @success_color;
+}
+
+/* The amber card that says what losing the passphrase and the key means. */
+.warning-card {
+    background-color: alpha(@warning_color, 0.15);
+    border: 1px solid alpha(@warning_color, 0.4);
+    border-radius: 12px;
+    padding: 18px;
+}
+
+.warning-card image {
+    color: @warning_color;
+}
+
+/* The passphrase meter takes its colour from the verdict, and the word
+ * beside it says the same thing for anybody who cannot see the colour. */
+levelbar.strength.weak block.filled {
+    background-color: @error_color;
+}
+
+levelbar.strength.fair block.filled {
+    background-color: @warning_color;
+}
+
+levelbar.strength.good block.filled,
+levelbar.strength.strong block.filled {
+    background-color: @success_color;
+}
+
+label.weak {
+    color: @error_color;
+}
+
+label.fair {
+    color: @warning_color;
+}
+
+label.good,
+label.strong {
+    color: @success_color;
+}

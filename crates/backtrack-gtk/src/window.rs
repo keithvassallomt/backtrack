@@ -746,6 +746,42 @@ impl Window {
         }
     }
 
+    /// Re-read the list of backups whenever it may have grown.
+    ///
+    /// A backup that finishes adds one; a catalogue job makes pending ones
+    /// browsable, and after an import it is working through a whole history,
+    /// newest first. Without this the timeline would show what was there when
+    /// the window opened, with the snapshots imported since badged as still
+    /// being catalogued until somebody reopened it.
+    async fn follow_catalogue(self: &Rc<Self>, proxy: crate::daemon::Daemon1Proxy<'static>) {
+        use futures::StreamExt;
+        if let Ok(mut indexing) = proxy.receive_indexing_progress().await {
+            let this = Rc::clone(self);
+            ui::spawn(async move {
+                // One signal per archive as the catalogue job reaches it, so a
+                // new name means the one before it is finished.
+                let mut current = String::new();
+                while let Some(signal) = StreamExt::next(&mut indexing).await {
+                    let Ok(args) = signal.args() else { continue };
+                    if args.archive != current {
+                        current = args.archive.to_string();
+                        this.load_archives();
+                    }
+                }
+            });
+        }
+        let Ok(mut finished) = proxy.receive_job_finished().await else {
+            warn!("new backups will not appear until the window is reopened");
+            return;
+        };
+        while let Some(signal) = StreamExt::next(&mut finished).await {
+            let Ok(args) = signal.args() else { continue };
+            if matches!(args.kind, "backup" | "offline" | "index") {
+                self.load_archives();
+            }
+        }
+    }
+
     /// One backup older or newer.
     fn step(self: &Rc<Self>, direction: Step) {
         let view = self.state.view();
@@ -936,6 +972,11 @@ impl Window {
                     let following = Rc::clone(&this);
                     let proxy = following.daemon.borrow().clone();
                     if let Some(proxy) = proxy {
+                        let cataloguing = Rc::clone(&following);
+                        let catalogue_proxy = proxy.clone();
+                        ui::spawn(
+                            async move { cataloguing.follow_catalogue(catalogue_proxy).await },
+                        );
                         ui::spawn(async move { following.follow_status(proxy).await });
                     }
                     let ticking = Rc::clone(&this);
@@ -991,6 +1032,19 @@ impl Window {
     pub fn toast(&self, message: &str) {
         self.toasts.add_toast(adw::Toast::new(message));
     }
+}
+
+/// Point every open window at `target` and re-read what it shows, as after
+/// the wizard has moved the backups somewhere else. Returns whether there
+/// was a window to do it to.
+pub fn refresh_all(target: &Target) -> bool {
+    let open: Vec<Rc<Window>> = OPEN.with(|open| open.borrow().clone());
+    for window in &open {
+        window.retarget(target);
+        window.load_archives();
+        window.refresh_status();
+    }
+    !open.is_empty()
 }
 
 /// Point an already-open window at `target`.

@@ -18,11 +18,13 @@
 pub mod calendar;
 pub mod compare;
 pub mod density;
+pub mod exclusions;
 pub mod format;
 pub mod group;
 pub mod restore;
 pub mod search;
 pub mod status;
+pub mod wizard;
 
 use gtk4::glib;
 

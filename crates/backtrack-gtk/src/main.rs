@@ -148,7 +148,7 @@ fn main() -> glib::ExitCode {
                     window::retarget(&existing, &target);
                     existing.present();
                 }
-                None => window::Window::build(app, &target).present(),
+                None => open_first_window(app, target),
             }
             glib::ExitCode::SUCCESS
         },
@@ -157,6 +157,34 @@ fn main() -> glib::ExitCode {
     // The user's own argv, forwarded to whichever instance is primary: that is
     // what lets a second `--path` re-point the window already on screen.
     app.run_with_args(&std::env::args().collect::<Vec<String>>())
+}
+
+/// Open the timeline, or the welcome wizard if nothing is set up yet.
+///
+/// Asked of the daemon rather than read from `config.toml`: the daemon is what
+/// backs up, so its answer is the one that counts. With no daemon to ask, the
+/// timeline opens anyway. Browsing needs only the catalogue, and the wizard
+/// could not create anything without the daemon behind it.
+fn open_first_window(app: &adw::Application, target: Target) {
+    // Nothing is on screen while the daemon is asked, and an application with
+    // no window and nothing holding it would quit in the meantime.
+    let hold = app.hold();
+    let app = app.clone();
+    glib::spawn_future_local(async move {
+        let daemon = daemon::connect().await.ok();
+        let status = match &daemon {
+            Some(daemon) => daemon.get_status().await.ok(),
+            None => None,
+        };
+        match (daemon, status) {
+            (Some(daemon), Some(status)) if !status.configured => {
+                info!("nothing is set up yet; opening the welcome wizard");
+                ui::wizard::present(&app, daemon, None, None);
+            }
+            _ => window::Window::build(&app, &target).present(),
+        }
+        drop(hold);
+    });
 }
 
 #[cfg(test)]

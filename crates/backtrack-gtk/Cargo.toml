@@ -28,6 +28,11 @@ futures.workspace = true
 async-channel = "2"
 # The line diff behind the compare view.
 similar.workspace = true
+# The wizard's passphrase strength meter. A port of Dropbox's estimator rather
+# than a length-and-character-classes count, which rates "Password1!" strong.
+# The derive-builder feature is only for constructing its options, which the
+# meter never does.
+zxcvbn = { version = "3.1", default-features = false }
 
 [dev-dependencies]
 tempfile = "3"
