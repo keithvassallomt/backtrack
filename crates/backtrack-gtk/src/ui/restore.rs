@@ -292,7 +292,7 @@ impl Restores {
     /// The toast, with the offer that makes Replace safe to click.
     fn offer_undo(self: &Rc<Self>, preview: &RestorePreview, name: &str) {
         let moved = (preview.conflicts + preview.only_in_backup + preview.type_changed) as usize;
-        let toast = adw::Toast::new(&copy::restored_toast(moved, name));
+        let toast = crate::ui::toast(&copy::restored_toast(moved, name));
         toast.set_button_label(Some("Undo"));
         // Long enough to read and reach; the stash keeps the files far longer,
         // so a missed toast is an inconvenience rather than a loss.
@@ -343,7 +343,7 @@ impl Restores {
     }
 
     fn toast(&self, message: &str) {
-        self.toasts.add_toast(adw::Toast::new(message));
+        self.toasts.add_toast(crate::ui::toast(message));
     }
 }
 

@@ -1030,7 +1030,7 @@ impl Window {
 
     /// Say something in passing, in the window it concerns.
     pub fn toast(&self, message: &str) {
-        self.toasts.add_toast(adw::Toast::new(message));
+        self.toasts.add_toast(ui::toast(message));
     }
 }
 

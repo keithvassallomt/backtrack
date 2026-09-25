@@ -153,7 +153,10 @@ fn summary_rows(
 
     let mut review_added = false;
     for summary in copy::summary_rows(preview) {
-        let row = adw::ActionRow::builder().title(&summary.text).build();
+        let row = adw::ActionRow::builder()
+            .use_markup(false)
+            .title(&summary.text)
+            .build();
         row.set_title_lines(2);
         row.add_prefix(&Image::from_icon_name(summary.icon));
         // One Review button, on the first row that offers it: two would be two
@@ -298,6 +301,7 @@ fn review_row(
     let name = copy::review_name(&entry.path, target);
 
     let row = adw::ActionRow::builder()
+        .use_markup(false)
         .title(&name)
         .subtitle(format!("On disk: {disk}\nBackup: {backup}"))
         .build();

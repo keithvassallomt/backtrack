@@ -123,6 +123,7 @@ fn comparison(entry: &RestoreEntry, name: &str) -> GtkBox {
 /// One side of the comparison, with the `newer` tag on whichever side has it.
 fn version_row(icon: &str, title: &str, detail: &str, newer: bool) -> adw::ActionRow {
     let row = adw::ActionRow::builder()
+        .use_markup(false)
         .title(title)
         .subtitle(detail)
         .build();

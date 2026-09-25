@@ -255,7 +255,7 @@ fn tile(icon: &str) -> gtk4::Image {
 impl Wizard {
     /// Say something in passing.
     fn toast(&self, message: &str) {
-        self.toasts.add_toast(adw::Toast::new(message));
+        self.toasts.add_toast(crate::ui::toast(message));
     }
 
     /// Whether this run is moving the backups somewhere new.

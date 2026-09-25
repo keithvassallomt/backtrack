@@ -72,7 +72,7 @@ fn reload(toasts: &adw::ToastOverlay, daemon: &Service) {
             Ok(entries) => show(&toasts, &daemon, entries),
             Err(error) => {
                 warn!(%error, "the safety stash could not be read");
-                toasts.add_toast(adw::Toast::new("The safety stash could not be read"));
+                toasts.add_toast(crate::ui::toast("The safety stash could not be read"));
             }
         }
     });
@@ -133,7 +133,10 @@ fn row(
     daemon: &Service,
 ) -> adw::ActionRow {
     let name = crate::path::name(&entry.original).to_string();
+    // Plain text: a file name is not markup, and one with `&` in it would
+    // otherwise leave the row blank.
     let row = adw::ActionRow::builder()
+        .use_markup(false)
         .title(&name)
         .subtitle(copy::stash_row_subtitle(
             &entry.original,
@@ -168,13 +171,13 @@ fn row(
             match proxy.put_back_replaced(&stashed).await {
                 Ok(displaced) => {
                     info!(stashed, displaced, "a replaced file was put back");
-                    toasts.add_toast(adw::Toast::new(&copy::put_back_toast(&name)));
+                    toasts.add_toast(crate::ui::toast(&copy::put_back_toast(&name)));
                     reload(&toasts, &daemon);
                 }
                 Err(error) => {
                     warn!(%error, stashed, "the file could not be put back");
                     button.set_sensitive(true);
-                    toasts.add_toast(adw::Toast::new(&clean(&error.to_string())));
+                    toasts.add_toast(crate::ui::toast(&clean(&error.to_string())));
                 }
             }
         });

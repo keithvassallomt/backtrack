@@ -176,6 +176,16 @@ pub fn prefer_wide_responses(dialog: &adw::AlertDialog) {
     dialog.set_prefer_wide_layout(true);
 }
 
+/// A toast that shows `text` as it is written.
+///
+/// Toasts read their title as markup unless told otherwise, and the text of a
+/// toast is often a file name. A name with an ampersand in it is a perfectly
+/// good file name and a malformed piece of markup, and GTK's answer to that
+/// is a blank toast.
+pub fn toast(text: &str) -> adw::Toast {
+    adw::Toast::builder().title(text).use_markup(false).build()
+}
+
 /// Run `task` on the main loop. A thin alias so the intent reads at the call
 /// site: this is work that must not block the frame, not a background thread.
 pub fn spawn(task: impl std::future::Future<Output = ()> + 'static) {
