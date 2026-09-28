@@ -62,11 +62,13 @@ struct Prefs {
     bound: RefCell<Vec<Setting>>,
 }
 
-/// Open Preferences over `parent`, or raise it if it is already open.
+/// Open Preferences over `parent`, at `page` if one is named, or raise it if
+/// it is already open.
 pub fn present(
     app: &adw::Application,
     parent: &adw::ApplicationWindow,
     daemon: Daemon1Proxy<'static>,
+    page: Option<&'static str>,
 ) {
     if let Some(open) = OPEN.with(|open| open.borrow().clone()) {
         open.present();
@@ -82,7 +84,7 @@ pub fn present(
                 return;
             }
         };
-        build(app, parent, daemon, config).present();
+        build(app, parent, daemon, config, page).present();
     });
 }
 
@@ -96,6 +98,7 @@ fn build(
     parent: adw::ApplicationWindow,
     daemon: Daemon1Proxy<'static>,
     config: Config,
+    page: Option<&'static str>,
 ) -> adw::Window {
     let window = adw::Window::builder()
         .title("Preferences")
@@ -158,6 +161,10 @@ fn build(
         stack.add_titled_with_icon(&page, Some(name), title, icon);
     }
     prefs.check_bindings();
+    prefs.badge_attention(&stack);
+    if let Some(page) = page {
+        stack.set_visible_child_name(page);
+    }
 
     let sidebar = adw::ViewSwitcherSidebar::builder().stack(&stack).build();
     let sidebar_scroller = gtk4::ScrolledWindow::builder()
@@ -273,6 +280,40 @@ impl Prefs {
 
     fn show_status(&self, show: impl Fn(&Status) + 'static) {
         self.status_shows.borrow_mut().push(Box::new(show));
+    }
+
+    /// health.md's `DEGRADED`: a badge in Preferences, on the page where the
+    /// thing that needs attention lives, and a line saying what it is.
+    fn badge_attention(&self, stack: &adw::ViewStack) {
+        let pages: Vec<(adw::ViewStackPage, adw::Banner)> = ["storage", "advanced"]
+            .into_iter()
+            .filter_map(|name| {
+                let child = stack.child_by_name(name)?;
+                let page = child.downcast::<adw::PreferencesPage>().ok()?;
+                let banner = adw::Banner::new("");
+                page.set_banner(Some(&banner));
+                Some((stack.page(&page), banner))
+            })
+            .collect();
+        self.show_status(move |status| {
+            let status = status.clone();
+            let pages = pages.clone();
+            crate::ui::spawn(async move {
+                let not_browsable = gio::spawn_blocking(not_browsable).await.unwrap_or(0);
+                let badge = crate::model::health::attention_badge(&status, not_browsable);
+                // The catalogue's own rows are on Advanced; room is on Storage.
+                let home = match status.reason.as_str() {
+                    "catalogue-rebuilding" | "not-yet-browsable" => "advanced",
+                    _ => "storage",
+                };
+                for (stack_page, banner) in &pages {
+                    let here = badge.is_some() && stack_page.name().as_deref() == Some(home);
+                    stack_page.set_needs_attention(here);
+                    banner.set_title(badge.as_deref().filter(|_| here).unwrap_or(""));
+                    banner.set_revealed(here);
+                }
+            });
+        });
     }
 
     fn show_storage(&self, show: impl Fn(Result<&StorageInfo, &str>) + 'static) {
@@ -737,7 +778,52 @@ impl Prefs {
             "document-open-recent-symbolic",
         ));
         let state = gtk4::Image::new();
+        let details = Button::with_label("Show Details");
+        details.set_valign(Align::Center);
+        details.set_visible(false);
+        last.add_suffix(&details);
         last.add_suffix(&state);
+        let failure: Rc<RefCell<Option<String>>> = Rc::default();
+        let reading = Rc::clone(&failure);
+        let window = self.window.clone();
+        details.connect_clicked(move |_| {
+            let Some(message) = reading.borrow().clone() else {
+                return;
+            };
+            let dialog = adw::AlertDialog::builder()
+                .heading("The Last Backup Did Not Finish")
+                .body(&message)
+                .close_response("close")
+                .build();
+            dialog.add_response("close", "Close");
+            dialog.present(Some(&window));
+        });
+        let daemon = self.daemon.clone();
+        let showing = details.clone();
+        self.show_status(move |status| {
+            let last_success = status.last_backup;
+            let daemon = daemon.clone();
+            let showing = showing.clone();
+            let failure = Rc::clone(&failure);
+            crate::ui::spawn(async move {
+                let report = daemon.get_health().await.ok();
+                let now = glib::DateTime::now_utc().map(|d| d.to_unix()).unwrap_or(0);
+                let message = report.and_then(|report| {
+                    report
+                        .errors
+                        .into_iter()
+                        .find(|(subsystem, at, ..)| subsystem == "backup" && *at > last_success)
+                        .map(|(_, at, _, message)| {
+                            format!(
+                                "The last attempt, {}, did not finish: {message}",
+                                crate::model::status::ago(at as i64, now, &glib::TimeZone::local())
+                            )
+                        })
+                });
+                showing.set_visible(message.is_some());
+                *failure.borrow_mut() = message;
+            });
+        });
         let shown = last.clone();
         self.show_status(move |status| {
             let now = glib::DateTime::now_utc().map(|d| d.to_unix()).unwrap_or(0);
@@ -1305,6 +1391,14 @@ async fn confirm(
     );
     crate::ui::prefer_wide_responses(&dialog);
     dialog.choose_future(Some(parent)).await == "go"
+}
+
+/// How many backups the catalogue has not read yet.
+fn not_browsable() -> usize {
+    backtrack_core::index::IndexReader::open(&backtrack_core::paths::index_db())
+        .and_then(|reader| reader.archives_overview())
+        .map(|archives| archives.iter().filter(|a| !a.catalogued).count())
+        .unwrap_or(0)
 }
 
 /// "47 backups indexed · 132 MB on disk", read from the catalogue itself.

@@ -9,6 +9,7 @@ pub mod compare;
 pub mod conflict;
 pub mod exclusions;
 pub mod files;
+pub mod fix;
 pub mod menu;
 pub mod prefs;
 pub mod preview;

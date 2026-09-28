@@ -12,7 +12,9 @@
 //! The connection is made through D-Bus activation, so there is no "is the
 //! daemon running?" check anywhere in the app. Asking for it starts it.
 
-use backtrack_core::dbus::{ReplacedFile, RestorePreview, SearchResult, Status, StorageInfo};
+use backtrack_core::dbus::{
+    HealthReport, LocalStorage, ReplacedFile, RestorePreview, SearchResult, Status, StorageInfo,
+};
 use tracing::warn;
 
 /// The daemon, as the window calls it.
@@ -103,6 +105,32 @@ pub trait Daemon1 {
     fn verify(&self) -> zbus::Result<u64>;
     /// Reclaim the space deleted backups were using; the job doing it.
     fn compact(&self) -> zbus::Result<u64>;
+    /// Apply the retention policy now; the job doing it.
+    fn prune(&self) -> zbus::Result<u64>;
+
+    /// The state, how it came about, and what the person has been told.
+    fn get_health(&self) -> zbus::Result<HealthReport>;
+    /// Give the passphrase again, optionally putting a saved recovery key
+    /// back first. Tried before it is kept. Returns the backup it starts, or
+    /// 0.
+    fn unlock_backups(
+        &self,
+        passphrase: &str,
+        remember: bool,
+        recovery_key: &str,
+    ) -> zbus::Result<u64>;
+    /// Repair what a check found wrong; the job doing it.
+    fn repair(&self) -> zbus::Result<u64>;
+    /// Put an unrepairable repository aside, deleting nothing. Returns where
+    /// it went.
+    fn start_fresh(&self) -> zbus::Result<String>;
+    /// Where the room on this computer has gone.
+    fn get_local_storage(&self) -> zbus::Result<LocalStorage>;
+    /// Remove the copies extracted for previews; the bytes freed.
+    fn clear_preview_cache(&self) -> zbus::Result<u64>;
+    /// Give up the files restores replaced, but the last hour's; the bytes
+    /// freed.
+    fn empty_stash(&self) -> zbus::Result<u64>;
 
     /// Progress of a running backup.
     #[zbus(signal)]

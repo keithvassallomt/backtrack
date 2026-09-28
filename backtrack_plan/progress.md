@@ -102,9 +102,9 @@
 
 ## Stage 10 — Health ([stage file](stages/stage-10-health.md))
 - [x] S10-T1 Health state machine + escalation timers per health.md
-- [/] S10-T2 Notifications respecting user policy
-- [ ] S10-T3 Main-window banner states (mockup 23)
-- [/] S10-T4 Resolution flows: passphrase (mockup 24), reauth, disk-full, repair
+- [x] S10-T2 Notifications respecting user policy
+- [/] S10-T3 Main-window banner states (mockup 23)
+- [x] S10-T4 Resolution flows: passphrase (mockup 24), reauth, disk-full, repair
 - [x] S10-T5 Monthly borg check schedule + index integrity check
 - [x] S10-T6 backtrack doctor diagnostic bundle
 

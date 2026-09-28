@@ -227,3 +227,14 @@ label.good,
 label.strong {
     color: @success_color;
 }
+
+/* health.md's banner colours: yellow when the backups are at risk, red when
+ * they have stopped. The quiet states keep libadwaita's own grey, which is
+ * what makes them read as a status line rather than a warning. */
+banner.warning {
+    --banner-color: var(--warning-bg-color);
+}
+
+banner.error {
+    --banner-color: var(--error-bg-color);
+}

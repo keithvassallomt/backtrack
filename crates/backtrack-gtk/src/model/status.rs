@@ -5,9 +5,13 @@
 //!
 //! It is written to be read in passing, so it answers in the order a worried
 //! person asks: is something happening right now, is something stopping it,
-//! and failing both, when did this last work? The full health model and its
-//! banner are Stage 10; this is the quiet version that is true in the
-//! meantime.
+//! and failing both, when did this last work?
+//!
+//! The banner under the header bar says what the health state is about. This
+//! line leaves out whatever the banner is already saying, so the two are never
+//! the same sentence twice, and keeps it when the banner is about something
+//! else: a paused machine whose backups have also stopped still says it is
+//! paused.
 
 use backtrack_core::dbus::Status;
 use gtk4::glib;
@@ -23,7 +27,7 @@ pub const INDEFINITE_PAUSE_THRESHOLD: u64 = 365 * 86_400;
 pub fn line(status: &Status, now: i64, tz: &glib::TimeZone) -> String {
     let now_secs = now.max(0) as u64;
 
-    if status.paused_until > now_secs {
+    if status.paused_until > now_secs && status.state != "PAUSED" {
         return if status.paused_until - now_secs > INDEFINITE_PAUSE_THRESHOLD {
             "Backups are paused until you resume them".to_string()
         } else {
@@ -47,7 +51,7 @@ pub fn line(status: &Status, now: i64, tz: &glib::TimeZone) -> String {
         seconds => seconds as i64,
     };
 
-    let protection = if status.destination_reachable {
+    let protection = if status.destination_reachable || status.state == "PROTECTED_LOCALLY" {
         String::new()
     } else {
         match status.offline_mode.as_str() {
@@ -173,6 +177,27 @@ mod tests {
             "Last backup 2 hours ago · your backup destination is away, so changes are \
              being kept on this computer"
         );
+    }
+
+    #[test]
+    fn what_the_banner_already_says_is_not_said_again() {
+        let mut paused = status();
+        paused.state = "PAUSED".into();
+        paused.paused_until = (NOW + 3_600) as u64;
+        assert_eq!(line(&paused, NOW, &utc()), "Last backup 2 hours ago");
+
+        let mut away = status();
+        away.state = "PROTECTED_LOCALLY".into();
+        away.destination_reachable = false;
+        assert_eq!(line(&away, NOW, &utc()), "Last backup 2 hours ago");
+    }
+
+    #[test]
+    fn a_pause_behind_a_different_banner_is_still_mentioned() {
+        let mut broken = status();
+        broken.state = "BROKEN".into();
+        broken.paused_until = (NOW + 3_600) as u64;
+        assert_eq!(line(&broken, NOW, &utc()), "Backups are paused until 13:00");
     }
 
     #[test]

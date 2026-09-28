@@ -6,8 +6,12 @@
 //! The launch contract is the one the file-manager plugins use:
 //!
 //! ```text
-//! backtrack-gtk [--path DIR] [--select FILE]
+//! backtrack-gtk [--path DIR] [--select FILE] [--fix REASON]
 //! ```
+//!
+//! `--fix` is how a notification opens the fix for what it was about: the
+//! daemon sends the notification and, when it is clicked, runs this with the
+//! health reason it named.
 //!
 //! Launching it again with a different `--path` re-points the window that is
 //! already open rather than stacking up another one, because right-clicking
@@ -47,6 +51,9 @@ struct Args {
     /// File to select once that folder is open.
     #[arg(long, value_name = "FILE")]
     select: Option<PathBuf>,
+    /// Open the fix for a problem Backtrack has told you about.
+    #[arg(long, value_name = "REASON")]
+    fix: Option<String>,
 }
 
 /// What the window is being asked to show, in archive-relative paths.
@@ -143,6 +150,13 @@ fn main() -> glib::ExitCode {
             ui::apply_theme_override(command_line.getenv("BACKTRACK_THEME").as_deref());
 
             let target = Target::resolve(&args);
+            let fix = args.fix.as_deref().and_then(|token| {
+                let reason = backtrack_core::dbus::Reason::parse(token);
+                if reason.is_none() {
+                    warn!(token, "ignoring a fix this build does not know");
+                }
+                reason
+            });
 
             match app.active_window() {
                 Some(existing) => {
@@ -152,8 +166,11 @@ fn main() -> glib::ExitCode {
                         window::retarget(&existing, target);
                     }
                     existing.present();
+                    if let Some(reason) = fix {
+                        window::fix(&existing, reason);
+                    }
                 }
-                None => open_first_window(app, target),
+                None => open_first_window(app, target, fix),
             }
             glib::ExitCode::SUCCESS
         },
@@ -173,7 +190,11 @@ fn main() -> glib::ExitCode {
 /// backs up, so its answer is the one that counts. With no daemon to ask, the
 /// timeline opens anyway. Browsing needs only the catalogue, and the wizard
 /// could not create anything without the daemon behind it.
-fn open_first_window(app: &adw::Application, target: Option<Target>) {
+fn open_first_window(
+    app: &adw::Application,
+    target: Option<Target>,
+    fix: Option<backtrack_core::dbus::Reason>,
+) {
     // Nothing is on screen while the daemon is asked, and an application with
     // no window and nothing holding it would quit in the meantime.
     let hold = app.hold();
@@ -194,7 +215,11 @@ fn open_first_window(app: &adw::Application, target: Option<Target>) {
                     Some(target) => target,
                     None => window::backed_up_target().await,
                 };
-                window::Window::build(&app, &target).present();
+                let window = window::Window::build(&app, &target);
+                window.present();
+                if let Some(reason) = fix {
+                    window::fix(window.upcast_ref(), reason);
+                }
             }
         }
         drop(hold);
@@ -209,7 +234,26 @@ mod tests {
         Args {
             path: path.map(PathBuf::from),
             select: select.map(PathBuf::from),
+            fix: None,
         }
+    }
+
+    #[test]
+    fn a_notification_s_click_is_read_as_the_fix_it_names() {
+        // The other half of the daemon's `notify::command`: what it passes is
+        // what this parses, for every reason a notification can be about.
+        for reason in backtrack_core::dbus::Reason::ALL {
+            let parsed = Args::try_parse_from(["backtrack-gtk", "--fix", reason.as_str()]).unwrap();
+            assert_eq!(
+                parsed
+                    .fix
+                    .as_deref()
+                    .and_then(backtrack_core::dbus::Reason::parse),
+                Some(reason)
+            );
+        }
+        let plain = Args::try_parse_from(["backtrack-gtk"]).unwrap();
+        assert_eq!(plain.fix, None);
     }
 
     #[test]

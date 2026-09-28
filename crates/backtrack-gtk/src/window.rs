@@ -10,8 +10,10 @@
 //! backup you are viewing, and stepping back through time does not change the
 //! folder you are looking at.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
+
+use backtrack_core::dbus::Reason;
 
 use gtk4::prelude::*;
 use gtk4::{gio, glib, Align, Box as GtkBox, Button, Label, Orientation};
@@ -45,6 +47,17 @@ pub struct Window {
     position: Label,
     /// The line at the bottom that says how backups are doing.
     status: Label,
+    /// The line under the header bar that says what health is about, when it
+    /// is about anything, and names the fix. Mockup 23.
+    banner: adw::Banner,
+    /// What the banner's button does at the moment.
+    banner_action: Cell<Option<crate::model::health::Action>>,
+    /// What the person calls the place backups go, for the one banner that
+    /// names it. Read when that banner is showing.
+    destination: RefCell<String>,
+    /// A fix asked for before the daemon had answered: from a notification
+    /// that started the window, say.
+    pending_fix: RefCell<Option<Reason>>,
     older: adw::SplitButton,
     newer: adw::SplitButton,
     /// The dropdown on each stepping button, rebuilt as the selection changes
@@ -121,6 +134,10 @@ impl Window {
             toasts: adw::ToastOverlay::new(),
             position,
             status,
+            banner: adw::Banner::new(""),
+            banner_action: Cell::new(None),
+            destination: RefCell::new(String::new()),
+            pending_fix: RefCell::new(None),
             older,
             newer,
             older_menu,
@@ -165,6 +182,16 @@ impl Window {
     fn assemble(self: &Rc<Self>) {
         let layout = adw::ToolbarView::new();
         layout.add_top_bar(&self.header());
+        // Under the header bar and across the whole window, as mockup 23
+        // draws it: it is about the backups, not about any one pane.
+        let this = Rc::clone(self);
+        self.banner
+            .connect_button_clicked(move |_| match this.banner_action.get() {
+                Some(crate::model::health::Action::Fix(reason)) => this.open_fix(reason),
+                Some(crate::model::health::Action::Resume) => this.resume(),
+                None => {}
+            });
+        layout.add_top_bar(&self.banner);
         layout.set_content(Some(&self.body()));
         layout.add_bottom_bar(&self.actions());
 
@@ -483,7 +510,7 @@ impl Window {
                 return;
             };
             if let Ok(app) = app.downcast::<adw::Application>() {
-                ui::prefs::present(&app, &opener.window, proxy);
+                ui::prefs::present(&app, &opener.window, proxy, None);
             }
         });
         self.window.add_action(&preferences);
@@ -706,7 +733,20 @@ impl Window {
         let this = Rc::clone(self);
         ui::spawn(async move {
             match proxy.get_status().await {
-                Ok(status) => this.render_status(&status),
+                Ok(status) => {
+                    // Only the sign-in banner names the destination, so only
+                    // then is it worth asking for.
+                    if status.reason == Reason::AuthFailed.as_str() {
+                        if let Ok(text) = proxy.get_config().await {
+                            if let Ok((config, _)) = backtrack_core::config::Config::parse(&text) {
+                                *this.destination.borrow_mut() = backtrack_core::destination::name(
+                                    &config.storage.repository.unwrap_or_default(),
+                                );
+                            }
+                        }
+                    }
+                    this.render_status(&status);
+                }
                 Err(error) => warn!(%error, "the status could not be read"),
             }
         });
@@ -717,12 +757,84 @@ impl Window {
         let tz = glib::TimeZone::local();
         self.status
             .set_text(&crate::model::status::line(status, now, &tz));
+        self.render_banner(status, now, &tz);
         // Resuming is only an offer when there is something to resume.
         ui::menu::set_enabled(
             &self.window,
             "resume",
             status.paused_until > now.max(0) as u64,
         );
+    }
+
+    /// Show the banner health.md calls for, or none.
+    fn render_banner(&self, status: &backtrack_core::dbus::Status, now: i64, tz: &glib::TimeZone) {
+        use crate::model::health::{self, Tone};
+        let not_browsable = self
+            .state
+            .view()
+            .archives
+            .iter()
+            .filter(|archive| !archive.catalogued)
+            .count();
+        let banner = health::banner(status, &self.destination.borrow(), not_browsable, now, tz);
+        for tone in ["warning", "error"] {
+            self.banner.remove_css_class(tone);
+        }
+        let Some(banner) = banner else {
+            self.banner.set_revealed(false);
+            self.banner_action.set(None);
+            return;
+        };
+        match banner.tone {
+            Tone::Warning => self.banner.add_css_class("warning"),
+            Tone::Error => self.banner.add_css_class("error"),
+            Tone::Info => {}
+        }
+        self.banner.set_title(&banner.title);
+        self.banner
+            .set_button_label(banner.action.map(|action| action.label()));
+        self.banner_action.set(banner.action);
+        self.banner.set_revealed(true);
+    }
+
+    /// Open the fix for `reason`, once the daemon is there to carry it out.
+    fn open_fix(self: &Rc<Self>, reason: Reason) {
+        let Some(proxy) = self.daemon.borrow().clone() else {
+            *self.pending_fix.borrow_mut() = Some(reason);
+            return;
+        };
+        let Some(app) = self
+            .window
+            .application()
+            .and_then(|app| app.downcast::<adw::Application>().ok())
+        else {
+            return;
+        };
+        info!(reason = reason.as_str(), "opening a fix");
+        ui::fix::open(
+            &ui::fix::Context {
+                app,
+                window: self.window.clone(),
+                daemon: proxy,
+                toasts: self.toasts.clone(),
+            },
+            reason,
+        );
+    }
+
+    /// A fix asked for from outside the window: a notification clicked, most
+    /// likely, which may be older than the problem's solution. Opened only if
+    /// it is still the problem.
+    fn fix_if_current(self: &Rc<Self>, status: &backtrack_core::dbus::Status, reason: Reason) {
+        if status.reason == reason.as_str() {
+            self.open_fix(reason);
+        } else {
+            info!(
+                reason = reason.as_str(),
+                "a fix was asked for that is no longer needed"
+            );
+            self.toast("That has been put right already");
+        }
     }
 
     /// Re-read the status on a slow tick.
@@ -982,6 +1094,10 @@ impl Window {
                     ui::menu::set_enabled(&this.window, "pause", true);
                     ui::menu::set_enabled(&this.window, "preferences", true);
                     this.render_status(&status);
+                    let pending = this.pending_fix.borrow_mut().take();
+                    if let Some(reason) = pending {
+                        this.fix_if_current(&status, reason);
+                    }
                     let following = Rc::clone(&this);
                     let proxy = following.daemon.borrow().clone();
                     if let Some(proxy) = proxy {
@@ -1080,6 +1196,27 @@ pub fn refresh_all(target: &Target) -> bool {
         window.refresh_status();
     }
     !open.is_empty()
+}
+
+/// Open the fix for `reason` in `window`, if it is still needed.
+pub fn fix(window: &gtk4::Window, reason: Reason) {
+    let found = OPEN.with(|open| {
+        open.borrow()
+            .iter()
+            .find(|w| w.window.upcast_ref::<gtk4::Window>() == window)
+            .cloned()
+    });
+    let Some(found) = found else { return };
+    let Some(proxy) = found.daemon.borrow().clone() else {
+        *found.pending_fix.borrow_mut() = Some(reason);
+        return;
+    };
+    ui::spawn(async move {
+        match proxy.get_status().await {
+            Ok(status) => found.fix_if_current(&status, reason),
+            Err(error) => warn!(%error, "the status could not be read"),
+        }
+    });
 }
 
 /// Point an already-open window at `target`.
