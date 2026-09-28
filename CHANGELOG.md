@@ -250,6 +250,14 @@ All notable changes to Backtrack are documented here. This project adheres to
   each daily backup was due.
 - Backups imported from another computer no longer make a new computer look
   overdue before its own first backup has run.
+- When a change is too big for the space set aside on this computer,
+  Backtrack no longer deletes the local snapshots it already holds to make
+  room that would still not be enough. It keeps them, and says it cannot
+  protect the new change until the limit is raised or the backup drive is
+  back.
+- Protection on this computer that has gone over its space limit is now
+  reported for as long as it is over, rather than forgotten at the next
+  backup with nothing to save.
 
 ## [0.1.0] - TBD
 

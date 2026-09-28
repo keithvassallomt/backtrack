@@ -193,9 +193,6 @@ pub struct Shared {
     /// "the drive isn't reachable, and that's fine" into something the user
     /// needs to know about.
     offline_broken: Mutex<bool>,
-    /// Set when the spool is at its storage limit. `DEGRADED`, not a failure:
-    /// protection is still happening, it is just constrained.
-    offline_degraded: Mutex<bool>,
     /// Lets a finished local backup report what it did. Nested because the job
     /// factory only learns the handle once the job actually starts.
     #[allow(clippy::type_complexity)]
@@ -322,7 +319,6 @@ impl Shared {
             snapshots_dir,
             offline_mode: Mutex::new(None),
             offline_broken: Mutex::new(false),
-            offline_degraded: Mutex::new(false),
             offline_handle: Mutex::new(None),
             first_backup: Mutex::new(None),
             notifier: Mutex::new(Arc::new(crate::notify::NoDesktop)),
@@ -1132,7 +1128,6 @@ impl Shared {
             return true;
         };
         let outcome = outcome.outcome();
-        *self.offline_degraded.lock().unwrap() = outcome.degraded;
         *self.spool_held.lock().unwrap() = outcome.held;
         !outcome.held
     }
@@ -1413,16 +1408,15 @@ impl Shared {
         // Most pressing first: a disk filling up turns into a stopped backup,
         // the other two only ever into a slower timeline, and a rebuild in
         // progress explains any backups not yet browsable.
-        let attention =
-            if *self.local_disk_low.lock().unwrap() || *self.offline_degraded.lock().unwrap() {
-                Some(Reason::LocalDiskFull)
-            } else if *self.catalogue_rebuilding.lock().unwrap() {
-                Some(Reason::CatalogueRebuilding)
-            } else if *self.pending.lock().unwrap() > 0 && !self.cataloguing() {
-                Some(Reason::NotYetBrowsable)
-            } else {
-                None
-            };
+        let attention = if *self.local_disk_low.lock().unwrap() || self.spool_over_limit() {
+            Some(Reason::LocalDiskFull)
+        } else if *self.catalogue_rebuilding.lock().unwrap() {
+            Some(Reason::CatalogueRebuilding)
+        } else if *self.pending.lock().unwrap() > 0 && !self.cataloguing() {
+            Some(Reason::NotYetBrowsable)
+        } else {
+            None
+        };
         HealthInputs {
             blocking,
             paused_until: self.pause.lock().unwrap().until(now),
@@ -1437,6 +1431,19 @@ impl Shared {
             frequency: schedule.interval.filter(|_| schedule.configured),
             attention,
         }
+    }
+
+    /// Whether the local safety net holds more than its limit: what a delta
+    /// bigger than the whole limit, taken once, leaves behind.
+    ///
+    /// Measured from its size each time rather than remembered from the run
+    /// that caused it, so a run with nothing to save cannot make it forgotten.
+    /// It stays true until the limit is raised, the next local backup makes
+    /// room, or the snapshots expire once the destination has them.
+    fn spool_over_limit(&self) -> bool {
+        let offline = self.config().storage.offline;
+        let limit = u64::from(offline.space_limit_gb) * 1024 * 1024 * 1024;
+        offline.enabled && limit > 0 && crate::offline::directory_bytes(&self.spool_dir) > limit
     }
 
     /// Whether something is busy making backups browsable. A backup waiting
@@ -1671,6 +1678,8 @@ impl Shared {
         *self.last_backup.lock().unwrap() = Some(SystemTime::now());
         if kind == JobKind::Backup {
             *self.unexplained_failures.lock().unwrap() = 0;
+            // What the safety net could not hold is on the destination now.
+            *self.spool_held.lock().unwrap() = false;
         }
         let mut latched = self.latched.lock().unwrap();
         let proven = match kind {
@@ -3809,6 +3818,73 @@ mod tests {
             Health::HEALTHY,
             "the snapshot needed the passphrase, so it is back"
         );
+    }
+
+    /// Make the local safety net look `bytes` big without using the disk.
+    fn spool_of(dir: &std::path::Path, bytes: u64) {
+        std::fs::create_dir_all(dir.join("spool/data/0")).unwrap();
+        std::fs::File::create(dir.join("spool/data/0/1"))
+            .unwrap()
+            .set_len(bytes)
+            .unwrap();
+    }
+
+    #[test]
+    fn a_safety_net_over_its_limit_is_degraded_for_as_long_as_it_is_over() {
+        let dir = tempfile::tempdir().unwrap();
+        let shared = configured(dir.path());
+        shared.record_backup_success(JobKind::Backup);
+        shared.config.lock().unwrap().storage.offline.space_limit_gb = 1;
+        spool_of(dir.path(), 1_200 * 1024 * 1024);
+
+        // Found in the Stage 10 drill: a run with nothing to save used to
+        // clear this, a minute after it was set.
+        for _ in 0..2 {
+            let health = shared.health();
+            assert_eq!(health.state, HealthState::Degraded);
+            assert_eq!(health.reason, Some(Reason::LocalDiskFull));
+            update_health(
+                &shared,
+                JobKind::Offline,
+                &JobState::Done(Outcome::Completed),
+            );
+        }
+
+        shared.config.lock().unwrap().storage.offline.space_limit_gb = 5;
+        assert_eq!(
+            shared.health(),
+            Health::HEALTHY,
+            "raising the limit is the fix"
+        );
+    }
+
+    #[test]
+    fn away_from_the_destination_an_over_limit_safety_net_is_still_the_quiet_line() {
+        let dir = tempfile::tempdir().unwrap();
+        let shared = configured(dir.path());
+        shared.record_backup_success(JobKind::Backup);
+        shared.config.lock().unwrap().storage.offline.space_limit_gb = 1;
+        spool_of(dir.path(), 1_200 * 1024 * 1024);
+        *shared.destination_reachable.lock().unwrap() = false;
+        assert_eq!(shared.health().state, HealthState::ProtectedLocally);
+    }
+
+    #[test]
+    fn a_change_the_safety_net_held_back_is_cleared_by_reaching_the_destination() {
+        let dir = tempfile::tempdir().unwrap();
+        let shared = configured(dir.path());
+        *shared.spool_held.lock().unwrap() = true;
+        assert_eq!(shared.health().reason, Some(Reason::LocalDiskFull));
+        assert_eq!(shared.health().state, HealthState::Broken);
+
+        shared.record_backup_success(JobKind::Offline);
+        assert_eq!(
+            shared.health().state,
+            HealthState::Broken,
+            "a local snapshot of something else does not protect it"
+        );
+        shared.record_backup_success(JobKind::Backup);
+        assert_eq!(shared.health(), Health::HEALTHY);
     }
 
     #[test]

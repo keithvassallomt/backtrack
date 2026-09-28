@@ -207,6 +207,17 @@
     an unencrypted Borg repository would meet the same. Borg's listing now
     reports whether a repository is encrypted; for one that is not, the
     safety net is what the passphrase is tried against.
+  - **Two local-snapshot decisions were Keith's, after the drill.** A delta
+    bigger than the whole limit, arriving while the spool holds anything,
+    used to evict everything and then hold, so the next run took it into
+    the emptied spool and health flipped between BROKEN and
+    PROTECTED_LOCALLY every run. The spool now keeps what it holds and
+    stays BROKEN until the limit is raised or a backup reaches the
+    destination. "Over its limit" is now measured from the spool's size
+    rather than set by one run and cleared by the next quiet one; while the
+    destination is away it stays the quiet line, and once it is back an
+    over-limit spool is DEGRADED. This reverses the Stage 5 cap test that
+    asserted the eviction.
 
 - 2026-09-25 (Stage 9: Definition of Done): Keith walked the whole stage on a
   clean development home and it passed end to end.

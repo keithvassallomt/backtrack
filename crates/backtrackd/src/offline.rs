@@ -113,11 +113,17 @@ pub fn plan_cap(cap: u64, held: u64, incoming: u64, existing: &[LocalArchive]) -
     // If the spool is empty, take it anyway — once. Somebody who spent an
     // offline afternoon editing a video is exactly the person who needs the
     // local copy, and refusing to protect anything because the allowance is too
-    // small would be the wrong answer to give them. If the spool already holds
-    // that oversized archive, hold rather than grow without limit, and say so.
+    // small would be the wrong answer to give them.
+    //
+    // If the spool already holds something, keep it and take nothing new.
+    // Throwing it away would make room that is still not enough, lose the
+    // versions it holds for nothing, and leave an empty spool for the next run
+    // to fill, only for the one after to empty it again. Holding is the
+    // health model's "Local disk full" row, and stays so until the limit is
+    // raised or the destination comes back.
     CapPlan {
         proceed: existing.is_empty(),
-        evict,
+        evict: Vec::new(),
         degraded: true,
     }
 }
@@ -330,11 +336,20 @@ mod tests {
     #[test]
     fn once_that_oversized_archive_is_held_the_spool_stops_growing() {
         // The other half: having taken it once, the next tick must not keep
-        // piling on. Everything evictable is dropped, and it still does not fit.
+        // piling on, and must not throw away what it holds to make room that
+        // would still not be enough. Found in the Stage 10 drill, where doing
+        // so made health flip between broken and protected on every run.
         let plan = plan_cap(GB, 5 * GB, 5 * GB, &archives(1));
-        assert_eq!(plan.evict.len(), 1, "it drops what it can");
-        assert!(!plan.proceed, "and then holds rather than growing forever");
+        assert!(plan.evict.is_empty(), "nothing is dropped for nothing");
+        assert!(!plan.proceed, "and nothing new is taken");
         assert!(plan.degraded);
+    }
+
+    #[test]
+    fn small_snapshots_are_not_given_up_for_a_delta_that_could_never_fit() {
+        let plan = plan_cap(GB, 300 * 1024 * 1024, 5 * GB, &archives(3));
+        assert!(plan.evict.is_empty());
+        assert!(!plan.proceed);
     }
 
     #[test]

@@ -539,8 +539,6 @@ pub struct OfflineOutcome {
     pub files: usize,
     /// Local snapshots dropped to stay inside the cap.
     pub evicted: usize,
-    /// The spool is under strain and the user should be told.
-    pub degraded: bool,
     /// Something changed and was not archived, because it would not fit. The
     /// job still ends well — refusing to grow is the cap working — but nothing
     /// was protected, and that must not be counted as a backup.
@@ -664,7 +662,6 @@ async fn run_offline(
     {
         let mut outcome = outcome.lock().unwrap();
         outcome.evicted = cap.evict.len();
-        outcome.degraded = cap.degraded;
         outcome.held = !cap.proceed;
     }
     if cap.degraded {
