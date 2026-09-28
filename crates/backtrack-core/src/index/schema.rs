@@ -14,7 +14,7 @@ use super::{IndexError, Result};
 
 /// The schema version this build of the crate expects. Bump when appending a
 /// migration.
-pub const SCHEMA_VERSION: i64 = 2;
+pub const SCHEMA_VERSION: i64 = 3;
 
 /// Ordered list of migrations. Index `i` migrates the database *to* version
 /// `i + 1`. The runner applies only those beyond the current version.
@@ -73,6 +73,13 @@ const MIGRATIONS: &[&str] = &[
     -- carrying the load" — nothing has caught up yet, so nothing may be
     -- discarded. Epoch seconds, like every other time in this schema.
     ALTER TABLE archives ADD COLUMN expirable_at INTEGER;
+    "#,
+    // ── v3 ── finding the versions that ended inside a range of archives.
+    r#"
+    -- What a local snapshot holds that the next backup at the destination does
+    -- not is the versions that ended between the two. Without this, asking
+    -- that reads every version in the catalogue, once per local snapshot.
+    CREATE INDEX versions_last_seq ON versions(last_seq);
     "#,
 ];
 

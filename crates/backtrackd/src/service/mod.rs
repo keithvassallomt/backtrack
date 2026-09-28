@@ -3051,9 +3051,6 @@ pub async fn fan_out_signals(shared: Arc<Shared>, emitter: SignalEmitter<'static
                 };
             }
             JobUpdate::State { id, kind, state } => {
-                if let Some(outcome) = state.outcome_token() {
-                    let _ = Daemon1::job_finished(&emitter, id, kind.as_str(), outcome).await;
-                }
                 if state.is_terminal() {
                     shared.job_ended(id, kind, &state);
                     // Counted off this loop: the count takes the catalogue's
@@ -3074,6 +3071,14 @@ pub async fn fan_out_signals(shared: Arc<Shared>, emitter: SignalEmitter<'static
                     // declined to queue while busy can be reconsidered now
                     // rather than at the next tick.
                     shared.wake_scheduler();
+                }
+                // Announced once the catalogue says what the job did, local
+                // snapshots marked as caught up included: a window reloads
+                // its timeline when it hears this, and hearing it first left
+                // their badges saying the destination did not have them until
+                // the next backup.
+                if let Some(outcome) = state.outcome_token() {
+                    let _ = Daemon1::job_finished(&emitter, id, kind.as_str(), outcome).await;
                 }
                 if let Some(changed) = shared.reassess(SystemTime::now()) {
                     announce(&emitter, changed).await;

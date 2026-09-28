@@ -69,8 +69,15 @@ network returns ─┐
 
 ### UI rules
 
-- Snapshots taken offline appear in the timeline with a small **"on this
-  computer"** badge — they're real, browsable, restorable.
+- Snapshots taken offline appear in the timeline as real, browsable,
+  restorable snapshots. Until the destination has caught up, each carries a
+  red **"local backup only"** badge, whose tooltip says it exists only on
+  this computer. Once the destination has caught up, a snapshot that holds
+  versions the next backed-up snapshot does not carries a yellow **"local
+  snapshot"** badge, whose tooltip says the destination has its data, the
+  intermediate versions are only on this computer, and the date it is
+  removed; one holding nothing of its own has no badge. (Keith, 2026-09-28,
+  replacing the original "on this computer" badge.)
 - The restore engine reads from whichever repo holds the requested version;
   the user never chooses a repo.
 - Status copy while offline: *"Backup drive not reachable — protecting your

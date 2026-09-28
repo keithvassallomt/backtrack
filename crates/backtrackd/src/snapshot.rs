@@ -40,7 +40,7 @@
 //! and there would be no way out of it from inside the application.
 
 use std::path::{Path, PathBuf};
-use std::time::{Duration, SystemTime};
+use std::time::Duration;
 
 use tracing::{debug, warn};
 
@@ -51,9 +51,6 @@ const BTRFS_MAGIC: rustix::fs::FsWord = 0x9123_683e;
 /// to find a subvolume boundary without privileges or an ioctl — and this
 /// codebase denies `unsafe`, so an ioctl is not on the table.
 const SUBVOLUME_ROOT_INO: u64 = 256;
-
-/// How long hourly local snapshots are kept.
-pub const SNAPSHOT_RETENTION: Duration = Duration::from_secs(24 * 3_600);
 
 /// How long a snapshot may take to be created or removed before we give up and
 /// treat btrfs as unavailable. A wedged `btrfs` process must not hold a backup.
@@ -201,21 +198,6 @@ pub async fn probe(subvolume: &Path, snapshots_dir: &Path) -> bool {
     true
 }
 
-/// When a local snapshot should be removed.
-///
-/// The earlier of two rules, per the stage plan: hourly snapshots are kept for
-/// a day, and anything the destination has already caught up with expires on
-/// its own clock. In practice the day almost always wins, which is the intent —
-/// snapshots are cheap but not free, and yesterday's hourlies stop being
-/// interesting once the real repository holds them.
-pub fn expires_at(created: SystemTime, expirable_at: Option<SystemTime>) -> SystemTime {
-    let by_age = created + SNAPSHOT_RETENTION;
-    match expirable_at {
-        Some(marked) => by_age.min(marked),
-        None => by_age,
-    }
-}
-
 /// Run `btrfs` with the given arguments.
 async fn btrfs(args: &[&std::ffi::OsStr]) -> Result<(), String> {
     let mut cmd = tokio::process::Command::new("btrfs");
@@ -239,32 +221,6 @@ async fn btrfs(args: &[&std::ffi::OsStr]) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::time::UNIX_EPOCH;
-
-    fn at(secs: u64) -> SystemTime {
-        UNIX_EPOCH + Duration::from_secs(secs)
-    }
-
-    #[test]
-    fn hourly_snapshots_are_kept_for_a_day() {
-        assert_eq!(expires_at(at(1_000), None), at(1_000) + SNAPSHOT_RETENTION);
-    }
-
-    #[test]
-    fn an_expiry_the_destination_set_wins_when_it_comes_first() {
-        let created = at(1_000);
-        let soon = created + Duration::from_secs(3_600);
-        assert_eq!(expires_at(created, Some(soon)), soon);
-    }
-
-    #[test]
-    fn a_later_expiry_does_not_extend_the_daily_retention() {
-        // "whichever first": a 30-day marker must not keep yesterday's hourlies
-        // alive for a month.
-        let created = at(1_000);
-        let far = created + Duration::from_secs(30 * 24 * 3_600);
-        assert_eq!(expires_at(created, Some(far)), created + SNAPSHOT_RETENTION);
-    }
 
     #[test]
     fn a_non_btrfs_path_has_no_containing_subvolume() {

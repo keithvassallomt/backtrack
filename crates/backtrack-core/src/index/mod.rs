@@ -16,6 +16,7 @@
 //! - Reads open the database read-only and use [`reader`] — Stage 1 T3+.
 
 mod item;
+mod local;
 mod reader;
 mod schema;
 mod writer;
@@ -25,6 +26,7 @@ use std::path::Path;
 use rusqlite::Connection;
 
 pub use item::{parse_borg_mtime, ArchiveMeta, BorgItem, ItemParseError, Kind, Repo, ITEM_FORMAT};
+pub use local::{removed_at, EXPIRE_AFTER_CATCH_UP, SNAPSHOT_RETENTION};
 pub use reader::{
     ArchiveSummary, Direction, Entry, IndexReader, LiveEntry, SearchHit, VersionSpan,
 };

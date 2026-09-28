@@ -238,6 +238,8 @@ mod tests {
             ts: 1_781_438_400 + seq * 3600,
             repo: "primary".to_string(),
             catalogued: true,
+            caught_up: None,
+            holds_intermediate: false,
         }
     }
 

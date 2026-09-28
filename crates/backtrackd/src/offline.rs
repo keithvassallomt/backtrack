@@ -32,7 +32,7 @@
 //!   rather than quietly growing without limit.
 
 use std::path::{Path, PathBuf};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 /// One local snapshot, as the cap planner sees it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -217,41 +217,23 @@ pub async fn detect(sources: &[PathBuf], snapshots_dir: &Path) -> Mode {
     Mode::Spool
 }
 
-/// How long a locally-held snapshot is kept after the destination has caught
-/// up.
-///
-/// Not arbitrary: what these still hold once a real backup has succeeded is the
-/// *intermediate* versions from the offline window — the 10:00, 11:00 and 12:00
-/// edits of a file that changed several times while away. A month is long
-/// enough that somebody who realises on their return that they want the
-/// mid-afternoon version can still have it, and short enough that a laptop does
-/// not carry an offline week around forever.
-pub const EXPIRE_AFTER_CATCH_UP: Duration = Duration::from_secs(30 * 24 * 3_600);
-
 /// Whether a locally-held snapshot may be discarded at `now`.
 ///
-/// Two rules, and which applies depends on what kind of snapshot it is:
-///
-/// - **Nothing expires until the destination has caught up.** An unmarked
-///   archive is the only copy of the versions it holds, and discarding it would
-///   be losing data to save disk.
-/// - Once marked, a **spool** archive lives for [`EXPIRE_AFTER_CATCH_UP`],
-///   while a **filesystem snapshot** also has its own daily retention and goes
-///   at whichever comes first. Snapshots are near-free but they pin extents, so
-///   yesterday's hourlies stop earning their keep quickly.
+/// **Nothing expires until the destination has caught up.** An unmarked
+/// archive is the only copy of the versions it holds, and discarding it would
+/// be losing data to save disk. After that it goes when
+/// [`backtrack_core::index::removed_at`] says, which is also the date the
+/// window shows.
 pub fn expired(row: &backtrack_core::index::LocalArchiveRow, now: SystemTime) -> bool {
-    let Some(marked) = row.expirable_at else {
+    if row.expirable_at.is_none() {
         return false;
-    };
-    let marked = UNIX_EPOCH + Duration::from_secs(marked.max(0) as u64);
-    let due = marked + EXPIRE_AFTER_CATCH_UP;
-    let due = if row.repo == backtrack_core::index::Repo::FsSnapshot.as_str() {
-        let created = UNIX_EPOCH + Duration::from_secs(row.ts.max(0) as u64);
-        due.min(crate::snapshot::expires_at(created, None))
-    } else {
-        due
-    };
-    due <= now
+    }
+    let now = now
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    backtrack_core::index::removed_at(&row.repo, row.ts, row.expirable_at)
+        .is_some_and(|due| due <= now)
 }
 
 /// The archive name for a local snapshot taken at `now`.
@@ -285,6 +267,7 @@ pub fn next_local_name(now: SystemTime, taken: &[String]) -> (String, SystemTime
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Duration;
 
     const GB: u64 = 1024 * 1024 * 1024;
 

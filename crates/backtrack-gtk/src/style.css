@@ -26,9 +26,17 @@
     color: @accent_color;
 }
 
-.badge.local {
-    background-color: alpha(@success_color, 0.15);
-    color: @success_color;
+/* A backup the destination does not have yet is the one place a snapshot
+ * carries risk, so it is red. Once the destination has caught up, what is
+ * left here is only the in-between versions, and it is yellow. */
+.badge.local-only {
+    background-color: alpha(@error_color, 0.15);
+    color: @error_color;
+}
+
+.badge.local-snapshot {
+    background-color: alpha(@warning_color, 0.15);
+    color: @warning_color;
 }
 
 /* The breadcrumb sits in the header bar as one pill of flat buttons. */

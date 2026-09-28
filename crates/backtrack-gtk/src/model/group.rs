@@ -46,13 +46,74 @@ pub struct Row {
     pub ts: i64,
     /// What the row reads as, already shortened to suit its group.
     pub label: String,
-    /// Held on this computer rather than at the destination — the spool and
-    /// filesystem-snapshot archives from Stage 5.
-    pub local_only: bool,
+    /// Where the backup is kept, as far as the sidebar has anything to say
+    /// about it.
+    pub kept: Kept,
     /// Whether the archive's file list has been read. An uncatalogued archive
     /// cannot be browsed, so the sidebar says "cataloguing…" instead of
     /// offering an empty folder.
     pub catalogued: bool,
+}
+
+/// Where a backup is kept, as far as the sidebar has anything to say about it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Kept {
+    /// At the destination, or on this computer holding nothing the destination
+    /// lacks. Nothing to say.
+    Normally,
+    /// Only on this computer: taken while the destination was away, and the
+    /// destination has not caught up since.
+    LocalOnly,
+    /// On this computer, holding versions the destination never got, until
+    /// it is removed at `until`.
+    LocalSnapshot { until: i64 },
+}
+
+impl Kept {
+    fn of(archive: &ArchiveSummary) -> Kept {
+        if archive.repo == "primary" {
+            return Kept::Normally;
+        }
+        match (archive.caught_up, archive.removed_at()) {
+            (None, _) => Kept::LocalOnly,
+            (Some(_), Some(until)) if archive.holds_intermediate => Kept::LocalSnapshot { until },
+            _ => Kept::Normally,
+        }
+    }
+}
+
+/// A row's badge: its words, its style class, and what hovering it says.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Badge {
+    pub text: &'static str,
+    pub class: &'static str,
+    pub tooltip: String,
+}
+
+/// The badge for how a backup is kept, or none.
+pub fn badge(kept: Kept, tz: &glib::TimeZone) -> Option<Badge> {
+    match kept {
+        Kept::Normally => None,
+        Kept::LocalOnly => Some(Badge {
+            text: "local backup only",
+            class: "local-only",
+            tooltip: "Kept only on this computer. It was made while your backup destination \
+                      was away, and nothing else has a copy: if this computer is lost or its \
+                      disk fails, this backup goes with it. Backtrack backs up to the \
+                      destination as soon as it can reach it again."
+                .to_string(),
+        }),
+        Kept::LocalSnapshot { until } => Some(Badge {
+            text: "local snapshot",
+            class: "local-snapshot",
+            tooltip: format!(
+                "Your backup destination now has this snapshot's data. Some files here \
+                 changed again before it caught up, and those versions are kept only on \
+                 this computer, until this snapshot is removed on {}.",
+                format::at(until, tz, "%e %B").trim_start()
+            ),
+        }),
+    }
 }
 
 /// A band of the past and the backups in it, newest first.
@@ -90,7 +151,7 @@ pub fn sidebar(archives: &[ArchiveSummary], now: i64, tz: &glib::TimeZone) -> Ve
             seq: archive.seq,
             ts: archive.ts,
             label: label(bucket, archive.ts, crowded, tz),
-            local_only: archive.repo != "primary",
+            kept: Kept::of(archive),
             catalogued: archive.catalogued,
         };
 
@@ -177,6 +238,8 @@ mod tests {
             ts,
             repo: "primary".to_string(),
             catalogued: true,
+            caught_up: None,
+            holds_intermediate: false,
         }
     }
 
@@ -266,15 +329,87 @@ mod tests {
         assert_eq!(titles, ["Today", "Yesterday"]);
     }
 
+    fn local(seq: i64, repo: &str, caught_up: Option<i64>, holds: bool) -> ArchiveSummary {
+        ArchiveSummary {
+            repo: repo.to_string(),
+            caught_up,
+            holds_intermediate: holds,
+            ..archive(seq, NOW - seq * HOUR)
+        }
+    }
+
     #[test]
-    fn a_backup_held_on_this_computer_is_marked_as_such() {
-        let mut spool = archive(9, NOW);
-        spool.repo = "spool".to_string();
-        let mut snapshot = archive(8, NOW - HOUR);
-        snapshot.repo = "fs-snapshot".to_string();
-        let groups = sidebar(&[spool, snapshot, archive(7, NOW - 2 * HOUR)], NOW, &utc());
-        let local: Vec<_> = groups[0].rows.iter().map(|r| r.local_only).collect();
-        assert_eq!(local, [true, true, false]);
+    fn a_backup_is_badged_by_whether_the_destination_has_it() {
+        let caught_up = NOW - 3_600;
+        let groups = sidebar(
+            &[
+                local(1, "spool", None, false),
+                local(2, "fs-snapshot", None, false),
+                local(3, "spool", Some(caught_up), true),
+                local(4, "spool", Some(caught_up), false),
+                archive(5, NOW - 5 * HOUR),
+            ],
+            NOW,
+            &utc(),
+        );
+        let kept: Vec<Kept> = groups[0].rows.iter().map(|r| r.kept).collect();
+        assert_eq!(
+            kept,
+            [
+                Kept::LocalOnly,
+                Kept::LocalOnly,
+                Kept::LocalSnapshot {
+                    until: caught_up + 30 * DAY
+                },
+                Kept::Normally,
+                Kept::Normally,
+            ],
+            "a caught-up snapshot holding nothing of its own is not badged"
+        );
+    }
+
+    #[test]
+    fn before_the_catch_up_the_badge_is_red_and_says_what_is_at_stake() {
+        let shown = badge(Kept::LocalOnly, &utc()).unwrap();
+        assert_eq!(shown.text, "local backup only");
+        assert_eq!(shown.class, "local-only");
+        assert!(
+            shown.tooltip.contains("only on this computer"),
+            "{}",
+            shown.tooltip
+        );
+        assert!(
+            shown.tooltip.contains("if this computer is lost"),
+            "{}",
+            shown.tooltip
+        );
+    }
+
+    #[test]
+    fn after_the_catch_up_the_badge_is_yellow_and_says_until_when() {
+        // 2026-10-28 00:00 UTC.
+        let shown = badge(
+            Kept::LocalSnapshot {
+                until: 1_793_145_600,
+            },
+            &utc(),
+        )
+        .unwrap();
+        assert_eq!(shown.text, "local snapshot");
+        assert_eq!(shown.class, "local-snapshot");
+        assert!(
+            shown
+                .tooltip
+                .contains("destination now has this snapshot's data"),
+            "{}",
+            shown.tooltip
+        );
+        assert!(
+            shown.tooltip.ends_with("removed on 28 October."),
+            "{}",
+            shown.tooltip
+        );
+        assert_eq!(badge(Kept::Normally, &utc()), None);
     }
 
     #[test]

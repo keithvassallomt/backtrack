@@ -159,6 +159,8 @@ mod tests {
             ts,
             repo: "primary".to_string(),
             catalogued: true,
+            caught_up: None,
+            holds_intermediate: false,
         }
     }
 

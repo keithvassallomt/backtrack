@@ -878,12 +878,15 @@ async fn run_snapshot(plan: &SnapshotPlan, sink: &JobSink) -> Result<JobSummary,
             .await
             .map_err(joined)?
             .map_err(indexing)?;
-    let now = SystemTime::now();
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
     let expired: Vec<(i64, String)> = held
         .into_iter()
         .filter(|row| {
-            let created = UNIX_EPOCH + Duration::from_secs(row.ts.max(0) as u64);
-            crate::snapshot::expires_at(created, None) <= now
+            backtrack_core::index::removed_at(&row.repo, row.ts, row.expirable_at)
+                .is_some_and(|due| due <= now)
         })
         .map(|row| (row.seq, row.name))
         .collect();

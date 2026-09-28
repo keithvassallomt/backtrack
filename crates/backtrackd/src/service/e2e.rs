@@ -969,7 +969,7 @@ async fn local_snapshots_are_removed_once_their_time_is_up() {
     restore_the_destination(&shared);
 
     let long_ago =
-        SystemTime::now() - crate::offline::EXPIRE_AFTER_CATCH_UP - Duration::from_secs(1);
+        SystemTime::now() - backtrack_core::index::EXPIRE_AFTER_CATCH_UP - Duration::from_secs(1);
     let at = backtrack_core::state::to_epoch(Some(long_ago)).unwrap() as i64;
     let index = shared.index().unwrap();
     let marked = tokio::task::spawn_blocking(move || index.lock().unwrap().mark_expirable(at))

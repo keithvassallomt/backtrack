@@ -223,6 +223,11 @@ All notable changes to Backtrack are documented here. This project adheres to
 - A damaged catalogue no longer stops Backtrack starting. It is set aside and
   read again from your backups, and what has been read so far can be browsed
   in the meantime.
+- Snapshots kept on this computer now say whether your backup destination has
+  them. Until it catches up they are marked "local backup only", in red.
+  Afterwards, one that still holds versions of files the destination never
+  got is marked "local snapshot", in yellow, and says when it will be
+  removed; one holding nothing of its own is no longer marked at all.
 
 ### Fixed
 - A file could be shown as "deleted after this" while it still existed, in the

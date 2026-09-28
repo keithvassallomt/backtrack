@@ -296,13 +296,19 @@ fn factory() -> SignalListItemFactory {
                 label.remove_css_class("heading");
                 label.set_sensitive(snapshot.catalogued);
                 describe(&label, &snapshot);
+                for class in ["local-only", "local-snapshot"] {
+                    badge.remove_css_class(class);
+                }
+                badge.set_tooltip_text(None);
                 if !snapshot.catalogued {
                     badge.set_text("cataloguing…");
-                    badge.remove_css_class("local");
                     badge.set_visible(true);
-                } else if snapshot.local_only {
-                    badge.set_text("on this computer");
-                    badge.add_css_class("local");
+                } else if let Some(kept) =
+                    crate::model::group::badge(snapshot.kept, &glib::TimeZone::local())
+                {
+                    badge.set_text(kept.text);
+                    badge.add_css_class(kept.class);
+                    badge.set_tooltip_text(Some(&kept.tooltip));
                     badge.set_visible(true);
                 } else {
                     badge.set_visible(false);
@@ -319,10 +325,12 @@ fn factory() -> SignalListItemFactory {
 /// What a screen reader says for a row, which has to carry what the badge says
 /// as well as the time.
 fn describe(label: &Label, snapshot: &Row) {
-    let spoken = match (snapshot.catalogued, snapshot.local_only) {
+    use crate::model::group::Kept;
+    let spoken = match (snapshot.catalogued, snapshot.kept) {
         (false, _) => format!("{}, still being catalogued", snapshot.label),
-        (true, true) => format!("{}, kept on this computer", snapshot.label),
-        (true, false) => snapshot.label.clone(),
+        (true, Kept::LocalOnly) => format!("{}, local backup only", snapshot.label),
+        (true, Kept::LocalSnapshot { .. }) => format!("{}, local snapshot", snapshot.label),
+        (true, Kept::Normally) => snapshot.label.clone(),
     };
     label.update_property(&[gtk4::accessible::Property::Label(&spoken)]);
 }

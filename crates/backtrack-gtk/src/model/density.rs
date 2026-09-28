@@ -172,6 +172,8 @@ mod tests {
             ts: date_to_day(year, month, day) * DAY + hour * 3600,
             repo: "primary".to_string(),
             catalogued: true,
+            caught_up: None,
+            holds_intermediate: false,
         }
     }
 

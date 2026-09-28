@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 
 use rusqlite::{params, Connection, OpenFlags, OptionalExtension};
 
-use super::item::Kind;
+use super::item::{Kind, Repo};
 use super::schema::{self, SCHEMA_VERSION};
 use super::{IndexError, Result};
 
@@ -81,7 +81,33 @@ pub struct ArchiveSummary {
     /// exists in the repository but is not catalogued cannot be browsed, and the
     /// sidebar has to say so ("cataloguing…") rather than showing it as empty.
     pub catalogued: bool,
+    /// For a snapshot held on this computer: when the destination caught up
+    /// with it. `None` while it is still the only copy of what it holds, and
+    /// for a backup at the destination.
+    pub caught_up: Option<i64>,
+    /// For a local snapshot the destination has caught up with: whether it
+    /// holds a file version the next backup at the destination does not, one
+    /// changed again or deleted before that backup ran. What still makes it
+    /// worth having, and worth saying so.
+    pub holds_intermediate: bool,
 }
+
+impl ArchiveSummary {
+    /// When this snapshot is removed from this computer, if it is going to be.
+    pub fn removed_at(&self) -> Option<i64> {
+        super::removed_at(&self.repo, self.ts, self.caught_up)
+    }
+}
+
+/// Whether any file version valid at `?1` ended before the backup `?2`.
+///
+/// A version valid at the snapshot and not at the later backup is exactly one
+/// that ended in between, and `versions_last_seq` makes finding those a range
+/// lookup over what changed in that gap rather than a read of the whole table.
+/// Directories are left out: a folder's modification time moves whenever
+/// something is added to it, which is not data a person could lose.
+const HOLDS_INTERMEDIATE: &str = "SELECT EXISTS(SELECT 1 FROM versions
+     WHERE last_seq >= ?1 AND last_seq < ?2 AND first_seq <= ?1 AND kind <> 'dir')";
 
 /// Which way [`IndexReader::next_change`] steps.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -285,7 +311,8 @@ impl IndexReader {
     /// Every archive, newest first, for the snapshot sidebar.
     pub fn archives_overview(&self) -> Result<Vec<ArchiveSummary>> {
         let mut stmt = self.conn.prepare_cached(
-            "SELECT seq, borg_id, name, ts, repo, status FROM archives ORDER BY seq DESC",
+            "SELECT seq, borg_id, name, ts, repo, status, expirable_at
+             FROM archives ORDER BY seq DESC",
         )?;
         let rows = stmt.query_map([], |r| {
             Ok(ArchiveSummary {
@@ -295,9 +322,36 @@ impl IndexReader {
                 ts: r.get(3)?,
                 repo: r.get(4)?,
                 catalogued: r.get::<_, Option<String>>(5)?.is_none(),
+                caught_up: r.get(6)?,
+                holds_intermediate: false,
             })
         })?;
-        Ok(rows.collect::<std::result::Result<_, _>>()?)
+        let mut archives: Vec<ArchiveSummary> = rows.collect::<std::result::Result<_, _>>()?;
+        for archive in archives.iter_mut() {
+            if archive.caught_up.is_some() && archive.repo != Repo::Primary.as_str() {
+                archive.holds_intermediate = self.holds_intermediate(archive.seq)?;
+            }
+        }
+        Ok(archives)
+    }
+
+    /// Whether the local snapshot `seq` holds a file version the next
+    /// catalogued backup at the destination does not. With no such backup,
+    /// nothing at the destination covers it, and it does.
+    fn holds_intermediate(&self, seq: i64) -> Result<bool> {
+        let next: Option<i64> = self.conn.query_row(
+            "SELECT MIN(seq) FROM archives
+             WHERE seq > ?1 AND repo = 'primary' AND status IS NULL",
+            [seq],
+            |r| r.get(0),
+        )?;
+        let Some(next) = next else {
+            return Ok(true);
+        };
+        Ok(self
+            .conn
+            .prepare_cached(HOLDS_INTERMEDIATE)?
+            .query_row([seq, next], |r| r.get(0))?)
     }
 
     /// The newest archive whose file list has been read, and which can
@@ -551,7 +605,7 @@ impl IndexReader {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::index::{ArchiveMeta, BorgItem, IndexWriter, Repo};
+    use crate::index::{ArchiveMeta, BorgItem, IndexWriter};
     use std::time::Instant;
 
     fn item(path: &str, kind: Kind, size: i64) -> BorgItem {
@@ -777,6 +831,107 @@ mod tests {
         assert!(
             all.iter().all(|a| a.catalogued),
             "an ingested archive is browsable"
+        );
+    }
+
+    /// A catalogue with an offline window: a backup, local snapshots while
+    /// the destination was away, and the backup that caught up.
+    fn offline_window(later: Vec<BorgItem>) -> (tempfile::TempDir, IndexReader) {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("index.db");
+        {
+            let mut w = IndexWriter::open(&path).unwrap();
+            w.ingest_archive(
+                &meta("a1", 1_000),
+                Repo::Primary,
+                vec![dir("home"), file("home/report", 1), file("home/notes", 1)].into_iter(),
+            )
+            .unwrap();
+            // Away: the report is edited, and a local snapshot holds the edit.
+            let s2 = w.append_archive(&meta("s2", 2_000), Repo::Spool).unwrap();
+            w.ingest_delta(s2, vec![Ok(file("home/report", 2))].into_iter())
+                .unwrap();
+            w.ingest_archive(&meta("a3", 3_000), Repo::Primary, later.into_iter())
+                .unwrap();
+            w.mark_expirable(3_100).unwrap();
+        }
+        (tmp, IndexReader::open(&path).unwrap())
+    }
+
+    fn spool(reader: &IndexReader) -> ArchiveSummary {
+        reader
+            .archives_overview()
+            .unwrap()
+            .into_iter()
+            .find(|a| a.repo == "spool")
+            .unwrap()
+    }
+
+    #[test]
+    fn a_local_snapshot_whose_edit_changed_again_before_the_catch_up_holds_it_alone() {
+        let (_t, r) = offline_window(vec![
+            dir("home"),
+            file("home/report", 3),
+            file("home/notes", 1),
+        ]);
+        let s2 = spool(&r);
+        assert_eq!(s2.caught_up, Some(3_100));
+        assert!(s2.holds_intermediate, "report v2 is on this computer alone");
+        assert_eq!(s2.removed_at(), Some(3_100 + 30 * 86_400));
+    }
+
+    #[test]
+    fn a_local_snapshot_the_catch_up_repeated_holds_nothing_of_its_own() {
+        // The report still reads v2 at the catch-up, and the folder's time has
+        // moved because something was added to it, which is not data.
+        let mut home = dir("home");
+        home.mtime = 2_900;
+        let (_t, r) = offline_window(vec![
+            home,
+            file("home/report", 2),
+            file("home/notes", 1),
+            file("home/new", 1),
+        ]);
+        let s2 = spool(&r);
+        assert_eq!(s2.caught_up, Some(3_100));
+        assert!(!s2.holds_intermediate);
+    }
+
+    #[test]
+    fn a_local_snapshot_the_destination_has_not_caught_up_with_says_so() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("index.db");
+        {
+            let mut w = IndexWriter::open(&path).unwrap();
+            w.ingest_archive(
+                &meta("a1", 1_000),
+                Repo::Primary,
+                vec![file("x", 1)].into_iter(),
+            )
+            .unwrap();
+            let s2 = w.append_archive(&meta("s2", 2_000), Repo::Spool).unwrap();
+            w.ingest_delta(s2, vec![Ok(file("x", 2))].into_iter())
+                .unwrap();
+        }
+        let s2 = spool(&IndexReader::open(&path).unwrap());
+        assert_eq!(s2.caught_up, None);
+        assert_eq!(s2.removed_at(), None, "the only copy is never removed");
+    }
+
+    #[test]
+    fn what_a_local_snapshot_holds_alone_is_found_through_the_index() {
+        let (_t, r) = scripted();
+        let plan: Vec<String> = r
+            .conn
+            .prepare(&format!("EXPLAIN QUERY PLAN {HOLDS_INTERMEDIATE}"))
+            .unwrap()
+            .query_map([2, 4], |row| row.get::<_, String>(3))
+            .unwrap()
+            .map(|detail| detail.unwrap())
+            .collect();
+        assert!(
+            plan.iter().any(|step| step.contains("versions_last_seq")),
+            "a scan of every version, once per local snapshot, on every reload: {plan:?}"
         );
     }
 

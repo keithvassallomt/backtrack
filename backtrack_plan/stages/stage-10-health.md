@@ -71,6 +71,21 @@ transitions), last error per subsystem, escalation timer state. Still zero
 secrets (grep test stays).
 **Accept:** bundle from a BROKEN state names the failing catalogue row.
 
+### S10-T7 — Local snapshot badges
+Added after the Definition of Done, at Keith's direction: "on this computer"
+did not say what matters about a local snapshot. Before the destination has
+caught up, the timeline badge reads "local backup only", in red, and its
+tooltip says the snapshot exists only on this computer. Once the destination
+has caught up, the badge reads "local snapshot", in yellow, and its tooltip
+says the destination now has the snapshot's data, that the intermediate
+versions here are only on this computer, and the date the snapshot is
+removed. The yellow badge is shown only when the snapshot holds a file
+version the next backed-up snapshot does not; otherwise there is no badge.
+The removal date comes from the same rule the daemon removes snapshots by.
+**Accept:** unit tests cover each phase and the no-difference case against a
+real catalogue, including a catalogue query that stays an index lookup; the
+badges and tooltips are checked in the window.
+
 ## Definition of Done
 Kill-switch drill: with the app running, (1) delete keyring entry, (2) make
 destination unwritable, (3) fill spool quota — each produces the documented state,
