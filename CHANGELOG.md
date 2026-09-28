@@ -174,6 +174,30 @@ All notable changes to Backtrack are documented here. This project adheres to
   up. Only what you change is changed. Moving to a new destination asks first,
   starts the new one fresh, and leaves the backups you already have where they
   are, ready to open again with Import.
+- Backtrack now tells you when your backups need you, and only then. A yellow
+  banner appears after a day with no successful backup, a red one when backups
+  have stopped until something is done, and each says what is wrong and has a
+  Fix… button that starts putting it right. Being away from your backup drive
+  is not a warning: the window says so quietly while your changes are kept on
+  this computer.
+- Notifications for the same problems, following your choice in Preferences:
+  only when attention is needed (the default), after every backup as well, or
+  never. A backup that fails once and succeeds an hour later is never
+  announced. A day without a backup is announced once, again at three days,
+  then weekly; backups that have stopped are announced at once, then at most
+  once a day. Clicking a notification opens its fix, and a notification about
+  a problem that has since been fixed is taken down.
+- A fix for each problem Backtrack can name: entering the passphrase again, or
+  putting back your saved recovery key when the backups' key has changed;
+  signing in to a network share again; making room on a full backup drive;
+  seeing where Backtrack's space on this computer has gone and giving some of
+  it back; checking, repairing and, if nothing else works, starting afresh
+  from damaged backups, which are always kept rather than deleted; and
+  installing the backup engine if it is missing.
+- Backtrack checks your backups for damage once a month in the background, and
+  sooner if backups keep failing for no known reason.
+- `backtrack doctor` now includes how the backups' health has changed, the last
+  error from each part of Backtrack, and which notifications have gone out.
 - Project bootstrap: Cargo workspace (core library plus daemon, GTK app, and CLI
   binaries), structured logging with JSONL rotation, developer task runner,
   versioning policy, and continuous integration.
@@ -190,6 +214,15 @@ All notable changes to Backtrack are documented here. This project adheres to
   is running, and is not stored in the system keyring.
 - The timeline now updates as backups finish and as imported history is read
   in, rather than showing what was there when the window was opened.
+- A backup destination that is there but will not accept backups, such as a
+  drive that has become read-only, now stops backups with a banner and a
+  notification saying so. It was treated as unreachable, and covered quietly
+  by the protection on this computer.
+- A backup that cannot sign in to an SSH server is now reported as a sign-in
+  problem rather than as the server being unreachable.
+- A damaged catalogue no longer stops Backtrack starting. It is set aside and
+  read again from your backups, and what has been read so far can be browsed
+  in the meantime.
 
 ### Fixed
 - A file could be shown as "deleted after this" while it still existed, in the
@@ -209,6 +242,14 @@ All notable changes to Backtrack are documented here. This project adheres to
 - A file whose name contains an ampersand no longer shows as a blank line in
   Recently Replaced Files, the restore summary and its review list, the
   conflict dialog, or the messages that say what was restored.
+- Verify Repository Health reported damaged backups as healthy.
+- When the storage limit for protection on this computer was too small to keep
+  your latest changes, Backtrack still counted them as protected. It now says
+  they are not, and how to make room.
+- A daily schedule was reported as not backed up recently in the hours before
+  each daily backup was due.
+- Backups imported from another computer no longer make a new computer look
+  overdue before its own first backup has run.
 
 ## [0.1.0] - TBD
 

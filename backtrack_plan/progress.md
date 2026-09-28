@@ -137,6 +137,69 @@
 
 (append dated entries here; never delete)
 
+- 2026-09-28 (Stage 10: health): what the stage decided, and what it found.
+  The kill-switch drill and the comparison with mockup 23 are Keith's and
+  follow; until then S10-T3 stays in progress.
+  - **Four decisions were Keith's.** Notifications come from the daemon
+    through org.freedesktop.Notifications, not GNotification: the window is
+    usually closed when something goes wrong, and only the window is a
+    GApplication. A click runs `backtrack-gtk --fix <reason>` in a systemd
+    scope of its own, so restarting the daemon cannot close the window it
+    opened; the notification portal under Flatpak is left for S13-T3. A
+    destination that is there but refuses writes is the "can't sign in" row
+    rather than an unreachable one, and its banner keeps the catalogue's
+    words with the drive's or server's name in them. The recovery-key link
+    puts the saved key back and asks for the passphrase that went with it,
+    and says in so many words that a key cannot recover a forgotten
+    passphrase.
+  - **Two gaps in health.md's table were closed rather than guessed.** At
+    risk means no protection for the longer of a day and two scheduled
+    periods, so a daily schedule is not at risk every day before its backup.
+    The clock starts no earlier than when this computer began backing up to
+    its destination (`protected_since`), so a computer that has never
+    managed a backup is not exempt, and imported history from another
+    machine does not make a new one overdue.
+  - **A damaged repository was reported healthy.** `borg check` exits 1, in
+    Borg's warning band, when it finds damage, even with modern exit codes,
+    and every warning was being read as success. Found by corrupting a
+    segment by hand before relying on the check; a check now ends in
+    RepoCorrupt whenever it finds anything.
+  - **A spool that held back a snapshot was counted as protection.** The
+    offline job ends well when the storage limit stops it growing, and its
+    success reset the last-backup clock with nothing kept. It no longer
+    counts, and it is the "Local disk full" row until a snapshot fits.
+  - **What has been said is persisted.** The escalation record, the last
+    fifty transitions and the last error of each part of the daemon live in
+    state.toml, so a restart repeats no notice and a state's start survives
+    it. The rules are a pure function over a mock clock; a failure at 14:00
+    followed by a success at 15:00 is tested and never announced.
+  - **BROKEN clears on proof, not on hope.** A backup to the destination
+    clears any row. A local snapshot clears only the rows it went through
+    (passphrase, Borg, local disk), a passphrase tried against the
+    repository clears the passphrase rows, a clean check clears repair, and
+    Borg being found again clears the engine row.
+  - **The fixes are tested where the failure can be induced, against real
+    Borg**: wrong and missing passphrases, a key changed elsewhere, a
+    read-only destination, a corrupted repository taken through check,
+    repair and a fresh start with every file of the old one byte-identical
+    afterwards, and a genuinely full destination: a 4 MB tmpfs in an
+    unprivileged user namespace, which the test re-runs itself inside. That
+    one skips where namespaces are not allowed, which may include CI.
+  - **A damaged catalogue no longer stops the daemon.** It is put aside as
+    `index.db.damaged` for a bug report and rebuilt from the repository,
+    newest first, while health says DEGRADED.
+  - **Known limits.** SSH sign-in has no password prompt: Backtrack runs ssh
+    in batch mode and signs in with the computer's key, so that fix explains
+    and retries. AdwBanner centres its title and has no icon slot, so
+    mockup 23's left-aligned warning icon is not reproduced. A rebuilt
+    catalogue forgets the local snapshots' rows; their data stays in the
+    spool but is not browsable. The monthly check runs at normal priority,
+    only while the daemon is idle and the destination is there.
+  - Suite: **761 unit tests** and the real-Borg integration set, `just
+    check` green. A headless run forced every state through the development
+    interface and opened every fix by `--fix` with no panic and no GTK
+    critical.
+
 - 2026-09-25 (Stage 9: Definition of Done): Keith walked the whole stage on a
   clean development home and it passed end to end.
   - **Zero to protected, under three minutes.** Welcome, a chosen folder
