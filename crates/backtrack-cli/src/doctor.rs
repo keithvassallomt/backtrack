@@ -18,6 +18,8 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
+use backtrack_core::dbus::{HealthReport, Reason};
+
 use crate::CliError;
 
 /// Text that looks like it is assigning a secret. Matched case-insensitively
@@ -45,7 +47,12 @@ pub const REDACTED: &str = "[redacted]";
 const LOG_LINES: usize = 200;
 
 /// Build the bundle, returning the path written.
-pub fn collect(status_json: &str, config_toml: &str, now: SystemTime) -> Result<PathBuf, CliError> {
+pub fn collect(
+    status_json: &str,
+    config_toml: &str,
+    health: &Result<HealthReport, String>,
+    now: SystemTime,
+) -> Result<PathBuf, CliError> {
     let dir = std::env::temp_dir();
     let stamp = crate::render::format_time(now)
         .replace([' ', ':'], "-")
@@ -65,7 +72,7 @@ pub fn collect(status_json: &str, config_toml: &str, now: SystemTime) -> Result<
     let encoder = flate2::write::GzEncoder::new(file, flate2::Compression::default());
     let mut tar = tar::Builder::new(encoder);
 
-    for (name, contents) in sections(status_json, config_toml) {
+    for (name, contents) in sections(status_json, config_toml, health) {
         append(&mut tar, &name, &contents)?;
     }
 
@@ -82,15 +89,99 @@ pub fn collect(status_json: &str, config_toml: &str, now: SystemTime) -> Result<
 ///
 /// Split from the writing so the contents can be tested without unpacking a
 /// tarball — and so the redaction test sees exactly what would be shipped.
-pub fn sections(status_json: &str, config_toml: &str) -> Vec<(String, String)> {
+pub fn sections(
+    status_json: &str,
+    config_toml: &str,
+    health: &Result<HealthReport, String>,
+) -> Vec<(String, String)> {
     vec![
         ("versions.txt".to_string(), versions()),
         ("status.json".to_string(), redact(status_json)),
+        ("health.txt".to_string(), redact(&health_text(health))),
         ("config.toml".to_string(), redact(config_toml)),
         ("index.txt".to_string(), redact(&index_stats())),
         ("environment.txt".to_string(), redact(&environment())),
         ("log-tail.jsonl".to_string(), redact(&log_tail())),
     ]
+}
+
+/// How health got to where it is: the state and the catalogue row it names,
+/// the recent transitions, the last failure of each part of the daemon, and
+/// what the person has been told. The first thing to read in a report about a
+/// banner.
+fn health_text(health: &Result<HealthReport, String>) -> String {
+    let report = match health {
+        Ok(report) => report,
+        Err(e) => return format!("health unavailable: {e}\n"),
+    };
+    let mut out = format!("state {} since {}\n", report.state, time(report.since));
+    if let Some(reason) = Reason::parse(&report.reason) {
+        out.push_str(&format!("reason {}\n", reason.as_str()));
+        if let Some(row) = catalogue_row(reason) {
+            out.push_str(&format!("catalogue row {row}\n"));
+        }
+        if let Some(failure) = reason.failure() {
+            out.push_str(&format!("banner {}\n", failure.copy("<destination>")));
+        }
+    }
+
+    out.push_str("\ntransitions, oldest first\n");
+    for (at, state, reason) in &report.history {
+        out.push_str(&format!("  {}  {state} {reason}\n", time(*at)));
+    }
+
+    out.push_str("\nlast error of each part\n");
+    if report.errors.is_empty() {
+        out.push_str("  none\n");
+    }
+    for (subsystem, at, reason, message) in &report.errors {
+        out.push_str(&format!(
+            "  {subsystem}  {}  {reason}  {message}\n",
+            time(*at)
+        ));
+    }
+
+    out.push_str("\nescalation\n");
+    out.push_str(&format!(
+        "  at-risk notices for the current stretch: {} (stretch from {}, last {})\n",
+        report.at_risk_notices,
+        time(report.at_risk_since),
+        time(report.at_risk_notified)
+    ));
+    if report.broken_notified_reason.is_empty() {
+        out.push_str("  no broken notice has gone out\n");
+    } else {
+        out.push_str(&format!(
+            "  last broken notice: {} at {}\n",
+            report.broken_notified_reason,
+            time(report.broken_notified)
+        ));
+    }
+    out
+}
+
+/// The row of health.md's failure catalogue a reason is, by the name the
+/// document gives it.
+fn catalogue_row(reason: Reason) -> Option<&'static str> {
+    Some(match reason {
+        Reason::PassphraseMissing => "Passphrase missing (keyring reset/locked)",
+        Reason::PassphraseWrong => "Wrong passphrase (repo key changed)",
+        Reason::AuthFailed => "Destination credentials expired (SMB/SSH auth)",
+        Reason::DestinationFull => "Destination full",
+        Reason::LocalDiskFull => "Local disk full (spool/staging)",
+        Reason::RepoCorrupt => "Repo corruption",
+        Reason::BorgMissing => "Borg missing / wrong version",
+        Reason::CatalogueRebuilding => "Index corruption",
+        Reason::NotYetBrowsable => "Snapshot taken but indexing failed",
+        Reason::NoRecentBackup | Reason::DestinationAway | Reason::Paused => return None,
+    })
+}
+
+/// Epoch seconds as a UTC time, or "never".
+fn time(seconds: u64) -> String {
+    crate::render::from_epoch(seconds)
+        .map(crate::render::format_time)
+        .unwrap_or_else(|| "never".to_string())
 }
 
 /// Versions of everything that could be at fault.
@@ -295,14 +386,78 @@ mod tests {
         }
     }
 
+    /// A health report from a machine whose keyring lost the passphrase.
+    fn broken() -> HealthReport {
+        HealthReport {
+            state: "BROKEN".into(),
+            reason: "passphrase-missing".into(),
+            since: 1_700_000_600,
+            history: vec![
+                (1_700_000_000, "HEALTHY".into(), String::new()),
+                (1_700_000_600, "BROKEN".into(), "passphrase-missing".into()),
+            ],
+            errors: vec![(
+                "backup".into(),
+                1_700_000_600,
+                "passphrase-missing".into(),
+                "no passphrase is stored for this repository".into(),
+            )],
+            at_risk_notices: 0,
+            at_risk_notified: 0,
+            at_risk_since: 0,
+            broken_notified_reason: "passphrase-missing".into(),
+            broken_notified: 1_700_000_600,
+        }
+    }
+
+    #[test]
+    fn a_bundle_from_a_broken_machine_names_the_failing_catalogue_row() {
+        let sections = sections("{}", "", &Ok(broken()));
+        let (_, health) = sections
+            .iter()
+            .find(|(name, _)| name == "health.txt")
+            .expect("the bundle has a health section");
+        for expected in [
+            "state BROKEN",
+            "reason passphrase-missing",
+            "catalogue row Passphrase missing (keyring reset/locked)",
+            "banner Backtrack needs your backup passphrase again.",
+            "BROKEN passphrase-missing",
+            "backup",
+            "no passphrase is stored for this repository",
+            "last broken notice: passphrase-missing",
+        ] {
+            assert!(health.contains(expected), "missing {expected:?}:\n{health}");
+        }
+    }
+
+    #[test]
+    fn a_daemon_that_would_not_say_is_part_of_the_report() {
+        let text = health_text(&Err("no daemon".into()));
+        assert_eq!(text, "health unavailable: no daemon\n");
+    }
+
+    #[test]
+    fn every_catalogue_failure_is_named_by_its_row() {
+        for failure in backtrack_core::engine::HealthFailure::ALL {
+            assert!(
+                catalogue_row(Reason::from(*failure)).is_some(),
+                "{failure:?}"
+            );
+        }
+    }
+
     #[test]
     fn the_whole_bundle_is_scanned_not_just_the_config() {
         // Every section goes through redact(), so a secret in any of them is
         // caught. Proved here through the real assembly path.
         let secret = "hunter2-correct-horse";
+        let mut report = broken();
+        report.errors[0].3 = format!("borg said passphrase={secret}");
         let sections = sections(
             &format!("{{\"token\": \"{secret}\"}}"),
             &format!("passphrase = \"{secret}\"\n[storage]\nrepository = \"/mnt/b\""),
+            &Ok(report),
         );
         for (name, contents) in &sections {
             assert!(
@@ -357,11 +512,12 @@ on_battery = false";
 
     #[test]
     fn the_bundle_contains_what_a_bug_report_needs() {
-        let sections = sections("{}", "");
+        let sections = sections("{}", "", &Ok(broken()));
         let names: Vec<&str> = sections.iter().map(|(n, _)| n.as_str()).collect();
         for expected in [
             "versions.txt",
             "status.json",
+            "health.txt",
             "config.toml",
             "index.txt",
             "environment.txt",
@@ -381,8 +537,13 @@ on_battery = false";
 
     #[test]
     fn a_bundle_is_written_and_is_a_valid_archive() {
-        let path = collect("{\"state\":\"HEALTHY\"}", "frequency = \"hourly\"", now())
-            .expect("bundle written");
+        let path = collect(
+            "{\"state\":\"HEALTHY\"}",
+            "frequency = \"hourly\"",
+            &Ok(broken()),
+            now(),
+        )
+        .expect("bundle written");
         assert!(path.exists(), "{} was not created", path.display());
         assert!(path.to_string_lossy().ends_with(".tar.gz"));
 
@@ -409,7 +570,13 @@ on_battery = false";
         //
         // A distinct timestamp from the test above: same second plus same
         // process means the same filename, and the two would clobber each other.
-        let path = collect("{}", "", now() + Duration::from_secs(1)).expect("bundle written");
+        let path = collect(
+            "{}",
+            "",
+            &Err("no daemon".into()),
+            now() + Duration::from_secs(1),
+        )
+        .expect("bundle written");
         let file = std::fs::File::open(&path).unwrap();
         let decoder = flate2::read::GzDecoder::new(file);
         let mut archive = tar::Archive::new(decoder);

@@ -54,8 +54,15 @@ impl HealthState {
         }
     }
 
-    /// Every state, for exhaustiveness tests.
-    #[cfg(test)]
+    /// Read the wire form back.
+    pub fn parse(name: &str) -> Option<HealthState> {
+        HealthState::ALL
+            .iter()
+            .copied()
+            .find(|state| state.as_str() == name)
+    }
+
+    /// Every state.
     pub const ALL: &'static [HealthState] = &[
         HealthState::Healthy,
         HealthState::ProtectedLocally,

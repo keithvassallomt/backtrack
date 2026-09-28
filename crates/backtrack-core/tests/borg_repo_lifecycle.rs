@@ -200,3 +200,132 @@ async fn the_passphrase_changes_and_the_repository_describes_itself() {
     secrets.set("test", PASS).await.unwrap();
     assert!(eng.repo_info().await.is_ok());
 }
+
+/// Run a job to its end and return how it finished.
+async fn outcome(stream: backtrack_core::engine::JobStream) -> Result<(), EngineError> {
+    use futures::StreamExt;
+    let mut stream = stream;
+    while let Some(event) = stream.next().await {
+        if let backtrack_core::engine::JobEvent::Finished(result) = event {
+            return result.map(|_| ());
+        }
+    }
+    panic!("the job ended without saying how");
+}
+
+/// A repository holding one backup, and an engine over it.
+async fn backed_up(dir: &std::path::Path) -> (String, BorgCli) {
+    let repo = dir.join("repo").to_str().unwrap().to_string();
+    let src = dir.join("src");
+    std::fs::create_dir_all(&src).unwrap();
+    // Incompressible, so the archive has a data segment worth damaging.
+    let block: Vec<u8> = (0..2_000_000u32)
+        .map(|n| (n.wrapping_mul(2_654_435_761) >> 13) as u8)
+        .collect();
+    std::fs::write(src.join("a.bin"), block).unwrap();
+    let engine = BorgCli::new(repo.clone(), "test".into(), store(dir).await)
+        .await
+        .unwrap();
+    engine
+        .init_repo(&RepoSpec {
+            path: repo.clone(),
+            encryption: Encryption::RepokeyBlake2,
+        })
+        .await
+        .unwrap();
+    let spec = backtrack_core::engine::CreateSpec {
+        archive_name: "one".into(),
+        created_at: std::time::SystemTime::now(),
+        sources: vec![src],
+        excludes: Vec::new(),
+        paths: Vec::new(),
+        compression: backtrack_core::engine::Compression::None,
+        upload_limit_kib: None,
+        one_file_system: true,
+    };
+    outcome(engine.create(&spec).await.unwrap()).await.unwrap();
+    (repo, engine)
+}
+
+/// Flip bytes in the middle of the largest data segment.
+fn damage(repo: &str) {
+    let segments = std::path::Path::new(repo).join("data/0");
+    let largest = std::fs::read_dir(&segments)
+        .unwrap()
+        .flatten()
+        .max_by_key(|entry| entry.metadata().map(|m| m.len()).unwrap_or(0))
+        .unwrap()
+        .path();
+    let mut bytes = std::fs::read(&largest).unwrap();
+    let middle = bytes.len() / 2;
+    for byte in &mut bytes[middle..middle + 64] {
+        *byte ^= 0xff;
+    }
+    std::fs::write(&largest, bytes).unwrap();
+}
+
+/// S10-T5: Borg reports damage by exiting in its *warning* band, and a check
+/// that read that as success would call a corrupt repository healthy.
+#[tokio::test]
+async fn a_damaged_repository_fails_its_check_and_repair_brings_it_back() {
+    use backtrack_core::engine::CheckLevel;
+
+    let dir = tempfile::tempdir().unwrap();
+    let (repo, engine) = backed_up(dir.path()).await;
+    assert_eq!(
+        outcome(engine.check(CheckLevel::Full).await.unwrap()).await,
+        Ok(()),
+        "an undamaged repository passes"
+    );
+
+    damage(&repo);
+    assert_eq!(
+        outcome(engine.check(CheckLevel::Full).await.unwrap()).await,
+        Err(EngineError::RepoCorrupt)
+    );
+
+    outcome(engine.repair().await.unwrap())
+        .await
+        .expect("repair runs without a terminal to answer it");
+    assert_eq!(
+        outcome(engine.check(CheckLevel::Full).await.unwrap()).await,
+        Ok(()),
+        "repaired, the repository passes again"
+    );
+}
+
+/// S10-T4: "Lost the passphrase? Use your recovery key…" puts the saved key
+/// back, after which the passphrase it was saved with opens the repository.
+#[tokio::test]
+async fn a_saved_key_restores_the_passphrase_it_was_saved_with() {
+    let dir = tempfile::tempdir().unwrap();
+    let (_, engine) = backed_up(dir.path()).await;
+    let saved = engine.key_export().await.unwrap();
+    engine
+        .change_passphrase(PASS, "changed-elsewhere")
+        .await
+        .unwrap();
+    assert_eq!(
+        engine.repo_info().await.unwrap_err(),
+        EngineError::PassphraseWrong,
+        "the key has changed under the stored passphrase"
+    );
+
+    engine.key_import(&saved).await.unwrap();
+    engine
+        .repo_info()
+        .await
+        .expect("the saved key opens with the passphrase it was saved with");
+
+    // Refused, and said so, for a key from somewhere else or not a key at all.
+    let other_dir = tempfile::tempdir().unwrap();
+    let (_, other) = backed_up(other_dir.path()).await;
+    assert_eq!(
+        other.key_import(&saved).await.unwrap_err(),
+        EngineError::KeyForAnotherRepository
+    );
+    assert_eq!(
+        engine.key_import("this is not a key").await.unwrap_err(),
+        EngineError::NotARecoveryKey
+    );
+}

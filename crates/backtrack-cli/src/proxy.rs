@@ -6,7 +6,7 @@
 //! Generated from the same names and payload types the daemon serves, so the
 //! two cannot drift: [`backtrack_core::dbus`] holds both.
 
-use backtrack_core::dbus::{SearchResult, Status};
+use backtrack_core::dbus::{HealthReport, SearchResult, Status};
 
 /// The daemon, as seen from a client.
 #[zbus::proxy(
@@ -18,6 +18,7 @@ pub trait Daemon1 {
     fn pause(&self, until: u64) -> zbus::Result<()>;
     fn resume(&self) -> zbus::Result<()>;
     fn get_status(&self) -> zbus::Result<Status>;
+    fn get_health(&self) -> zbus::Result<HealthReport>;
     fn restore_files(
         &self,
         archive: &str,

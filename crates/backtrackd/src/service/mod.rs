@@ -19,6 +19,7 @@
 //! them today and a method that lies about working is worse than one that does
 //! not exist.
 
+mod dev;
 mod e2e;
 mod error;
 mod escalation;
@@ -57,7 +58,10 @@ use crate::preflight::{self, Facts, SystemProbe, UnknownProbe, Verdict};
 use crate::reachability::{DestinationProbe, Reach, RealProbe};
 use crate::schedule::{self, ScheduleInput};
 
-pub use backtrack_core::dbus::{ReplacedFile, RestorePreview, SearchResult, Status, StorageInfo};
+pub use backtrack_core::dbus::{
+    HealthReport, LocalStorage, ReplacedFile, RestorePreview, SearchResult, Status, StorageInfo,
+};
+pub use dev::Dev;
 pub use error::{DaemonError, Result};
 pub use escalation::Alert;
 pub use health::{Health, HealthInputs, HealthState};
@@ -65,6 +69,15 @@ pub use preview::PreviewCache;
 pub use state::{PauseState, RestorePolicy};
 
 use state::{config_document, config_get, config_set, next_due, to_epoch};
+
+/// How many backups in a row may fail for reasons nobody classified before
+/// the repository is checked, rather than waiting for the month to come round.
+/// health.md: repository damage is detected by the monthly check "and after
+/// repeated failures", which is how it usually first shows itself.
+const UNEXPLAINED_BEFORE_CHECK: u32 = 3;
+
+/// How many of the newest archives the routine check reads the metadata of.
+const CHECK_SAMPLE: u32 = 3;
 
 /// The most search results the daemon will return.
 ///
@@ -193,6 +206,14 @@ pub struct Shared {
     first_backup: Mutex<Option<u64>>,
     /// Where notifications go. Nowhere until the session bus is reached.
     notifier: Mutex<Arc<dyn crate::notify::NotificationSink>>,
+    /// A state shown in place of the real one, set only through the
+    /// development interface.
+    forced: Mutex<Option<Health>>,
+    /// Backups that failed in a row for reasons nobody classified.
+    unexplained_failures: Mutex<u32>,
+    /// The catalogue was found damaged at start and is being read again from
+    /// the repository: health.md's "Catalogue rebuilding…".
+    catalogue_rebuilding: Mutex<bool>,
 }
 
 impl Shared {
@@ -305,6 +326,9 @@ impl Shared {
             offline_handle: Mutex::new(None),
             first_backup: Mutex::new(None),
             notifier: Mutex::new(Arc::new(crate::notify::NoDesktop)),
+            forced: Mutex::new(None),
+            unexplained_failures: Mutex::new(0),
+            catalogue_rebuilding: Mutex::new(false),
         })
     }
 
@@ -411,6 +435,10 @@ impl Shared {
         if reachable {
             info!("the backup destination is reachable again");
             self.on_reconnected().await;
+            // A rebuild that had to wait for the destination can go on now.
+            if *self.catalogue_rebuilding.lock().unwrap() {
+                self.reconcile_catalogue().await;
+            }
         } else {
             info!("the backup destination is no longer reachable; protecting changes locally");
             // Bring the schedule round promptly: the next tick is what starts
@@ -756,6 +784,11 @@ impl Shared {
     /// that has been unplugged for a week produces one attempt per interval
     /// instead of one per tick.
     async fn submit_backup(&self) -> Result<u64> {
+        // Asked again rather than refused: this is how "Check Again" finds
+        // Borg once somebody has installed it.
+        if self.engine.lock().unwrap().is_none() {
+            self.connect_engine().await?;
+        }
         let engine = self.engine()?;
         let index = self.index()?;
         let config = self.config();
@@ -857,35 +890,43 @@ impl Shared {
         Ok(engine)
     }
 
+    /// The passphrase the local safety net is encrypted with, read before a
+    /// new destination's replaces it. `None` when there was no destination, or
+    /// when it cannot be read, which is said.
+    async fn spool_passphrase(&self, previous: Option<&str>) -> Option<String> {
+        let previous = previous?;
+        match self.secrets.get(previous).await {
+            Ok(old) => Some(old),
+            Err(e) => {
+                warn!("the local snapshots cannot be carried over to the new destination: {e}");
+                None
+            }
+        }
+    }
+
     /// Carry the local safety net over to a new destination.
     ///
     /// The spool is encrypted with the passphrase of the destination it
-    /// stands in for, and that passphrase is looked up under the
-    /// destination's name. A new destination brings a new passphrase under a
-    /// new name, so without this the snapshots already on this computer would
-    /// open until the daemon next restarted and never again after. They are
-    /// re-keyed rather than thrown away because they may hold versions of
-    /// files that nothing else has.
-    async fn rekey_spool(&self, previous: Option<&str>, passphrase: &str) {
-        // Whatever happens next, the engine built for the old name is done.
+    /// stands in for. A new destination brings a new passphrase, so without
+    /// this the snapshots already on this computer would open until the daemon
+    /// next restarted and never again after. They are re-keyed rather than
+    /// thrown away because they may hold versions of files that nothing else
+    /// has.
+    ///
+    /// `old` is read before the new passphrase is stored, because a new
+    /// repository can have the old one's name: a fresh start after damage puts
+    /// it exactly where the damaged one was.
+    async fn rekey_spool(&self, old: Option<String>, passphrase: &str) {
+        // Whatever happens next, the engine built for the old passphrase is
+        // done.
         *self.spool.lock().unwrap() = None;
-        let Some(previous) = previous else { return };
-        if !self.spool_dir.join("config").exists() {
-            return;
-        }
-        let old = match self.secrets.get(previous).await {
-            Ok(old) => old,
-            Err(e) => {
-                warn!("the local snapshots cannot be carried over to the new destination: {e}");
-                return;
-            }
-        };
-        if old == passphrase {
+        let Some(old) = old else { return };
+        if old == passphrase || !self.spool_dir.join("config").exists() {
             return;
         }
         let spool = match BorgCli::new(
             self.spool_dir.display().to_string(),
-            previous.to_string(),
+            self.spool_dir.display().to_string(),
             self.secrets.clone(),
         )
         .await
@@ -1207,6 +1248,53 @@ impl Shared {
         info!(job, "reclaiming repository space");
     }
 
+    /// Start the routine repository check if it is due, and return its job.
+    ///
+    /// Monthly, and sooner when backups keep failing for reasons nobody has
+    /// classified. Low priority: only while nothing else has the repository,
+    /// and only when the destination is there to be checked. Sampled, because
+    /// the full verification reads every byte and takes hours on a large
+    /// repository; that one stays in Preferences for anyone who wants it.
+    ///
+    /// Damage it finds ends the job with `RepoCorrupt`, which is the "backup
+    /// needs repair" banner.
+    pub fn maybe_check(&self, now: SystemTime) -> Option<u64> {
+        let last = backtrack_core::state::from_epoch(self.persisted.lock().unwrap().last_check);
+        let suspicious = *self.unexplained_failures.lock().unwrap() >= UNEXPLAINED_BEFORE_CHECK;
+        if last.is_none() && !suspicious {
+            // The first start with a destination begins the clock.
+            self.update_persisted(|state| {
+                state.last_check = backtrack_core::state::to_epoch(Some(now));
+            });
+            return None;
+        }
+        let busy = self.busy();
+        let due = schedule::check_due(last, now, busy) || (suspicious && !busy);
+        if !due || !self.destination_reachable() {
+            return None;
+        }
+        let engine = self.engine().ok()?;
+        self.update_persisted(|state| {
+            state.last_check = backtrack_core::state::to_epoch(Some(now));
+        });
+        *self.unexplained_failures.lock().unwrap() = 0;
+        let factory: JobFactory = Arc::new(move |_job| {
+            let engine = Arc::clone(&engine);
+            Box::pin(async move { engine.check(CheckLevel::Sampled(CHECK_SAMPLE)).await })
+                as BoxFuture<'_, _>
+        });
+        let job = self.jobs.submit(JobKind::Check, factory);
+        info!(job, suspicious, "checking the repository");
+        Some(job)
+    }
+
+    /// Note that the catalogue is being read again from the repository, after
+    /// it was found damaged.
+    pub fn start_catalogue_rebuild(&self) {
+        *self.catalogue_rebuilding.lock().unwrap() = true;
+        self.health_changed.notify_one();
+    }
+
     /// The catalogue writer, which only exists once a data directory does.
     fn index(&self) -> Result<Arc<Mutex<IndexWriter>>> {
         self.index
@@ -1247,15 +1335,30 @@ impl Shared {
     }
 
     /// Build the engine for the configured repository, if there is one.
-    pub async fn connect_engine(self: &Arc<Self>) -> Result<()> {
+    ///
+    /// Borg missing or too old is health.md's "backup engine is missing" row,
+    /// and is recorded as one: without it there is no engine, every backup is
+    /// refused before it starts, and nothing would ever say why.
+    pub async fn connect_engine(&self) -> Result<()> {
         let repository = self.config.lock().unwrap().storage.repository.clone();
         let Some(repository) = repository else {
             debug!("no repository configured; engine not connected");
             return Ok(());
         };
-        let engine = BorgCli::new(repository.clone(), repository, self.secrets.clone()).await?;
-        self.set_engine(Arc::new(engine));
-        Ok(())
+        match BorgCli::new(repository.clone(), repository, self.secrets.clone()).await {
+            Ok(engine) => {
+                self.set_engine(Arc::new(engine));
+                self.resolved(&[HealthFailure::BorgMissing]);
+                Ok(())
+            }
+            Err(error) => {
+                if let Some(failure) = error.health_failure() {
+                    self.record_blocking_failure(failure);
+                    self.health_changed.notify_one();
+                }
+                Err(error.into())
+            }
+        }
     }
 
     fn engine(&self) -> Result<Arc<dyn BackupEngine>> {
@@ -1280,7 +1383,19 @@ impl Shared {
     /// The current health, computed fresh from facts.
     pub fn health(&self) -> Health {
         let now = SystemTime::now();
-        health::evaluate(&self.health_inputs(now), now)
+        self.shown(health::evaluate(&self.health_inputs(now), now))
+    }
+
+    /// The state to show: the real one, unless development has forced
+    /// another.
+    fn shown(&self, real: Health) -> Health {
+        self.forced.lock().unwrap().unwrap_or(real)
+    }
+
+    /// Show `health` in place of the real state, or the real state again.
+    fn force(&self, health: Option<Health>) {
+        *self.forced.lock().unwrap() = health;
+        self.health_changed.notify_one();
     }
 
     /// Everything health is computed from, as it stands.
@@ -1296,10 +1411,13 @@ impl Shared {
             .unwrap()
             .or(local_full.then_some(HealthFailure::LocalDiskFull));
         // Most pressing first: a disk filling up turns into a stopped backup,
-        // the other two only ever into a slower timeline.
+        // the other two only ever into a slower timeline, and a rebuild in
+        // progress explains any backups not yet browsable.
         let attention =
             if *self.local_disk_low.lock().unwrap() || *self.offline_degraded.lock().unwrap() {
                 Some(Reason::LocalDiskFull)
+            } else if *self.catalogue_rebuilding.lock().unwrap() {
+                Some(Reason::CatalogueRebuilding)
             } else if *self.pending.lock().unwrap() > 0 && !self.cataloguing() {
                 Some(Reason::NotYetBrowsable)
             } else {
@@ -1347,7 +1465,7 @@ impl Shared {
     /// Returns the new health when it changed, for the caller to announce.
     fn reassess(&self, now: SystemTime) -> Option<Health> {
         let inputs = self.health_inputs(now);
-        let current = health::evaluate(&inputs, now);
+        let current = self.shown(health::evaluate(&inputs, now));
         let changed = {
             let mut announced = self.announced.lock().unwrap();
             let changed = *announced != Some(current);
@@ -1424,6 +1542,99 @@ impl Shared {
             .unwrap_or(0)
     }
 
+    /// Whether `passphrase` opens the repository, asked without storing it.
+    ///
+    /// Where the destination is away, the local safety net answers instead:
+    /// it is encrypted with the same passphrase, and somebody whose keyring
+    /// was reset on a train should not have to wait until they are home.
+    async fn try_passphrase(&self, repository: &str, passphrase: &str) -> Result<()> {
+        let trial: Arc<dyn SecretStore> = Arc::new(Trial(passphrase.to_string()));
+        let engine = BorgCli::new(
+            repository.to_string(),
+            repository.to_string(),
+            Arc::clone(&trial),
+        )
+        .await?;
+        match engine.repo_info().await {
+            Err(backtrack_core::engine::EngineError::RepoUnreachable)
+                if self.spool_dir.join("config").exists() =>
+            {
+                let spool_path = self.spool_dir.display().to_string();
+                let spool = BorgCli::new(spool_path.clone(), spool_path, trial).await?;
+                spool.repo_info().await?;
+                Ok(())
+            }
+            answer => answer.map(|_| ()).map_err(DaemonError::from),
+        }
+    }
+
+    /// Where the room on this computer has gone.
+    fn local_storage(&self) -> LocalStorage {
+        let config = self.config();
+        let data = self.state_path.parent().unwrap_or(&self.state_path);
+        LocalStorage {
+            free: preflight::free_bytes(data).unwrap_or(0),
+            snapshots: crate::offline::directory_bytes(&self.spool_dir),
+            snapshot_limit: u64::from(config.storage.offline.space_limit_gb) * 1024 * 1024 * 1024,
+            stash: crate::offline::directory_bytes(&self.replaced_dir),
+            cache: self.preview.size_bytes(),
+        }
+    }
+
+    /// Take the destination's backups out of the catalogue, leaving the local
+    /// snapshots, which are not in the destination and could not be read back
+    /// from it.
+    async fn forget_primary_archives(&self) -> Result<()> {
+        let index = self.index()?;
+        tokio::task::spawn_blocking(move || {
+            let mut writer = index.lock().unwrap();
+            let seqs: Vec<i64> = writer
+                .archives_in(backtrack_core::index::Repo::Primary)?
+                .into_iter()
+                .map(|row| row.seq)
+                .collect();
+            writer.remove_archives(&seqs)
+        })
+        .await
+        .map_err(|e| DaemonError::IndexUnavailable(e.to_string()))??;
+        Ok(())
+    }
+
+    /// The state, how it came about, and what has been said about it.
+    fn health_report(&self) -> HealthReport {
+        let now = SystemTime::now();
+        let health = self.health();
+        let since = self.state_since(health, now);
+        let state = self.persisted.lock().unwrap().clone();
+        HealthReport {
+            state: health.state.as_str().to_string(),
+            reason: health.reason_str().to_string(),
+            since,
+            history: state
+                .health_history
+                .iter()
+                .map(|t| (t.at, t.state.clone(), t.reason.clone()))
+                .collect(),
+            errors: state
+                .last_errors
+                .iter()
+                .map(|e| {
+                    (
+                        e.subsystem.clone(),
+                        e.at,
+                        e.reason.clone(),
+                        e.message.clone(),
+                    )
+                })
+                .collect(),
+            at_risk_notices: state.notified.at_risk_count,
+            at_risk_notified: state.notified.at_risk_at.unwrap_or(0),
+            at_risk_since: state.notified.at_risk_since.unwrap_or(0),
+            broken_notified_reason: state.notified.broken_reason.unwrap_or_default(),
+            broken_notified: state.notified.broken_at.unwrap_or(0),
+        }
+    }
+
     /// Start the clock that "no successful backups" is measured on.
     fn start_protection_clock(&self) {
         self.update_persisted(|state| {
@@ -1449,6 +1660,9 @@ impl Shared {
     /// about whether the destination is still full or still refusing us.
     fn record_backup_success(&self, kind: JobKind) {
         *self.last_backup.lock().unwrap() = Some(SystemTime::now());
+        if kind == JobKind::Backup {
+            *self.unexplained_failures.lock().unwrap() = 0;
+        }
         let mut latched = self.latched.lock().unwrap();
         let proven = match kind {
             JobKind::Offline => latched.is_some_and(|failure| {
@@ -1470,6 +1684,44 @@ impl Shared {
     /// Record a failure that stops backups until the user acts.
     fn record_blocking_failure(&self, failure: HealthFailure) {
         *self.latched.lock().unwrap() = Some(failure);
+    }
+
+    /// Forget the failure holding backups up, for a repository that has not
+    /// been tried yet.
+    fn clear_blocking_failure(&self) {
+        *self.latched.lock().unwrap() = None;
+        self.health_changed.notify_one();
+    }
+
+    /// Clear the failure holding backups up if it is one of `fixed`: what a
+    /// resolution has just proved, short of a whole backup.
+    fn resolved(&self, fixed: &[HealthFailure]) {
+        let mut latched = self.latched.lock().unwrap();
+        if latched.is_some_and(|failure| fixed.contains(&failure)) {
+            *latched = None;
+            drop(latched);
+            self.health_changed.notify_one();
+        }
+    }
+
+    /// Record how a job failed, as the last word from its part of the daemon.
+    fn record_error(&self, kind: JobKind, error: &backtrack_core::engine::EngineError) {
+        let subsystem = subsystem(kind);
+        let reason = error
+            .health_failure()
+            .map(|failure| Reason::from(failure).as_str().to_string())
+            .unwrap_or_default();
+        let at = backtrack_core::state::to_epoch(Some(SystemTime::now())).unwrap_or(0);
+        let message = error.to_string();
+        self.update_persisted(|state| {
+            state.last_errors.retain(|e| e.subsystem != subsystem);
+            state.last_errors.push(backtrack_core::state::LastError {
+                subsystem: subsystem.to_string(),
+                at,
+                reason,
+                message,
+            });
+        });
     }
 
     /// Take in a job that has ended: what it means for health, and whether
@@ -2229,6 +2481,7 @@ impl Daemon1 {
         #[zbus(connection)] connection: &zbus::Connection,
     ) -> Result<()> {
         let previous = self.shared.config().storage.repository;
+        let old = self.shared.spool_passphrase(previous.as_deref()).await;
         self.shared.secrets.set(path, passphrase).await?;
         let engine = BorgCli::new(
             path.to_string(),
@@ -2251,12 +2504,11 @@ impl Daemon1 {
             state.last_attempt = backtrack_core::state::to_epoch(Some(SystemTime::now()));
         });
         self.shared.start_protection_clock();
+        // Whatever was wrong with the last repository is not wrong with this
+        // one, which has not been tried yet.
+        self.shared.clear_blocking_failure();
         info!(path, "repository created");
-        if previous.as_deref() != Some(path) {
-            self.shared
-                .rekey_spool(previous.as_deref(), passphrase)
-                .await;
-        }
+        self.shared.rekey_spool(old, passphrase).await;
 
         // A new repository holds nothing, so a catalogue still describing
         // the previous destination's backups would offer restores from
@@ -2384,18 +2636,7 @@ impl Daemon1 {
                     .into(),
             ));
         }
-        let index = self.shared.index()?;
-        tokio::task::spawn_blocking(move || {
-            let mut writer = index.lock().unwrap();
-            let seqs: Vec<i64> = writer
-                .archives_in(backtrack_core::index::Repo::Primary)?
-                .into_iter()
-                .map(|row| row.seq)
-                .collect();
-            writer.remove_archives(&seqs)
-        })
-        .await
-        .map_err(|e| DaemonError::IndexUnavailable(e.to_string()))??;
+        self.shared.forget_primary_archives().await?;
         info!("catalogue cleared for a rebuild");
         self.shared
             .reconcile_catalogue()
@@ -2424,6 +2665,163 @@ impl Daemon1 {
         Ok(())
     }
 
+    /// Take the passphrase again, after the keyring lost it or it stopped
+    /// matching the repository, and carry on backing up.
+    ///
+    /// Tried against the repository before it is kept anywhere, so a typo is
+    /// answered here, in the dialog it was typed into, rather than an hour
+    /// later as the same banner again. `remember` is the dialog's "Remember it
+    /// so backups run automatically", which is the Remember passphrase
+    /// setting.
+    ///
+    /// `recovery_key`, when not empty, is put back into the repository first:
+    /// the path for a repository whose key has changed since the key was
+    /// saved, after which `passphrase` is the one that was in use then.
+    ///
+    /// Returns the backup it starts, or 0 when there is nothing chosen to
+    /// back up.
+    async fn unlock_backups(
+        &self,
+        passphrase: &str,
+        remember: bool,
+        recovery_key: &str,
+    ) -> Result<u64> {
+        if passphrase.is_empty() {
+            return Err(DaemonError::InvalidArgument(
+                "a passphrase cannot be empty".into(),
+            ));
+        }
+        let repository = self.shared.config().storage.repository.ok_or_else(|| {
+            DaemonError::NotConfigured("no backup destination is configured yet".into())
+        })?;
+        if !recovery_key.trim().is_empty() {
+            self.shared.engine()?.key_import(recovery_key).await?;
+            info!("a saved recovery key was put back into the repository");
+        }
+        self.shared.try_passphrase(&repository, passphrase).await?;
+
+        // The setting moves before the passphrase is stored, so it is stored
+        // where the setting now says.
+        if remember != self.shared.config().security.remember_passphrase {
+            self.shared
+                .secrets
+                .set_remember(remember, Some(&repository))
+                .await?;
+            let mut config = self.shared.config();
+            config.security.remember_passphrase = remember;
+            self.shared.store_config(config)?;
+        }
+        self.shared.secrets.set(&repository, passphrase).await?;
+        info!(remember, "the passphrase was given again");
+        self.shared.resolved(&[
+            HealthFailure::PassphraseMissing,
+            HealthFailure::PassphraseWrong,
+        ]);
+        if self.shared.config().backup.include.is_empty() {
+            return Ok(0);
+        }
+        self.shared.submit_backup().await
+    }
+
+    /// Repair what a check found wrong (`borg check --repair`). Returns the
+    /// job.
+    ///
+    /// Whatever is damaged beyond saving is removed so that the rest can be
+    /// used again. The window says so in plain words before asking, and runs
+    /// a check afterwards to find out whether it worked.
+    async fn repair(&self) -> Result<u64> {
+        let engine = self.shared.engine()?;
+        if !self.shared.idle() {
+            return Err(DaemonError::LockedByOther(
+                "wait for the current job to finish, then repair".into(),
+            ));
+        }
+        info!("repairing the repository");
+        let factory: JobFactory = Arc::new(move |_job| {
+            let engine = Arc::clone(&engine);
+            Box::pin(async move { engine.repair().await }) as BoxFuture<'_, _>
+        });
+        Ok(self.shared.jobs.submit(JobKind::Check, factory))
+    }
+
+    /// Put a repository that could not be repaired aside, so that a new one
+    /// can be made in its place. Returns where the old one now is.
+    ///
+    /// Nothing is deleted. The repository is renamed beside where it was, with
+    /// everything in it, for whatever can still be salvaged by hand; the
+    /// catalogue forgets the backups that were in it. The new repository is
+    /// made by `SetupRepo`, as any other is.
+    ///
+    /// Refused for a repository on a server, which cannot be renamed from
+    /// here: a fresh start there goes to a new location, and leaves the old
+    /// one exactly as it is.
+    async fn start_fresh(&self) -> Result<String> {
+        let repository = self.shared.config().storage.repository.ok_or_else(|| {
+            DaemonError::NotConfigured("no backup destination is configured yet".into())
+        })?;
+        let path = PathBuf::from(&repository);
+        if !path.is_absolute() {
+            return Err(DaemonError::InvalidArgument(
+                "a repository on a server cannot be put aside from here; choose a new \
+                 location for the fresh start instead"
+                    .into(),
+            ));
+        }
+        if !self.shared.idle() {
+            return Err(DaemonError::LockedByOther(
+                "wait for the current job to finish".into(),
+            ));
+        }
+        let aside = set_aside(&path, SystemTime::now())?;
+        *self.shared.engine.lock().unwrap() = None;
+        self.shared.forget_primary_archives().await?;
+        info!(
+            aside = %aside.display(),
+            "the damaged repository was put aside with nothing in it deleted"
+        );
+        Ok(aside.display().to_string())
+    }
+
+    /// Where the room on this computer has gone: the local safety net, the
+    /// safety stash, and the preview cache.
+    async fn get_local_storage(&self) -> Result<LocalStorage> {
+        let shared = Arc::clone(&self.shared);
+        tokio::task::spawn_blocking(move || shared.local_storage())
+            .await
+            .map_err(|e| DaemonError::LocalDiskFull(e.to_string()))
+    }
+
+    /// Remove the copies extracted for previews. Returns the bytes freed.
+    async fn clear_preview_cache(&self) -> Result<u64> {
+        let cache = self.shared.preview.clone();
+        let freed = tokio::task::spawn_blocking(move || cache.clear())
+            .await
+            .map_err(|e| DaemonError::LocalDiskFull(e.to_string()))?;
+        info!(bytes = freed, "the preview cache was cleared");
+        Ok(freed)
+    }
+
+    /// Give up the files restores replaced, apart from the last hour's, which
+    /// an Undo still on screen may be about to need. Returns the bytes freed.
+    async fn empty_stash(&self) -> Result<u64> {
+        let root = self.shared.replaced_dir.clone();
+        let now = backtrack_core::state::to_epoch(Some(SystemTime::now())).unwrap_or(0) as i64;
+        let report = tokio::task::spawn_blocking(move || restore::expire_stash(&root, now, 0))
+            .await
+            .map_err(|e| DaemonError::RestoreFailed(e.to_string()))?;
+        info!(
+            restores = report.batches,
+            bytes = report.bytes,
+            "the safety stash was emptied on request"
+        );
+        Ok(report.bytes)
+    }
+
+    /// The state, how it came about, and what the person has been told.
+    async fn get_health(&self) -> Result<HealthReport> {
+        Ok(self.shared.health_report())
+    }
+
     /// The configured repository's recovery key, exactly as `borg key export`
     /// writes it, so that the file a person saves is one `borg key import`
     /// reads back without editing.
@@ -2450,6 +2848,7 @@ impl Daemon1 {
         #[zbus(connection)] connection: &zbus::Connection,
     ) -> Result<()> {
         let previous = self.shared.config().storage.repository;
+        let old = self.shared.spool_passphrase(previous.as_deref()).await;
         self.shared.secrets.set(path, passphrase).await?;
         let engine = BorgCli::new(
             path.to_string(),
@@ -2464,12 +2863,9 @@ impl Daemon1 {
         self.shared.store_config(config)?;
         self.shared.set_engine(Arc::new(engine));
         self.shared.start_protection_clock();
+        self.shared.clear_blocking_failure();
         info!(path, archives = info.archive_count, "repository imported");
-        if previous.as_deref() != Some(path) {
-            self.shared
-                .rekey_spool(previous.as_deref(), passphrase)
-                .await;
-        }
+        self.shared.rekey_spool(old, passphrase).await;
         crate::background::apply(connection, self.shared.wants_background()).await;
 
         self.shared.adopt_catalogue().await
@@ -2699,12 +3095,97 @@ fn update_health(shared: &Shared, kind: JobKind, state: &JobState) {
         // backup clears it, because only a successful backup proves the problem
         // is gone.
         JobState::Failed(e) => {
+            shared.record_error(kind, e);
             if let Some(failure) = e.health_failure() {
                 shared.record_blocking_failure(failure);
             }
+            if kind == JobKind::Backup
+                && matches!(e, backtrack_core::engine::EngineError::BorgFailed { .. })
+            {
+                *shared.unexplained_failures.lock().unwrap() += 1;
+            }
+        }
+        // The catalogue has been read again, as far as the repository goes.
+        // Anything that would not catalogue is left pending, and is the
+        // "not yet browsable" state's to report rather than this one's.
+        JobState::Done(Outcome::Completed) if kind == JobKind::Index => {
+            *shared.catalogue_rebuilding.lock().unwrap() = false;
+        }
+        // A check that found nothing wrong is the proof a damaged repository
+        // is not damaged any more, whether a repair made it so or the damage
+        // was never in the repository at all.
+        JobState::Done(Outcome::Completed) if kind == JobKind::Check => {
+            shared.resolved(&[HealthFailure::RepoCorrupt]);
         }
         _ => {}
     }
+}
+
+/// Which part of the daemon a job belongs to, for the last-error record.
+fn subsystem(kind: JobKind) -> &'static str {
+    match kind {
+        JobKind::Backup => "backup",
+        JobKind::Offline => "local",
+        JobKind::Index => "catalogue",
+        JobKind::Check => "check",
+        JobKind::Prune | JobKind::Compact => "maintenance",
+        JobKind::Restore | JobKind::RestoreEverything => "restore",
+    }
+}
+
+/// One passphrase, held for one question and never stored: how a passphrase
+/// someone has just typed is tried before it is kept anywhere.
+struct Trial(String);
+
+#[async_trait::async_trait]
+impl SecretStore for Trial {
+    async fn get(&self, _repo_id: &str) -> backtrack_core::engine::Result<String> {
+        Ok(self.0.clone())
+    }
+
+    async fn set(&self, _repo_id: &str, _passphrase: &str) -> backtrack_core::engine::Result<()> {
+        Err(backtrack_core::engine::EngineError::Local(
+            "a passphrase being tried is not stored".into(),
+        ))
+    }
+
+    async fn delete(&self, _repo_id: &str) -> backtrack_core::engine::Result<()> {
+        Err(backtrack_core::engine::EngineError::Local(
+            "a passphrase being tried is not stored".into(),
+        ))
+    }
+}
+
+/// Rename a damaged repository beside where it was, and return its new name.
+///
+/// A rename in the same folder, so nothing is copied and nothing can be lost
+/// on the way: the files are the same files under a new name. The name says
+/// what it is and when it was put there, and never replaces anything already
+/// by that name.
+fn set_aside(repository: &std::path::Path, now: SystemTime) -> Result<PathBuf> {
+    let name = repository
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .ok_or_else(|| DaemonError::InvalidArgument("the repository has no name".into()))?;
+    let stamp = pipeline::iso8601_basic_at(now);
+    let aside = (1..)
+        .map(|n| {
+            let suffix = if n == 1 {
+                String::new()
+            } else {
+                format!("-{n}")
+            };
+            repository.with_file_name(format!("{name}.damaged-{stamp}{suffix}"))
+        })
+        .find(|candidate| !candidate.exists())
+        .expect("an unbounded search finds a free name");
+    std::fs::rename(repository, &aside).map_err(|e| {
+        DaemonError::RestoreFailed(format!(
+            "{} could not be put aside: {e}",
+            repository.display()
+        ))
+    })?;
+    Ok(aside)
 }
 
 fn percentage(current: u64, total: u64) -> u32 {
@@ -3579,6 +4060,222 @@ mod tests {
             recorder.titles(),
             vec!["Backtrack can't sign in to nas.local."]
         );
+    }
+
+    #[tokio::test]
+    async fn local_storage_says_where_the_room_went_and_the_reductions_free_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let shared = configured(dir.path());
+        let daemon = Daemon1::new(Arc::clone(&shared));
+
+        std::fs::create_dir_all(dir.path().join("spool")).unwrap();
+        std::fs::write(dir.path().join("spool/segment"), vec![0u8; 1000]).unwrap();
+        let now = to_epoch(Some(SystemTime::now()));
+        let old = dir.path().join(format!("replaced/{}/home/k", now - 86_400));
+        let recent = dir.path().join(format!("replaced/{}/home/k", now - 60));
+        std::fs::create_dir_all(&old).unwrap();
+        std::fs::create_dir_all(&recent).unwrap();
+        std::fs::write(old.join("report.odt"), vec![0u8; 500]).unwrap();
+        std::fs::write(recent.join("notes.txt"), vec![0u8; 300]).unwrap();
+        shared.preview.ensure_dir().unwrap();
+        std::fs::write(shared.preview.entry_path("a1", "photo.jpg"), vec![0u8; 200]).unwrap();
+
+        let storage = daemon.get_local_storage().await.unwrap();
+        assert_eq!(storage.snapshots, 1000);
+        assert_eq!(storage.snapshot_limit, 10 * 1024 * 1024 * 1024);
+        assert_eq!(storage.stash, 800);
+        assert_eq!(storage.cache, 200);
+        assert!(storage.free > 0, "a real filesystem has room to report");
+
+        assert_eq!(daemon.clear_preview_cache().await.unwrap(), 200);
+        assert_eq!(
+            daemon.empty_stash().await.unwrap(),
+            500,
+            "the last hour's restore is kept: its Undo may still be on screen"
+        );
+        let storage = daemon.get_local_storage().await.unwrap();
+        assert_eq!((storage.stash, storage.cache), (300, 0));
+        assert!(recent.join("notes.txt").exists());
+    }
+
+    #[tokio::test]
+    async fn a_forced_state_is_shown_and_announced_until_it_is_lifted() {
+        let dir = tempfile::tempdir().unwrap();
+        let (shared, recorder) = recorded(dir.path());
+        shared.record_backup_success(JobKind::Backup);
+        shared.reassess(SystemTime::now());
+        let dev = Dev::new(Arc::clone(&shared));
+
+        dev.force_health("BROKEN", "auth-failed").await.unwrap();
+        let health = shared.health();
+        assert_eq!(health.state, HealthState::Broken);
+        assert_eq!(health.reason, Some(Reason::AuthFailed));
+        assert!(shared.reassess(SystemTime::now()).is_some());
+        assert_eq!(
+            recorder.shown.lock().unwrap().len(),
+            1,
+            "with its notification"
+        );
+
+        assert!(dev.force_health("SIDEWAYS", "").await.is_err());
+        assert!(dev.force_health("AT_RISK", "no-such-reason").await.is_err());
+
+        dev.force_health("", "").await.unwrap();
+        assert_eq!(shared.health(), Health::HEALTHY);
+    }
+
+    #[test]
+    fn the_health_report_has_the_history_the_errors_and_what_was_said() {
+        let dir = tempfile::tempdir().unwrap();
+        let shared = configured(dir.path());
+        let now = SystemTime::now();
+        shared.record_backup_success(JobKind::Backup);
+        shared.reassess(now);
+        update_health(
+            &shared,
+            JobKind::Backup,
+            &failed(backtrack_core::engine::EngineError::DestinationFull),
+        );
+        shared.reassess(now + Duration::from_secs(60));
+
+        let report = shared.health_report();
+        assert_eq!(report.state, "BROKEN");
+        assert_eq!(report.reason, "destination-full");
+        let states: Vec<&str> = report.history.iter().map(|(_, s, _)| s.as_str()).collect();
+        assert_eq!(states, vec!["HEALTHY", "BROKEN"]);
+        assert_eq!(report.errors.len(), 1);
+        let (subsystem, _, reason, message) = &report.errors[0];
+        assert_eq!(
+            (subsystem.as_str(), reason.as_str(), message.as_str()),
+            (
+                "backup",
+                "destination-full",
+                "the backup destination is full"
+            )
+        );
+        assert_eq!(report.broken_notified_reason, "destination-full");
+        assert!(report.broken_notified > 0);
+    }
+
+    #[test]
+    fn a_repository_is_put_aside_beside_itself_and_never_over_anything() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = dir.path().join("repo");
+        std::fs::create_dir_all(repo.join("data")).unwrap();
+        std::fs::write(repo.join("config"), b"the repository").unwrap();
+        let at = SystemTime::UNIX_EPOCH + Duration::from_secs(1_790_000_000);
+        let stamp = pipeline::iso8601_basic_at(at);
+        std::fs::create_dir(dir.path().join(format!("repo.damaged-{stamp}"))).unwrap();
+
+        let aside = set_aside(&repo, at).unwrap();
+        assert_eq!(aside, dir.path().join(format!("repo.damaged-{stamp}-2")));
+        assert!(!repo.exists());
+        assert_eq!(
+            std::fs::read(aside.join("config")).unwrap(),
+            b"the repository"
+        );
+        assert!(
+            dir.path().join(format!("repo.damaged-{stamp}")).exists(),
+            "what already had the first name is left alone"
+        );
+    }
+
+    fn check_jobs(shared: &Shared) -> usize {
+        shared
+            .jobs
+            .list()
+            .iter()
+            .filter(|job| job.kind == JobKind::Check)
+            .count()
+    }
+
+    #[test]
+    fn the_routine_check_comes_round_monthly_on_a_mock_clock() {
+        let dir = tempfile::tempdir().unwrap();
+        let shared = configured(dir.path());
+        let day = Duration::from_secs(86_400);
+        let start = SystemTime::UNIX_EPOCH + Duration::from_secs(1_790_000_000);
+
+        assert_eq!(
+            shared.maybe_check(start),
+            None,
+            "the first look starts the clock"
+        );
+        assert_eq!(
+            shared.persisted.lock().unwrap().last_check,
+            to_epoch(Some(start)).into()
+        );
+        assert_eq!(shared.maybe_check(start + 29 * day), None);
+        assert_eq!(check_jobs(&shared), 0);
+
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let _guard = rt.enter();
+        let job = shared
+            .maybe_check(start + 30 * day)
+            .expect("a month on, it runs");
+        assert_eq!(check_jobs(&shared), 1);
+        assert_eq!(
+            shared.persisted.lock().unwrap().last_check,
+            to_epoch(Some(start + 30 * day)).into(),
+            "and the next is a month from now"
+        );
+        let _ = shared.jobs.cancel(job);
+    }
+
+    #[test]
+    fn backups_failing_for_no_known_reason_bring_the_check_forward() {
+        let dir = tempfile::tempdir().unwrap();
+        let shared = configured(dir.path());
+        let now = SystemTime::now();
+        shared.update_persisted(|state| state.last_check = to_epoch(Some(now)).into());
+        let unexplained = backtrack_core::engine::EngineError::BorgFailed {
+            code: 2,
+            stderr: "something nobody classified".into(),
+        };
+        for _ in 0..UNEXPLAINED_BEFORE_CHECK - 1 {
+            update_health(&shared, JobKind::Backup, &failed(unexplained.clone()));
+        }
+        assert_eq!(shared.maybe_check(now), None, "two is not yet a pattern");
+
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let _guard = rt.enter();
+        update_health(&shared, JobKind::Backup, &failed(unexplained.clone()));
+        let job = shared.maybe_check(now).expect("the third is");
+        let _ = shared.jobs.cancel(job);
+        assert_eq!(*shared.unexplained_failures.lock().unwrap(), 0);
+
+        // A success in between starts the count again.
+        update_health(&shared, JobKind::Backup, &failed(unexplained.clone()));
+        update_health(&shared, JobKind::Backup, &failed(unexplained.clone()));
+        shared.record_backup_success(JobKind::Backup);
+        update_health(&shared, JobKind::Backup, &failed(unexplained));
+        assert_eq!(shared.maybe_check(now), None);
+    }
+
+    #[test]
+    fn a_destination_that_is_away_is_not_checked() {
+        let dir = tempfile::tempdir().unwrap();
+        let shared = configured(dir.path());
+        let now = SystemTime::now();
+        shared.update_persisted(|state| {
+            state.last_check = to_epoch(Some(now - Duration::from_secs(60 * 86_400))).into()
+        });
+        *shared.destination_reachable.lock().unwrap() = false;
+        assert_eq!(shared.maybe_check(now), None);
+    }
+
+    #[test]
+    fn a_catalogue_being_rebuilt_is_degraded_until_the_catalogue_job_ends() {
+        let dir = tempfile::tempdir().unwrap();
+        let shared = configured(dir.path());
+        shared.record_backup_success(JobKind::Backup);
+        shared.start_catalogue_rebuild();
+        let health = shared.health();
+        assert_eq!(health.state, HealthState::Degraded);
+        assert_eq!(health.reason, Some(Reason::CatalogueRebuilding));
+
+        update_health(&shared, JobKind::Index, &JobState::Done(Outcome::Completed));
+        assert_eq!(shared.health(), Health::HEALTHY);
     }
 
     /// A connection to hand methods that want one. Nothing is served on it.

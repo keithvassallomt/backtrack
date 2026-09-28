@@ -51,6 +51,10 @@ pub enum DaemonError {
     BorgFailed(String),
     /// The operation was cancelled.
     Cancelled(String),
+    /// A recovery key saved from a different repository.
+    KeyForAnotherRepository(String),
+    /// Something offered as a recovery key that is not one.
+    NotARecoveryKey(String),
 
     /// No job with that id.
     NoSuchJob(String),
@@ -101,6 +105,8 @@ impl From<EngineError> for DaemonError {
             EngineError::BorgMissing { .. } => DaemonError::BorgMissing(message),
             EngineError::BorgFailed { .. } => DaemonError::BorgFailed(message),
             EngineError::Cancelled => DaemonError::Cancelled(message),
+            EngineError::KeyForAnotherRepository => DaemonError::KeyForAnotherRepository(message),
+            EngineError::NotARecoveryKey => DaemonError::NotARecoveryKey(message),
             EngineError::Local(_) => DaemonError::RestoreFailed(message),
         }
     }
@@ -156,6 +162,8 @@ mod tests {
                 stderr: "boom".into(),
             },
             EngineError::Cancelled,
+            EngineError::KeyForAnotherRepository,
+            EngineError::NotARecoveryKey,
         ]
     }
 

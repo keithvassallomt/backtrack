@@ -125,11 +125,27 @@ impl PreviewCache {
     }
 
     /// Current size of the cache in bytes.
-    #[cfg(test)]
     pub fn size_bytes(&self) -> u64 {
         self.scan()
             .map(|entries| entries.iter().map(|e| e.size).sum())
             .unwrap_or(0)
+    }
+
+    /// Remove every entry, returning the bytes freed. Nothing in the cache
+    /// is anything but a copy, so this costs only the time to extract again.
+    pub fn clear(&self) -> u64 {
+        let Ok(entries) = self.scan() else { return 0 };
+        entries
+            .into_iter()
+            .filter(|entry| match std::fs::remove_file(&entry.path) {
+                Ok(()) => true,
+                Err(e) => {
+                    warn!(path = %entry.path.display(), "cannot remove a preview: {e}");
+                    false
+                }
+            })
+            .map(|entry| entry.size)
+            .sum()
     }
 
     fn scan(&self) -> std::io::Result<Vec<CacheEntry>> {
@@ -222,6 +238,17 @@ mod tests {
         assert!(!cache.contains("a1", "f.txt"));
         write_entry(&cache, "a1", "f.txt", 10, 0);
         assert!(cache.contains("a1", "f.txt"));
+    }
+
+    #[test]
+    fn clearing_removes_every_copy_and_says_how_much_it_freed() {
+        let (_dir, cache) = cache(1000);
+        write_entry(&cache, "a1", "one", 100, 0);
+        write_entry(&cache, "a2", "two", 250, 0);
+        assert_eq!(cache.clear(), 350);
+        assert_eq!(cache.size_bytes(), 0);
+        assert!(!cache.contains("a1", "one"));
+        assert_eq!(cache.clear(), 0, "an empty cache frees nothing");
     }
 
     #[test]

@@ -15,6 +15,7 @@
 //! | msgid `Repository.DoesNotExist`; a line with both "repository" and "does not exist"; or ssh "No route to host"/"Connection refused"/"Connection closed"/"Network is unreachable"/"Could not resolve hostname" | `RepoUnreachable` |
 //! | "No space left on device", "Errno 28" | `DestinationFull` |
 //! | msgid `LockTimeout`, "Failed to create/acquire the lock" | `LockedByOther` |
+//! | msgid `RepoIdMismatch` / `NotABorgKeyFile` (`key import`) | `KeyForAnotherRepository` / `NotARecoveryKey` |
 //! | msgid `Repository.CheckNeeded`; "Inconsistency detected"; "Data integrity error"; a line with both "manifest" and "corrupt" | `RepoCorrupt` |
 //! | anything else with a non-zero code | `BorgFailed { code, stderr }` |
 //!
@@ -172,6 +173,12 @@ pub fn classify(code: i32, errors: &[ErrLine]) -> EngineError {
     ) {
         return EngineError::LockedByOther;
     }
+    if any(errors, &["RepoIdMismatch"]) {
+        return EngineError::KeyForAnotherRepository;
+    }
+    if any(errors, &["NotABorgKeyFile"]) {
+        return EngineError::NotARecoveryKey;
+    }
     if any(
         errors,
         &[
@@ -279,6 +286,20 @@ mod tests {
             "a file vanished while being read"
         ));
         assert!(!is_evidence(LogLevel::Info, "Remote: hello"));
+    }
+
+    #[test]
+    fn a_recovery_key_refused_by_borg_says_which_way_it_was_wrong() {
+        let other = [line(
+            Some("RepoIdMismatch"),
+            "This key backup seems to be for a different backup repository, aborting.",
+        )];
+        assert_eq!(classify(2, &other), EngineError::KeyForAnotherRepository);
+        let garbage = [line(
+            Some("NotABorgKeyFile"),
+            "This file is not a Borg key backup, aborting.",
+        )];
+        assert_eq!(classify(2, &garbage), EngineError::NotARecoveryKey);
     }
 
     #[test]

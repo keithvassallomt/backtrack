@@ -121,13 +121,19 @@ pub async fn run() -> Result<Outcome, StartupError> {
     // The single-writer guarantee: one `IndexWriter` for the process, held for
     // its lifetime. Shared with the service layer because the backup pipeline
     // catalogues through it; nothing else may open the index for writing.
-    let index = Arc::new(std::sync::Mutex::new(open_index()?));
+    let (index, damaged) = open_index()?;
+    let index = Arc::new(std::sync::Mutex::new(index));
 
     // The one registry every job goes through.
     let jobs = JobRegistry::new();
     let secrets = backtrack_core::secret::default_store().map_err(StartupError::Secrets)?;
     let shared = Shared::new(config, Arc::clone(&jobs), secrets);
     shared.set_index(index);
+    // Rebuilt by the reconciliation that every start runs, once the name is
+    // won; until it finishes, health says so.
+    if damaged {
+        shared.start_catalogue_rebuild();
+    }
 
     // Everything that shapes an answer happens before the name is claimed.
     //
@@ -160,13 +166,20 @@ pub async fn run() -> Result<Outcome, StartupError> {
 
     // Export the object, and start turning job updates into signals, before
     // claiming the name — see below for why the order matters.
-    let connection = zbus::connection::Builder::session()
+    let builder = zbus::connection::Builder::session()
         .map_err(StartupError::Bus)?
         .serve_at(dbus::OBJECT_PATH, Daemon1::new(Arc::clone(&shared)))
-        .map_err(StartupError::Bus)?
-        .build()
-        .await
         .map_err(StartupError::Bus)?;
+    // The development controls exist only in development: an installed daemon
+    // does not serve them at all.
+    let builder = if std::env::var_os("BACKTRACK_DEV").is_some() {
+        builder
+            .serve_at(dbus::OBJECT_PATH, service::Dev::new(Arc::clone(&shared)))
+            .map_err(StartupError::Bus)?
+    } else {
+        builder
+    };
+    let connection = builder.build().await.map_err(StartupError::Bus)?;
 
     // Before the fan-out starts, so the first thing health has to say reaches
     // the desktop rather than the log.
@@ -300,7 +313,8 @@ async fn connect_system_probe(
 }
 
 /// Create the data directory if needed and open the index for writing.
-fn open_index() -> Result<IndexWriter, StartupError> {
+/// Also says whether it had to be started again because it was damaged.
+fn open_index() -> Result<(IndexWriter, bool), StartupError> {
     let dir = paths::data_dir();
     std::fs::create_dir_all(&dir).map_err(|source| StartupError::DataDir {
         path: dir.clone(),
@@ -308,12 +322,53 @@ fn open_index() -> Result<IndexWriter, StartupError> {
     })?;
 
     let path = paths::index_db();
-    let writer = IndexWriter::open(&path).map_err(|source| StartupError::Index {
+    let opened = open_index_at(&path).map_err(|source| StartupError::Index {
         path: path.clone(),
         source,
     })?;
     info!(path = %path.display(), "index opened for writing");
-    Ok(writer)
+    Ok(opened)
+}
+
+/// Open the index at `path`, starting it afresh if it fails its integrity
+/// check. The second value says whether it did.
+///
+/// A damaged catalogue does not stop the daemon. It is derived data:
+/// everything in it can be read again from the repository, and refusing to
+/// start over it would stop the backups as well as the browsing. The damaged
+/// file is kept beside the new one, where a bug report can find it, replacing
+/// any kept from before.
+pub(crate) fn open_index_at(
+    path: &std::path::Path,
+) -> Result<(IndexWriter, bool), backtrack_core::index::IndexError> {
+    match IndexWriter::open(path) {
+        Ok(writer) => Ok((writer, false)),
+        Err(backtrack_core::index::IndexError::Corrupt(detail)) => {
+            warn!(
+                path = %path.display(),
+                detail,
+                "the catalogue is damaged; it is being put aside and read again from the backups"
+            );
+            // The write-ahead log and shared memory go with it: left behind,
+            // SQLite would replay the damaged database's log into the new one.
+            for suffix in ["", "-wal", "-shm"] {
+                let from = PathBuf::from(format!("{}{suffix}", path.display()));
+                let to = PathBuf::from(format!("{}.damaged{suffix}", path.display()));
+                match std::fs::rename(&from, &to) {
+                    Ok(()) => {}
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(e) => {
+                        return Err(backtrack_core::index::IndexError::Corrupt(format!(
+                            "{} could not be put aside: {e}",
+                            from.display()
+                        )))
+                    }
+                }
+            }
+            Ok((IndexWriter::open(path)?, true))
+        }
+        Err(other) => Err(other),
+    }
 }
 
 /// Block until SIGTERM or SIGINT, or until the daemon is no longer needed,
@@ -363,6 +418,30 @@ mod tests {
         // D-Bus activation both treat a non-zero exit as a failed unit.
         assert_eq!(Outcome::AlreadyRunning.exit_code(), 0);
         assert_eq!(Outcome::ShutDown.exit_code(), 0);
+    }
+
+    #[test]
+    fn a_damaged_catalogue_is_put_aside_and_started_again() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("index.db");
+        let damage = vec![0x5au8; 64 * 1024];
+        std::fs::write(&path, &damage).unwrap();
+
+        let (writer, damaged) = open_index_at(&path).expect("opens anyway");
+        assert!(damaged);
+        assert!(writer
+            .archives_in(backtrack_core::index::Repo::Primary)
+            .unwrap()
+            .is_empty());
+        assert_eq!(
+            std::fs::read(dir.path().join("index.db.damaged")).unwrap(),
+            damage,
+            "kept for a bug report, as it was"
+        );
+
+        drop(writer);
+        let (_, damaged) = open_index_at(&path).unwrap();
+        assert!(!damaged, "a sound catalogue is opened as it is");
     }
 
     #[test]

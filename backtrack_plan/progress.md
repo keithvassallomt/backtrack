@@ -104,9 +104,9 @@
 - [x] S10-T1 Health state machine + escalation timers per health.md
 - [/] S10-T2 Notifications respecting user policy
 - [ ] S10-T3 Main-window banner states (mockup 23)
-- [ ] S10-T4 Resolution flows: passphrase (mockup 24), reauth, disk-full, repair
-- [ ] S10-T5 Monthly borg check schedule + index integrity check
-- [ ] S10-T6 backtrack doctor diagnostic bundle
+- [/] S10-T4 Resolution flows: passphrase (mockup 24), reauth, disk-full, repair
+- [x] S10-T5 Monthly borg check schedule + index integrity check
+- [x] S10-T6 backtrack doctor diagnostic bundle
 
 ## Stage 11 — Disaster recovery ([stage file](stages/stage-11-disaster-recovery.md))
 - [ ] S11-T1 RestoreEverything job: per-top-folder, resumable

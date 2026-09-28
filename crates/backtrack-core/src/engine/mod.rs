@@ -90,6 +90,18 @@ pub trait BackupEngine: Send + Sync {
     /// Free repository space (`borg compact`).
     async fn compact(&self) -> Result<JobStream>;
 
-    /// Consistency check (`borg check`).
+    /// Consistency check (`borg check`). Damage found ends the job with
+    /// [`EngineError::RepoCorrupt`].
     async fn check(&self, level: CheckLevel) -> Result<JobStream>;
+
+    /// Repair what a check found (`borg check --repair`). Whatever is damaged
+    /// beyond saving is removed, so that the rest can be used again.
+    async fn repair(&self) -> Result<JobStream>;
+
+    /// Put a saved recovery key back into the repository (`borg key import`).
+    ///
+    /// The key is the repository's own key, encrypted with the passphrase that
+    /// was in use when it was saved; afterwards that passphrase opens the
+    /// repository. Borg refuses a key saved from any other repository.
+    async fn key_import(&self, key: &str) -> Result<()>;
 }

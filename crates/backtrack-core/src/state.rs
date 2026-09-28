@@ -40,6 +40,8 @@ pub struct RuntimeState {
     /// repository, so it runs on its own daily cadence rather than after every
     /// backup.
     pub last_compact: Option<u64>,
+    /// When the routine repository check last ran. Monthly, per health.md.
+    pub last_check: Option<u64>,
     /// When this computer started backing up to its destination: set up,
     /// imported, or given its first folders to back up.
     ///
@@ -59,6 +61,20 @@ pub struct RuntimeState {
     /// of how the machine got into the state it is in, and where the current
     /// state's start is read from after a restart.
     pub health_history: Vec<Transition>,
+    /// The last failure of each part of the daemon, for the dialogs that
+    /// explain a problem and for `doctor`.
+    pub last_errors: Vec<LastError>,
+}
+
+/// How one part of the daemon last failed.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LastError {
+    /// `backup`, `local`, `catalogue`, `check`, `maintenance` or `restore`.
+    pub subsystem: String,
+    pub at: u64,
+    /// The health reason token when the failure is a catalogue row, else empty.
+    pub reason: String,
+    pub message: String,
 }
 
 /// When the person was last told about each kind of trouble.
@@ -205,6 +221,7 @@ mod tests {
             paused_until: Some(1_700_000_000),
             last_attempt: Some(1_699_999_000),
             last_compact: None,
+            last_check: Some(1_699_100_000),
             protected_since: Some(1_699_000_000),
             notified: Notified {
                 at_risk_since: Some(1_699_500_000),
@@ -214,6 +231,12 @@ mod tests {
                 broken_at: Some(1_699_900_000),
             },
             health_history: Vec::new(),
+            last_errors: vec![LastError {
+                subsystem: "backup".into(),
+                at: 1_699_900_000,
+                reason: "destination-full".into(),
+                message: "the backup destination is full".into(),
+            }],
         };
         original.record_transition(Transition {
             at: 1_699_900_000,

@@ -51,6 +51,12 @@ pub enum EngineError {
     BorgFailed { code: i32, stderr: String },
     #[error("the job was cancelled")]
     Cancelled,
+    /// A recovery key that opens some other repository, not this one.
+    #[error("that recovery key belongs to a different backup")]
+    KeyForAnotherRepository,
+    /// Something given as a recovery key that is not one.
+    #[error("that file is not a Backtrack recovery key")]
+    NotARecoveryKey,
     /// A failure on this machine rather than at the repository — a restore that
     /// could not read its staging directory, say.
     ///
@@ -138,6 +144,9 @@ impl EngineError {
             EngineError::LockedByOther => None,
             EngineError::BorgFailed { .. } => None,
             EngineError::Cancelled => None,
+            // A mistake in what the person offered, answered in the dialog
+            // they offered it from.
+            EngineError::KeyForAnotherRepository | EngineError::NotARecoveryKey => None,
             // A restore that could not write to the user's disk is a failed
             // restore, not an unhealthy backup: the banner is about whether
             // the machine is being protected, and it still is.
@@ -171,6 +180,8 @@ mod tests {
                 stderr: "boom".into(),
             },
             EngineError::Cancelled,
+            EngineError::KeyForAnotherRepository,
+            EngineError::NotARecoveryKey,
         ]
     }
 

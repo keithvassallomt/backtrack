@@ -76,6 +76,10 @@ pub enum CheckLevel {
     Archives,
     /// Full check (default).
     Full,
+    /// The whole repository, but the archives' metadata for only the newest
+    /// few (`--last N`): what a routine check can afford on a repository with
+    /// a year of history.
+    Sampled(u32),
 }
 
 /// A repository to create.

@@ -120,6 +120,21 @@ pub fn compact_due(last_compact: Option<SystemTime>, now: SystemTime, busy: bool
     })
 }
 
+/// How often the routine repository check runs: monthly, per health.md.
+pub const CHECK_EVERY: Duration = Duration::from_secs(30 * 24 * 3_600);
+
+/// Whether the routine check is due.
+///
+/// The same shape as compaction, for the same reasons: never while another
+/// job has the repository, and not on a daemon's first day, when the check
+/// would be reading a repository nothing has been written to yet.
+pub fn check_due(last_check: Option<SystemTime>, now: SystemTime, busy: bool) -> bool {
+    if busy {
+        return false;
+    }
+    last_check.is_some_and(|last| now.duration_since(last).is_ok_and(|age| age >= CHECK_EVERY))
+}
+
 /// Decide what the scheduler should do at `now`.
 ///
 /// `jitter` is the delay to use if this turns out to be a catch-up; it is passed
@@ -271,6 +286,7 @@ impl Scheduler {
         // deferred by the hourly backup would never run at all.
         if input.configured {
             self.shared.maybe_compact().await;
+            self.shared.maybe_check(SystemTime::now());
         }
 
         match decide(&input, SystemTime::now(), jitter()) {
@@ -564,6 +580,18 @@ mod tests {
         // would simply queue a repository rewrite in front of the next backup.
         let yesterday = now() - Duration::from_secs(25 * 3_600);
         assert!(!compact_due(Some(yesterday), now(), true));
+    }
+
+    #[test]
+    fn the_routine_check_comes_round_monthly_and_never_over_another_job() {
+        let day = Duration::from_secs(24 * 3_600);
+        assert!(check_due(Some(now() - 30 * day), now(), false));
+        assert!(!check_due(Some(now() - 29 * day), now(), false));
+        assert!(!check_due(Some(now() - 45 * day), now(), true));
+        assert!(
+            !check_due(None, now(), false),
+            "the first day starts the clock"
+        );
     }
 
     #[test]

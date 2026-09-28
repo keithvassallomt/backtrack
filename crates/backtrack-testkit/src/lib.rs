@@ -212,6 +212,12 @@ impl BackupEngine for MockEngine {
     async fn check(&self, _level: CheckLevel) -> Result<JobStream> {
         self.job(vec![JobEvent::Finished(Ok(Default::default()))])
     }
+    async fn repair(&self) -> Result<JobStream> {
+        self.job(vec![JobEvent::Finished(Ok(Default::default()))])
+    }
+    async fn key_import(&self, _key: &str) -> Result<()> {
+        self.check_fail()
+    }
 }
 
 /// An in-memory [`SecretStore`]; missing entries return

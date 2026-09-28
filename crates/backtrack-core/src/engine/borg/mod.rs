@@ -25,7 +25,7 @@ use crate::engine::{
 use crate::index::{ArchiveMeta, BorgItem};
 use crate::secret::SecretStore;
 
-use invoke::{base_command, probe_version, spawn_streamed};
+use invoke::{base_command, probe_version, spawn_check, spawn_streamed};
 
 /// The v1 backup engine: drives the `borg` CLI (1.2/1.4).
 pub struct BorgCli {
@@ -436,9 +436,34 @@ impl BackupEngine for BorgCli {
                 cmd.arg("--archives-only");
             }
             CheckLevel::Full => {}
+            CheckLevel::Sampled(newest) => {
+                cmd.arg("--last").arg(newest.to_string());
+            }
         }
         cmd.arg(&self.repo);
-        spawn_streamed(cmd)
+        spawn_check(cmd)
+    }
+
+    async fn repair(&self) -> Result<JobStream> {
+        let mut cmd = self.cmd().await?;
+        // Borg asks for "YES" at a terminal before repairing anything. The
+        // person has already answered that question, in the plain words of
+        // the dialog that led here, and there is no terminal.
+        cmd.env("BORG_CHECK_I_KNOW_WHAT_I_AM_DOING", "YES")
+            .arg("check")
+            .arg("--repair")
+            .arg("--progress")
+            .arg(&self.repo);
+        spawn_check(cmd)
+    }
+
+    async fn key_import(&self, key: &str) -> Result<()> {
+        // No passphrase: putting the key back only writes it into the
+        // repository's configuration, and using it is what needs one. The key
+        // goes in on stdin so that it is never written to a file on the way.
+        let mut cmd = base_command(&self.bin, "");
+        cmd.arg("key").arg("import").arg(&self.repo).arg("-");
+        run_with_input(cmd, key).await.map(|_| ())
     }
 }
 
@@ -545,6 +570,32 @@ async fn run_to_completion(mut cmd: Command) -> Result<Vec<u8>> {
         code: -1,
         stderr: format!("running borg: {e}"),
     })?;
+    finished(out)
+}
+
+/// [`run_to_completion`], with `input` written to the command's stdin.
+async fn run_with_input(mut cmd: Command, input: &str) -> Result<Vec<u8>> {
+    use tokio::io::AsyncWriteExt;
+    let spawn_failed = |e: std::io::Error| EngineError::BorgFailed {
+        code: -1,
+        stderr: format!("running borg: {e}"),
+    };
+    cmd.stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut child = cmd.spawn().map_err(spawn_failed)?;
+    if let Some(mut stdin) = child.stdin.take() {
+        stdin
+            .write_all(input.as_bytes())
+            .await
+            .map_err(spawn_failed)?;
+        // Dropped here, which closes it: Borg reads to the end.
+    }
+    finished(child.wait_with_output().await.map_err(spawn_failed)?)
+}
+
+/// Classify a finished command: its stdout, unless it failed.
+fn finished(out: std::process::Output) -> Result<Vec<u8>> {
     let code = out.status.code().unwrap_or(-1);
     match classify::classify_exit(code) {
         classify::ExitClass::Success => {}

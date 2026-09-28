@@ -92,7 +92,29 @@ fn send_sigterm(child: &Child) {
 /// Spawn a job-style borg command (progress on stderr) and return its stream.
 /// Stdout is discarded; the stderr reader forwards events and, on exit,
 /// classifies failure into the terminal [`JobEvent::Finished`].
-pub(super) fn spawn_streamed(mut cmd: Command) -> Result<JobStream> {
+pub(super) fn spawn_streamed(cmd: Command) -> Result<JobStream> {
+    spawn(cmd, Warnings::Tolerated)
+}
+
+/// [`spawn_streamed`] for `borg check`, which reports damage by exiting in
+/// the *warning* band: a repository with a corrupt segment exits 1 with
+/// "errors found", even under `BORG_EXIT_CODES=modern`. Read as every other
+/// command's warnings are, that is a clean bill of health for a damaged
+/// repository.
+pub(super) fn spawn_check(cmd: Command) -> Result<JobStream> {
+    spawn(cmd, Warnings::MeanDamage)
+}
+
+/// What a warning exit means for the command that produced it.
+#[derive(Clone, Copy)]
+enum Warnings {
+    /// The command reached its normal end; see [`classify_exit`].
+    Tolerated,
+    /// The command found something wrong with the repository.
+    MeanDamage,
+}
+
+fn spawn(mut cmd: Command, warnings: Warnings) -> Result<JobStream> {
     cmd.stdout(Stdio::null())
         .stderr(Stdio::piped())
         .kill_on_drop(true);
@@ -149,10 +171,13 @@ pub(super) fn spawn_streamed(mut cmd: Command) -> Result<JobStream> {
                         // warnings have already gone out as `JobEvent::Log`, so
                         // this line is only the fact that the run as a whole
                         // ended in the warning band.
-                        ExitClass::Warning => {
-                            tracing::info!(code, "borg finished with warnings");
-                            Ok(JobSummary::default())
-                        }
+                        ExitClass::Warning => match warnings {
+                            Warnings::Tolerated => {
+                                tracing::info!(code, "borg finished with warnings");
+                                Ok(JobSummary::default())
+                            }
+                            Warnings::MeanDamage => Err(EngineError::RepoCorrupt),
+                        },
                         ExitClass::Error => Err(classify(code, &errbuf)),
                     }
                 }

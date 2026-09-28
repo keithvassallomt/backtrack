@@ -1686,3 +1686,502 @@ async fn moving_to_a_new_destination_leaves_the_old_one_intact() {
         "the local snapshots open with the new passphrase"
     );
 }
+
+/// Wait for a job to end and take it in as the signal fan-out would, then
+/// return how it ended.
+async fn settle(shared: &Arc<Shared>, job: u64) -> crate::jobs::JobState {
+    for _ in 0..1200 {
+        let snapshot = shared.jobs.snapshot(job).expect("job exists");
+        if snapshot.state.is_terminal() {
+            shared.job_ended(job, snapshot.kind, &snapshot.state);
+            shared.reassess(SystemTime::now());
+            return snapshot.state;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    panic!("job {job} never finished");
+}
+
+fn failed_with(state: &crate::jobs::JobState) -> Option<backtrack_core::engine::EngineError> {
+    match state {
+        crate::jobs::JobState::Failed(error) => Some(error.clone()),
+        _ => None,
+    }
+}
+
+fn completed(state: &crate::jobs::JobState) -> bool {
+    *state == crate::jobs::JobState::Done(crate::jobs::Outcome::Completed)
+}
+
+/// The state and its reason, as a banner would read them.
+fn health(shared: &Arc<Shared>) -> (&'static str, &'static str) {
+    let health = shared.health();
+    (health.state.as_str(), health.reason_str())
+}
+
+/// S10-T4, the passphrase row: a stored passphrase that no longer opens the
+/// repository stops backups, a wrong one typed into the dialog is refused
+/// without being kept, and the right one resumes them.
+#[tokio::test]
+async fn a_wrong_passphrase_is_broken_until_the_right_one_is_given_again() {
+    let fixture = small_fixture().await;
+    let shared = Arc::clone(&fixture.shared);
+    let repo = shared.config().storage.repository.unwrap();
+    let daemon = Daemon1::new(Arc::clone(&shared));
+
+    shared
+        .secrets
+        .set(&repo, "not the passphrase")
+        .await
+        .unwrap();
+    let job = daemon.backup_now().await.unwrap();
+    assert_eq!(
+        failed_with(&settle(&shared, job).await),
+        Some(backtrack_core::engine::EngineError::PassphraseWrong)
+    );
+    assert_eq!(health(&shared), ("BROKEN", "passphrase-wrong"));
+
+    let refused = daemon.unlock_backups("still wrong", true, "").await;
+    assert!(
+        matches!(
+            refused,
+            Err(crate::service::DaemonError::PassphraseWrong(_))
+        ),
+        "{refused:?}"
+    );
+    assert_eq!(
+        shared.secrets.get(&repo).await.unwrap(),
+        "not the passphrase",
+        "a passphrase that did not open the repository is not kept"
+    );
+    assert_eq!(health(&shared), ("BROKEN", "passphrase-wrong"));
+
+    let job = daemon.unlock_backups(PASS, true, "").await.unwrap();
+    assert!(job > 0, "backups resume at once");
+    assert_ne!(
+        health(&shared).0,
+        "BROKEN",
+        "the banner goes as soon as the passphrase is proved, not an hour later"
+    );
+    assert!(completed(&settle(&shared, job).await));
+    assert_eq!(health(&shared), ("HEALTHY", ""));
+    assert_eq!(shared.secrets.get(&repo).await.unwrap(), PASS);
+}
+
+/// The keyring losing the passphrase, and the person choosing not to let it
+/// keep the new one.
+#[tokio::test]
+async fn a_missing_passphrase_is_kept_only_where_the_person_says() {
+    let fixture = small_fixture().await;
+    let shared = Arc::clone(&fixture.shared);
+    let repo = shared.config().storage.repository.unwrap();
+    let daemon = Daemon1::new(Arc::clone(&shared));
+    // The engine the daemon builds for itself, which asks the daemon's own
+    // store: a passphrase that is not remembered lives nowhere else.
+    shared.connect_engine().await.unwrap();
+
+    shared.secrets.delete(&repo).await.unwrap();
+    let job = daemon.backup_now().await.unwrap();
+    assert_eq!(
+        failed_with(&settle(&shared, job).await),
+        Some(backtrack_core::engine::EngineError::PassphraseMissing)
+    );
+    assert_eq!(health(&shared), ("BROKEN", "passphrase-missing"));
+
+    let job = daemon.unlock_backups(PASS, false, "").await.unwrap();
+    assert!(completed(&settle(&shared, job).await));
+    assert_eq!(health(&shared), ("HEALTHY", ""));
+    assert!(!shared.config().security.remember_passphrase);
+    let keyring = FileSecretStore::new(fixture._dir.path().join("s.json"));
+    assert_eq!(
+        keyring.get(&repo).await.unwrap_err(),
+        backtrack_core::engine::EngineError::PassphraseMissing,
+        "not remembered means not in the keyring"
+    );
+}
+
+/// "Lost the passphrase? Use your recovery key…": the repository's key was
+/// changed somewhere else, and the key saved before that puts it back.
+#[tokio::test]
+async fn a_key_changed_elsewhere_is_put_back_from_the_saved_recovery_key() {
+    let fixture = small_fixture().await;
+    let shared = Arc::clone(&fixture.shared);
+    let daemon = Daemon1::new(Arc::clone(&shared));
+    let saved = engine(&shared).key_export().await.unwrap();
+    engine(&shared)
+        .change_passphrase(PASS, "changed on another computer")
+        .await
+        .unwrap();
+
+    let job = daemon.backup_now().await.unwrap();
+    settle(&shared, job).await;
+    assert_eq!(health(&shared), ("BROKEN", "passphrase-wrong"));
+
+    let refused = daemon.unlock_backups(PASS, true, "not a key").await;
+    assert!(
+        matches!(
+            refused,
+            Err(crate::service::DaemonError::NotARecoveryKey(_))
+        ),
+        "{refused:?}"
+    );
+
+    let job = daemon.unlock_backups(PASS, true, &saved).await.unwrap();
+    assert!(completed(&settle(&shared, job).await));
+    assert_eq!(health(&shared), ("HEALTHY", ""));
+}
+
+/// Make everything under `path` read-only, or writable again.
+fn writable(path: &std::path::Path, yes: bool) {
+    use std::os::unix::fs::PermissionsExt;
+    for entry in walk(path) {
+        let is_dir = entry.is_dir();
+        let mode = match (is_dir, yes) {
+            (true, true) => 0o700,
+            (true, false) => 0o500,
+            (false, true) => 0o600,
+            (false, false) => 0o400,
+        };
+        std::fs::set_permissions(&entry, std::fs::Permissions::from_mode(mode)).unwrap();
+    }
+}
+
+/// Every path under `root`, `root` included, parents before children.
+fn walk(root: &std::path::Path) -> Vec<std::path::PathBuf> {
+    let mut found = vec![root.to_path_buf()];
+    let mut next = 0;
+    while next < found.len() {
+        let here = found[next].clone();
+        next += 1;
+        if here.is_dir() {
+            let mut children: Vec<_> = std::fs::read_dir(&here)
+                .unwrap()
+                .flatten()
+                .map(|e| e.path())
+                .collect();
+            children.sort();
+            found.extend(children);
+        }
+    }
+    found
+}
+
+/// S10-T4, the sign-in row, and the DoD's "make destination unwritable": a
+/// destination that is there and refuses to be written to stops backups with
+/// the banner that says so, and trying again once it accepts them clears it.
+#[tokio::test]
+async fn a_destination_that_refuses_writes_is_broken_until_it_takes_them_again() {
+    if rustix::process::geteuid().is_root() {
+        eprintln!("skipping: running as root, which bypasses permission checks");
+        return;
+    }
+    let fixture = small_fixture().await;
+    let shared = Arc::clone(&fixture.shared);
+    let repo = std::path::PathBuf::from(shared.config().storage.repository.unwrap());
+    let daemon = Daemon1::new(Arc::clone(&shared));
+
+    writable(&repo, false);
+    assert_eq!(
+        shared.probe_destination().await,
+        crate::reachability::Reach::Yes,
+        "it is there, so this is not the local safety net's to cover"
+    );
+    let job = daemon.backup_now().await.unwrap();
+    let ended = settle(&shared, job).await;
+    writable(&repo, true);
+    assert_eq!(
+        failed_with(&ended),
+        Some(backtrack_core::engine::EngineError::AuthFailed)
+    );
+    assert_eq!(health(&shared), ("BROKEN", "auth-failed"));
+
+    // "Try Again", once whoever changed it has changed it back.
+    let job = daemon.backup_now().await.unwrap();
+    assert!(completed(&settle(&shared, job).await));
+    assert_eq!(health(&shared), ("HEALTHY", ""));
+}
+
+/// The environment variable that tells the test below it is the copy running
+/// inside the namespace, and where the small filesystem is.
+const QUOTA_DIR: &str = "BACKTRACK_TEST_QUOTA_DIR";
+
+/// S10-T4, the destination-full row, against a destination that really is
+/// full: a few megabytes of tmpfs in a user namespace of its own, so no root
+/// is needed and nothing outside the test can see it. The test runs itself
+/// again inside the namespace, where Borg inherits the mount.
+#[tokio::test]
+async fn a_full_destination_is_broken_and_room_made_on_it_lets_backups_run() {
+    let Some(quota) = std::env::var_os(QUOTA_DIR) else {
+        let dir = tempfile::tempdir().unwrap();
+        let allowed = std::process::Command::new("unshare")
+            .args(["-Urm", "true"])
+            .status()
+            .is_ok_and(|status| status.success());
+        if !allowed {
+            eprintln!("skipping: user namespaces are not available here");
+            return;
+        }
+        let status = std::process::Command::new("unshare")
+            .args(["-Urm", "sh", "-c"])
+            .arg("mount -t tmpfs -o size=4m tmpfs \"$0\" && exec \"$@\"")
+            .arg(dir.path())
+            .arg(std::env::current_exe().unwrap())
+            .args([
+                "service::e2e::a_full_destination_is_broken_and_room_made_on_it_lets_backups_run",
+                "--exact",
+                "--nocapture",
+                "--test-threads=1",
+            ])
+            .env(QUOTA_DIR, dir.path())
+            .status()
+            .unwrap();
+        assert!(status.success(), "the run inside the namespace failed");
+        return;
+    };
+
+    let dir = tempfile::tempdir().unwrap();
+    let repo = std::path::Path::new(&quota).join("repo");
+    let repo = repo.to_str().unwrap().to_string();
+    let src = dir.path().join("src");
+    std::fs::create_dir_all(&src).unwrap();
+    std::fs::write(src.join("notes.txt"), b"small enough to fit").unwrap();
+    // Incompressible, and bigger than the whole destination.
+    let mut state = 0x9e37_79b9_7f4a_7c15u64;
+    let big: Vec<u8> = (0..6_000_000)
+        .map(|_| {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            (state >> 32) as u8
+        })
+        .collect();
+    std::fs::write(src.join("video.bin"), big).unwrap();
+
+    let secrets: Arc<dyn SecretStore> = Arc::new(FileSecretStore::new(dir.path().join("s.json")));
+    secrets.set(&repo, PASS).await.unwrap();
+    let borg = BorgCli::new(repo.clone(), repo.clone(), Arc::clone(&secrets))
+        .await
+        .unwrap();
+    borg.init_repo(&RepoSpec {
+        path: repo.clone(),
+        encryption: Encryption::RepokeyBlake2,
+    })
+    .await
+    .unwrap();
+    let mut config = Config::default();
+    config.storage.repository = Some(repo);
+    config.backup.include = vec![src.clone()];
+    config.backup.exclude = vec![];
+    let shared = Shared::in_dir(config, JobRegistry::new(), secrets, dir.path());
+    shared.set_engine(Arc::new(borg));
+    shared.set_index(Arc::new(std::sync::Mutex::new(
+        backtrack_core::index::IndexWriter::open(&dir.path().join("index.db")).unwrap(),
+    )));
+    let daemon = Daemon1::new(Arc::clone(&shared));
+
+    let job = daemon.backup_now().await.unwrap();
+    assert_eq!(
+        failed_with(&settle(&shared, job).await),
+        Some(backtrack_core::engine::EngineError::DestinationFull)
+    );
+    assert_eq!(health(&shared), ("BROKEN", "destination-full"));
+
+    // Free Up Space: the retention policy, then the space it frees.
+    let job = daemon.prune().await.unwrap();
+    assert!(
+        completed(&settle(&shared, job).await),
+        "prune runs on a full destination"
+    );
+    let job = daemon.compact().await.unwrap();
+    assert!(
+        completed(&settle(&shared, job).await),
+        "and so does compaction"
+    );
+    assert_eq!(
+        health(&shared),
+        ("BROKEN", "destination-full"),
+        "only a backup that fits proves the problem gone"
+    );
+
+    // What the person does about it: here, not keeping the video.
+    std::fs::remove_file(src.join("video.bin")).unwrap();
+    let job = daemon.backup_now().await.unwrap();
+    assert!(completed(&settle(&shared, job).await));
+    assert_eq!(health(&shared), ("HEALTHY", ""));
+}
+
+/// Flip bytes in the middle of the largest data segment.
+fn damage(repo: &str) {
+    let segments = std::path::Path::new(repo).join("data/0");
+    let largest = std::fs::read_dir(&segments)
+        .unwrap()
+        .flatten()
+        .max_by_key(|entry| entry.metadata().map(|m| m.len()).unwrap_or(0))
+        .unwrap()
+        .path();
+    let mut bytes = std::fs::read(&largest).unwrap();
+    let middle = bytes.len() / 2;
+    for byte in &mut bytes[middle..middle + 64] {
+        *byte ^= 0xff;
+    }
+    std::fs::write(&largest, bytes).unwrap();
+}
+
+/// Every file under `root`, by its path relative to `root`, with its bytes.
+fn fingerprint(root: &std::path::Path) -> Vec<(std::path::PathBuf, Vec<u8>)> {
+    walk(root)
+        .into_iter()
+        .filter(|path| path.is_file())
+        .map(|path| {
+            let bytes = std::fs::read(&path).unwrap();
+            (path.strip_prefix(root).unwrap().to_path_buf(), bytes)
+        })
+        .collect()
+}
+
+/// S10-T4, the repair row, and the stage's rule that the flow never deletes:
+/// a damaged repository is found by the check, the repair makes it whole, and
+/// when a fresh start is taken the old repository survives it byte for byte.
+#[tokio::test]
+async fn a_damaged_repository_is_checked_repaired_and_never_deleted() {
+    let fixture = fixture().await;
+    let shared = Arc::clone(&fixture.shared);
+    let repo = shared.config().storage.repository.unwrap();
+    let daemon = Daemon1::new(Arc::clone(&shared));
+    let job = daemon.backup_now().await.unwrap();
+    assert!(completed(&settle(&shared, job).await));
+
+    damage(&repo);
+    let job = daemon.verify().await.unwrap();
+    assert_eq!(
+        failed_with(&settle(&shared, job).await),
+        Some(backtrack_core::engine::EngineError::RepoCorrupt)
+    );
+    assert_eq!(health(&shared), ("BROKEN", "repo-corrupt"));
+
+    let job = daemon.repair().await.unwrap();
+    assert!(completed(&settle(&shared, job).await));
+    let job = daemon.verify().await.unwrap();
+    assert!(completed(&settle(&shared, job).await));
+    assert_eq!(
+        health(&shared),
+        ("HEALTHY", ""),
+        "a clean check is the proof, with no backup needed"
+    );
+
+    // Unrecoverable, as far as the person is concerned: they start afresh.
+    damage(&repo);
+    let job = daemon.verify().await.unwrap();
+    settle(&shared, job).await;
+    assert_eq!(health(&shared), ("BROKEN", "repo-corrupt"));
+    let before = fingerprint(std::path::Path::new(&repo));
+    assert!(!before.is_empty());
+
+    let aside = daemon.start_fresh().await.unwrap();
+    assert!(
+        !std::path::Path::new(&repo).exists(),
+        "the way is clear for the new one"
+    );
+    assert_eq!(
+        fingerprint(std::path::Path::new(&aside)),
+        before,
+        "every file of the old repository is where the fresh start put it, unchanged"
+    );
+    let index = shared.index().unwrap();
+    let primary = tokio::task::spawn_blocking(move || {
+        index
+            .lock()
+            .unwrap()
+            .archives_in(backtrack_core::index::Repo::Primary)
+            .unwrap()
+            .len()
+    })
+    .await
+    .unwrap();
+    assert_eq!(primary, 0, "the catalogue no longer offers what it held");
+
+    // The wizard's part: a new repository where the old one was.
+    let (_server, client) = connect(Arc::clone(&shared)).await;
+    client
+        .call_method(
+            None::<()>,
+            PATH,
+            Some(IFACE),
+            "SetupRepo",
+            &(repo.as_str(), PASS),
+        )
+        .await
+        .expect("a new repository in the old one's place");
+    assert_ne!(
+        health(&shared).0,
+        "BROKEN",
+        "a new repository has no old failures"
+    );
+    let job = daemon.backup_now().await.unwrap();
+    assert!(completed(&settle(&shared, job).await));
+    assert_eq!(health(&shared), ("HEALTHY", ""));
+    assert_eq!(
+        fingerprint(std::path::Path::new(&aside)),
+        before,
+        "and it is still untouched after the new one has been used"
+    );
+}
+
+/// S10-T5: a catalogue damaged between runs is put aside when the daemon
+/// starts, health says it is being rebuilt, and once the repository has been
+/// read again the timeline has every backup back and health is quiet.
+#[tokio::test]
+async fn a_damaged_catalogue_is_rebuilt_from_the_repository_and_health_recovers() {
+    let fixture = small_fixture().await;
+    let shared = Arc::clone(&fixture.shared);
+    let daemon = Daemon1::new(Arc::clone(&shared));
+    for _ in 0..2 {
+        let job = daemon.backup_now().await.unwrap();
+        assert!(completed(&settle(&shared, job).await));
+    }
+
+    // Damaged while the daemon was not running.
+    let index_path = fixture._dir.path().join("index.db");
+    *shared.index.lock().unwrap() = None;
+    drop(daemon);
+    for suffix in ["-wal", "-shm"] {
+        let _ = std::fs::remove_file(format!("{}{suffix}", index_path.display()));
+    }
+    std::fs::write(&index_path, vec![0x5au8; 64 * 1024]).unwrap();
+
+    // The next start.
+    let (writer, damaged) = crate::daemon::open_index_at(&index_path).unwrap();
+    assert!(damaged);
+    let restarted = Shared::in_dir(
+        shared.config(),
+        JobRegistry::new(),
+        Arc::new(FileSecretStore::new(fixture._dir.path().join("s.json"))),
+        fixture._dir.path(),
+    );
+    restarted.set_engine(engine(&shared));
+    restarted.set_index(Arc::new(std::sync::Mutex::new(writer)));
+    restarted.restore_persisted_state();
+    restarted.seed_last_backup();
+    *restarted.last_backup.lock().unwrap() = Some(SystemTime::now());
+    restarted.start_catalogue_rebuild();
+    assert_eq!(health(&restarted), ("DEGRADED", "catalogue-rebuilding"));
+
+    let job = restarted
+        .reconcile_catalogue()
+        .await
+        .expect("the destination is there to rebuild from");
+    assert!(completed(&settle(&restarted, job).await));
+    assert_eq!(health(&restarted), ("HEALTHY", ""));
+    let index = restarted.index().unwrap();
+    let archives = tokio::task::spawn_blocking(move || {
+        index
+            .lock()
+            .unwrap()
+            .archives_in(backtrack_core::index::Repo::Primary)
+            .unwrap()
+            .len()
+    })
+    .await
+    .unwrap();
+    assert_eq!(archives, 2, "every backup is browsable again");
+}

@@ -298,7 +298,7 @@ async fn run(command: Command) -> Result<String, CliError> {
             // Best-effort: a doctor bundle is most wanted precisely when the
             // daemon is not answering, so a failure to reach it becomes part of
             // the report rather than the end of it.
-            let (status_json, config_toml) = match proxy::connect().await {
+            let (status_json, config_toml, health) = match proxy::connect().await {
                 Ok(daemon) => {
                     let status = match daemon.get_status().await {
                         Ok(status) => {
@@ -308,12 +308,17 @@ async fn run(command: Command) -> Result<String, CliError> {
                         Err(e) => format!("{{\"error\": \"{e}\"}}"),
                     };
                     let config = daemon.get_config().await.unwrap_or_default();
-                    (status, config)
+                    let health = daemon.get_health().await.map_err(|e| e.to_string());
+                    (status, config, health)
                 }
-                Err(e) => (format!("{{\"error\": \"{e}\"}}"), String::new()),
+                Err(e) => (
+                    format!("{{\"error\": \"{e}\"}}"),
+                    String::new(),
+                    Err(e.to_string()),
+                ),
             };
 
-            let path = doctor::collect(&status_json, &config_toml, now)?;
+            let path = doctor::collect(&status_json, &config_toml, &health, now)?;
             Ok(format!(
                 "Diagnostic bundle written to:\n  {}\n\nIt contains no passphrases or keys. Attach it to a bug report.\n",
                 path.display()

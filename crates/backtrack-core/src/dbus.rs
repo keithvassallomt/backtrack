@@ -317,6 +317,46 @@ pub struct StorageInfo {
     pub free: u64,
 }
 
+/// What `GetLocalStorage` answers with: where the room on this computer has
+/// gone, for the "not enough space on this computer" fix.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+pub struct LocalStorage {
+    /// Free space where Backtrack keeps its data; 0 when it could not be read.
+    pub free: u64,
+    /// What the local safety net holds while the destination is away, and the
+    /// limit it is kept within.
+    pub snapshots: u64,
+    pub snapshot_limit: u64,
+    /// Files restores replaced, kept so that a restore can be undone.
+    pub stash: u64,
+    /// Copies of backed-up files extracted for previews and comparisons.
+    pub cache: u64,
+}
+
+/// What `GetHealth` answers with: the state, how it came about, and what the
+/// person has been told about it. The detail behind a banner, and what
+/// `backtrack doctor` puts in a bug report.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+pub struct HealthReport {
+    pub state: String,
+    pub reason: String,
+    pub since: u64,
+    /// Recent transitions, oldest first: when, state, reason.
+    pub history: Vec<(u64, String, String)>,
+    /// The last failure of each part of the daemon: which part, when, the
+    /// reason token when the failure is a catalogue row, and what it said.
+    pub errors: Vec<(String, u64, String, String)>,
+    /// The at-risk notices so far: how many for the current stretch without
+    /// a backup, when the last went, and when that stretch began. Zero when
+    /// there have been none.
+    pub at_risk_notices: u32,
+    pub at_risk_notified: u64,
+    pub at_risk_since: u64,
+    /// The last broken notice: what it was about, and when.
+    pub broken_notified_reason: String,
+    pub broken_notified: u64,
+}
+
 /// Phase names carried on `BackupProgress`. Defined here because a client
 /// reads them to decide what to say, and a phase renamed on one side only
 /// would leave a progress page silent.
