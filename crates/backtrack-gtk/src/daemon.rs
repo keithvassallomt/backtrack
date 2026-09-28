@@ -112,9 +112,9 @@ pub trait Daemon1 {
     #[zbus(signal)]
     fn indexing_progress(&self, archive: &str, pct: u32) -> zbus::Result<()>;
 
-    /// The overall health state changed.
+    /// The overall health state changed, and what it is about.
     #[zbus(signal)]
-    fn status_changed(&self, state: &str) -> zbus::Result<()>;
+    fn status_changed(&self, state: &str, reason: &str) -> zbus::Result<()>;
 
     /// A job ended. `outcome` is `completed`, `cancelled` or `failed`.
     #[zbus(signal)]

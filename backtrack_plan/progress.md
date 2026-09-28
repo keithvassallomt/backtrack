@@ -12,8 +12,8 @@
 > tasks: add them here + to the stage file, then `just provision-board-apply`.
 > See [../CLAUDE.md](../CLAUDE.md) for the full workflow.
 
-**Current stage:** 10 (not started)
-**Last updated:** 2026-09-25
+**Current stage:** 10 (in progress)
+**Last updated:** 2026-09-28
 
 ## Stage 0 — Bootstrap ([stage file](stages/stage-00-bootstrap.md))
 - [x] S00-T1 Git repo, license, .gitignore, README skeleton
@@ -101,8 +101,8 @@
 - [x] S09-T5 Run-wizard-again path (non-destructive)
 
 ## Stage 10 — Health ([stage file](stages/stage-10-health.md))
-- [ ] S10-T1 Health state machine + escalation timers per health.md
-- [ ] S10-T2 Notifications respecting user policy
+- [x] S10-T1 Health state machine + escalation timers per health.md
+- [/] S10-T2 Notifications respecting user policy
 - [ ] S10-T3 Main-window banner states (mockup 23)
 - [ ] S10-T4 Resolution flows: passphrase (mockup 24), reauth, disk-full, repair
 - [ ] S10-T5 Monthly borg check schedule + index integrity check

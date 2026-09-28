@@ -168,6 +168,10 @@ pub async fn run() -> Result<Outcome, StartupError> {
         .await
         .map_err(StartupError::Bus)?;
 
+    // Before the fan-out starts, so the first thing health has to say reaches
+    // the desktop rather than the log.
+    shared.set_notifier(Arc::new(crate::notify::DesktopSink::start(&connection)));
+
     let emitter = SignalEmitter::new(&connection, dbus::OBJECT_PATH).map_err(StartupError::Bus)?;
     tokio::spawn(service::fan_out_signals(
         Arc::clone(&shared),
@@ -223,7 +227,7 @@ pub async fn run() -> Result<Outcome, StartupError> {
     // and catalogues whatever is missing. It runs as a job because it takes only
     // a shared lock and can take minutes on a large repository: a restore, and
     // the next hourly backup, must not wait for it.
-    let outstanding = shared.uncatalogued_count().await;
+    let outstanding = shared.refresh_pending().await;
     if outstanding > 0 {
         warn!(
             count = outstanding,

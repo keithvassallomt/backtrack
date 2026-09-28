@@ -22,6 +22,10 @@ use backtrack_core::dbus::{SearchResult, Status};
 pub fn status_json(status: &Status, now: SystemTime) -> serde_json::Value {
     serde_json::json!({
         "state": status.state,
+        // What the state is about, or null when healthy: the same token the
+        // daemon sends, so a script can tell a full disk from a lost
+        // passphrase without parsing prose.
+        "reason": if status.reason.is_empty() { serde_json::Value::Null } else { status.reason.clone().into() },
         "healthy": status.state == "HEALTHY",
         "configured": status.configured,
         "destination_reachable": status.destination_reachable,
@@ -295,6 +299,8 @@ mod tests {
             active_job: 0,
             paused_until: 0,
             configured: true,
+            reason: String::new(),
+            since: 0,
         }
     }
 
@@ -306,6 +312,7 @@ mod tests {
         let json = status_json(&status(), at(1_700_001_800));
         let expected = serde_json::json!({
             "state": "HEALTHY",
+            "reason": null,
             "healthy": true,
             "configured": true,
             "destination_reachable": true,

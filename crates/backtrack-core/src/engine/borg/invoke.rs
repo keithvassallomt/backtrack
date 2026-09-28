@@ -13,9 +13,9 @@ use tokio::process::{Child, Command};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
-use crate::engine::borg::classify::{classify, classify_exit, ErrLine, ExitClass};
+use crate::engine::borg::classify::{classify, classify_exit, is_evidence, ErrLine, ExitClass};
 use crate::engine::borg::logjson::{parse_log_line, Parsed};
-use crate::engine::{EngineError, JobEvent, JobStream, JobSummary, LogLevel, Result};
+use crate::engine::{EngineError, JobEvent, JobStream, JobSummary, Result};
 
 /// The minimum supported Borg version.
 pub(super) const BORG_FLOOR: (u32, u32) = (1, 2);
@@ -190,7 +190,7 @@ async fn forward_line(
             msgid,
             message,
         } => {
-            if level == LogLevel::Error {
+            if is_evidence(level, &message) {
                 errbuf.push(ErrLine {
                     msgid,
                     message: message.clone(),

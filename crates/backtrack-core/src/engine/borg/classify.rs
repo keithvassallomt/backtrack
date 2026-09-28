@@ -89,6 +89,22 @@ pub struct ErrLine {
     pub message: String,
 }
 
+/// Whether a `--log-json` line is evidence of why an invocation failed.
+///
+/// Borg's own errors, and ssh's words about the connection, which Borg relays
+/// at warning level as `Remote:` lines. Without the second, a server that
+/// refuses the sign-in looks like one that went away: Borg's own error is only
+/// that the connection closed, and the "Permission denied" that says why is a
+/// warning a line earlier.
+pub fn is_evidence(level: crate::engine::LogLevel, message: &str) -> bool {
+    use crate::engine::LogLevel;
+    match level {
+        LogLevel::Error => true,
+        LogLevel::Warning => message.starts_with("Remote:"),
+        _ => false,
+    }
+}
+
 /// True if any error line matches any single needle: msgid equal
 /// (case-insensitive) OR message contains it (case-insensitive).
 fn any(errors: &[ErrLine], needles: &[&str]) -> bool {
@@ -233,6 +249,36 @@ mod tests {
     fn ssh_auth_maps_to_auth_failed() {
         let errs = [line(None, "Permission denied (publickey).")];
         assert_eq!(classify(2, &errs), EngineError::AuthFailed);
+    }
+
+    #[test]
+    fn a_refused_sign_in_relayed_by_borg_is_not_mistaken_for_a_lost_connection() {
+        // What a scheduled backup to a server that no longer accepts the key
+        // actually sees: ssh's refusal relayed as a warning, then Borg's own
+        // error, which on its own would read as the server going away.
+        let errs = [
+            line(
+                None,
+                "Remote: keith@nas.local: Permission denied (publickey,password).",
+            ),
+            line(
+                None,
+                "Connection closed by remote host. Is borg working on the server?",
+            ),
+        ];
+        assert_eq!(classify(2, &errs), EngineError::AuthFailed);
+    }
+
+    #[test]
+    fn ssh_s_own_words_count_and_borg_s_other_warnings_do_not() {
+        use crate::engine::LogLevel;
+        assert!(is_evidence(LogLevel::Error, "anything"));
+        assert!(is_evidence(LogLevel::Warning, "Remote: Permission denied"));
+        assert!(!is_evidence(
+            LogLevel::Warning,
+            "a file vanished while being read"
+        ));
+        assert!(!is_evidence(LogLevel::Info, "Remote: hello"));
     }
 
     #[test]

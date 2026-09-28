@@ -21,6 +21,7 @@
 
 mod e2e;
 mod error;
+mod escalation;
 mod health;
 #[cfg(test)]
 mod introspect;
@@ -33,8 +34,9 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
 
 use backtrack_core::config::Config;
+use backtrack_core::dbus::Reason;
 use backtrack_core::engine::{
-    ArchiveId, BackupEngine, BorgCli, CheckLevel, CreateSpec, PrunePolicy,
+    ArchiveId, BackupEngine, BorgCli, CheckLevel, CreateSpec, HealthFailure, PrunePolicy,
 };
 use backtrack_core::index::{IndexReader, IndexWriter, Kind};
 use backtrack_core::paths;
@@ -57,7 +59,8 @@ use crate::schedule::{self, ScheduleInput};
 
 pub use backtrack_core::dbus::{ReplacedFile, RestorePreview, SearchResult, Status, StorageInfo};
 pub use error::{DaemonError, Result};
-pub use health::{HealthInputs, HealthState};
+pub use escalation::Alert;
+pub use health::{Health, HealthInputs, HealthState};
 pub use preview::PreviewCache;
 pub use state::{PauseState, RestorePolicy};
 
@@ -96,7 +99,9 @@ pub struct Shared {
     last_archive: Mutex<Option<String>>,
     /// Facts the health model is computed from.
     last_backup: Mutex<Option<SystemTime>>,
-    blocking_failure: Mutex<bool>,
+    /// The catalogue row a job failed with, held until a backup proves it is
+    /// fixed. See [`update_health`] for why only that clears it.
+    latched: Mutex<Option<HealthFailure>>,
     destination_reachable: Mutex<bool>,
     /// Bookkeeping that has to survive a restart: the pause, the attempt clock,
     /// the compaction clock. See [`backtrack_core::state`].
@@ -119,9 +124,21 @@ pub struct Shared {
     /// [`UnknownProbe`] until the system bus is reached, which keeps a daemon
     /// in a container backing up rather than gated on services it cannot see.
     probe: Mutex<Arc<dyn SystemProbe>>,
-    /// Something wants eventual attention: today, a local disk low enough to
-    /// mention. Feeds the health model's `DEGRADED`.
-    needs_attention: Mutex<bool>,
+    /// The local disk is low enough to mention: `DEGRADED`, the first half of
+    /// health.md's "Local disk full" row.
+    local_disk_low: Mutex<bool>,
+    /// The local disk is too full for a backup to start: the second half,
+    /// `BROKEN`. A fact measured at every preflight rather than a latch, so
+    /// freeing space clears it at the next look.
+    local_disk_full: Mutex<bool>,
+    /// The local safety net held back a snapshot because it would not fit in
+    /// its limit, so changes are not being protected. The same row, `BROKEN`.
+    spool_held: Mutex<bool>,
+    /// Backups that reached a repository and are not browsable yet. Counted
+    /// when jobs end, since asking costs a catalogue query.
+    pending: Mutex<usize>,
+    /// The state last worked out, so a change can be recognised as one.
+    announced: Mutex<Option<Health>>,
     /// The last preflight skip announced, so a machine that sits on battery all
     /// afternoon logs the reason once rather than once a minute.
     last_skip: Mutex<Option<preflight::Skip>>,
@@ -174,6 +191,8 @@ pub struct Shared {
     /// Its end is announced, because the wizard told the person they could
     /// close the window and wait for it.
     first_backup: Mutex<Option<u64>>,
+    /// Where notifications go. Nowhere until the session bus is reached.
+    notifier: Mutex<Arc<dyn crate::notify::NotificationSink>>,
 }
 
 impl Shared {
@@ -259,13 +278,17 @@ impl Shared {
             engine: Mutex::new(None),
             last_archive: Mutex::new(None),
             last_backup: Mutex::new(None),
-            blocking_failure: Mutex::new(false),
+            latched: Mutex::new(None),
             destination_reachable: Mutex::new(true),
             persisted: Mutex::new(RuntimeState::default()),
             state_path,
             waker: Mutex::new(None),
             probe: Mutex::new(Arc::new(UnknownProbe)),
-            needs_attention: Mutex::new(false),
+            local_disk_low: Mutex::new(false),
+            local_disk_full: Mutex::new(false),
+            spool_held: Mutex::new(false),
+            pending: Mutex::new(0),
+            announced: Mutex::new(None),
             last_skip: Mutex::new(None),
             index: Mutex::new(None),
             restores: Arc::new(crate::restore::Restores::default()),
@@ -281,6 +304,7 @@ impl Shared {
             offline_degraded: Mutex::new(false),
             offline_handle: Mutex::new(None),
             first_backup: Mutex::new(None),
+            notifier: Mutex::new(Arc::new(crate::notify::NoDesktop)),
         })
     }
 
@@ -497,6 +521,26 @@ impl Shared {
         Ok(())
     }
 
+    /// Send notifications here from now on.
+    pub fn set_notifier(&self, notifier: Arc<dyn crate::notify::NotificationSink>) {
+        *self.notifier.lock().unwrap() = notifier;
+    }
+
+    /// Show `note` if the person's choice of notifications lets `kind`
+    /// through.
+    fn tell(&self, kind: crate::notify::Kind, note: crate::notify::Note) {
+        let policy = self.config().general.notifications;
+        if crate::notify::permits(policy, kind) {
+            self.notifier.lock().unwrap().show(note);
+        } else {
+            debug!(
+                title = note.title,
+                ?policy,
+                "a notification the person chose not to have"
+            );
+        }
+    }
+
     /// Adopt a probe that can answer for the machine, once one is available.
     pub fn set_probe(&self, probe: Arc<dyn SystemProbe>) {
         *self.probe.lock().unwrap() = probe;
@@ -646,7 +690,8 @@ impl Shared {
         if let Some(reachable) = facts.destination_reachable {
             *self.destination_reachable.lock().unwrap() = reachable;
         }
-        *self.needs_attention.lock().unwrap() = preflight::local_disk_needs_attention(&facts);
+        *self.local_disk_low.lock().unwrap() = preflight::local_disk_needs_attention(&facts);
+        *self.local_disk_full.lock().unwrap() = preflight::local_disk_full(&facts);
 
         match preflight::evaluate(&facts) {
             Verdict::Go => {
@@ -1033,14 +1078,22 @@ impl Shared {
         self.config().storage.offline.enabled && !*self.offline_broken.lock().unwrap()
     }
 
-    /// Fold a finished local backup into the health facts.
-    fn record_offline_outcome(&self) {
+    /// Fold a finished local backup into the health facts, and say whether it
+    /// protected what had changed.
+    ///
+    /// A snapshot held back by the storage limit ends as a successful job,
+    /// because holding is the limit doing its job; but nothing was kept, and
+    /// counting it as protection would let a machine sit behind a full spool
+    /// for a week without ever being at risk.
+    fn record_offline_outcome(&self) -> bool {
         let handle = self.offline_handle.lock().unwrap().clone();
         let Some(outcome) = handle.and_then(|h| h.lock().unwrap().clone()) else {
-            return;
+            return true;
         };
         let outcome = outcome.outcome();
         *self.offline_degraded.lock().unwrap() = outcome.degraded;
+        *self.spool_held.lock().unwrap() = outcome.held;
+        !outcome.held
     }
 
     /// Catalogue anything the repository has that the index does not.
@@ -1224,21 +1277,158 @@ impl Shared {
         Ok(())
     }
 
-    /// The current health state, computed fresh from facts.
-    pub fn health(&self) -> HealthState {
+    /// The current health, computed fresh from facts.
+    pub fn health(&self) -> Health {
         let now = SystemTime::now();
-        let config = self.config();
-        let inputs = HealthInputs {
-            blocking_failure: *self.blocking_failure.lock().unwrap(),
+        health::evaluate(&self.health_inputs(now), now)
+    }
+
+    /// Everything health is computed from, as it stands.
+    fn health_inputs(&self, now: SystemTime) -> HealthInputs {
+        let schedule = self.schedule_input();
+        // The engine's own failure first: it is the one a job actually hit.
+        // The disk and the spool are facts about this computer that the next
+        // look may find already cleared.
+        let local_full = *self.local_disk_full.lock().unwrap() || *self.spool_held.lock().unwrap();
+        let blocking = self
+            .latched
+            .lock()
+            .unwrap()
+            .or(local_full.then_some(HealthFailure::LocalDiskFull));
+        // Most pressing first: a disk filling up turns into a stopped backup,
+        // the other two only ever into a slower timeline.
+        let attention =
+            if *self.local_disk_low.lock().unwrap() || *self.offline_degraded.lock().unwrap() {
+                Some(Reason::LocalDiskFull)
+            } else if *self.pending.lock().unwrap() > 0 && !self.cataloguing() {
+                Some(Reason::NotYetBrowsable)
+            } else {
+                None
+            };
+        HealthInputs {
+            blocking,
             paused_until: self.pause.lock().unwrap().until(now),
             destination_reachable: *self.destination_reachable.lock().unwrap(),
             offline_protection_active: self.offline_protection_active(),
             last_success: *self.last_backup.lock().unwrap(),
-            frequency: config.backup.frequency.interval(),
-            needs_attention: *self.needs_attention.lock().unwrap()
-                || *self.offline_degraded.lock().unwrap(),
+            protected_since: backtrack_core::state::from_epoch(
+                self.persisted.lock().unwrap().protected_since,
+            ),
+            // What the schedule will actually do: a destination with nothing
+            // chosen to back up has no schedule, and cannot be late.
+            frequency: schedule.interval.filter(|_| schedule.configured),
+            attention,
+        }
+    }
+
+    /// Whether something is busy making backups browsable. A backup waiting
+    /// its turn behind one of these is not one that failed to catalogue.
+    fn cataloguing(&self) -> bool {
+        self.jobs.list().iter().any(|job| {
+            !job.state.is_terminal()
+                && matches!(
+                    job.kind,
+                    JobKind::Backup | JobKind::Offline | JobKind::Index
+                )
+        })
+    }
+
+    /// Count the backups that are not browsable yet, for the health model,
+    /// and return the count.
+    pub async fn refresh_pending(&self) -> usize {
+        let count = self.uncatalogued_count().await;
+        *self.pending.lock().unwrap() = count;
+        count
+    }
+
+    /// Work out the health now and act on it: record a change, and tell the
+    /// person if the escalation rules say this is the moment.
+    ///
+    /// Returns the new health when it changed, for the caller to announce.
+    fn reassess(&self, now: SystemTime) -> Option<Health> {
+        let inputs = self.health_inputs(now);
+        let current = health::evaluate(&inputs, now);
+        let changed = {
+            let mut announced = self.announced.lock().unwrap();
+            let changed = *announced != Some(current);
+            *announced = Some(current);
+            changed
         };
-        health::evaluate(&inputs, now)
+        if changed {
+            self.record_transition(current, now);
+            // A notification about a problem that has been fixed is worse
+            // than none: clicking it opens a fix for nothing.
+            if !matches!(current.state, HealthState::AtRisk | HealthState::Broken) {
+                self.notifier
+                    .lock()
+                    .unwrap()
+                    .withdraw(crate::notify::Topic::Health);
+            }
+        }
+
+        let told = self.persisted.lock().unwrap().notified.clone();
+        let until = backtrack_core::state::to_epoch(health::protected_until(&inputs));
+        let at = backtrack_core::state::to_epoch(Some(now)).unwrap_or(0);
+        if let Some((alert, record)) = escalation::decide(current, until, &told, at) {
+            // Recorded whether or not it is shown: someone who has switched
+            // notifications off and back on should not be handed a backlog.
+            self.update_persisted(|state| state.notified = record);
+            info!(?alert, "backups need the person's attention");
+            let destination = self.config().storage.repository.unwrap_or_default();
+            self.tell(
+                crate::notify::Kind::Attention,
+                crate::notify::alert(alert, &backtrack_core::destination::name(&destination)),
+            );
+        }
+        changed.then_some(current)
+    }
+
+    /// Add a change of state to the history, unless the history already ends
+    /// with it — which is what a restart into the same state looks like.
+    fn record_transition(&self, health: Health, now: SystemTime) {
+        let last = self
+            .persisted
+            .lock()
+            .unwrap()
+            .health_history
+            .last()
+            .cloned();
+        if last.is_some_and(|t| t.state == health.state.as_str() && t.reason == health.reason_str())
+        {
+            return;
+        }
+        info!(
+            state = health.state.as_str(),
+            reason = health.reason_str(),
+            "health state changed"
+        );
+        let at = backtrack_core::state::to_epoch(Some(now)).unwrap_or(0);
+        self.update_persisted(|state| {
+            state.record_transition(backtrack_core::state::Transition {
+                at,
+                state: health.state.as_str().to_string(),
+                reason: health.reason_str().to_string(),
+            })
+        });
+    }
+
+    /// When the current state began: its entry in the history, or now if it
+    /// has not been recorded yet.
+    fn state_since(&self, health: Health, now: SystemTime) -> u64 {
+        let history = &self.persisted.lock().unwrap().health_history;
+        history
+            .last()
+            .filter(|t| t.state == health.state.as_str() && t.reason == health.reason_str())
+            .map(|t| t.at)
+            .or_else(|| backtrack_core::state::to_epoch(Some(now)))
+            .unwrap_or(0)
+    }
+
+    /// Start the clock that "no successful backups" is measured on.
+    fn start_protection_clock(&self) {
+        self.update_persisted(|state| {
+            state.protected_since = backtrack_core::state::to_epoch(Some(SystemTime::now()));
+        });
     }
 
     /// The id of whatever is running now, or 0.
@@ -1252,39 +1442,73 @@ impl Shared {
     }
 
     /// Record that a backup succeeded, which is what keeps health honest.
-    fn record_backup_success(&self) {
+    ///
+    /// A backup to the destination proves every blocking failure fixed. One
+    /// on this computer proves only the ones it went through: it needed the
+    /// passphrase, Borg and room on the local disk, and it says nothing at all
+    /// about whether the destination is still full or still refusing us.
+    fn record_backup_success(&self, kind: JobKind) {
         *self.last_backup.lock().unwrap() = Some(SystemTime::now());
-        *self.blocking_failure.lock().unwrap() = false;
+        let mut latched = self.latched.lock().unwrap();
+        let proven = match kind {
+            JobKind::Offline => latched.is_some_and(|failure| {
+                matches!(
+                    failure,
+                    HealthFailure::PassphraseMissing
+                        | HealthFailure::PassphraseWrong
+                        | HealthFailure::BorgMissing
+                        | HealthFailure::LocalDiskFull
+                )
+            }),
+            _ => true,
+        };
+        if proven {
+            *latched = None;
+        }
     }
 
     /// Record a failure that stops backups until the user acts.
-    fn record_blocking_failure(&self, blocking: bool) {
-        *self.blocking_failure.lock().unwrap() = blocking;
+    fn record_blocking_failure(&self, failure: HealthFailure) {
+        *self.latched.lock().unwrap() = Some(failure);
     }
 
-    /// Say how the first backup went, if `job` was it.
+    /// Take in a job that has ended: what it means for health, and whether
+    /// it is worth a notification.
+    fn job_ended(&self, id: u64, kind: JobKind, state: &JobState) {
+        update_health(self, kind, state);
+        self.announce_backup(id, kind, state);
+    }
+
+    /// Say how a backup went, to somebody who wants to know.
     ///
-    /// Only a job that has ended counts, and the record is cleared either way:
-    /// a first backup that failed leaves the next one as the first.
-    ///
-    /// Sent from a task of its own. This is called from the loop that turns
-    /// job updates into signals, and a notification service that is slow to
-    /// answer must not hold up every signal behind it.
-    fn announce_first_backup(&self, job: u64, state: &JobState, bus: &zbus::Connection) {
-        {
+    /// The first backup always gets a word unless notifications are off,
+    /// because the wizard told the person they could close the window and
+    /// wait for it. Every other one only for somebody who asked to hear
+    /// about every backup, and only when it went well: one that did not is
+    /// the health model's to report, when it is worth reporting.
+    fn announce_backup(&self, job: u64, kind: JobKind, state: &JobState) {
+        let first = {
             let mut first = self.first_backup.lock().unwrap();
-            if *first != Some(job) {
-                return;
+            let was = *first == Some(job);
+            if was {
+                // Cleared either way: a first backup that failed leaves the
+                // next one as the first.
+                *first = None;
             }
-            *first = None;
-        }
+            was
+        };
         let Some(outcome) = state.outcome_token() else {
             return;
         };
-        let policy = self.config().general.notifications;
-        if let Some((summary, body)) = crate::notify::first_backup(policy, outcome) {
-            let bus = bus.clone();
-            tokio::spawn(async move { crate::notify::send(&bus, summary, body).await });
+        if first {
+            if let Some(note) = crate::notify::first_backup(outcome) {
+                self.tell(crate::notify::Kind::FirstBackup, note);
+            }
+        } else if kind == JobKind::Backup && *state == JobState::Done(Outcome::Completed) {
+            self.tell(
+                crate::notify::Kind::Success,
+                crate::notify::backup_complete(),
+            );
         }
     }
 }
@@ -1413,8 +1637,9 @@ impl Daemon1 {
             next_due(schedule.interval, schedule.last_attempt, now)
         };
         let local = self.shared.local_protection().await;
+        let health = self.shared.health();
         Ok(Status {
-            state: self.shared.health().as_str().to_string(),
+            state: health.state.as_str().to_string(),
             last_backup: to_epoch(last_backup),
             next_backup: to_epoch(next),
             destination_reachable: self.shared.destination_reachable(),
@@ -1425,6 +1650,8 @@ impl Daemon1 {
             active_job: self.shared.active_job(),
             paused_until: to_epoch(paused_until),
             configured: config.is_configured(),
+            reason: health.reason_str().to_string(),
+            since: self.shared.state_since(health, now),
         })
     }
 
@@ -1953,8 +2180,14 @@ impl Daemon1 {
                 )
                 .await?;
         }
+        let first_sources = before.backup.include.is_empty() && !updated.backup.include.is_empty();
         self.shared.store_config(updated)?;
         info!(key, "configuration changed");
+        // A destination imported with nothing to back up has no schedule, and
+        // nothing can be late until it has one.
+        if first_sources {
+            self.shared.start_protection_clock();
+        }
         // The schedule reads the configuration fresh each time it decides, so
         // a new frequency or source list only needs it to decide again now.
         self.shared.wake_scheduler();
@@ -2017,6 +2250,7 @@ impl Daemon1 {
         self.shared.update_persisted(|state| {
             state.last_attempt = backtrack_core::state::to_epoch(Some(SystemTime::now()));
         });
+        self.shared.start_protection_clock();
         info!(path, "repository created");
         if previous.as_deref() != Some(path) {
             self.shared
@@ -2229,6 +2463,7 @@ impl Daemon1 {
         config.storage.repository = Some(path.to_string());
         self.shared.store_config(config)?;
         self.shared.set_engine(Arc::new(engine));
+        self.shared.start_protection_clock();
         info!(path, archives = info.archive_count, "repository imported");
         if previous.as_deref() != Some(path) {
             self.shared
@@ -2267,9 +2502,14 @@ impl Daemon1 {
         pct: u32,
     ) -> zbus::Result<()>;
 
-    /// The overall health state changed.
+    /// The overall health state changed. `reason` is what it is about, as a
+    /// `Reason` token, and empty when healthy.
     #[zbus(signal)]
-    pub async fn status_changed(emitter: &SignalEmitter<'_>, state: &str) -> zbus::Result<()>;
+    pub async fn status_changed(
+        emitter: &SignalEmitter<'_>,
+        state: &str,
+        reason: &str,
+    ) -> zbus::Result<()>;
 
     /// A job ended, however it ended.
     ///
@@ -2321,6 +2561,11 @@ async fn cache_extraction(
     Ok(())
 }
 
+/// How often health is looked at again when nothing has happened. Two things
+/// change it with no event at all to hang a look off: a pause running out,
+/// and a day passing without a backup.
+const REASSESS_EVERY: Duration = Duration::from_secs(60);
+
 /// Turn the job registry's updates into D-Bus signals.
 ///
 /// Runs for the daemon's lifetime. `StatusChanged` is emitted only when the
@@ -2329,14 +2574,18 @@ async fn cache_extraction(
 pub async fn fan_out_signals(shared: Arc<Shared>, emitter: SignalEmitter<'static>) {
     let mut updates = shared.jobs.subscribe();
     let health_changed = shared.health_waker();
-    let mut announced = shared.health();
-    let _ = Daemon1::status_changed(&emitter, announced.as_str()).await;
+    let mut tick = tokio::time::interval(REASSESS_EVERY);
+    // The first answer is announced whatever it is: a client that connected
+    // while the daemon was starting is waiting to hear it.
+    let first = shared
+        .reassess(SystemTime::now())
+        .unwrap_or_else(|| shared.health());
+    announce(&emitter, first).await;
 
     loop {
-        // Two sources, one destination. Jobs are the usual reason health moves,
-        // but not the only one: the backup destination coming or going changes
-        // the answer with no job involved at all, and a client that only ever
-        // hears about jobs would sit on a stale banner until the next backup.
+        // Three sources, one destination. Jobs are the usual reason health
+        // moves, but not the only one: the destination coming or going changes
+        // the answer with no job involved at all, and so does the clock.
         let update = tokio::select! {
             update = updates.recv() => match update {
                 Ok(update) => Some(update),
@@ -2350,14 +2599,12 @@ pub async fn fan_out_signals(shared: Arc<Shared>, emitter: SignalEmitter<'static
                 Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
             },
             _ = health_changed.notified() => None,
+            _ = tick.tick() => None,
         };
 
         let Some(update) = update else {
-            let current = shared.health();
-            if current != announced {
-                announced = current;
-                info!(state = current.as_str(), "health state changed");
-                let _ = Daemon1::status_changed(&emitter, current.as_str()).await;
+            if let Some(changed) = shared.reassess(SystemTime::now()) {
+                announce(&emitter, changed).await;
             }
             continue;
         };
@@ -2394,8 +2641,15 @@ pub async fn fan_out_signals(shared: Arc<Shared>, emitter: SignalEmitter<'static
                     let _ = Daemon1::job_finished(&emitter, id, kind.as_str(), outcome).await;
                 }
                 if state.is_terminal() {
-                    update_health(&shared, kind, &state);
-                    shared.announce_first_backup(id, &state, emitter.connection());
+                    shared.job_ended(id, kind, &state);
+                    // Counted off this loop: the count takes the catalogue's
+                    // lock, which an ingest can hold for minutes, and every
+                    // signal would wait behind it.
+                    let counting = Arc::clone(&shared);
+                    tokio::spawn(async move {
+                        counting.refresh_pending().await;
+                        counting.health_waker().notify_one();
+                    });
                     // A backup that reached the real destination is what starts
                     // the local safety net's clock. Awaited here rather than
                     // spawned so the marking cannot race the next backup.
@@ -2407,30 +2661,32 @@ pub async fn fan_out_signals(shared: Arc<Shared>, emitter: SignalEmitter<'static
                     // rather than at the next tick.
                     shared.wake_scheduler();
                 }
-                let current = shared.health();
-                if current != announced {
-                    announced = current;
-                    info!(state = current.as_str(), "health state changed");
-                    let _ = Daemon1::status_changed(&emitter, current.as_str()).await;
+                if let Some(changed) = shared.reassess(SystemTime::now()) {
+                    announce(&emitter, changed).await;
                 }
             }
         }
     }
 }
 
+/// Tell every client the state and its reason.
+async fn announce(emitter: &SignalEmitter<'_>, health: Health) {
+    let _ = Daemon1::status_changed(emitter, health.state.as_str(), health.reason_str()).await;
+}
+
 /// Fold a finished job into the facts health is computed from.
-fn update_health(shared: &Arc<Shared>, kind: JobKind, state: &JobState) {
+fn update_health(shared: &Shared, kind: JobKind, state: &JobState) {
     match state {
-        JobState::Done(Outcome::Completed)
-            if matches!(kind, JobKind::Backup | JobKind::Offline) =>
-        {
-            // A local snapshot counts, and health.md says so: the last success
-            // is "the last backup that succeeded anywhere — network, spool, or
-            // snapshot". A laptop that has been away for a week and protecting
-            // itself hourly is not at risk, and must not be told it is.
-            shared.record_backup_success();
-            if kind == JobKind::Offline {
-                shared.record_offline_outcome();
+        // A local snapshot counts, and health.md says so: the last success
+        // is "the last backup that succeeded anywhere — network, spool, or
+        // snapshot". A laptop that has been away for a week and protecting
+        // itself hourly is not at risk, and must not be told it is.
+        JobState::Done(Outcome::Completed) if kind == JobKind::Backup => {
+            shared.record_backup_success(kind);
+        }
+        JobState::Done(Outcome::Completed) if kind == JobKind::Offline => {
+            if shared.record_offline_outcome() {
+                shared.record_backup_success(kind);
             }
         }
         // Only failures the catalogue calls blocking put the product in BROKEN;
@@ -2442,8 +2698,10 @@ fn update_health(shared: &Arc<Shared>, kind: JobKind, state: &JobState) {
         // dismissing a banner the user still needs to act on. Only a successful
         // backup clears it, because only a successful backup proves the problem
         // is gone.
-        JobState::Failed(e) if e.health_failure().is_some() => {
-            shared.record_blocking_failure(true);
+        JobState::Failed(e) => {
+            if let Some(failure) = e.health_failure() {
+                shared.record_blocking_failure(failure);
+            }
         }
         _ => {}
     }
@@ -2994,6 +3252,347 @@ mod tests {
             create_spec(&config).compression.as_borg_arg(),
             backtrack_core::engine::Compression::Lz4.as_borg_arg()
         );
+    }
+
+    fn failed(error: backtrack_core::engine::EngineError) -> JobState {
+        JobState::Failed(error)
+    }
+
+    #[test]
+    fn a_failure_outside_the_catalogue_changes_nothing() {
+        // The 14:00 failure of health.md's principle 2: a lock, a network
+        // blip, Borg saying something nobody classified. None of it is news.
+        let dir = tempfile::tempdir().unwrap();
+        let shared = configured(dir.path());
+        shared.record_backup_success(JobKind::Backup);
+        for error in [
+            backtrack_core::engine::EngineError::LockedByOther,
+            backtrack_core::engine::EngineError::RepoUnreachable,
+            backtrack_core::engine::EngineError::BorgFailed {
+                code: 2,
+                stderr: "something".into(),
+            },
+        ] {
+            update_health(&shared, JobKind::Backup, &failed(error));
+            assert_eq!(shared.health(), Health::HEALTHY);
+        }
+    }
+
+    #[test]
+    fn a_catalogue_failure_is_broken_with_its_row_until_a_backup_succeeds() {
+        let dir = tempfile::tempdir().unwrap();
+        let shared = configured(dir.path());
+        update_health(
+            &shared,
+            JobKind::Backup,
+            &failed(backtrack_core::engine::EngineError::DestinationFull),
+        );
+        let health = shared.health();
+        assert_eq!(health.state, HealthState::Broken);
+        assert_eq!(health.reason, Some(Reason::DestinationFull));
+
+        update_health(
+            &shared,
+            JobKind::Backup,
+            &JobState::Done(Outcome::Completed),
+        );
+        assert_eq!(shared.health(), Health::HEALTHY);
+    }
+
+    #[test]
+    fn a_local_backup_clears_only_the_failures_it_went_through() {
+        let dir = tempfile::tempdir().unwrap();
+        let shared = configured(dir.path());
+
+        shared.record_blocking_failure(HealthFailure::DestinationFull);
+        shared.record_backup_success(JobKind::Offline);
+        assert_eq!(
+            shared.health().reason,
+            Some(Reason::DestinationFull),
+            "a snapshot on this computer says nothing about the destination"
+        );
+
+        shared.record_blocking_failure(HealthFailure::PassphraseMissing);
+        shared.record_backup_success(JobKind::Offline);
+        assert_eq!(
+            shared.health(),
+            Health::HEALTHY,
+            "the snapshot needed the passphrase, so it is back"
+        );
+    }
+
+    #[test]
+    fn a_disk_too_full_to_back_up_is_broken_and_a_low_one_degraded() {
+        let dir = tempfile::tempdir().unwrap();
+        let shared = configured(dir.path());
+        shared.record_backup_success(JobKind::Backup);
+
+        *shared.local_disk_low.lock().unwrap() = true;
+        let health = shared.health();
+        assert_eq!(health.state, HealthState::Degraded);
+        assert_eq!(health.reason, Some(Reason::LocalDiskFull));
+
+        *shared.local_disk_full.lock().unwrap() = true;
+        let health = shared.health();
+        assert_eq!(health.state, HealthState::Broken);
+        assert_eq!(health.reason, Some(Reason::LocalDiskFull));
+
+        // Measured, not latched: the next look that finds room clears it.
+        *shared.local_disk_full.lock().unwrap() = false;
+        *shared.local_disk_low.lock().unwrap() = false;
+        assert_eq!(shared.health(), Health::HEALTHY);
+    }
+
+    #[test]
+    fn a_backup_not_yet_catalogued_is_degraded_only_once_nothing_is_cataloguing() {
+        let dir = tempfile::tempdir().unwrap();
+        let shared = configured(dir.path());
+        shared.record_backup_success(JobKind::Backup);
+        *shared.pending.lock().unwrap() = 1;
+        assert_eq!(shared.health().reason, Some(Reason::NotYetBrowsable));
+
+        // The same count while a backup is on its way through is just the
+        // pipeline doing its work.
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let job = rt.block_on(shared.submit_backup()).unwrap();
+        assert_eq!(shared.health(), Health::HEALTHY);
+        shared.jobs.cancel(job).unwrap();
+    }
+
+    #[test]
+    fn nothing_to_back_up_is_never_late() {
+        // What an import leaves a new computer with: a destination full of
+        // somebody's history, and no folders of its own chosen yet.
+        let dir = tempfile::tempdir().unwrap();
+        let shared = configured(dir.path());
+        shared.config.lock().unwrap().backup.include.clear();
+        *shared.last_backup.lock().unwrap() =
+            Some(SystemTime::now() - Duration::from_secs(30 * 86_400));
+        assert_eq!(shared.health(), Health::HEALTHY);
+    }
+
+    #[test]
+    fn transitions_are_recorded_once_and_survive_a_restart() {
+        let dir = tempfile::tempdir().unwrap();
+        let shared = configured(dir.path());
+        shared.record_backup_success(JobKind::Backup);
+        let now = SystemTime::now();
+        assert_eq!(shared.reassess(now), Some(Health::HEALTHY));
+        assert_eq!(shared.reassess(now), None, "no change, nothing to announce");
+
+        shared.record_blocking_failure(HealthFailure::RepoCorrupt);
+        let broken = shared.reassess(now + Duration::from_secs(60)).unwrap();
+        assert_eq!(broken.reason, Some(Reason::RepoCorrupt));
+        let since = to_epoch(Some(now + Duration::from_secs(60)));
+        assert_eq!(
+            shared.state_since(broken, now + Duration::from_secs(600)),
+            since
+        );
+
+        let restarted = configured(dir.path());
+        restarted.restore_persisted_state();
+        restarted.record_blocking_failure(HealthFailure::RepoCorrupt);
+        restarted.reassess(now + Duration::from_secs(120));
+        let history = restarted.persisted.lock().unwrap().health_history.clone();
+        let states: Vec<(&str, &str)> = history
+            .iter()
+            .map(|t| (t.state.as_str(), t.reason.as_str()))
+            .collect();
+        assert_eq!(
+            states,
+            vec![("HEALTHY", ""), ("BROKEN", "repo-corrupt")],
+            "a restart into the same state is not a transition"
+        );
+        assert_eq!(
+            restarted.state_since(broken, now + Duration::from_secs(600)),
+            since,
+            "the state began before the restart, not at it"
+        );
+    }
+
+    #[test]
+    fn a_restart_does_not_repeat_what_has_already_been_said() {
+        let dir = tempfile::tempdir().unwrap();
+        let shared = configured(dir.path());
+        let now = SystemTime::now();
+        shared.record_blocking_failure(HealthFailure::PassphraseMissing);
+        shared.reassess(now);
+        let told = shared.persisted.lock().unwrap().notified.clone();
+        assert_eq!(told.broken_reason.as_deref(), Some("passphrase-missing"));
+
+        let restarted = configured(dir.path());
+        restarted.restore_persisted_state();
+        restarted.record_blocking_failure(HealthFailure::PassphraseMissing);
+        restarted.reassess(now + Duration::from_secs(3_600));
+        assert_eq!(
+            restarted.persisted.lock().unwrap().notified,
+            told,
+            "an hour later, after a restart, is still inside the day"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_first_folder_starts_the_clock_that_lateness_is_measured_on() {
+        let dir = tempfile::tempdir().unwrap();
+        let shared = configured(dir.path());
+        shared.config.lock().unwrap().backup.include.clear();
+        assert_eq!(shared.persisted.lock().unwrap().protected_since, None);
+
+        let daemon = Daemon1::new(Arc::clone(&shared));
+        let (_server, client) = p2p().await;
+        daemon
+            .set_config(
+                "backup.include",
+                &format!("[{:?}]", dir.path().join("src").display().to_string()),
+                &client,
+            )
+            .await
+            .unwrap();
+        assert!(shared.persisted.lock().unwrap().protected_since.is_some());
+    }
+
+    /// A notification sink that remembers what it was given.
+    #[derive(Default)]
+    struct Recorder {
+        shown: Mutex<Vec<crate::notify::Note>>,
+        withdrawn: Mutex<Vec<crate::notify::Topic>>,
+    }
+
+    impl crate::notify::NotificationSink for Recorder {
+        fn show(&self, note: crate::notify::Note) {
+            self.shown.lock().unwrap().push(note);
+        }
+        fn withdraw(&self, topic: crate::notify::Topic) {
+            self.withdrawn.lock().unwrap().push(topic);
+        }
+    }
+
+    impl Recorder {
+        fn titles(&self) -> Vec<String> {
+            self.shown
+                .lock()
+                .unwrap()
+                .iter()
+                .map(|note| note.title.clone())
+                .collect()
+        }
+    }
+
+    fn recorded(dir: &std::path::Path) -> (Arc<Shared>, Arc<Recorder>) {
+        let shared = configured(dir);
+        let recorder = Arc::new(Recorder::default());
+        shared.set_notifier(Arc::clone(&recorder) as Arc<dyn crate::notify::NotificationSink>);
+        (shared, recorder)
+    }
+
+    #[test]
+    fn the_notifications_a_person_gets_are_the_ones_they_chose() {
+        use backtrack_core::config::Notifications;
+        let done = JobState::Done(Outcome::Completed);
+        for (policy, expected) in [
+            (
+                Notifications::AttentionOnly,
+                vec!["Your first backup is complete", "The backup drive is full."],
+            ),
+            (
+                Notifications::All,
+                vec![
+                    "Your first backup is complete",
+                    "Backup complete",
+                    "The backup drive is full.",
+                ],
+            ),
+            (Notifications::None, vec![]),
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let (shared, recorder) = recorded(dir.path());
+            shared.config.lock().unwrap().general.notifications = policy;
+
+            // The first backup, then an ordinary one, then a real problem.
+            *shared.first_backup.lock().unwrap() = Some(1);
+            shared.job_ended(1, JobKind::Backup, &done);
+            shared.job_ended(2, JobKind::Backup, &done);
+            shared.job_ended(
+                3,
+                JobKind::Backup,
+                &failed(backtrack_core::engine::EngineError::DestinationFull),
+            );
+            shared.reassess(SystemTime::now());
+
+            assert_eq!(recorder.titles(), expected, "{policy:?}");
+        }
+    }
+
+    #[test]
+    fn a_local_snapshot_and_a_failed_backup_get_no_success_note() {
+        let dir = tempfile::tempdir().unwrap();
+        let (shared, recorder) = recorded(dir.path());
+        shared.config.lock().unwrap().general.notifications =
+            backtrack_core::config::Notifications::All;
+        shared.job_ended(1, JobKind::Offline, &JobState::Done(Outcome::Completed));
+        shared.job_ended(
+            2,
+            JobKind::Backup,
+            &failed(backtrack_core::engine::EngineError::LockedByOther),
+        );
+        assert!(recorder.titles().is_empty(), "{:?}", recorder.titles());
+    }
+
+    #[test]
+    fn a_notice_opens_the_fix_for_what_it_is_about() {
+        let dir = tempfile::tempdir().unwrap();
+        let (shared, recorder) = recorded(dir.path());
+        shared.record_blocking_failure(HealthFailure::PassphraseWrong);
+        shared.reassess(SystemTime::now());
+        let shown = recorder.shown.lock().unwrap().clone();
+        assert_eq!(shown.len(), 1);
+        assert_eq!(shown[0].fix, Some(Reason::PassphraseWrong));
+        assert_eq!(shown[0].topic, crate::notify::Topic::Health);
+    }
+
+    #[test]
+    fn a_fixed_problem_takes_its_notification_down() {
+        let dir = tempfile::tempdir().unwrap();
+        let (shared, recorder) = recorded(dir.path());
+        let now = SystemTime::now();
+        shared.record_blocking_failure(HealthFailure::AuthExpired);
+        shared.reassess(now);
+        assert!(recorder.withdrawn.lock().unwrap().is_empty());
+
+        shared.record_backup_success(JobKind::Backup);
+        shared.reassess(now + Duration::from_secs(60));
+        assert_eq!(
+            *recorder.withdrawn.lock().unwrap(),
+            vec![crate::notify::Topic::Health]
+        );
+    }
+
+    #[test]
+    fn the_sign_in_notice_names_the_destination() {
+        let dir = tempfile::tempdir().unwrap();
+        let (shared, recorder) = recorded(dir.path());
+        shared.config.lock().unwrap().storage.repository =
+            Some("ssh://keith@nas.local/./backups".into());
+        shared.record_blocking_failure(HealthFailure::AuthExpired);
+        shared.reassess(SystemTime::now());
+        assert_eq!(
+            recorder.titles(),
+            vec!["Backtrack can't sign in to nas.local."]
+        );
+    }
+
+    /// A connection to hand methods that want one. Nothing is served on it.
+    async fn p2p() -> (zbus::Connection, zbus::Connection) {
+        let guid = zbus::Guid::generate();
+        let (a, b) = tokio::net::UnixStream::pair().unwrap();
+        let server = zbus::connection::Builder::unix_stream(a)
+            .server(guid)
+            .unwrap()
+            .p2p()
+            .build();
+        let client = zbus::connection::Builder::unix_stream(b).p2p().build();
+        let (server, client) = futures::join!(server, client);
+        (server.unwrap(), client.unwrap())
     }
 
     #[test]

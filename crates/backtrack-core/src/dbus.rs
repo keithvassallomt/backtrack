@@ -70,6 +70,121 @@ pub struct Status {
     pub paused_until: u64,
     /// Whether a repository has been configured at all.
     pub configured: bool,
+    /// Why `state` is what it is, as a [`Reason`] token; empty when healthy.
+    ///
+    /// The state says how worried to be and the reason says about what. A
+    /// banner needs both: "BROKEN" alone cannot choose between asking for a
+    /// passphrase and offering to free up space.
+    pub reason: String,
+    /// When the current state began.
+    pub since: u64,
+}
+
+/// Why the health state is what it is.
+///
+/// A row of health.md's failure catalogue where the state has one, and
+/// otherwise the plain reason the state exists at all. Shared by the daemon,
+/// which decides it, and every client, which chooses its copy and its fix from
+/// it, so the two ends cannot spell a row differently.
+///
+/// The same token is what a notification's click hands the application to say
+/// which fix to open.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Reason {
+    /// Catalogue: "Passphrase missing (keyring reset/locked)".
+    PassphraseMissing,
+    /// Catalogue: "Wrong passphrase (repo key changed)".
+    PassphraseWrong,
+    /// Catalogue: "Destination credentials expired (SMB/SSH auth)", which
+    /// also covers a destination that is there and refuses to be written to.
+    AuthFailed,
+    /// Catalogue: "Destination full".
+    DestinationFull,
+    /// Catalogue: "Local disk full (spool/staging)", DEGRADED while backups
+    /// still run and BROKEN once they cannot.
+    LocalDiskFull,
+    /// Catalogue: "Repo corruption".
+    RepoCorrupt,
+    /// Catalogue: "Borg missing / wrong version".
+    BorgMissing,
+    /// Catalogue: "Index corruption", while the catalogue is rebuilt.
+    CatalogueRebuilding,
+    /// Catalogue: "Snapshot taken but indexing failed".
+    NotYetBrowsable,
+    /// AT_RISK: nothing has been protected for too long.
+    NoRecentBackup,
+    /// PROTECTED_LOCALLY: the destination is away and this computer is
+    /// keeping the changes.
+    DestinationAway,
+    /// PAUSED: the person asked for it.
+    Paused,
+}
+
+impl Reason {
+    /// Every reason, for exhaustiveness tests on both sides of the bus.
+    pub const ALL: [Reason; 12] = [
+        Reason::PassphraseMissing,
+        Reason::PassphraseWrong,
+        Reason::AuthFailed,
+        Reason::DestinationFull,
+        Reason::LocalDiskFull,
+        Reason::RepoCorrupt,
+        Reason::BorgMissing,
+        Reason::CatalogueRebuilding,
+        Reason::NotYetBrowsable,
+        Reason::NoRecentBackup,
+        Reason::DestinationAway,
+        Reason::Paused,
+    ];
+
+    /// The wire form.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Reason::PassphraseMissing => "passphrase-missing",
+            Reason::PassphraseWrong => "passphrase-wrong",
+            Reason::AuthFailed => "auth-failed",
+            Reason::DestinationFull => "destination-full",
+            Reason::LocalDiskFull => "local-disk-full",
+            Reason::RepoCorrupt => "repo-corrupt",
+            Reason::BorgMissing => "borg-missing",
+            Reason::CatalogueRebuilding => "catalogue-rebuilding",
+            Reason::NotYetBrowsable => "not-yet-browsable",
+            Reason::NoRecentBackup => "no-recent-backup",
+            Reason::DestinationAway => "destination-away",
+            Reason::Paused => "paused",
+        }
+    }
+
+    /// Read a wire token back. `None` for anything this build does not know,
+    /// which a client treats as "no reason it can act on".
+    pub fn parse(token: &str) -> Option<Reason> {
+        Reason::ALL
+            .into_iter()
+            .find(|reason| reason.as_str() == token)
+    }
+
+    /// The catalogue row that stops backups, for the reasons that are one.
+    pub fn failure(self) -> Option<crate::engine::HealthFailure> {
+        crate::engine::HealthFailure::ALL
+            .iter()
+            .copied()
+            .find(|failure| Reason::from(*failure) == self)
+    }
+}
+
+impl From<crate::engine::HealthFailure> for Reason {
+    fn from(failure: crate::engine::HealthFailure) -> Reason {
+        use crate::engine::HealthFailure;
+        match failure {
+            HealthFailure::PassphraseMissing => Reason::PassphraseMissing,
+            HealthFailure::PassphraseWrong => Reason::PassphraseWrong,
+            HealthFailure::AuthExpired => Reason::AuthFailed,
+            HealthFailure::DestinationFull => Reason::DestinationFull,
+            HealthFailure::LocalDiskFull => Reason::LocalDiskFull,
+            HealthFailure::RepoCorrupt => Reason::RepoCorrupt,
+            HealthFailure::BorgMissing => Reason::BorgMissing,
+        }
+    }
 }
 
 /// One result row from `SearchFiles`.
@@ -250,6 +365,31 @@ mod tests {
         assert_eq!(bus_name_for(false), BUS_NAME);
         assert_eq!(bus_name_for(true), BUS_NAME_DEV);
         assert_ne!(BUS_NAME, BUS_NAME_DEV);
+    }
+
+    #[test]
+    fn reason_tokens_are_unique_and_read_back() {
+        let mut seen = std::collections::HashSet::new();
+        for reason in Reason::ALL {
+            assert!(seen.insert(reason.as_str()), "{reason:?} repeats a token");
+            assert_eq!(Reason::parse(reason.as_str()), Some(reason));
+        }
+        assert_eq!(Reason::parse(""), None, "healthy has no reason");
+        assert_eq!(Reason::parse("something-new"), None);
+    }
+
+    #[test]
+    fn every_catalogue_failure_has_a_reason_of_its_own() {
+        let reasons: std::collections::HashSet<Reason> = crate::engine::HealthFailure::ALL
+            .iter()
+            .map(|failure| Reason::from(*failure))
+            .collect();
+        assert_eq!(reasons.len(), crate::engine::HealthFailure::ALL.len());
+        for failure in crate::engine::HealthFailure::ALL {
+            assert_eq!(Reason::from(*failure).failure(), Some(*failure));
+        }
+        assert_eq!(Reason::NoRecentBackup.failure(), None);
+        assert_eq!(Reason::CatalogueRebuilding.failure(), None);
     }
 
     #[test]

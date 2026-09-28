@@ -40,6 +40,68 @@ pub struct RuntimeState {
     /// repository, so it runs on its own daily cadence rather than after every
     /// backup.
     pub last_compact: Option<u64>,
+    /// When this computer started backing up to its destination: set up,
+    /// imported, or given its first folders to back up.
+    ///
+    /// The clock that "no successful backups for a day" is measured on starts
+    /// no earlier than this. Without it a computer that has never managed a
+    /// backup would never be at risk, and one that has just imported somebody's
+    /// history would be at risk the moment the import finished, measured from
+    /// the newest backup of a different machine.
+    pub protected_since: Option<u64>,
+    /// What the person has already been told about the current risk. Kept
+    /// across restarts so that a laptop waking up does not tell them again.
+    ///
+    /// Tables last: TOML cannot put a plain value after one, so every field
+    /// added above this line keeps the file writable.
+    pub notified: Notified,
+    /// The most recent health transitions, oldest first. What `doctor` shows
+    /// of how the machine got into the state it is in, and where the current
+    /// state's start is read from after a restart.
+    pub health_history: Vec<Transition>,
+}
+
+/// When the person was last told about each kind of trouble.
+///
+/// Epoch seconds like the rest of this file. See the daemon's escalation rules
+/// for how these are read.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Notified {
+    /// Which stretch without a backup the at-risk notices were about, named by
+    /// when protection was last in place. A new successful backup starts a new
+    /// stretch, and with it the count again.
+    pub at_risk_since: Option<u64>,
+    /// How many at-risk notices that stretch has had.
+    pub at_risk_count: u32,
+    /// When the last of them went out.
+    pub at_risk_at: Option<u64>,
+    /// The failure the last broken notice was about, as its reason token.
+    pub broken_reason: Option<String>,
+    /// When it went out.
+    pub broken_at: Option<u64>,
+}
+
+/// One change of health state.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Transition {
+    pub at: u64,
+    pub state: String,
+    /// The reason token, empty when healthy.
+    pub reason: String,
+}
+
+/// How many transitions are kept. Enough to see a pattern in a bug report; few
+/// enough that the file stays small.
+pub const HISTORY_LENGTH: usize = 50;
+
+impl RuntimeState {
+    /// Record a transition, keeping only the most recent [`HISTORY_LENGTH`].
+    pub fn record_transition(&mut self, transition: Transition) {
+        self.health_history.push(transition);
+        let excess = self.health_history.len().saturating_sub(HISTORY_LENGTH);
+        self.health_history.drain(..excess);
+    }
 }
 
 impl RuntimeState {
@@ -139,13 +201,59 @@ mod tests {
     fn round_trips_through_disk() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("nested").join("state.toml");
-        let original = RuntimeState {
+        let mut original = RuntimeState {
             paused_until: Some(1_700_000_000),
             last_attempt: Some(1_699_999_000),
             last_compact: None,
+            protected_since: Some(1_699_000_000),
+            notified: Notified {
+                at_risk_since: Some(1_699_500_000),
+                at_risk_count: 2,
+                at_risk_at: Some(1_699_800_000),
+                broken_reason: Some("destination-full".into()),
+                broken_at: Some(1_699_900_000),
+            },
+            health_history: Vec::new(),
         };
+        original.record_transition(Transition {
+            at: 1_699_900_000,
+            state: "BROKEN".into(),
+            reason: "destination-full".into(),
+        });
         original.save_to(&path).expect("saves, creating parents");
         assert_eq!(RuntimeState::load_from(&path), original);
+    }
+
+    #[test]
+    fn the_history_keeps_only_the_most_recent_transitions() {
+        let mut state = RuntimeState::default();
+        for at in 0..(HISTORY_LENGTH as u64 + 7) {
+            state.record_transition(Transition {
+                at,
+                state: "HEALTHY".into(),
+                reason: String::new(),
+            });
+        }
+        assert_eq!(state.health_history.len(), HISTORY_LENGTH);
+        assert_eq!(state.health_history.first().map(|t| t.at), Some(7));
+        assert_eq!(
+            state.health_history.last().map(|t| t.at),
+            Some(HISTORY_LENGTH as u64 + 6)
+        );
+    }
+
+    #[test]
+    fn a_file_from_before_the_health_bookkeeping_still_loads() {
+        // Every machine that ran an earlier build has a state.toml without
+        // these fields, and must keep its pause and its attempt clock.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("state.toml");
+        std::fs::write(&path, "paused_until = 42\nlast_attempt = 41\n").unwrap();
+        let state = RuntimeState::load_from(&path);
+        assert_eq!(state.paused_until, Some(42));
+        assert_eq!(state.last_attempt, Some(41));
+        assert_eq!(state.notified, Notified::default());
+        assert!(state.health_history.is_empty());
     }
 
     #[test]

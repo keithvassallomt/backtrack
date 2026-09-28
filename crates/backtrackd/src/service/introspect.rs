@@ -29,7 +29,7 @@ pub const METHODS: &[(&str, &str, &str)] = &[
     ("GetConfig", "", "s"),
     ("GetConfigKey", "s", "s"),
     ("GetRestorePreview", "t", "(ssuuuuuua(ssbtxtxss)a(ss)as)"),
-    ("GetStatus", "", "(sttbtsuuttb)"),
+    ("GetStatus", "", "(sttbtsuuttbst)"),
     ("GetStorageInfo", "", "(stttt)"),
     ("ImportRepo", "ss", ""),
     ("InspectDestination", "s", "s"),
@@ -62,7 +62,7 @@ pub const SIGNALS: &[(&str, &str)] = &[
     ("IndexingProgress", "su"),
     ("JobFinished", "tss"),
     ("RestoreProgress", "ttt"),
-    ("StatusChanged", "s"),
+    ("StatusChanged", "ss"),
 ];
 
 #[cfg(test)]

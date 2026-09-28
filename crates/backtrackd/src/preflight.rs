@@ -160,6 +160,13 @@ pub fn local_disk_needs_attention(facts: &Facts) -> bool {
     facts.free_local_bytes.is_some_and(|free| free < DISK_WARN)
 }
 
+/// Whether the local disk is too full for a backup to start. The skip itself
+/// is still only a decision; this is what makes it one the user hears about,
+/// because unlike a battery it will not clear by itself.
+pub fn local_disk_full(facts: &Facts) -> bool {
+    facts.free_local_bytes.is_some_and(|free| free < DISK_FLOOR)
+}
+
 /// What the machine can be asked about itself.
 ///
 /// A trait because the answers come from two system services that are absent in
@@ -549,7 +556,19 @@ mod tests {
         };
         assert_eq!(evaluate(&facts), Verdict::Go);
         assert!(local_disk_needs_attention(&facts));
+        assert!(!local_disk_full(&facts), "low, but a backup still runs");
         assert!(!local_disk_needs_attention(&ready()));
+    }
+
+    #[test]
+    fn a_disk_too_full_to_back_up_is_full_and_not_merely_low() {
+        let facts = Facts {
+            free_local_bytes: Some(10 * 1024 * 1024),
+            ..ready()
+        };
+        assert!(local_disk_full(&facts));
+        assert!(local_disk_needs_attention(&facts));
+        assert!(!local_disk_full(&ready()));
     }
 
     #[test]
@@ -560,6 +579,7 @@ mod tests {
         };
         assert_eq!(evaluate(&facts), Verdict::Go);
         assert!(!local_disk_needs_attention(&facts));
+        assert!(!local_disk_full(&facts));
     }
 
     #[test]

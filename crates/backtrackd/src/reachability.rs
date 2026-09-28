@@ -116,21 +116,25 @@ impl DestinationProbe for RealProbe {
         if repository.is_empty() {
             return Reach::Unknown;
         }
-        match ssh_endpoint(repository) {
+        match backtrack_core::destination::ssh_endpoint(repository) {
             Some((host, port)) => probe_remote(&host, port, engine).await,
             None => probe_local(repository).await,
         }
     }
 }
 
-/// A local path or a mounted share: it is there and writable, or it is not.
+/// A local path or a mounted share: it is there, or it is not.
 ///
-/// The write check is [`rustix::fs::access`] rather than actually creating a
-/// file. Touching the repository once a minute to prove we can would be a
-/// strange thing to do to somebody's backups, and a share that is mounted
-/// read-only — the classic "the NAS came back but in a degraded state" — is
-/// exactly the case that must not read as reachable, because a backup into it
-/// would fail.
+/// Only *there* is asked, not whether it can be written to. A share that came
+/// back read-only, or a folder whose permissions changed, is not an absent
+/// destination for the local safety net to cover quietly: it is health.md's
+/// "can't sign in" failure, which stops backups until somebody acts, and the
+/// person has to hear about it. Reporting it as reachable lets the backup run
+/// and fail with exactly that. A folder that cannot even be looked into is the
+/// same case, and is there too.
+///
+/// Nothing is written to find out. Touching the repository once a minute to
+/// prove we can would be a strange thing to do to somebody's backups.
 ///
 /// Run on a blocking thread under a timeout: a `stat` on a mount whose server
 /// has vanished does not return promptly, and on some it does not return at
@@ -141,10 +145,10 @@ impl DestinationProbe for RealProbe {
 async fn probe_local(repository: &str) -> Reach {
     let path = std::path::PathBuf::from(repository);
     let look = tokio::task::spawn_blocking(move || {
-        use rustix::fs::Access;
-        // EXEC_OK on a directory is the permission to traverse into it, which
-        // is what Borg needs alongside the ability to write.
-        rustix::fs::access(&path, Access::WRITE_OK | Access::EXEC_OK).is_ok()
+        match rustix::fs::access(&path, rustix::fs::Access::EXISTS) {
+            Ok(()) => true,
+            Err(e) => e == rustix::io::Errno::ACCESS || e == rustix::io::Errno::PERM,
+        }
     });
     match tokio::time::timeout(PROBE_TIMEOUT, look).await {
         Ok(Ok(answered)) => Reach::from(answered),
@@ -204,52 +208,6 @@ async fn probe_remote(host: &str, port: u16, engine: Option<Arc<dyn BackupEngine
             Reach::Yes
         }
         Err(_) => Reach::Unknown,
-    }
-}
-
-/// Host and port for a Borg remote destination, or `None` for a local path.
-///
-/// Borg accepts `ssh://[user@]host[:port]/path` and the scp-style
-/// `[user@]host:path`. The second is the ambiguous one: a plain path containing
-/// a colon must not be mistaken for it, so an `@` before the first `/` is
-/// required — the same rule preflight uses to decide whether a destination
-/// costs network traffic.
-pub fn ssh_endpoint(repository: &str) -> Option<(String, u16)> {
-    if let Some(rest) = repository.strip_prefix("ssh://") {
-        let authority = rest.split('/').next()?;
-        let host_port = authority.rsplit('@').next()?;
-        return Some(split_host_port(host_port));
-    }
-    let (prefix, _) = repository.split_once(':')?;
-    if !prefix.contains('@') || prefix.contains('/') {
-        return None;
-    }
-    let host = prefix.rsplit('@').next()?;
-    (!host.is_empty()).then(|| (host.to_string(), 22))
-}
-
-/// Split `host` or `host:port`, defaulting to SSH's port. IPv6 literals arrive
-/// bracketed, and the brackets come off — `TcpStream::connect` wants the bare
-/// address.
-fn split_host_port(text: &str) -> (String, u16) {
-    if let Some(rest) = text.strip_prefix('[') {
-        if let Some((addr, tail)) = rest.split_once(']') {
-            let port = tail
-                .strip_prefix(':')
-                .and_then(|p| p.parse().ok())
-                .unwrap_or(22);
-            return (addr.to_string(), port);
-        }
-    }
-    match text.rsplit_once(':') {
-        Some((host, port)) => match port.parse() {
-            Ok(port) => (host.to_string(), port),
-            // Not a port. Borg's scp-style form has already been handled by the
-            // caller, so this is a hostname with a colon in it — malformed, but
-            // passing it on unchanged gives a better error than inventing one.
-            Err(_) => (text.to_string(), 22),
-        },
-        None => (text.to_string(), 22),
     }
 }
 
@@ -503,38 +461,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn borg_remote_destinations_are_recognised_with_their_ports() {
-        assert_eq!(
-            ssh_endpoint("ssh://nas.local/./backups"),
-            Some(("nas.local".into(), 22))
-        );
-        assert_eq!(
-            ssh_endpoint("ssh://keith@nas.local:2222/./backups"),
-            Some(("nas.local".into(), 2222))
-        );
-        assert_eq!(
-            ssh_endpoint("keith@nas.local:backups"),
-            Some(("nas.local".into(), 22))
-        );
-        assert_eq!(
-            ssh_endpoint("ssh://[2001:db8::1]:2222/./backups"),
-            Some(("2001:db8::1".into(), 2222)),
-            "an IPv6 literal loses its brackets before it reaches connect()"
-        );
-    }
-
-    #[test]
-    fn a_local_path_is_not_a_remote_destination() {
-        assert_eq!(ssh_endpoint("/mnt/usb/backups"), None);
-        assert_eq!(
-            ssh_endpoint("/mnt/odd:name/backups"),
-            None,
-            "a colon in a path is still a path"
-        );
-        assert_eq!(ssh_endpoint(""), None);
-    }
-
     #[tokio::test]
     async fn a_local_destination_is_probed_by_looking_at_it() {
         let dir = tempfile::tempdir().unwrap();
@@ -552,9 +478,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_read_only_destination_does_not_count_as_reachable() {
-        // "The NAS came back, but read-only" is a real failure mode, and one a
-        // plain existence check reports as fine right up until the backup fails.
+    async fn a_read_only_destination_is_there_and_left_to_fail_loudly() {
+        // "The NAS came back, but read-only" is a real failure mode. It used to
+        // read as unreachable, which handed it to the local safety net and
+        // said nothing; it is health.md's "can't sign in" row, and the backup
+        // that runs because the destination is there is what reports it.
         //
         // Root is exempt from permission checks, so on a machine running as
         // root — which is how CI's container runs — a read-only directory is
@@ -578,7 +506,30 @@ mod tests {
         std::os::unix::fs::PermissionsExt::set_mode(&mut perms, 0o700);
         std::fs::set_permissions(&repo, perms).unwrap();
 
-        assert_eq!(reach, Reach::No);
+        assert_eq!(reach, Reach::Yes);
+    }
+
+    #[tokio::test]
+    async fn a_destination_that_cannot_even_be_looked_into_is_there() {
+        if rustix::process::geteuid().is_root() {
+            eprintln!("skipping: running as root, which bypasses permission checks");
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let share = dir.path().join("share");
+        let repo = share.join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        let mut perms = std::fs::metadata(&share).unwrap().permissions();
+        std::os::unix::fs::PermissionsExt::set_mode(&mut perms, 0o000);
+        std::fs::set_permissions(&share, perms).unwrap();
+
+        let reach = RealProbe.probe(repo.to_str().unwrap(), None).await;
+
+        let mut perms = std::fs::metadata(&share).unwrap().permissions();
+        std::os::unix::fs::PermissionsExt::set_mode(&mut perms, 0o700);
+        std::fs::set_permissions(&share, perms).unwrap();
+
+        assert_eq!(reach, Reach::Yes, "refused is not the same as absent");
     }
 
     #[tokio::test]

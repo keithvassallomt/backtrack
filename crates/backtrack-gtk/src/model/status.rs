@@ -120,6 +120,8 @@ mod tests {
             active_job: 0,
             paused_until: 0,
             configured: true,
+            reason: String::new(),
+            since: 0,
         }
     }
 

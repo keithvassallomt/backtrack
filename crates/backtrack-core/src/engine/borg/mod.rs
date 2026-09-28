@@ -101,6 +101,8 @@ impl BorgCli {
             return Ok(Presence::Existing);
         }
 
+        // Whether the server refused us or could not be reached at all is in
+        // ssh's own words, which the collection includes.
         let errors = collect_json_errors(&out.stderr);
         let said = |msgid: &str| errors.iter().any(|e| e.msgid.as_deref() == Some(msgid));
         if said("PassphraseWrong") {
@@ -112,11 +114,7 @@ impl BorgCli {
         if said("Repository.InvalidRepository") {
             return Ok(Presence::Occupied);
         }
-        // Whether the server refused us or could not be reached at all is in
-        // ssh's own words, which Borg passes on as warnings rather than errors.
-        let mut evidence = errors;
-        evidence.extend(remote_warnings(&out.stderr));
-        Err(classify::classify(code, &evidence))
+        Err(classify::classify(code, &errors))
     }
 }
 
@@ -149,24 +147,6 @@ fn local_presence(path: &Path) -> Option<Presence> {
 
 fn writable(dir: &Path) -> bool {
     rustix::fs::access(dir, rustix::fs::Access::WRITE_OK).is_ok()
-}
-
-/// The `Remote:` warnings in captured `--log-json` stderr: ssh speaking,
-/// relayed by Borg, and the only place that says "Permission denied".
-fn remote_warnings(stderr: &[u8]) -> Vec<classify::ErrLine> {
-    use crate::engine::LogLevel;
-    use logjson::{parse_log_line, Parsed};
-    String::from_utf8_lossy(stderr)
-        .lines()
-        .filter_map(|l| match parse_log_line(l) {
-            Parsed::Log {
-                level: LogLevel::Warning,
-                msgid,
-                message,
-            } if message.starts_with("Remote:") => Some(classify::ErrLine { msgid, message }),
-            _ => None,
-        })
-        .collect()
 }
 
 #[async_trait]
@@ -576,19 +556,20 @@ async fn run_to_completion(mut cmd: Command) -> Result<Vec<u8>> {
     Ok(out.stdout)
 }
 
-/// Extract error-level lines from captured `--log-json` stderr, for the
-/// non-streaming (`output()`) commands.
+/// Extract the lines that say why a non-streaming (`output()`) command
+/// failed from its captured `--log-json` stderr. See [`classify::is_evidence`].
 fn collect_json_errors(stderr: &[u8]) -> Vec<classify::ErrLine> {
-    use crate::engine::LogLevel;
     use logjson::{parse_log_line, Parsed};
     String::from_utf8_lossy(stderr)
         .lines()
         .filter_map(|l| match parse_log_line(l) {
             Parsed::Log {
-                level: LogLevel::Error,
+                level,
                 msgid,
                 message,
-            } => Some(classify::ErrLine { msgid, message }),
+            } if classify::is_evidence(level, &message) => {
+                Some(classify::ErrLine { msgid, message })
+            }
             _ => None,
         })
         .collect()

@@ -84,6 +84,31 @@ pub enum HealthFailure {
 }
 
 impl HealthFailure {
+    /// The catalogue's banner copy for this row, word for word from
+    /// health.md, with `destination` naming the place for the one row that
+    /// names one.
+    ///
+    /// Here rather than in a client so that the notification and the banner
+    /// say the same words: they are two views of one row, and a person who
+    /// sees both should recognise the second as the first.
+    pub fn copy(self, destination: &str) -> String {
+        match self {
+            HealthFailure::PassphraseMissing => {
+                "Backtrack needs your backup passphrase again.".to_string()
+            }
+            HealthFailure::PassphraseWrong => {
+                "The saved passphrase no longer matches the backup.".to_string()
+            }
+            HealthFailure::AuthExpired => format!("Backtrack can't sign in to {destination}."),
+            HealthFailure::DestinationFull => "The backup drive is full.".to_string(),
+            HealthFailure::LocalDiskFull => {
+                "Not enough space on this computer to keep protecting changes.".to_string()
+            }
+            HealthFailure::RepoCorrupt => "The backup needs repair.".to_string(),
+            HealthFailure::BorgMissing => "Backtrack's backup engine is missing.".to_string(),
+        }
+    }
+
     /// Every engine-relevant catalogue row, for the coverage test.
     pub const ALL: &'static [HealthFailure] = &[
         HealthFailure::PassphraseMissing,

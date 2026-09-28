@@ -123,8 +123,8 @@ async fn a_client_drives_a_backup_and_hears_progress_then_healthy() {
     // real transition the client can observe rather than the state it was
     // already in. This is the recovery path a user actually cares about: the
     // banner clearing once a backup finally succeeds.
-    shared.record_blocking_failure(true);
-    assert_eq!(shared.health().as_str(), "BROKEN");
+    shared.record_blocking_failure(backtrack_core::engine::HealthFailure::DestinationFull);
+    assert_eq!(shared.health().state.as_str(), "BROKEN");
 
     let (server, client) = connect(Arc::clone(&shared)).await;
     let emitter = SignalEmitter::new(&server, PATH).unwrap();
@@ -168,7 +168,11 @@ async fn a_client_drives_a_backup_and_hears_progress_then_healthy() {
                 finished.push((id, kind, outcome));
             }
             Some("StatusChanged") => {
-                let state: String = message.body().deserialize().expect("state payload");
+                let (state, reason): (String, String) =
+                    message.body().deserialize().expect("state payload");
+                if state == "BROKEN" {
+                    assert_eq!(reason, "destination-full", "the reason travels with it");
+                }
                 states.push(state.clone());
                 if state == "HEALTHY" {
                     break;
