@@ -12,7 +12,7 @@
 > tasks: add them here + to the stage file, then `just provision-board-apply`.
 > See [../CLAUDE.md](../CLAUDE.md) for the full workflow.
 
-**Current stage:** 10 (in progress)
+**Current stage:** 11 (not started)
 **Last updated:** 2026-09-28
 
 ## Stage 0 — Bootstrap ([stage file](stages/stage-00-bootstrap.md))
@@ -103,7 +103,7 @@
 ## Stage 10 — Health ([stage file](stages/stage-10-health.md))
 - [x] S10-T1 Health state machine + escalation timers per health.md
 - [x] S10-T2 Notifications respecting user policy
-- [/] S10-T3 Main-window banner states (mockup 23)
+- [x] S10-T3 Main-window banner states (mockup 23)
 - [x] S10-T4 Resolution flows: passphrase (mockup 24), reauth, disk-full, repair
 - [x] S10-T5 Monthly borg check schedule + index integrity check
 - [x] S10-T6 backtrack doctor diagnostic bundle
@@ -136,6 +136,31 @@
 ## Notes / decisions made during implementation
 
 (append dated entries here; never delete)
+
+- 2026-09-28 (Stage 10: Definition of Done): Keith ran the kill-switch drill
+  on the development machine with the app open, and it passed on the second
+  attempt, after the two fixes the first attempt found.
+  - **Keyring.** Deleting the passphrase and backing up gave the red
+    "Backtrack needs your backup passphrase again." and its notification;
+    the mockup 24 dialog took the passphrase back and the banner cleared.
+  - **Unwritable destination.** A read-only repository gave the red
+    "Backtrack can't sign in to …" and its notification, not the quiet
+    offline line; making it writable again and Try Again cleared it.
+  - **Spool quota.** With the limit at 1 GB and the destination away, a
+    second oversized change held the spool: red "Not enough space on this
+    computer to keep protecting changes.", its notification, and it stayed
+    red until the limit was raised in the fix, then returned to the offline
+    line, and to healthy once the destination came back.
+  - **Banners against mockup 23.** Every state was forced through the
+    development interface. The at-risk banner matches in colour and copy;
+    it differs in layout, since AdwBanner centres its title and has no icon
+    slot. Notifications appeared on Quickshell as well as being logged.
+  - **What the first attempt found, and fixed:** unlocking beside an
+    unencrypted destination stored whatever was typed; the spool threw away
+    what it held for a change that could never fit, so health flipped every
+    run; and "over its limit" was forgotten at the next quiet run. The drill
+    steps themselves were also wrong for the machine they ran on, which
+    cost a second attempt.
 
 - 2026-09-28 (Stage 10: health): what the stage decided, and what it found.
   The kill-switch drill and the comparison with mockup 23 are Keith's and
