@@ -2185,3 +2185,65 @@ async fn a_damaged_catalogue_is_rebuilt_from_the_repository_and_health_recovers(
     .unwrap();
     assert_eq!(archives, 2, "every backup is browsable again");
 }
+
+/// Found by the Stage 10 drill: an unencrypted destination opens with any
+/// passphrase, so unlocking against it alone stored whatever was typed, and
+/// the local safety net, encrypted with the real one, refused the next local
+/// backup with "The saved passphrase no longer matches the backup." With such
+/// a destination the safety net is the test.
+#[tokio::test]
+async fn beside_an_unencrypted_destination_the_safety_net_is_what_checks_the_passphrase() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = dir.path().join("repo").to_str().unwrap().to_string();
+    let src = dir.path().join("src");
+    std::fs::create_dir_all(&src).unwrap();
+    std::fs::write(src.join("notes.txt"), b"hello").unwrap();
+    let made = std::process::Command::new("borg")
+        .args(["init", "-e", "none", &repo])
+        .env("BORG_UNKNOWN_UNENCRYPTED_REPO_ACCESS_IS_OK", "yes")
+        .output()
+        .unwrap();
+    assert!(
+        made.status.success(),
+        "{}",
+        String::from_utf8_lossy(&made.stderr)
+    );
+
+    let secrets: Arc<dyn SecretStore> = Arc::new(FileSecretStore::new(dir.path().join("s.json")));
+    secrets.set(&repo, PASS).await.unwrap();
+    let mut config = Config::default();
+    config.storage.repository = Some(repo.clone());
+    config.backup.include = vec![src];
+    let shared = Shared::in_dir(config, JobRegistry::new(), secrets, dir.path());
+    shared.set_index(Arc::new(std::sync::Mutex::new(
+        backtrack_core::index::IndexWriter::open(&dir.path().join("index.db")).unwrap(),
+    )));
+    shared.connect_engine().await.unwrap();
+    assert!(
+        !engine(&shared).repo_info().await.unwrap().encrypted,
+        "Borg reports the destination unencrypted"
+    );
+    // The safety net, made the way the daemon makes it: keyed to the
+    // passphrase stored for the destination.
+    shared.spool_engine().await.unwrap();
+
+    shared.secrets.delete(&repo).await.unwrap();
+    let daemon = Daemon1::new(Arc::clone(&shared));
+    let refused = daemon.unlock_backups("anything at all", true, "").await;
+    assert!(
+        matches!(
+            refused,
+            Err(crate::service::DaemonError::PassphraseWrong(_))
+        ),
+        "{refused:?}"
+    );
+    assert_eq!(
+        shared.secrets.get(&repo).await.unwrap_err(),
+        backtrack_core::engine::EngineError::PassphraseMissing,
+        "nothing was stored"
+    );
+
+    let job = daemon.unlock_backups(PASS, true, "").await.unwrap();
+    assert!(completed(&settle(&shared, job).await));
+    assert_eq!(shared.secrets.get(&repo).await.unwrap(), PASS);
+}

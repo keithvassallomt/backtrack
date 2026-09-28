@@ -1542,11 +1542,20 @@ impl Shared {
             .unwrap_or(0)
     }
 
-    /// Whether `passphrase` opens the repository, asked without storing it.
+    /// Whether `passphrase` is the one the backups use, asked without storing
+    /// it.
     ///
-    /// Where the destination is away, the local safety net answers instead:
-    /// it is encrypted with the same passphrase, and somebody whose keyring
-    /// was reset on a train should not have to wait until they are home.
+    /// The destination answers when it can, and it is the authority when it
+    /// is encrypted. An unencrypted one opens with any passphrase at all, so
+    /// its yes proves nothing; the passphrase is then only used by the local
+    /// safety net, which is always encrypted, and that is what has to accept
+    /// it. Accepting whatever was typed would store a passphrase the safety
+    /// net cannot open, and the next backup away from the destination would
+    /// fail with the very banner this was meant to clear.
+    ///
+    /// Where the destination is away, the safety net answers alone, so that
+    /// somebody whose keyring was reset on a train need not wait until they
+    /// are home.
     async fn try_passphrase(&self, repository: &str, passphrase: &str) -> Result<()> {
         let trial: Arc<dyn SecretStore> = Arc::new(Trial(passphrase.to_string()));
         let engine = BorgCli::new(
@@ -1555,10 +1564,10 @@ impl Shared {
             Arc::clone(&trial),
         )
         .await?;
+        let spooled = self.spool_dir.join("config").exists();
         match engine.repo_info().await {
-            Err(backtrack_core::engine::EngineError::RepoUnreachable)
-                if self.spool_dir.join("config").exists() =>
-            {
+            Ok(info) if info.encrypted || !spooled => Ok(()),
+            Ok(_) | Err(backtrack_core::engine::EngineError::RepoUnreachable) if spooled => {
                 let spool_path = self.spool_dir.display().to_string();
                 let spool = BorgCli::new(spool_path.clone(), spool_path, trial).await?;
                 spool.repo_info().await?;

@@ -199,6 +199,14 @@
     check` green. A headless run forced every state through the development
     interface and opened every fix by `--fix` with no panic and no GTK
     critical.
+  - **The drill found one defect.** Unlocking checked the passphrase against
+    the destination alone. The demo destination is unencrypted and opens
+    with anything, so what was typed was stored, and the local safety net,
+    encrypted with the real passphrase, refused the next local backup as
+    "The saved passphrase no longer matches the backup." Anyone who imports
+    an unencrypted Borg repository would meet the same. Borg's listing now
+    reports whether a repository is encrypted; for one that is not, the
+    safety net is what the passphrase is tried against.
 
 - 2026-09-25 (Stage 9: Definition of Done): Keith walked the whole stage on a
   clean development home and it passed end to end.

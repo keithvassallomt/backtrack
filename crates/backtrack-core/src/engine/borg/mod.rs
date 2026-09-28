@@ -184,9 +184,15 @@ impl BackupEngine for BorgCli {
             .and_then(|a| a.as_array())
             .map(|a| a.len())
             .unwrap_or(0);
+        let encrypted = out
+            .get("encryption")
+            .and_then(|e| e.get("mode"))
+            .and_then(|m| m.as_str())
+            .is_some_and(|mode| mode != "none");
         Ok(RepoInfo {
             repository_id,
             archive_count,
+            encrypted,
         })
     }
 

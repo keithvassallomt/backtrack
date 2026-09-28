@@ -54,6 +54,7 @@ async fn init_export_then_import_right_and_wrong() {
         .unwrap();
     let info = eng2.repo_info().await.unwrap();
     assert!(!info.repository_id.is_empty());
+    assert!(info.encrypted, "a repokey repository says it is encrypted");
 
     // import with the wrong passphrase
     secrets.set("test", "wrong").await.unwrap();

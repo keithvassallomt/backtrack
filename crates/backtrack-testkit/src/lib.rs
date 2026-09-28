@@ -127,6 +127,7 @@ impl BackupEngine for MockEngine {
         Ok(self.info.clone().unwrap_or(RepoInfo {
             repository_id: "mock-repo".into(),
             archive_count: 0,
+            encrypted: true,
         }))
     }
     async fn key_export(&self) -> Result<String> {

@@ -141,6 +141,9 @@ pub struct RepoStats {
 pub struct RepoInfo {
     pub repository_id: String,
     pub archive_count: usize,
+    /// Whether the repository needs a passphrase at all. One that does not
+    /// opens with any passphrase, so opening it proves nothing about one.
+    pub encrypted: bool,
 }
 
 /// A Borg archive name or hex id.
