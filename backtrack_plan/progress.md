@@ -12,7 +12,7 @@
 > tasks: add them here + to the stage file, then `just provision-board-apply`.
 > See [../CLAUDE.md](../CLAUDE.md) for the full workflow.
 
-**Current stage:** 10 (reopened for S10-T7)
+**Current stage:** 11 (not started)
 **Last updated:** 2026-09-28
 
 ## Stage 0 — Bootstrap ([stage file](stages/stage-00-bootstrap.md))
@@ -107,7 +107,7 @@
 - [x] S10-T4 Resolution flows: passphrase (mockup 24), reauth, disk-full, repair
 - [x] S10-T5 Monthly borg check schedule + index integrity check
 - [x] S10-T6 backtrack doctor diagnostic bundle
-- [/] S10-T7 Local snapshot badges say whether the destination has them
+- [x] S10-T7 Local snapshot badges say whether the destination has them
 
 ## Stage 11 — Disaster recovery ([stage file](stages/stage-11-disaster-recovery.md))
 - [ ] S11-T1 RestoreEverything job: per-top-folder, resumable
@@ -255,7 +255,10 @@
     The removal rule moved into core so the daemon and the window share one
     copy, replacing two in the daemon. A finished job is now announced after
     the catalogue records what it did, so the badges change with the
-    catch-up rather than at the next backup.
+    catch-up rather than at the next backup. Keith checked it in the window:
+    red while the destination was away, yellow on the snapshot whose edit
+    changed again before the catch-up, and no badge on the one the catch-up
+    repeated.
 
 - 2026-09-25 (Stage 9: Definition of Done): Keith walked the whole stage on a
   clean development home and it passed end to end.
