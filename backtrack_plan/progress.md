@@ -175,7 +175,7 @@
     other and every push restarted the daemon (on the host too); and
     `vm app` passed the window an empty argument.
   - **Plasma VM passed** (Fedora 45 KDE, same libraries): the first push
-    set it up, KWallet stored the demo passphrase without a prompt, a
+    set it up, including storing the demo passphrase in KWallet, a
     push with nothing changed did nothing, a daemon change compiled and
     restarted once, and `just vm-app` opened the window on its screen.
 
