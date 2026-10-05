@@ -23,7 +23,7 @@ machines, not workspaces: the code is edited in the checkout on the host, and
    desktop session, so the VM needs someone logged in.
 2. In the VM: `sudo systemctl enable --now sshd`.
 3. Here: `ssh-copy-id $(scripts/vm address <vm>)`, with `<vm>` the libvirt
-   domain name (`fedora44`).
+   domain name, quoted if it has spaces (`"fedora45 (GNOME)"`).
 4. Here, from your own terminal: `just vm-push <vm>`. It asks for the VM's
    sudo password once, to install the packages, and the first build takes a
    few minutes.
@@ -57,8 +57,10 @@ dev-machine` there), or on any other computer being set up for development.
 | What is installed and running there | `scripts/vm run <vm> scripts/dev-machine status` |
 | The daemon's log | `scripts/vm run <vm> journalctl --user -u backtrackd -n 50` |
 
-The VM's address is looked up on every call, so a new DHCP lease does not
-matter. Its SSH host key is accepted the first time and checked after that.
+The VM's address is looked up from libvirt on every call. On libvirt's
+default NAT network the VM's address is libvirt's to hand out, so it does
+not change with the network the host is on, and a new lease would not matter
+anyway. Its SSH host key is accepted the first time and checked after that.
 
 ## Keyrings
 

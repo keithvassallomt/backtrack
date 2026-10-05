@@ -581,14 +581,17 @@ uninstall-nautilus-dev:
 
 # Copy this checkout into a VM and bring it up to date there: packages, build,
 # units, demo backups, file-manager integration. VM is a libvirt domain name
-# or an SSH destination. The first push asks for the VM's sudo password.
+# (quote one with spaces) or an SSH destination. The first push asks for the
+# VM's sudo password.
 [doc("Copy this checkout into a VM and build, install and configure it there.")]
+[positional-arguments]
 vm-push VM:
-    scripts/vm push {{VM}}
+    scripts/vm push "$1"
 
 # Open Backtrack on a VM's screen, with the window's usual arguments.
+[positional-arguments]
 vm-app VM *ARGS:
-    scripts/vm app {{VM}} {{ARGS}}
+    scripts/vm app "$@"
 
 # Set this computer up for Backtrack development, or bring it up to date.
 # What vm-push runs inside the VM.
