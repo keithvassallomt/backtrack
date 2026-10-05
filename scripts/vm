@@ -60,7 +60,7 @@ reachable() {
     echo "Cannot log in to $destination over SSH without a password." >&2
     echo "Once per VM:" >&2
     echo "  1. In the VM:  sudo systemctl enable --now sshd" >&2
-    echo "  2. Here:       ssh-copy-id $destination" >&2
+    echo "  2. Here:       ssh-copy-id -f $destination" >&2
     exit 1
 }
 

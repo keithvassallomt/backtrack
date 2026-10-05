@@ -22,8 +22,12 @@ machines, not workspaces: the code is edited in the checkout on the host, and
 1. Start the VM and log in on its screen. Backtrack's daemon runs in your
    desktop session, so the VM needs someone logged in.
 2. In the VM: `sudo systemctl enable --now sshd`.
-3. Here: `ssh-copy-id $(scripts/vm address <vm>)`, with `<vm>` the libvirt
-   domain name, quoted if it has spaces (`"fedora45 (GNOME)"`).
+3. Here: `ssh-copy-id -f $(scripts/vm address <vm>)`, with `<vm>` the
+   libvirt domain name, quoted if it has spaces (`"fedora45 (GNOME)"`).
+   Without `-f`, `ssh-copy-id` first logs in with each key to see which are
+   installed, and OpenSSH 9.8 and later answer a burst of failed logins by
+   refusing the address for a while: the copy that follows fails with
+   "Connection reset by peer". If it happens anyway, wait half a minute.
 4. Here, from your own terminal: `just vm-push <vm>`. It asks for the VM's
    sudo password once, to install the packages, and the first build takes a
    few minutes.
