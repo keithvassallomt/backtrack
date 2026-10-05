@@ -25,6 +25,9 @@
 #   dr-drill reset        put the dev daemon back and delete the drill
 
 set -euo pipefail
+# Say where it stopped: under -e a failing command ends the script without a
+# word, and the next command in `dr-drill again && dr-drill app` never runs.
+trap 'echo "dr-drill: stopped at line $LINENO: $BASH_COMMAND" >&2' ERR
 
 ROOT=/var/tmp/backtrack-drill
 OLD="$ROOT/old"
@@ -136,9 +139,12 @@ again() {
     new_computer
     # The backups the first attempt made from the new computer go too, so the
     # old laptop's are all there is to import again.
-    BORG_PASSPHRASE="$PASSPHRASE" borg list --short "$REPO" | grep -v "^bt-$HOST-" | while read -r name; do
-        BORG_PASSPHRASE="$PASSPHRASE" borg delete "$REPO::$name"
-    done
+    # Often there are none, and grep finding nothing is not a failure here.
+    local others
+    others="$(BORG_PASSPHRASE="$PASSPHRASE" borg list --short "$REPO" | grep -v "^bt-$HOST-" || true)"
+    while read -r name; do
+        [[ -n "$name" ]] && BORG_PASSPHRASE="$PASSPHRASE" borg delete "$REPO::$name"
+    done <<<"$others"
     if [[ -f "$DROPIN" ]]; then
         systemctl --user start backtrackd.service
     fi
