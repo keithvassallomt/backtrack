@@ -42,6 +42,21 @@ The items appear only where they would find something:
 - **On this computer.** Network locations, the trash, Recent and search
   results' own folder are not files on this computer's disks.
 
+### When a change shows
+
+Nautilus builds the menu when the selection changes, not at each
+right-click, and keeps it until the selection changes again. A change to the
+backed-up folders or to the Preferences switch therefore shows from the next
+click in Nautilus: right-clicking a file that has stayed selected since
+before the change shows the menu as it was.
+
+Nautilus does let an extension say its items have changed (the menu
+provider's `items-updated` signal), but nautilus-python 4.2 cannot use it:
+Nautilus connects to the C object nautilus-python wraps each Python
+extension in, and a signal emitted from Python goes out on the Python
+object, which nothing listens to. Checked against a running Nautilus 50.3
+with a handler count on the Python object (none).
+
 ### Installing it for development
 
 ```sh
@@ -81,7 +96,9 @@ development daemon's demo fixture, whose one backed-up folder is
    `Documents` with `report.odt` selected.
 3. **The folder being shown.** Right-click the empty space beside the files.
    *Browse Backups of This Folder…* is in the menu. Choose it: Backtrack's
-   window, still open, moves to `Documents` with nothing selected.
+   window, still open, comes forward. It is already on `Documents`, so it
+   changes nothing and `report.odt` stays selected; a different folder clears
+   the selection (step 4).
 4. **A folder.** Go up to the fixture's `home` and right-click `Projects`. Both items are
    there. *Browse Backups of This Folder…* opens `Projects`; *Restore Previous
    Version…* opens `home` with `Projects` selected.
@@ -93,11 +110,22 @@ development daemon's demo fixture, whose one backed-up folder is
 7. **The trash.** Open Trash and right-click `backtrack-fm-check-draft.txt`:
    no Backtrack items, although it came from the backed-up `Documents`.
 8. **The switch.** In Backtrack, Preferences → General, turn off *GNOME Files
-   (Nautilus)*. Back in Nautilus, right-click `report.odt`: no Backtrack items,
-   without restarting Nautilus. Turn it on again and the item is back.
+   (Nautilus)*. Back in Nautilus, click `notes.txt`, then right-click
+   `report.odt`: no Backtrack items, without restarting Nautilus. Turn it on
+   again, click `notes.txt`, and right-click `report.odt`: the item is back.
+   The click in between matters; see "When a change shows" above.
 9. `scripts/fm-check reset` unmounts the stick, empties the draft from the
    trash, uninstalls the extension and quits Nautilus.
 
 Note while doing it whether the clock icon from mockup 2 shows beside the
 items. The extension asks for one, and whether it is drawn is up to the
 Nautilus release.
+
+### Checked
+
+Keith's run on 2026-10-05, on Hyprland with Nautilus 50.3.1 and
+nautilus-python 4.2.0, against the development daemon: every step above
+passed. Nautilus 50 draws no icon beside extension items, so mockup 2's clock
+does not appear. The run found that a change to the switch shows from the
+next click rather than at once, which is now step 8 and "When a change
+shows".

@@ -116,7 +116,7 @@
 - [x] S11-T4 Post-restore: enable schedule only after completion
 
 ## Stage 12 — Integrations & tray ([stage file](stages/stage-12-integrations-tray.md))
-- [/] S12-T1 Nautilus python extension (mockup 2)
+- [x] S12-T1 Nautilus python extension (mockup 2)
 - [ ] S12-T2 Dolphin service menu (mockup 3, menu part only)
 - [ ] S12-T3 StatusNotifierItem tray for non-GNOME (status, actions)
 - [ ] S12-T4 Background portal presence (GNOME quick-settings launch path)
@@ -169,12 +169,24 @@
     debug build's path, and `DEVELOPMENT = True` for `backtrack-dev` and
     `BACKTRACK_DEV=1`), the way `install-units` rewrites the units, so the
     file tried is the file that ships.
+  - **A change shows from the next click in Nautilus, not instantly.**
+    Found in Keith's check: with `report.odt` selected throughout, turning
+    the Preferences switch back on left the item missing. Nautilus builds the
+    menu when the selection changes and keeps it until it changes again. It
+    has a signal for an extension to say its items changed, but
+    nautilus-python wraps each Python extension in a C object of its own,
+    Nautilus connects to that, and nothing forwards a signal emitted from
+    Python: a handler count on the Python object inside a running Nautilus
+    50.3 was zero, and no rebuild followed. Documented rather than worked
+    around; the cost is one stale menu after a settings change.
   - **Checks:** `just check-integrations` (ruff, and unit tests with
     stand-ins for the GObject modules) joins `just check` and CI; CI
     installs ruff. A launch through the installed extension was smoke-tested
     in a headless compositor against the development daemon: the window
     opened on `Documents` with `report.odt` selected, and a second launch
-    went to the window already open.
+    went to the window already open. Keith's run of the manual checklist
+    (`docs/file-manager-integration.md`) passed every step; Nautilus 50
+    draws no icons on extension items, so mockup 2's clock is absent.
 
 - 2026-10-05 (Stage 11: Keith's drill through the window): Keith ran the
   walkthrough at 12 GB and every step worked: the offer, Start Restore,
