@@ -113,7 +113,13 @@ case "${1:-}" in
         [[ -n "${2:-}" ]] || { echo "usage: vm app <vm> [ARGS]" >&2; exit 2; }
         vm="$2"
         shift 2
-        run "$vm" "scripts/dev-machine app $(printf '%q ' "$@")" ;;
+        # Quoted for the remote shell; nothing at all when there are none, as
+        # printf would otherwise pass one empty argument.
+        arguments=""
+        if (( $# > 0 )); then
+            arguments="$(printf ' %q' "$@")"
+        fi
+        run "$vm" "scripts/dev-machine app$arguments" ;;
     run)
         [[ -n "${2:-}" && -n "${3:-}" ]] || { echo "usage: vm run <vm> COMMAND..." >&2; exit 2; }
         vm="$2"
