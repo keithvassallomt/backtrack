@@ -138,6 +138,23 @@
 
 (append dated entries here; never delete)
 
+- 2026-10-05 (Stage 11: Keith's drill through the window): Keith ran the
+  walkthrough at 12 GB and every step worked: the offer, Start Restore,
+  Pause during the 3 GB video (it took effect 10 s later, once the video
+  was whole, and kept it), the window closed and reattached, the daemon
+  killed and resumed (kept 16 photographs, fetched 28), the notification,
+  the summary for the `.bashrc` clash answered with Replace, and the first
+  backup. Restore 56 s including the pause and the kill; first backup 27 s.
+  - **Found: the summary waited for the first backup.** *Choose Which to
+    Keep…* took 24 s, queued behind the backup that starts as a recovery
+    ends: every restore job took the repository's shared lock, including
+    the ones that never open it. On a computer Borg has never seen, that
+    backup reads every file, so on a real home it would have been minutes.
+    Jobs that only move or compare files on this computer (working out the
+    recovery's summary, carrying out a prepared restore, undoing one, and
+    cancelling a recovery) now take no part in the repository's locking.
+    That also stops a Stage 7 "Replace" waiting for an hourly backup.
+
 - 2026-10-05 (Stage 11: disaster recovery): what the stage decided, and what
   it found. The drill through the window is Keith's and follows
   (docs/disaster-recovery-drill.md); until then T2 to T4 stay in progress.

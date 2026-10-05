@@ -614,7 +614,7 @@ impl Shared {
             });
             Box::pin(async move { Ok(stream) }) as BoxFuture<'_, _>
         });
-        Ok(self.jobs.submit(JobKind::Restore, factory))
+        Ok(self.jobs.submit_local(JobKind::Restore, factory))
     }
 
     /// Work out the summary of what a finished recovery set aside, filed under
@@ -652,7 +652,7 @@ impl Shared {
             });
             Box::pin(async move { Ok(stream) }) as BoxFuture<'_, _>
         });
-        Ok(self.jobs.submit(JobKind::Restore, factory))
+        Ok(self.jobs.submit_local(JobKind::Restore, factory))
     }
 
     /// Pick up a recovery a previous daemon left: carry on with one that has
@@ -2386,7 +2386,7 @@ impl Daemon1 {
                 Ok(crate::restore::start_execute(plan))
             }) as BoxFuture<'_, _>
         });
-        Ok(self.shared.jobs.submit(JobKind::Restore, factory))
+        Ok(self.shared.jobs.submit_local(JobKind::Restore, factory))
     }
 
     /// Restore `paths` into `dest`, which must be a directory made for this.
@@ -2502,7 +2502,7 @@ impl Daemon1 {
             };
             Box::pin(async move { Ok(crate::restore::start_undo(plan)) }) as BoxFuture<'_, _>
         });
-        Ok(self.shared.jobs.submit(JobKind::Restore, factory))
+        Ok(self.shared.jobs.submit_local(JobKind::Restore, factory))
     }
 
     /// Throw away a prepared restore and the copy it extracted.
@@ -3827,6 +3827,62 @@ mod tests {
         manifest.stage = crate::recovery::Stage::Review;
         shared.recovery.save(&manifest).unwrap();
         assert_eq!(decide(&shared, start + hour * 30), schedule::Decision::Run);
+    }
+
+    #[tokio::test]
+    async fn the_summary_of_a_recovery_does_not_wait_for_the_first_backup() {
+        // Found in the Stage 11 drill: "Choose Which to Keep…" took 24
+        // seconds, all of it queued behind the backup that starts the moment a
+        // recovery ends. On a computer Borg has never seen that backup reads
+        // every file, and the summary needs none of the repository.
+        let dir = tempfile::tempdir().unwrap();
+        let shared = configured(dir.path());
+        let mut manifest = recovering(&shared, dir.path());
+        manifest.stage = crate::recovery::Stage::Review;
+        manifest.handed_over = true;
+        shared.recovery.save(&manifest).unwrap();
+        let home = dir.path().join("home");
+        std::fs::create_dir_all(&home).unwrap();
+        std::fs::write(home.join(".bashrc"), b"this computer's").unwrap();
+        std::fs::create_dir_all(shared.recovery.held()).unwrap();
+        std::fs::write(shared.recovery.held().join(".bashrc"), b"the backup's").unwrap();
+
+        let backup = shared.submit_backup().await.unwrap();
+        let ended = |job| {
+            let shared = Arc::clone(&shared);
+            async move {
+                for _ in 0..200 {
+                    let state = shared.jobs.snapshot(job).unwrap().state;
+                    if state.is_terminal() {
+                        return state;
+                    }
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+                panic!("job {job} is still waiting");
+            }
+        };
+
+        let review = shared.prepare_recovery_review().unwrap();
+        assert_eq!(ended(review).await, JobState::Done(Outcome::Completed));
+        let daemon = Daemon1::new(Arc::clone(&shared));
+        let preview = daemon.get_restore_preview(review).await.unwrap();
+        assert_eq!(preview.conflicts, 1);
+
+        let carried = daemon
+            .execute_restore(review, "replace", Vec::new())
+            .await
+            .unwrap();
+        assert_eq!(ended(carried).await, JobState::Done(Outcome::Completed));
+        assert_eq!(
+            std::fs::read(home.join(".bashrc")).unwrap(),
+            b"the backup's"
+        );
+        assert_eq!(
+            shared.jobs.snapshot(backup).unwrap().state,
+            JobState::Running,
+            "all of it while the backup was still going"
+        );
+        shared.jobs.cancel(backup).unwrap();
     }
 
     #[test]

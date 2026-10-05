@@ -23,7 +23,7 @@ use tokio::sync::broadcast;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
 
-use super::{JobError, JobId, JobKind, JobState, Outcome, ProgressThrottle, RepoGuard};
+use super::{JobError, JobId, JobKind, JobState, Outcome, ProgressThrottle, RepoAccess, RepoGuard};
 
 /// How many updates the broadcast buffers before a slow subscriber starts
 /// missing them. A lagging subscriber loses intermediate progress, never the
@@ -78,6 +78,9 @@ struct Job {
     /// Trips to stop the current run. Replaced on each start, so a cancel
     /// aimed at a previous run cannot stop the next one.
     cancel: CancellationToken,
+    /// How it uses the repository. Its kind's, unless it was submitted as
+    /// work on this computer alone.
+    access: RepoAccess,
     /// Which start this is. A paused job is started again on resume, and the
     /// run it was paused out of may still be winding down when the next one
     /// begins; the count is how the old run knows the job is no longer its
@@ -124,6 +127,22 @@ impl JobRegistry {
 
     /// Queue a job and try to start it. Returns its id straight away.
     pub fn submit(self: &Arc<Self>, kind: JobKind, factory: JobFactory) -> JobId {
+        self.enqueue(kind, kind.access(), factory)
+    }
+
+    /// Queue a job of `kind` that never opens the repository, so that it
+    /// starts at once whatever else is running.
+    ///
+    /// Carrying out a restore that has been worked out, undoing one, and
+    /// working out the summary of what a disaster recovery set aside all move
+    /// or compare files on this computer and nothing else. Queued behind the
+    /// first backup after a recovery, which reads every file on a computer
+    /// Borg has never seen, they waited minutes for a lock they never take.
+    pub fn submit_local(self: &Arc<Self>, kind: JobKind, factory: JobFactory) -> JobId {
+        self.enqueue(kind, RepoAccess::Local, factory)
+    }
+
+    fn enqueue(self: &Arc<Self>, kind: JobKind, access: RepoAccess, factory: JobFactory) -> JobId {
         let id = {
             let mut inner = self.inner.lock().unwrap();
             let id = inner.next_id;
@@ -135,6 +154,7 @@ impl JobRegistry {
                     state: JobState::Queued,
                     factory,
                     cancel: CancellationToken::new(),
+                    access,
                     run: 0,
                 },
             );
@@ -169,6 +189,7 @@ impl JobRegistry {
                     state: JobState::Paused,
                     factory,
                     cancel: CancellationToken::new(),
+                    access: kind.access(),
                     run: 0,
                 },
             );
@@ -294,14 +315,12 @@ impl JobRegistry {
                         .jobs
                         .values()
                         .filter(|j| j.state.holds_repo())
-                        .map(|j| j.kind.access()),
+                        .map(|j| j.access),
                 );
-                let next = inner.queue.iter().position(|id| {
-                    inner
-                        .jobs
-                        .get(id)
-                        .is_some_and(|j| guard.admits(j.kind.access()))
-                });
+                let next = inner
+                    .queue
+                    .iter()
+                    .position(|id| inner.jobs.get(id).is_some_and(|j| guard.admits(j.access)));
                 match next {
                     None => None,
                     Some(pos) => {
@@ -795,6 +814,24 @@ mod tests {
         registry.resume(dr).unwrap();
         wait_until(&registry, dr, "running", |s| *s == JobState::Running).await;
         registry.cancel(dr).unwrap();
+    }
+
+    #[tokio::test]
+    async fn work_on_this_computer_alone_does_not_wait_for_a_backup() {
+        let registry = JobRegistry::new();
+        let backup = registry.submit(JobKind::Backup, pending_factory());
+        wait_until(&registry, backup, "running", |s| *s == JobState::Running).await;
+
+        // A restore that reads the repository waits its turn...
+        let fetching = registry.submit(JobKind::Restore, pending_factory());
+        // ...and one that only moves files on this computer does not.
+        let moving = registry.submit_local(JobKind::Restore, pending_factory());
+        wait_until(&registry, moving, "running", |s| *s == JobState::Running).await;
+        assert_eq!(registry.snapshot(fetching).unwrap().state, JobState::Queued);
+
+        for id in [moving, fetching, backup] {
+            registry.cancel(id).unwrap();
+        }
     }
 
     #[tokio::test]

@@ -100,10 +100,28 @@ paths, which no real computer does.
 
 ## Timings
 
-Measured on 2026-10-05 on the development machine (a debug build, a local
-repository on an SSD), with the drill driven over D-Bus rather than through the
-window, so that each step could be timed to the second. A person following the
-walkthrough adds the time spent reading and clicking.
+### Through the window
+
+Keith's drill on 2026-10-05, 12 GB, following the walkthrough above on the
+development machine (a debug build, a local repository on an SSD):
+
+| Step | Time |
+|---|---|
+| Import, until the restore was offered | 1 s |
+| Restore, start to finish | 56 s, including a 19 s pause and a killed daemon |
+| Pause, pressed during the 3 GB video | took effect 10 s later, once the video was whole; it was kept |
+| Window closed and reopened during the restore | reattached |
+| Daemon killed during Pictures | back 5 s later; kept 16 photographs, fetched 28 |
+| First backup after the restore | started at once, 27 s |
+
+The drill found one thing: *Choose Which to Keep…* waited 24 s for its
+dialog, queued behind that first backup although it never touches the
+repository. Fixed the same day; see the decision log.
+
+### Driven over D-Bus
+
+The same drill without the window, so that each step could be timed to the
+second:
 
 | Step | 3 GB | 12 GB, killed at 50% | 12 GB, paused at 56% |
 |---|---|---|---|
