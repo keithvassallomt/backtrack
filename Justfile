@@ -597,7 +597,9 @@ uninstall-nautilus-dev:
     #!/usr/bin/env bash
     set -euo pipefail
     dir="${XDG_DATA_HOME:-${HOME}/.local/share}/nautilus-python/extensions"
-    rm -f "${dir}/backtrack.py"
+    rm -f "${dir}/backtrack.py" "${dir}"/__pycache__/backtrack.*.pyc
+    # Python's cache folder, if this extension was all that was in it.
+    rmdir "${dir}/__pycache__" 2>/dev/null || true
     echo "Removed. Quit Nautilus (nautilus -q) so it lets go of the extension."
 
 # Remove build artifacts.
