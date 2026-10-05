@@ -66,21 +66,7 @@ fn read_offer(home: &std::path::Path, user: &str) -> Option<Offer> {
     let reader = IndexReader::open(&backtrack_core::paths::index_db())
         .map_err(|error| warn!(%error, "the catalogue could not be read"))
         .ok()?;
-    let archives: Vec<_> = reader
-        .archives_overview()
-        .ok()?
-        .into_iter()
-        .filter(|a| a.repo == "primary")
-        .collect();
-    let snapshots: Vec<Snapshot> = archives
-        .iter()
-        .filter(|a| a.catalogued)
-        .map(|a| Snapshot {
-            seq: a.seq,
-            name: a.name.clone(),
-            ts: a.ts,
-        })
-        .collect();
+    let (snapshots, count) = restorable(&reader)?;
     let latest = snapshots.first()?;
     let layout = recovery::layout(&reader, latest.seq, home, user).ok()??;
     if layout.steps.is_empty() {
@@ -91,9 +77,96 @@ fn read_offer(home: &std::path::Path, user: &str) -> Option<Offer> {
         host: copy::host_of(&latest.name),
         user: copy::user_of(&layout.source),
         bytes: layout.bytes(),
-        count: archives.len(),
+        count,
         snapshots,
     })
+}
+
+/// The backups that can be restored from, newest first, and how many there
+/// are at the destination altogether.
+fn restorable(reader: &IndexReader) -> Option<(Vec<Snapshot>, usize)> {
+    let archives: Vec<_> = reader
+        .archives_overview()
+        .ok()?
+        .into_iter()
+        .filter(|a| a.repo == "primary")
+        .collect();
+    let snapshots = archives
+        .iter()
+        .filter(|a| a.catalogued)
+        .map(|a| Snapshot {
+            seq: a.seq,
+            name: a.name.clone(),
+            ts: a.ts,
+        })
+        .collect();
+    Some((snapshots, archives.len()))
+}
+
+/// Add each backup to the dropdown as it becomes restorable.
+///
+/// The page appears as soon as the newest backup is catalogued, which on a
+/// repository of any age is long before the rest are; a dropdown holding one
+/// backup under a line saying there are forty-seven would read as forty-six
+/// lost. What is chosen stays chosen as the list grows.
+fn keep_up(
+    dropdown: &gtk4::DropDown,
+    model: &gtk4::StringList,
+    snapshots: &Rc<RefCell<Vec<Snapshot>>>,
+    count: usize,
+) {
+    if snapshots.borrow().len() >= count {
+        return;
+    }
+    let dropdown = dropdown.downgrade();
+    let model = model.clone();
+    let snapshots = Rc::clone(snapshots);
+    let reading = Rc::new(std::cell::Cell::new(false));
+    glib::timeout_add_seconds_local(2, move || {
+        let Some(dropdown) = dropdown.upgrade() else {
+            return glib::ControlFlow::Break;
+        };
+        if snapshots.borrow().len() >= count {
+            return glib::ControlFlow::Break;
+        }
+        if reading.replace(true) {
+            return glib::ControlFlow::Continue;
+        }
+        let model = model.clone();
+        let snapshots = Rc::clone(&snapshots);
+        let reading = Rc::clone(&reading);
+        crate::ui::spawn(async move {
+            let found = gio::spawn_blocking(|| {
+                let reader = IndexReader::open(&backtrack_core::paths::index_db()).ok()?;
+                restorable(&reader).map(|(snapshots, _)| snapshots)
+            })
+            .await
+            .ok()
+            .flatten();
+            reading.set(false);
+            let Some(found) = found.filter(|f| f.len() > snapshots.borrow().len()) else {
+                return;
+            };
+            let chosen = snapshots
+                .borrow()
+                .get(dropdown.selected() as usize)
+                .map(|s| s.name.clone());
+            let now = glib::DateTime::now_local()
+                .map(|t| t.to_unix())
+                .unwrap_or_default();
+            let tz = glib::TimeZone::local();
+            let labels: Vec<String> = found.iter().map(|s| copy::when(s.ts, now, &tz)).collect();
+            let labels: Vec<&str> = labels.iter().map(String::as_str).collect();
+            model.splice(0, model.n_items(), &labels);
+            let keep = found
+                .iter()
+                .position(|s| Some(&s.name) == chosen.as_ref())
+                .unwrap_or(0);
+            dropdown.set_selected(keep as u32);
+            *snapshots.borrow_mut() = found;
+        });
+        glib::ControlFlow::Continue
+    });
 }
 
 /// Which way on the person has chosen.
@@ -180,8 +253,11 @@ fn page(wizard: &Rc<Wizard>, offer: Rc<Offer>) -> adw::NavigationPage {
         .map(|s| copy::when(s.ts, now, &tz))
         .collect();
     let labels: Vec<&str> = labels.iter().map(String::as_str).collect();
-    let snapshot = gtk4::DropDown::from_strings(&labels);
+    let model = gtk4::StringList::new(&labels);
+    let snapshot = gtk4::DropDown::new(Some(model.clone()), gtk4::Expression::NONE);
     snapshot.set_valign(Align::Center);
+    let snapshots = Rc::new(RefCell::new(offer.snapshots.clone()));
+    keep_up(&snapshot, &model, &snapshots, offer.count);
     when.append(&snapshot);
     text.append(&when);
     first.append(&text);
@@ -265,7 +341,11 @@ fn page(wizard: &Rc<Wizard>, offer: Rc<Offer>) -> adw::NavigationPage {
 
     let this = Rc::clone(wizard);
     start.connect_clicked(move |button| {
-        let Some(chosen) = offer.snapshots.get(snapshot.selected() as usize).cloned() else {
+        let Some(chosen) = snapshots
+            .borrow()
+            .get(snapshot.selected() as usize)
+            .cloned()
+        else {
             return;
         };
         let this = Rc::clone(&this);
