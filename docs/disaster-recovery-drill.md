@@ -88,8 +88,12 @@ paths, which no real computer does.
 ### Variations
 
 - **Restore selected folders…** opens a checklist of the folders, each with its
-  size, all ticked. Untick Videos: the restore leaves it out, and `check`
-  reports it missing.
+  size, all ticked, from the newest backup; its own *Folders as of* dropdown
+  picks another. (The dropdown on the first page belongs to *Restore
+  everything* alone, and greys out when another choice is made.) Untick
+  Videos and pick *Yesterday, 08:00*: the restore leaves Videos out, and
+  `check` reports it missing, `Pictures/2025/holiday/IMG_2100.jpg` missing
+  (it was only in the 22:00 backup), and `Desktop/todo.txt` different.
 - **Just browse — restore things later** opens the timeline over the old
   laptop's backups and restores nothing. Nothing is backed up either, because
   nothing has been chosen to back up.

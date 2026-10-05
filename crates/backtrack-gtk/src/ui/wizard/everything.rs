@@ -262,6 +262,14 @@ fn page(wizard: &Rc<Wizard>, offer: Rc<Offer>) -> adw::NavigationPage {
     text.append(&when);
     first.append(&text);
     list.append(&card(&first));
+    // The backup chosen here is the one "Restore everything" restores, and
+    // only that: it sits in that choice's card, so it reads as part of it, and
+    // greys out when another choice is made. The folder checklist has a
+    // dropdown of its own.
+    everything
+        .bind_property("active", &when, "sensitive")
+        .sync_create()
+        .build();
 
     let selected = CheckButton::new();
     selected.set_group(Some(&everything));
@@ -340,7 +348,9 @@ fn page(wizard: &Rc<Wizard>, offer: Rc<Offer>) -> adw::NavigationPage {
     }
 
     let this = Rc::clone(wizard);
+    let count = offer.count;
     start.connect_clicked(move |button| {
+        let snapshots = Rc::clone(&snapshots);
         let Some(chosen) = snapshots
             .borrow()
             .get(snapshot.selected() as usize)
@@ -355,19 +365,18 @@ fn page(wizard: &Rc<Wizard>, offer: Rc<Offer>) -> adw::NavigationPage {
             match way {
                 Way::Browse => this.open_timeline().await,
                 Way::Selected => {
-                    let home = glib::home_dir();
-                    let user = glib::user_name().to_string_lossy().into_owned();
-                    let seq = chosen.seq;
-                    let steps = gio::spawn_blocking(move || folders(seq, &home, &user))
-                        .await
-                        .ok()
-                        .flatten()
-                        .unwrap_or_default();
+                    // From the newest backup, whatever the dropdown above says:
+                    // that dropdown is "Restore everything"'s.
+                    let newest = snapshots.borrow().clone();
+                    let Some(seq) = newest.first().map(|s| s.seq) else {
+                        return;
+                    };
+                    let steps = load_folders(seq).await;
                     if steps.is_empty() {
                         this.toast("That backup has no folders to choose from");
                         return;
                     }
-                    this.nav.push(&folders_page(&this, chosen, steps));
+                    this.nav.push(&folders_page(&this, newest, count, steps));
                 }
                 Way::Everything => {
                     button.set_sensitive(false);
@@ -391,15 +400,40 @@ fn page(wizard: &Rc<Wizard>, offer: Rc<Offer>) -> adw::NavigationPage {
 }
 
 /// The folders of backup `seq`, and what each would bring back.
-fn folders(seq: i64, home: &std::path::Path, user: &str) -> Option<Vec<recovery::Step>> {
-    let reader = IndexReader::open(&backtrack_core::paths::index_db()).ok()?;
-    Some(recovery::layout(&reader, seq, home, user).ok()??.steps)
+async fn load_folders(seq: i64) -> Vec<recovery::Step> {
+    let home = glib::home_dir();
+    let user = glib::user_name().to_string_lossy().into_owned();
+    gio::spawn_blocking(move || {
+        let reader = IndexReader::open(&backtrack_core::paths::index_db()).ok()?;
+        Some(recovery::layout(&reader, seq, &home, &user).ok()??.steps)
+    })
+    .await
+    .ok()
+    .flatten()
+    .unwrap_or_default()
 }
 
-/// "Restore selected folders…": a checklist of what is in the backup.
+/// "Restore selected folders…": a checklist of the folders in a backup, and a
+/// dropdown of its own for which backup that is.
+struct Folders {
+    snapshots: Rc<RefCell<Vec<Snapshot>>>,
+    dropdown: gtk4::DropDown,
+    /// Holds the checklist, which is rebuilt when another backup is chosen.
+    rows: GtkBox,
+    ticks: RefCell<Vec<(String, CheckButton)>>,
+    /// Folders the person has unticked, kept unticked across a change of
+    /// backup: choosing an older one should not quietly put Videos back.
+    unticked: RefCell<std::collections::HashSet<String>>,
+    start: Button,
+    /// Which reading of the catalogue is the latest, so a slow one for a
+    /// backup no longer chosen cannot overwrite a newer one.
+    reading: std::cell::Cell<u64>,
+}
+
 fn folders_page(
     wizard: &Rc<Wizard>,
-    chosen: Snapshot,
+    snapshots: Vec<Snapshot>,
+    count: usize,
     steps: Vec<recovery::Step>,
 ) -> adw::NavigationPage {
     let body = GtkBox::new(Orientation::Vertical, 18);
@@ -414,43 +448,37 @@ fn folders_page(
         .build();
     title.add_css_class("title-1");
     body.append(&title);
-    let now = glib::DateTime::now_local()
-        .map(|t| t.to_unix())
-        .unwrap_or_default();
-    let when = Label::builder()
-        .label(format!(
-            "From the backup of {}. Files already on this computer are never overwritten without asking.",
-            copy::when(chosen.ts, now, &glib::TimeZone::local())
-        ))
+    let promise = Label::builder()
+        .label("Files already on this computer are never overwritten without asking.")
         .xalign(0.0)
         .wrap(true)
         .build();
-    when.add_css_class("dim-label");
-    body.append(&when);
+    promise.add_css_class("dim-label");
+    body.append(&promise);
 
-    let group = adw::PreferencesGroup::new();
-    let ticks: Rc<RefCell<Vec<(String, CheckButton)>>> = Rc::new(RefCell::new(Vec::new()));
-    for step in &steps {
-        let tick = CheckButton::new();
-        tick.set_active(true);
-        tick.set_valign(Align::Center);
-        let row = adw::ActionRow::builder()
-            .title(copy::step_name(&step.key))
-            .subtitle(if step.key == copy::THE_REST {
-                format!(
-                    "Hidden folders and the files beside your folders · {}",
-                    copy::size(step.bytes)
-                )
-            } else {
-                copy::size(step.bytes)
-            })
-            .activatable_widget(&tick)
-            .build();
-        row.add_prefix(&tick);
-        group.add(&row);
-        ticks.borrow_mut().push((step.key.clone(), tick));
-    }
-    body.append(&group);
+    let now = glib::DateTime::now_local()
+        .map(|t| t.to_unix())
+        .unwrap_or_default();
+    let tz = glib::TimeZone::local();
+    let labels: Vec<String> = snapshots
+        .iter()
+        .map(|s| copy::when(s.ts, now, &tz))
+        .collect();
+    let labels: Vec<&str> = labels.iter().map(String::as_str).collect();
+    let model = gtk4::StringList::new(&labels);
+    let dropdown = gtk4::DropDown::new(Some(model.clone()), gtk4::Expression::NONE);
+    dropdown.set_valign(Align::Center);
+    let when = GtkBox::new(Orientation::Horizontal, 12);
+    let as_of = Label::new(Some("Folders as of"));
+    as_of.add_css_class("dim-label");
+    when.append(&as_of);
+    when.append(&dropdown);
+    body.append(&when);
+    let snapshots = Rc::new(RefCell::new(snapshots));
+    keep_up(&dropdown, &model, &snapshots, count);
+
+    let rows = GtkBox::new(Orientation::Vertical, 0);
+    body.append(&rows);
 
     let clamp = adw::Clamp::builder().maximum_size(640).child(&body).build();
     let scroller = gtk4::ScrolledWindow::builder()
@@ -477,37 +505,56 @@ fn folders_page(
     view.set_content(Some(&scroller));
     view.add_bottom_bar(&bar);
 
-    for (_, tick) in ticks.borrow().iter() {
-        let ticks = Rc::clone(&ticks);
-        let start = start.clone();
-        tick.connect_toggled(move |_| {
-            start.set_sensitive(ticks.borrow().iter().any(|(_, t)| t.is_active()));
-        });
-    }
+    let page = Rc::new(Folders {
+        snapshots,
+        dropdown,
+        rows,
+        ticks: RefCell::new(Vec::new()),
+        unticked: RefCell::new(std::collections::HashSet::new()),
+        start,
+        reading: std::cell::Cell::new(0),
+    });
+    page.show(&steps);
 
-    let this = Rc::clone(wizard);
-    start.connect_clicked(move |button| {
-        let keys: Vec<String> = ticks
+    let this = Rc::clone(&page);
+    page.dropdown
+        .connect_selected_notify(move |_| this.reload());
+
+    let this = Rc::clone(&page);
+    let wizard = Rc::clone(wizard);
+    page.start.connect_clicked(move |button| {
+        let Some(chosen) = this
+            .snapshots
+            .borrow()
+            .get(this.dropdown.selected() as usize)
+            .cloned()
+        else {
+            return;
+        };
+        let keys: Vec<String> = this
+            .ticks
             .borrow()
             .iter()
             .filter(|(_, t)| t.is_active())
             .map(|(key, _)| key.clone())
             .collect();
-        let this = Rc::clone(&this);
+        let wizard = Rc::clone(&wizard);
         let button = button.clone();
-        let archive = chosen.name.clone();
         crate::ui::spawn(async move {
             button.set_sensitive(false);
-            let started = this.daemon.restore_folders(&archive, &keys, "ask").await;
+            let started = wizard
+                .daemon
+                .restore_folders(&chosen.name, &keys, "ask")
+                .await;
             button.set_sensitive(true);
             match started {
                 Ok(job) => {
-                    info!(job, archive, folders = ?keys, "restoring some of this computer");
-                    this.hand_over();
+                    info!(job, archive = chosen.name, folders = ?keys, "restoring some of this computer");
+                    wizard.hand_over();
                 }
                 Err(error) => {
                     warn!(%error, "the restore could not start");
-                    this.toast(&explain(&error));
+                    wizard.toast(&explain(&error));
                 }
             }
         });
@@ -518,6 +565,79 @@ fn folders_page(
         .tag("everything-folders")
         .child(&view)
         .build()
+}
+
+impl Folders {
+    /// Read the folders of the backup now chosen, and show them.
+    fn reload(self: &Rc<Self>) {
+        let Some(seq) = self
+            .snapshots
+            .borrow()
+            .get(self.dropdown.selected() as usize)
+            .map(|s| s.seq)
+        else {
+            return;
+        };
+        let reading = self.reading.get() + 1;
+        self.reading.set(reading);
+        self.start.set_sensitive(false);
+        let this = Rc::clone(self);
+        crate::ui::spawn(async move {
+            let steps = load_folders(seq).await;
+            if this.reading.get() == reading {
+                this.show(&steps);
+            }
+        });
+    }
+
+    /// The checklist for `steps`, ticked except where the person has
+    /// unticked a folder of the same name.
+    fn show(self: &Rc<Self>, steps: &[recovery::Step]) {
+        while let Some(child) = self.rows.first_child() {
+            self.rows.remove(&child);
+        }
+        let group = adw::PreferencesGroup::new();
+        let mut ticks = Vec::with_capacity(steps.len());
+        for step in steps {
+            let tick = CheckButton::new();
+            tick.set_active(!self.unticked.borrow().contains(&step.key));
+            tick.set_valign(Align::Center);
+            let row = adw::ActionRow::builder()
+                .title(copy::step_name(&step.key))
+                .subtitle(if step.key == copy::THE_REST {
+                    format!(
+                        "Hidden folders and the files beside your folders · {}",
+                        copy::size(step.bytes)
+                    )
+                } else {
+                    copy::size(step.bytes)
+                })
+                .activatable_widget(&tick)
+                .build();
+            row.add_prefix(&tick);
+            group.add(&row);
+            let this = Rc::downgrade(self);
+            let key = step.key.clone();
+            tick.connect_toggled(move |tick| {
+                let Some(this) = this.upgrade() else { return };
+                if tick.is_active() {
+                    this.unticked.borrow_mut().remove(&key);
+                } else {
+                    this.unticked.borrow_mut().insert(key.clone());
+                }
+                this.update_start();
+            });
+            ticks.push((step.key.clone(), tick));
+        }
+        self.rows.append(&group);
+        *self.ticks.borrow_mut() = ticks;
+        self.update_start();
+    }
+
+    fn update_start(&self) {
+        self.start
+            .set_sensitive(self.ticks.borrow().iter().any(|(_, t)| t.is_active()));
+    }
 }
 
 /// A choice's own words, in the size the mockup sets them.
