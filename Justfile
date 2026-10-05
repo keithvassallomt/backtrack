@@ -474,7 +474,11 @@ install-units:
     dbus_dir="${XDG_DATA_HOME:-${HOME}/.local/share}/dbus-1/services"
 
     echo "Building the daemon so the unit points at something that exists…"
-    cargo build -p backtrackd
+    # The whole workspace, not `-p backtrackd`: the window turns on features
+    # of a shared crate, so the two builds make different daemon binaries and
+    # each replaces the other at target/debug/backtrackd. The one the unit
+    # runs is the one `just build` makes.
+    cargo build --workspace
 
     mkdir -p "${systemd_dir}" "${dbus_dir}"
 

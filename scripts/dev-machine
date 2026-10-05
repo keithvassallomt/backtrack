@@ -154,9 +154,18 @@ build() {
 units() {
     say "Installing the development daemon's units…"
     (cd "$ROOT" && just install-units >/dev/null)
-    # A daemon left running is the previous build.
-    if systemctl --user is-active -q backtrackd.service; then
-        systemctl --user restart backtrackd.service
+    # A running daemon is restarted only when it is not the build just made:
+    # a rebuild replaces the file, which leaves the old process running a
+    # deleted one. Restarting every time would interrupt whatever is being
+    # watched in the VM for a change that did not touch the daemon.
+    local pid exe
+    pid="$(systemctl --user show -p MainPID --value backtrackd.service)"
+    if [[ "$pid" != 0 ]]; then
+        exe="$(readlink "/proc/$pid/exe" || true)"
+        if [[ "$exe" != "$ROOT/target/debug/backtrackd" ]]; then
+            say "Restarting the daemon onto the new build…"
+            systemctl --user restart backtrackd.service
+        fi
     fi
 }
 
