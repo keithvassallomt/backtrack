@@ -121,7 +121,7 @@
 - [ ] S12-T3 StatusNotifierItem tray for non-GNOME (status, actions)
 - [ ] S12-T4 Background portal presence (GNOME quick-settings launch path)
 - [ ] S12-T5 App detects missing plugins → hints distro package (prefs General)
-- [/] S12-T6 Development VMs: one-command setup and push for GNOME and Plasma
+- [x] S12-T6 Development VMs: one-command setup and push for GNOME and Plasma
 
 ## Stage 13 — Packaging & release ([stage file](stages/stage-13-packaging-release.md))
 - [ ] S13-T1 Flatpak manifest (GNOME runtime, portals, bundled borg)
@@ -173,8 +173,11 @@
     logins; `just install-units` built `-p backtrackd`, whose features
     differ from a workspace build, so two daemon binaries replaced each
     other and every push restarted the daemon (on the host too); and
-    `vm app` passed the window an empty argument. The Plasma VM is still to
-    be made.
+    `vm app` passed the window an empty argument.
+  - **Plasma VM passed** (Fedora 45 KDE, same libraries): the first push
+    set it up, KWallet stored the demo passphrase without a prompt, a
+    push with nothing changed did nothing, a daemon change compiled and
+    restarted once, and `just vm-app` opened the window on its screen.
 
 - 2026-10-05 (S12-T1: the Nautilus extension): a launcher and nothing more,
   as the stage asks. Decisions:
