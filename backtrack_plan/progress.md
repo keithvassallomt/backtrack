@@ -163,6 +163,18 @@
     wizard makes, with a fixed passphrase for the local spool, rather than by
     writing `config.toml`, so the keyring and the catalogue are set up the
     way a real import sets them up.
+  - **GNOME VM passed** (Fedora 45, GNOME 51 libraries): the first push
+    installed, built and configured it; a push with nothing changed takes
+    2.5 s with no prompt and no restart; a push after a daemon change
+    compiles it once and restarts it once; `just vm-app` opens the window.
+    Keith's run found four faults, all fixed: `vm push` decided whether it
+    had a terminal inside a `$(…)`, so sudo could never ask; `ssh-copy-id`
+    without `-f` is refused by OpenSSH's penalties for its own trial
+    logins; `just install-units` built `-p backtrackd`, whose features
+    differ from a workspace build, so two daemon binaries replaced each
+    other and every push restarted the daemon (on the host too); and
+    `vm app` passed the window an empty argument. The Plasma VM is still to
+    be made.
 
 - 2026-10-05 (S12-T1: the Nautilus extension): a launcher and nothing more,
   as the stage asks. Decisions:
