@@ -113,7 +113,7 @@
 - [x] S11-T1 RestoreEverything job: per-top-folder, resumable
 - [/] S11-T2 DR entry dialog (mockup 21) off the import path
 - [/] S11-T3 Progress window, pause/cancel, honest ETA (mockup 22)
-- [/] S11-T4 Post-restore: enable schedule only after completion
+- [x] S11-T4 Post-restore: enable schedule only after completion
 
 ## Stage 12 — Integrations & tray ([stage file](stages/stage-12-integrations-tray.md))
 - [ ] S12-T1 Nautilus python extension (mockup 2)

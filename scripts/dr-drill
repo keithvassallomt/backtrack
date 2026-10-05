@@ -217,6 +217,12 @@ print(f"  missing from the new home: {len(missing)}", *missing[:10], sep="\n    
 print(f"  only on the new computer:  {len(extra)}", *extra[:10], sep="\n    ")
 print(f"  different:                 {len(differ)}", *differ[:10], sep="\n    ")
 PY
+    say "Recovery record:"
+    if [[ -f "$DATA/dr-job.json" ]]; then
+        echo "  still there: $(grep -o '"stage": "[a-z-]*"' "$DATA/dr-job.json")"
+    else
+        echo "  none"
+    fi
     say "What the new computer backs up now:"
     grep '^include' "$DATA/config.toml" || echo "  (nothing yet)"
     say "Archives in the backups:"
