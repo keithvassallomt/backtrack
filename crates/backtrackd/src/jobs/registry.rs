@@ -78,6 +78,18 @@ struct Job {
     /// Trips to stop the current run. Replaced on each start, so a cancel
     /// aimed at a previous run cannot stop the next one.
     cancel: CancellationToken,
+    /// Which start this is. A paused job is started again on resume, and the
+    /// run it was paused out of may still be winding down when the next one
+    /// begins; the count is how the old run knows the job is no longer its
+    /// to settle.
+    run: u64,
+}
+
+/// One start of a job: what it is, and which start.
+#[derive(Debug, Clone, Copy)]
+struct Run {
+    kind: JobKind,
+    number: u64,
 }
 
 struct Inner {
@@ -123,6 +135,7 @@ impl JobRegistry {
                     state: JobState::Queued,
                     factory,
                     cancel: CancellationToken::new(),
+                    run: 0,
                 },
             );
             inner.queue.push_back(id);
@@ -135,6 +148,38 @@ impl JobRegistry {
             state: JobState::Queued,
         });
         self.pump();
+        id
+    }
+
+    /// Register a job that starts out paused, waiting for [`Self::resume`].
+    ///
+    /// What a daemon that was restarted with a paused disaster recovery on
+    /// disk needs: the job has to exist, so the window can show it and the
+    /// person can resume it, but nothing asked for it to run.
+    pub fn submit_paused(self: &Arc<Self>, kind: JobKind, factory: JobFactory) -> JobId {
+        debug_assert!(kind.is_pausable(), "only a pausable kind can start paused");
+        let id = {
+            let mut inner = self.inner.lock().unwrap();
+            let id = inner.next_id;
+            inner.next_id += 1;
+            inner.jobs.insert(
+                id,
+                Job {
+                    kind,
+                    state: JobState::Paused,
+                    factory,
+                    cancel: CancellationToken::new(),
+                    run: 0,
+                },
+            );
+            id
+        };
+        info!(job = id, kind = kind.as_str(), "job registered paused");
+        self.publish(JobUpdate::State {
+            id,
+            kind,
+            state: JobState::Paused,
+        });
         id
     }
 
@@ -264,14 +309,24 @@ impl JobRegistry {
                         let job = inner.jobs.get_mut(&id).expect("queued job exists");
                         job.state = JobState::Running;
                         job.cancel = CancellationToken::new();
-                        Some((id, job.kind, job.factory.clone(), job.cancel.clone()))
+                        job.run += 1;
+                        Some((
+                            id,
+                            Run {
+                                kind: job.kind,
+                                number: job.run,
+                            },
+                            job.factory.clone(),
+                            job.cancel.clone(),
+                        ))
                     }
                 }
             };
 
-            let Some((id, kind, factory, cancel)) = started else {
+            let Some((id, run, factory, cancel)) = started else {
                 return;
             };
+            let kind = run.kind;
             info!(job = id, kind = kind.as_str(), "job started");
             self.publish(JobUpdate::State {
                 id,
@@ -279,7 +334,7 @@ impl JobRegistry {
                 state: JobState::Running,
             });
             let registry = Arc::clone(self);
-            tokio::spawn(async move { registry.run(id, kind, factory, cancel).await });
+            tokio::spawn(async move { registry.run(id, run, factory, cancel).await });
         }
     }
 
@@ -287,15 +342,17 @@ impl JobRegistry {
     async fn run(
         self: Arc<Self>,
         id: JobId,
-        kind: JobKind,
+        run: Run,
         factory: JobFactory,
         cancel: CancellationToken,
     ) {
+        let kind = run.kind;
         // Cancelling before the engine has even been asked to start is common:
         // the job was admitted a moment before the user changed their mind.
         let started = tokio::select! {
+            biased;
             _ = cancel.cancelled() => {
-                self.settle(id, kind, JobState::Done(Outcome::Cancelled));
+                self.settle_run(id, run, JobState::Done(Outcome::Cancelled));
                 return;
             }
             started = factory(id) => started,
@@ -304,20 +361,24 @@ impl JobRegistry {
         let mut stream = match started {
             Ok(stream) => stream,
             Err(e) => {
-                self.settle(id, kind, JobState::Failed(e));
+                self.settle_run(id, run, JobState::Failed(e));
                 return;
             }
         };
 
         let mut throttle = ProgressThrottle::default();
         loop {
+            // Biased towards the stop: an event that arrives in the same
+            // instant as a pause belongs to the run being paused, and acting on
+            // it would settle a job somebody has just asked to hold.
             let event = tokio::select! {
+                biased;
                 _ = cancel.cancelled() => {
                     // Dropping the stream trips its token, which is what signals
                     // the Borg child. Do it before settling so the repository is
                     // actually free by the time the next job is admitted.
                     drop(stream);
-                    self.settle(id, kind, self.cancellation_outcome(id));
+                    self.settle_run(id, run, self.cancellation_outcome(id));
                     return;
                 }
                 event = stream.next() => event,
@@ -351,15 +412,15 @@ impl JobRegistry {
                     // The last progress tick must land or the bar stops short.
                     throttle.release();
                     debug!(job = id, archive = ?summary.archive_id, "job finished");
-                    self.settle(id, kind, JobState::Done(Outcome::Completed));
+                    self.settle_run(id, run, JobState::Done(Outcome::Completed));
                     return;
                 }
                 Some(JobEvent::Finished(Err(EngineError::Cancelled))) => {
-                    self.settle(id, kind, JobState::Done(Outcome::Cancelled));
+                    self.settle_run(id, run, JobState::Done(Outcome::Cancelled));
                     return;
                 }
                 Some(JobEvent::Finished(Err(e))) => {
-                    self.settle(id, kind, self.failure_outcome(id, e));
+                    self.settle_run(id, run, self.failure_outcome(id, e));
                     return;
                 }
                 None => {
@@ -375,7 +436,7 @@ impl JobRegistry {
                             stderr: "engine stream ended without a terminal event".into(),
                         },
                     );
-                    self.settle(id, kind, outcome);
+                    self.settle_run(id, run, outcome);
                     return;
                 }
             }
@@ -404,6 +465,29 @@ impl JobRegistry {
             }
             _ => JobState::Failed(error),
         }
+    }
+
+    /// Settle the job a run belongs to, if it still does.
+    ///
+    /// A pause stops the run and leaves the job paused, so the run that was
+    /// stopped must not then settle it as cancelled: that is what turned every
+    /// pause into a cancel, and a resume into "job is not paused". Nor may it
+    /// settle a later run's job, which is where a paused job resumed quickly
+    /// enough would otherwise end up.
+    fn settle_run(self: &Arc<Self>, id: JobId, run: Run, state: JobState) {
+        let current = {
+            let inner = self.inner.lock().unwrap();
+            inner
+                .jobs
+                .get(&id)
+                .map(|job| job.run == run.number && job.state != JobState::Paused)
+        };
+        if current == Some(false) {
+            debug!(job = id, run = run.number, "a paused run stopped");
+            self.pump();
+            return;
+        }
+        self.settle(id, run.kind, state);
     }
 
     /// Move a job to its terminal state and let the queue move on.
@@ -665,6 +749,50 @@ mod tests {
         registry.cancel(backup).unwrap();
 
         registry.resume(dr).expect("resumable");
+        wait_until(&registry, dr, "running", |s| *s == JobState::Running).await;
+        registry.cancel(dr).unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_paused_job_stays_paused_once_its_run_has_stopped() {
+        // The run being paused sees its token trip and stops. Before runs were
+        // counted it then settled the job as cancelled, so the pause lasted
+        // only until the runtime got round to it, and resuming was refused.
+        let registry = JobRegistry::new();
+        let dr = registry.submit(JobKind::RestoreEverything, pending_factory());
+        wait_until(&registry, dr, "running", |s| *s == JobState::Running).await;
+
+        registry.pause(dr).expect("DR is pausable");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert_eq!(registry.snapshot(dr).unwrap().state, JobState::Paused);
+
+        registry.resume(dr).expect("still paused, so resumable");
+        wait_until(&registry, dr, "running", |s| *s == JobState::Running).await;
+        // The first run has long stopped; nothing it left behind may settle
+        // the second.
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert_eq!(registry.snapshot(dr).unwrap().state, JobState::Running);
+
+        registry.cancel(dr).unwrap();
+        wait_until(&registry, dr, "cancelled", |s| {
+            *s == JobState::Done(Outcome::Cancelled)
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn a_job_can_be_registered_paused_and_resumed_later() {
+        let registry = JobRegistry::new();
+        let dr = registry.submit_paused(JobKind::RestoreEverything, pending_factory());
+        assert_eq!(registry.snapshot(dr).unwrap().state, JobState::Paused);
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        assert_eq!(
+            registry.snapshot(dr).unwrap().state,
+            JobState::Paused,
+            "nothing asked it to run"
+        );
+
+        registry.resume(dr).unwrap();
         wait_until(&registry, dr, "running", |s| *s == JobState::Running).await;
         registry.cancel(dr).unwrap();
     }

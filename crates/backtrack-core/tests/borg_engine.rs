@@ -307,3 +307,95 @@ async fn a_listed_mtime_is_the_one_the_file_has() {
         "the listed mtime is the file's own, not its local rendering read as UTC",
     );
 }
+
+#[tokio::test]
+async fn a_patterns_file_extracts_a_folder_less_what_it_turns_down_and_names_each_item() {
+    let f = fixture().await;
+    let eng = engine(&f).await;
+    eng.init_repo(&RepoSpec {
+        path: f.repo.clone(),
+        encryption: Encryption::RepokeyBlake2,
+    })
+    .await
+    .unwrap();
+    std::fs::create_dir_all(f.src.join("keep/deep")).unwrap();
+    std::fs::create_dir_all(f.src.join("keep/never")).unwrap();
+    std::fs::write(f.src.join("keep/a.txt"), b"a").unwrap();
+    std::fs::write(f.src.join("keep/deep/b.txt"), b"b").unwrap();
+    std::fs::write(f.src.join("keep/never/secret.toml"), b"no").unwrap();
+    run_to_finish(
+        eng.create(&CreateSpec {
+            archive_name: "arch".into(),
+            sources: vec![f.src.clone()],
+            excludes: vec![],
+            compression: Compression::Zstd,
+            upload_limit_kib: None,
+            one_file_system: false,
+            created_at: std::time::SystemTime::now(),
+            paths: Vec::new(),
+        })
+        .await
+        .unwrap(),
+    )
+    .await
+    .unwrap();
+
+    let src = f.src.strip_prefix("/").unwrap().display().to_string();
+    let patterns_file = f.src.parent().unwrap().join("wanted.patterns");
+    let out = f.src.parent().unwrap().join("out");
+    std::fs::create_dir_all(&out).unwrap();
+
+    // The folder, without the part that must never come back.
+    std::fs::write(
+        &patterns_file,
+        backtrack_core::recovery::patterns(
+            &[format!("{src}/keep/never")],
+            &[format!("{src}/keep")],
+            &[],
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    let mut stream = eng
+        .extract_patterns(&ArchiveId("arch".into()), &patterns_file, &out)
+        .await
+        .unwrap();
+    let mut items = Vec::new();
+    let mut finished = None;
+    while let Some(event) = stream.next().await {
+        match event {
+            JobEvent::ItemDone { path } => items.push(path),
+            JobEvent::Finished(outcome) => finished = Some(outcome),
+            _ => {}
+        }
+    }
+    finished.expect("a terminal event").expect("extracted");
+    let here = out.join(&src);
+    assert_eq!(std::fs::read(here.join("keep/a.txt")).unwrap(), b"a");
+    assert_eq!(std::fs::read(here.join("keep/deep/b.txt")).unwrap(), b"b");
+    assert!(!here.join("keep/never").exists(), "turned down");
+    assert!(!here.join("hello.txt").exists(), "not asked for");
+    assert!(
+        items.contains(&format!("{src}/keep/deep/b.txt")),
+        "{items:?}"
+    );
+
+    // Exactly one file, for the resume of an extraction that stopped short.
+    let again = f.src.parent().unwrap().join("again");
+    std::fs::create_dir_all(&again).unwrap();
+    std::fs::write(
+        &patterns_file,
+        backtrack_core::recovery::patterns(&[], &[], &[format!("{src}/keep/deep/b.txt")]).unwrap(),
+    )
+    .unwrap();
+    run_to_finish(
+        eng.extract_patterns(&ArchiveId("arch".into()), &patterns_file, &again)
+            .await
+            .unwrap(),
+    )
+    .await
+    .unwrap();
+    let here = again.join(&src);
+    assert_eq!(std::fs::read(here.join("keep/deep/b.txt")).unwrap(), b"b");
+    assert!(!here.join("keep/a.txt").exists());
+}

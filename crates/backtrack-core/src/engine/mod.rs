@@ -68,6 +68,24 @@ pub trait BackupEngine: Send + Sync {
     /// Extract paths into `dest` (`borg extract`).
     async fn extract(&self, id: &ArchiveId, paths: &[String], dest: &Path) -> Result<JobStream>;
 
+    /// Extract what a patterns file selects into `dest` (`borg extract
+    /// --patterns-from`), reporting each item as it is reached.
+    ///
+    /// For extractions too precise for a list of folders: a folder less the
+    /// parts that must never be restored, or exactly the files an interrupted
+    /// extraction did not finish. A patterns file rather than arguments because
+    /// the second can run to hundreds of thousands of paths.
+    ///
+    /// Reports items, not progress: Borg can only total an extraction by
+    /// reading the archive's file list an extra time, and the caller can count
+    /// bytes from the catalogue and the files as they land.
+    async fn extract_patterns(
+        &self,
+        id: &ArchiveId,
+        patterns: &Path,
+        dest: &Path,
+    ) -> Result<JobStream>;
+
     /// Stream a single file's bytes to a reader (`borg extract --stdout`).
     async fn extract_stdout(
         &self,

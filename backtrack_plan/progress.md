@@ -12,8 +12,8 @@
 > tasks: add them here + to the stage file, then `just provision-board-apply`.
 > See [../CLAUDE.md](../CLAUDE.md) for the full workflow.
 
-**Current stage:** 11 (not started)
-**Last updated:** 2026-09-28
+**Current stage:** 11 (in progress)
+**Last updated:** 2026-10-05
 
 ## Stage 0 — Bootstrap ([stage file](stages/stage-00-bootstrap.md))
 - [x] S00-T1 Git repo, license, .gitignore, README skeleton
@@ -110,7 +110,7 @@
 - [x] S10-T7 Local snapshot badges say whether the destination has them
 
 ## Stage 11 — Disaster recovery ([stage file](stages/stage-11-disaster-recovery.md))
-- [ ] S11-T1 RestoreEverything job: per-top-folder, resumable
+- [/] S11-T1 RestoreEverything job: per-top-folder, resumable
 - [ ] S11-T2 DR entry dialog (mockup 21) off the import path
 - [ ] S11-T3 Progress window, pause/cancel, honest ETA (mockup 22)
 - [ ] S11-T4 Post-restore: enable schedule only after completion

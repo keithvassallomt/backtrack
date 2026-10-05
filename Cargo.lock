@@ -323,6 +323,7 @@ dependencies = [
  "futures",
  "rustix",
  "serde",
+ "serde_json",
  "tempfile",
  "thiserror",
  "tokio",

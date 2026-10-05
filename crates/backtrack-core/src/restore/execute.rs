@@ -72,6 +72,9 @@ pub struct Report {
     /// because one file in it is read-only: the rest is still wanted, and the
     /// failures are reported at the end.
     pub failures: Vec<(PathBuf, String)>,
+    /// The execution was asked to stop and did, between two files, before
+    /// reaching the end of the plan.
+    pub stopped: bool,
 }
 
 /// Carry out `plan`.
@@ -84,6 +87,23 @@ pub fn execute(
     stash: &Path,
     now: SystemTime,
 ) -> Result<Report> {
+    execute_watched(plan, decisions, stash, now, &|| false, &mut |_| {})
+}
+
+/// [`execute`], looking at `stop` before each path and telling `done` about
+/// each move as it is made.
+///
+/// What a restore that has to be pausable needs: it stops between two files,
+/// never in the middle of one, and what it had done by then is already known
+/// to whoever was told, so nothing it did is lost to the stop.
+pub fn execute_watched(
+    plan: &RestorePlan,
+    decisions: &Decisions,
+    stash: &Path,
+    now: SystemTime,
+    stop: &dyn Fn() -> bool,
+    done: &mut dyn FnMut(&Move),
+) -> Result<Report> {
     check_space(plan, decisions, stash)?;
 
     let stash_dir = stash.join(stamp(now).to_string());
@@ -92,6 +112,10 @@ pub fn execute(
     // Entries are sorted by path, so a directory is always created before the
     // files that go in it.
     for entry in &plan.entries {
+        if stop() {
+            report.stopped = true;
+            break;
+        }
         let decision = match entry.class {
             Class::Identical | Class::OnlyOnDisk => {
                 report.skipped += 1;
@@ -109,9 +133,10 @@ pub fn execute(
         }
 
         match apply(plan, entry.path.as_path(), entry, decision, &stash_dir) {
-            Ok(Some(done)) => {
+            Ok(Some(moved)) => {
+                done(&moved);
                 report.restored += 1;
-                report.log.moves.push(done);
+                report.log.moves.push(moved);
             }
             Ok(None) => report.skipped += 1,
             Err(error) => {
@@ -175,6 +200,39 @@ fn apply(
 
     move_path(&source, &target)?;
     Ok(Some(displaced.unwrap_or(Move::Added { path: target })))
+}
+
+/// Move the backup's copy of every path that needs a decision out of staging
+/// and into `aside`, at the same place relative to it, leaving the files on
+/// disk untouched.
+///
+/// For a restore that cannot ask as it goes. Everything that needs no answer
+/// is restored; what does is kept aside until it can be asked about, all at
+/// once, and the staging directory is free to be cleared.
+///
+/// A path inside one that was already set aside went with it.
+pub fn set_aside(plan: &RestorePlan, aside: &Path) -> Report {
+    let mut report = Report::default();
+    let mut moved: Vec<&Path> = Vec::new();
+    for entry in plan.decisions_needed() {
+        if moved.iter().any(|done| entry.path.starts_with(done)) {
+            continue;
+        }
+        let source = plan.staging.join(&entry.path);
+        if std::fs::symlink_metadata(&source).is_err() {
+            continue;
+        }
+        match move_path(&source, &aside.join(&entry.path)) {
+            Ok(()) => {
+                report.restored += 1;
+                moved.push(entry.path.as_path());
+            }
+            Err(error) => report
+                .failures
+                .push((entry.path.clone(), error.to_string())),
+        }
+    }
+    report
 }
 
 /// Put everything a restore did back the way it was, newest move first.
@@ -246,9 +304,25 @@ pub fn keep_both_name(path: &Path, taken: impl Fn(&Path) -> bool) -> PathBuf {
 ///
 /// Discovering this halfway through is the worst time: the stash would hold
 /// some of the originals and the destination some of the replacements.
+///
+/// Only a copy needs room. A file that arrives by rename from a staging
+/// directory on the same filesystem is already taking the space it will take,
+/// and asking for that much again refused a large folder on any disk with less
+/// than twice its size free; the same goes for a replaced file renamed into a
+/// stash beside it.
 fn check_space(plan: &RestorePlan, decisions: &Decisions, stash: &Path) -> Result<()> {
     let needed = plan.space_needed(decisions);
-    for (bytes, where_) in [(needed.dest, plan.dest.as_path()), (needed.stash, stash)] {
+    let dest = if super::same_filesystem(&plan.staging, &plan.dest) {
+        0
+    } else {
+        needed.dest
+    };
+    let stashed = if super::same_filesystem(&plan.dest, stash) {
+        0
+    } else {
+        needed.stash
+    };
+    for (bytes, where_) in [(dest, plan.dest.as_path()), (stashed, stash)] {
         if bytes == 0 {
             continue;
         }

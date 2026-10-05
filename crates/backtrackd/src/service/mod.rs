@@ -28,6 +28,7 @@ mod health;
 mod introspect;
 mod on_disk;
 mod preview;
+mod recovery_e2e;
 mod state;
 
 use std::path::PathBuf;
@@ -37,7 +38,7 @@ use std::time::{Duration, SystemTime};
 use backtrack_core::config::Config;
 use backtrack_core::dbus::Reason;
 use backtrack_core::engine::{
-    ArchiveId, BackupEngine, BorgCli, CheckLevel, CreateSpec, HealthFailure, PrunePolicy,
+    ArchiveId, BackupEngine, BorgCli, CheckLevel, CreateSpec, HealthFailure, JobStream, PrunePolicy,
 };
 use backtrack_core::index::{IndexReader, IndexWriter, Kind};
 use backtrack_core::paths;
@@ -59,7 +60,8 @@ use crate::reachability::{DestinationProbe, Reach, RealProbe};
 use crate::schedule::{self, ScheduleInput};
 
 pub use backtrack_core::dbus::{
-    HealthReport, LocalStorage, ReplacedFile, RestorePreview, SearchResult, Status, StorageInfo,
+    HealthReport, LocalStorage, RecoveryStatus, ReplacedFile, RestorePreview, SearchResult, Status,
+    StorageInfo,
 };
 pub use dev::Dev;
 pub use error::{DaemonError, Result};
@@ -211,6 +213,8 @@ pub struct Shared {
     /// The catalogue was found damaged at start and is being read again from
     /// the repository: health.md's "Catalogue rebuilding…".
     catalogue_rebuilding: Mutex<bool>,
+    /// The disaster recovery, if one is under way or waiting on its summary.
+    recovery: Arc<crate::recovery::Recovery>,
 }
 
 impl Shared {
@@ -234,6 +238,8 @@ impl Shared {
                 snapshots_dir: paths::snapshots_dir(),
                 staging_dir: paths::staging_dir(),
                 replaced_dir: paths::replaced_dir(),
+                recovery_manifest: paths::recovery_manifest(),
+                recovery_dir: paths::recovery_dir(),
             },
         )
     }
@@ -261,6 +267,8 @@ impl Shared {
                 snapshots_dir: dir.join("snapshots"),
                 staging_dir: dir.join("staging"),
                 replaced_dir: dir.join("replaced"),
+                recovery_manifest: dir.join("dr-job.json"),
+                recovery_dir: dir.join("recovery"),
             },
         )
     }
@@ -284,6 +292,8 @@ impl Shared {
             snapshots_dir,
             staging_dir,
             replaced_dir,
+            recovery_manifest,
+            recovery_dir,
         } = layout;
         Arc::new(Shared {
             config: Mutex::new(config),
@@ -325,6 +335,10 @@ impl Shared {
             forced: Mutex::new(None),
             unexplained_failures: Mutex::new(0),
             catalogue_rebuilding: Mutex::new(false),
+            recovery: Arc::new(crate::recovery::Recovery::new(
+                recovery_manifest,
+                recovery_dir,
+            )),
         })
     }
 
@@ -402,6 +416,331 @@ impl Shared {
             Box::pin(async move { Ok(stream) }) as BoxFuture<'_, _>
         });
         self.jobs.submit(JobKind::Restore, factory)
+    }
+
+    /// Start a disaster recovery of `archive`: everything in it, or only the
+    /// steps named in `folders`.
+    pub async fn begin_recovery(
+        &self,
+        archive: &str,
+        folders: Option<Vec<String>>,
+        policy: &str,
+    ) -> Result<u64> {
+        self.begin_recovery_into(
+            archive,
+            folders,
+            policy,
+            dirs_home(),
+            crate::recovery::user_name(),
+        )
+        .await
+    }
+
+    /// [`Shared::begin_recovery`] into the home folder `home` of the person
+    /// called `user`, which are this process's own everywhere but in tests.
+    pub(crate) async fn begin_recovery_into(
+        &self,
+        archive: &str,
+        folders: Option<Vec<String>>,
+        policy: &str,
+        home: PathBuf,
+        user: String,
+    ) -> Result<u64> {
+        let engine = self.engine()?;
+        let policy = match RestorePolicy::parse(policy)? {
+            RestorePolicy::Ask => "ask",
+            RestorePolicy::Replace => "replace",
+            RestorePolicy::KeepBoth => "keep-both",
+            RestorePolicy::SkipIdentical => "skip",
+        };
+        if self.recovery.load().is_some() {
+            return Err(DaemonError::RecoveryUnderWay(
+                "this computer is already being restored".into(),
+            ));
+        }
+
+        let index = self.index_path.clone();
+        let name = archive.to_string();
+        let found = tokio::task::spawn_blocking(move || -> Result<_> {
+            let reader = IndexReader::open(&index)?;
+            let seq = reader
+                .seq_of(&name)?
+                .ok_or_else(|| DaemonError::NotFound(format!("no backup called {name}")))?;
+            let summary = reader
+                .archives_overview()?
+                .into_iter()
+                .find(|a| a.seq == seq)
+                .ok_or_else(|| DaemonError::NotFound(format!("no backup called {name}")))?;
+            // The totals the progress is honest against come from the
+            // catalogue, so a backup it has not read yet cannot be measured.
+            if !summary.catalogued {
+                return Err(DaemonError::NotFound(
+                    "that backup is still being catalogued; try again in a moment".into(),
+                ));
+            }
+            let layout =
+                backtrack_core::recovery::layout(&reader, seq, &home, &user)?.ok_or_else(|| {
+                    DaemonError::NotFound("that backup holds nothing to restore".into())
+                })?;
+            let roots = reader.backed_up_roots(seq)?;
+            Ok((layout, summary.ts, roots, home))
+        })
+        .await
+        .map_err(|e| DaemonError::RestoreFailed(e.to_string()))??;
+        let (layout, taken, roots, home) = found;
+
+        let layout = match folders {
+            None => layout,
+            Some(keys) => {
+                if let Some(unknown) = keys
+                    .iter()
+                    .find(|key| !layout.steps.iter().any(|step| &step.key == *key))
+                {
+                    return Err(DaemonError::InvalidArgument(format!(
+                        "{unknown:?} is not one of the folders in that backup"
+                    )));
+                }
+                layout.only(&keys)
+            }
+        };
+        let backups_after = backtrack_core::recovery::backups_after(&roots, &layout.source, &home);
+        let manifest =
+            crate::recovery::Manifest::new(archive, taken, layout, home, policy, backups_after);
+        // Anything a recovery that was cancelled half-way left behind.
+        self.recovery.clear();
+        self.recovery.save(&manifest).map_err(|e| {
+            DaemonError::RestoreFailed(format!("the recovery could not be recorded: {e}"))
+        })?;
+        info!(
+            archive,
+            source = manifest.source,
+            dest = %manifest.dest.display(),
+            steps = manifest.steps.len(),
+            bytes = manifest.total(),
+            policy,
+            "restoring this computer"
+        );
+        Ok(self.submit_recovery(engine, false))
+    }
+
+    /// Register the job that runs the recovery on disk.
+    fn submit_recovery(&self, engine: Arc<dyn BackupEngine>, paused: bool) -> u64 {
+        let recovery = Arc::clone(&self.recovery);
+        let index = self.index_path.clone();
+        let stash = self.replaced_dir.clone();
+        let factory: JobFactory = Arc::new(move |_job| {
+            let stream = crate::recovery::start(crate::recovery::Driver {
+                engine: Arc::clone(&engine),
+                recovery: Arc::clone(&recovery),
+                index: index.clone(),
+                stash: stash.clone(),
+            });
+            Box::pin(async move { Ok(stream) }) as BoxFuture<'_, _>
+        });
+        let job = if paused {
+            self.jobs.submit_paused(JobKind::RestoreEverything, factory)
+        } else {
+            self.jobs.submit(JobKind::RestoreEverything, factory)
+        };
+        self.recovery.set_job(job);
+        job
+    }
+
+    /// The recovery's job while it is running or paused.
+    pub fn recovery_job(&self) -> Option<u64> {
+        let job = self.recovery.job()?;
+        let snapshot = self.jobs.snapshot(job).ok()?;
+        (!snapshot.state.is_terminal()).then_some(job)
+    }
+
+    /// Carry on with a recovery that was paused, or start again one that
+    /// stopped.
+    pub fn resume_recovery(&self) -> Result<u64> {
+        let manifest = self
+            .recovery
+            .load()
+            .ok_or_else(|| DaemonError::NotFound("there is no restore to carry on with".into()))?;
+        if manifest.stage != crate::recovery::Stage::Restoring {
+            return Err(DaemonError::InvalidArgument(
+                "that restore has already finished".into(),
+            ));
+        }
+        if let Some(job) = self.recovery.job() {
+            match self.jobs.snapshot(job).map(|s| s.state) {
+                Ok(JobState::Paused) => {
+                    self.recovery.set_pausing(false);
+                    self.jobs.resume(job)?;
+                    return Ok(job);
+                }
+                Ok(state) if !state.is_terminal() => return Ok(job),
+                _ => {}
+            }
+        }
+        let job = self.submit_recovery(self.engine()?, false);
+        info!(job, "carrying on with the restore of this computer");
+        Ok(job)
+    }
+
+    /// Stop the recovery for good, taking away what it restored if
+    /// `discard`. Returns the job doing it.
+    pub fn cancel_recovery(&self, discard: bool) -> Result<u64> {
+        if self.recovery.load().is_none() {
+            return Err(DaemonError::NotFound("there is no restore to stop".into()));
+        }
+        if let Some(job) = self.recovery.job() {
+            // Already over is fine: a recovery that stopped on its own is
+            // still one to put away.
+            let _ = self.jobs.cancel(job);
+        }
+        info!(discard, "the restore of this computer was cancelled");
+        let recovery = Arc::clone(&self.recovery);
+        let factory: JobFactory = Arc::new(move |_job| {
+            let recovery = Arc::clone(&recovery);
+            let (sink, stream) = JobStream::channel(4);
+            tokio::spawn(async move {
+                // The run being cancelled finishes the file it is on first,
+                // and it has the folder until it has.
+                let quiet = recovery.quiet().await;
+                let clearing = Arc::clone(&recovery);
+                let outcome = tokio::task::spawn_blocking(move || {
+                    crate::recovery::cancel(&clearing, discard)
+                })
+                .await
+                .map(|_| backtrack_core::engine::JobSummary::default())
+                .map_err(|e| backtrack_core::engine::EngineError::Local(e.to_string()));
+                drop(quiet);
+                sink.send(backtrack_core::engine::JobEvent::Finished(outcome))
+                    .await;
+            });
+            Box::pin(async move { Ok(stream) }) as BoxFuture<'_, _>
+        });
+        Ok(self.jobs.submit(JobKind::Restore, factory))
+    }
+
+    /// Work out the summary of what a finished recovery set aside, filed under
+    /// the job that does it, as any prepared restore is.
+    pub fn prepare_recovery_review(&self) -> Result<u64> {
+        let manifest = self
+            .recovery
+            .load()
+            .filter(|m| m.stage == crate::recovery::Stage::Review)
+            .ok_or_else(|| DaemonError::NotFound("nothing from the restore is waiting".into()))?;
+        let held = self.recovery.held();
+        let restores = Arc::clone(&self.restores);
+        let factory: JobFactory = Arc::new(move |job| {
+            let restores = Arc::clone(&restores);
+            let held = held.clone();
+            let archive = manifest.archive.clone();
+            let dest = manifest.dest.clone();
+            let (sink, stream) = JobStream::channel(4);
+            tokio::spawn(async move {
+                let outcome = tokio::task::spawn_blocking(move || {
+                    let asked = crate::recovery::top_level(&held);
+                    restore::plan(&archive, &held, &dest, &asked)
+                })
+                .await
+                .map_err(|e| backtrack_core::engine::EngineError::Local(e.to_string()))
+                .and_then(|planned| {
+                    planned.map_err(|e| backtrack_core::engine::EngineError::Local(e.to_string()))
+                })
+                .map(|plan| {
+                    restores.keep(job, plan);
+                    backtrack_core::engine::JobSummary::default()
+                });
+                sink.send(backtrack_core::engine::JobEvent::Finished(outcome))
+                    .await;
+            });
+            Box::pin(async move { Ok(stream) }) as BoxFuture<'_, _>
+        });
+        Ok(self.jobs.submit(JobKind::Restore, factory))
+    }
+
+    /// Pick up a recovery a previous daemon left: carry on with one that has
+    /// steps left, paused if it was paused, and finish handing over one that
+    /// ended.
+    pub fn recovery_at_start(&self) {
+        let Some(manifest) = self.recovery.load() else {
+            return;
+        };
+        match manifest.stage {
+            crate::recovery::Stage::Restoring => match self.engine() {
+                Ok(engine) => {
+                    let job = self.submit_recovery(engine, manifest.paused);
+                    info!(
+                        job,
+                        paused = manifest.paused,
+                        "carrying on with the restore of this computer"
+                    );
+                }
+                Err(error) => warn!(
+                    %error,
+                    "the restore of this computer cannot carry on until the backups can be reached"
+                ),
+            },
+            _ => self.after_recovery(),
+        }
+    }
+
+    /// A recovery has brought everything back: what to back up, when, and
+    /// telling the person.
+    ///
+    /// Done once, and recorded as done, so a restart before the summary is
+    /// answered neither repeats the notification nor undoes a change the
+    /// person made to the backup list in the meantime.
+    pub fn after_recovery(&self) {
+        let Some(mut manifest) = self.recovery.load() else {
+            return;
+        };
+        if manifest.stage == crate::recovery::Stage::Restoring {
+            return;
+        }
+        if !manifest.handed_over {
+            let mut config = self.config();
+            // A computer whose backups arrived from the Welcome page has
+            // nothing chosen to back up. It backs up what the old one did.
+            if config.backup.include.is_empty() && !manifest.backups_after.is_empty() {
+                config.backup.include = manifest.backups_after.clone();
+                match self.store_config(config) {
+                    Ok(()) => {
+                        info!(sources = ?manifest.backups_after, "backing up what the old computer backed up");
+                        self.forget_offline_mode();
+                    }
+                    Err(error) => warn!(%error, "what to back up could not be saved"),
+                }
+            }
+            // The first backup now, not an interval after one that ran before
+            // the restore began; and nothing is late from before it ended.
+            self.update_persisted(|state| state.last_attempt = None);
+            self.start_protection_clock();
+            let waiting = manifest.stage == crate::recovery::Stage::Review;
+            let restored: u64 = manifest.steps.iter().map(|s| s.restored).sum();
+            let held: u64 = manifest.steps.iter().map(|s| s.held).sum();
+            self.tell(
+                crate::notify::Kind::Recovery,
+                crate::notify::recovered(restored, if waiting { held } else { 0 }),
+            );
+            manifest.handed_over = true;
+            if let Err(error) = self.recovery.save(&manifest) {
+                warn!(%error, "the end of the restore could not be recorded");
+            }
+            self.wake_scheduler();
+        }
+        match manifest.stage {
+            crate::recovery::Stage::Finished => self.recovery.clear(),
+            _ => self.recovery.keep_only_what_waits(),
+        }
+    }
+
+    /// The recovery's job ended.
+    fn recovery_ended(&self, state: &JobState) {
+        match state {
+            JobState::Done(Outcome::Completed) => self.after_recovery(),
+            JobState::Failed(_) => self.tell(
+                crate::notify::Kind::Recovery,
+                crate::notify::recovery_stopped(),
+            ),
+            _ => {}
+        }
     }
 
     /// Where restores stage their extracted copies. Exposed so start-up can
@@ -635,7 +974,16 @@ impl Shared {
             // That is the state an import leaves a new computer in until the
             // person decides what to back up there, and a backup of nothing
             // would only fail, hourly.
-            configured: config.is_configured() && !config.backup.include.is_empty(),
+            //
+            // Nor while a disaster recovery has folders left to bring back:
+            // a backup of a half-restored home folder is not a backup of
+            // anything, and the entry dialog promises new backups start only
+            // once the restore has finished. The record on disk is what says
+            // so, which keeps the schedule held across a restart, before the
+            // recovery's job has even been registered again.
+            configured: config.is_configured()
+                && !config.backup.include.is_empty()
+                && !self.recovery.restoring(),
             busy: self.busy(),
             // Owned by the scheduler loop, which is the only thing that knows
             // whether it has already served a catch-up delay.
@@ -1807,6 +2155,8 @@ struct Layout {
     snapshots_dir: PathBuf,
     staging_dir: PathBuf,
     replaced_dir: PathBuf,
+    recovery_manifest: PathBuf,
+    recovery_dir: PathBuf,
 }
 
 /// A restore request that has passed its checks but has no job yet.
@@ -1857,6 +2207,11 @@ impl Daemon1 {
         if self.shared.config().backup.include.is_empty() {
             return Err(DaemonError::NotConfigured(
                 "nothing has been chosen to back up yet".into(),
+            ));
+        }
+        if self.shared.recovery.restoring() {
+            return Err(DaemonError::RecoveryUnderWay(
+                "backups start once this computer has been restored".into(),
             ));
         }
         self.shared.submit_backup().await
@@ -1922,6 +2277,7 @@ impl Daemon1 {
             configured: config.is_configured(),
             reason: health.reason_str().to_string(),
             since: self.shared.state_since(health, now),
+            recovery_job: self.shared.recovery_job().unwrap_or(0),
         })
     }
 
@@ -2342,27 +2698,69 @@ impl Daemon1 {
             .collect())
     }
 
-    /// Guided disaster recovery: bring back everything from `archive`.
+    /// Guided disaster recovery: bring back everything in `archive` into this
+    /// computer's home folder, a folder at a time.
     ///
-    /// The guided user experience is Stage 11. The job it drives exists now, and
-    /// is the one kind that can be paused between folders.
+    /// `policy` is what to do about files that are already here and differ:
+    /// `ask` sets them aside for one summary once everything else is back,
+    /// which is what the window uses; the others answer every one of them the
+    /// same way, for a caller with nobody to ask.
     async fn restore_everything(&self, archive: &str, policy: &str) -> Result<u64> {
-        let engine = self.shared.engine()?;
-        let policy = RestorePolicy::parse(policy)?;
-        info!(
-            archive,
-            policy = policy.as_str(),
-            "disaster recovery requested"
-        );
-        let archive = ArchiveId(archive.to_string());
-        let dest = dirs_home();
-        let factory: JobFactory = Arc::new(move |_job| {
-            let engine = Arc::clone(&engine);
-            let archive = archive.clone();
-            let dest = dest.clone();
-            Box::pin(async move { engine.extract(&archive, &[], &dest).await }) as BoxFuture<'_, _>
-        });
-        Ok(self.shared.jobs.submit(JobKind::RestoreEverything, factory))
+        self.shared.begin_recovery(archive, None, policy).await
+    }
+
+    /// Disaster recovery of only some of the folders: `folders` are the keys
+    /// `GetRecovery` and the window know them by, the folder's name or `.` for
+    /// the hidden folders and loose files.
+    async fn restore_folders(
+        &self,
+        archive: &str,
+        folders: Vec<String>,
+        policy: &str,
+    ) -> Result<u64> {
+        if folders.is_empty() {
+            return Err(DaemonError::InvalidArgument(
+                "choose at least one folder to restore".into(),
+            ));
+        }
+        self.shared
+            .begin_recovery(archive, Some(folders), policy)
+            .await
+    }
+
+    /// Where the disaster recovery is: everything the progress window shows.
+    async fn get_recovery(&self) -> Result<RecoveryStatus> {
+        self.shared.recovery.tidy();
+        let state = self
+            .shared
+            .recovery
+            .job()
+            .and_then(|job| self.shared.jobs.snapshot(job).ok())
+            .map(|snapshot| snapshot.state.as_str());
+        Ok(self.shared.recovery.status(state))
+    }
+
+    /// Carry on with a recovery that was paused or that stopped. Returns the
+    /// job running it.
+    async fn resume_recovery(&self) -> Result<u64> {
+        self.shared.resume_recovery()
+    }
+
+    /// Stop the recovery for good. `discard` takes away everything it has
+    /// restored that nobody has changed since; otherwise what is restored
+    /// stays. Either way the recovery is forgotten and the schedule is free.
+    ///
+    /// Returns the job doing it, which ends once the recovery has stopped.
+    async fn cancel_recovery(&self, discard: bool) -> Result<u64> {
+        self.shared.cancel_recovery(discard)
+    }
+
+    /// Work out the summary for the files a finished recovery set aside.
+    ///
+    /// Returns a job; once it ends, `GetRestorePreview`, `ExecuteRestore` and
+    /// `DiscardRestore` take its id, exactly as for any folder restore.
+    async fn prepare_recovery_review(&self) -> Result<u64> {
+        self.shared.prepare_recovery_review()
     }
 
     /// Apply the retention policy.
@@ -2405,7 +2803,17 @@ impl Daemon1 {
     /// Pause a job between units of work. Only guided disaster recovery
     /// qualifies; anything else is refused with `NotPausable`.
     async fn pause_job(&self, id: u64) -> Result<()> {
-        Ok(self.shared.jobs.pause(id)?)
+        // Said before the pause lands, so the run that stops writes down that
+        // it was asked to rather than that the daemon went away.
+        let recovering = self.shared.recovery.job() == Some(id);
+        if recovering {
+            self.shared.recovery.set_pausing(true);
+        }
+        let paused = self.shared.jobs.pause(id);
+        if recovering && paused.is_err() {
+            self.shared.recovery.set_pausing(false);
+        }
+        Ok(paused?)
     }
 
     /// Put a paused job back in the queue.
@@ -2414,6 +2822,9 @@ impl Daemon1 {
     /// job that can be paused and never resumed is a bug rather than an API, and
     /// Stage 11's resumable recovery needs this.
     async fn resume_job(&self, id: u64) -> Result<()> {
+        if self.shared.recovery.job() == Some(id) {
+            self.shared.recovery.set_pausing(false);
+        }
         Ok(self.shared.jobs.resume(id)?)
     }
 
@@ -3053,6 +3464,14 @@ pub async fn fan_out_signals(shared: Arc<Shared>, emitter: SignalEmitter<'static
             JobUpdate::State { id, kind, state } => {
                 if state.is_terminal() {
                     shared.job_ended(id, kind, &state);
+                    match kind {
+                        JobKind::RestoreEverything => shared.recovery_ended(&state),
+                        // Answering the summary of what a recovery set aside
+                        // is a restore like any other, and its end may be the
+                        // recovery's.
+                        JobKind::Restore => shared.recovery.tidy(),
+                        _ => {}
+                    }
                     // Counted off this loop: the count takes the catalogue's
                     // lock, which an ingest can hold for minutes, and every
                     // signal would wait behind it.
@@ -3248,6 +3667,8 @@ fn effective_excludes(config: &Config) -> Vec<String> {
         paths::staging_dir(),
         paths::replaced_dir(),
         paths::log_dir(),
+        paths::recovery_dir(),
+        paths::recovery_manifest(),
     ] {
         excludes.push(format!("pp:{}", dir.display()));
     }
@@ -3348,6 +3769,109 @@ mod tests {
             IndexWriter::open(&dir.join("index.db")).unwrap(),
         )));
         shared
+    }
+
+    /// A recovery with folders left, as the record on disk says it.
+    fn recovering(shared: &Shared, dir: &std::path::Path) -> crate::recovery::Manifest {
+        let manifest = crate::recovery::Manifest::new(
+            "bt-old-1",
+            1_000,
+            backtrack_core::recovery::Layout {
+                source: "home/old".into(),
+                steps: vec![backtrack_core::recovery::Step {
+                    key: "Documents".into(),
+                    members: vec!["home/old/Documents".into()],
+                    bytes: 10,
+                    files: 1,
+                }],
+                never: Vec::new(),
+            },
+            dir.join("home"),
+            "ask",
+            vec![dir.join("home/Documents")],
+        );
+        shared.recovery.save(&manifest).unwrap();
+        manifest
+    }
+
+    #[test]
+    fn the_schedule_is_held_while_a_computer_is_being_restored() {
+        // S11-T4: scheduled backups, and the maintenance that rides on the
+        // same decision, wait for the restore, at any time of any day, and
+        // start again the moment it is over.
+        let dir = tempfile::tempdir().unwrap();
+        let shared = configured(dir.path());
+        let hour = Duration::from_secs(3_600);
+        let start = SystemTime::UNIX_EPOCH + Duration::from_secs(1_800_000_000);
+        let decide = |shared: &Shared, now: SystemTime| {
+            schedule::decide(&shared.schedule_input(), now, Duration::ZERO)
+        };
+        assert_eq!(decide(&shared, start), schedule::Decision::Run);
+
+        let mut manifest = recovering(&shared, dir.path());
+        for hours in [0, 1, 5, 24, 24 * 9] {
+            assert!(
+                matches!(
+                    decide(&shared, start + hour * hours),
+                    schedule::Decision::Idle(_)
+                ),
+                "held {hours} hours in"
+            );
+        }
+        // The record alone does it: a daemon started afresh is held before it
+        // has registered anything.
+        let again = configured(dir.path());
+        assert!(matches!(decide(&again, start), schedule::Decision::Idle(_)));
+
+        // Every folder back, the summary waiting: free.
+        manifest.stage = crate::recovery::Stage::Review;
+        shared.recovery.save(&manifest).unwrap();
+        assert_eq!(decide(&shared, start + hour * 30), schedule::Decision::Run);
+    }
+
+    #[test]
+    fn the_end_of_a_recovery_hands_over_once_and_starts_the_backups() {
+        let dir = tempfile::tempdir().unwrap();
+        let shared = configured(dir.path());
+        // Imported from the Welcome page: nothing chosen to back up yet, and
+        // an attempt clock that says the next backup is an hour away.
+        let mut config = shared.config();
+        config.backup.include.clear();
+        shared.store_config(config).unwrap();
+        shared.update_persisted(|state| {
+            state.last_attempt = backtrack_core::state::to_epoch(Some(SystemTime::now()))
+        });
+        let mut manifest = recovering(&shared, dir.path());
+        let sink = Arc::new(Recorder::default());
+        shared.set_notifier(Arc::clone(&sink) as Arc<dyn crate::notify::NotificationSink>);
+
+        shared.after_recovery();
+        assert!(
+            shared.config().backup.include.is_empty(),
+            "nothing is handed over while folders are left"
+        );
+
+        manifest.stage = crate::recovery::Stage::Finished;
+        shared.recovery.save(&manifest).unwrap();
+        shared.after_recovery();
+        assert_eq!(
+            shared.config().backup.include,
+            vec![dir.path().join("home/Documents")],
+            "it backs up what the old computer backed up"
+        );
+        assert_eq!(shared.persisted.lock().unwrap().last_attempt, None);
+        assert_eq!(
+            schedule::decide(&shared.schedule_input(), SystemTime::now(), Duration::ZERO),
+            schedule::Decision::Run,
+            "the first backup after a recovery is due now"
+        );
+        assert_eq!(sink.titles(), ["Your files are back"]);
+        assert!(shared.recovery.load().is_none());
+
+        // Once: a second look neither repeats the note nor re-adds a source
+        // the person has since removed.
+        shared.after_recovery();
+        assert_eq!(sink.titles().len(), 1);
     }
 
     #[tokio::test]

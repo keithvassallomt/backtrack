@@ -303,6 +303,7 @@ mod tests {
             configured: true,
             reason: reason.into(),
             since: (NOW - 60) as u64,
+            recovery_job: 0,
         }
     }
 

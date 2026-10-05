@@ -67,6 +67,20 @@ pub fn staging_dir() -> PathBuf {
     data_dir().join("staging")
 }
 
+/// A disaster recovery's record of where it is: `<data_dir>/dr-job.json`
+/// (Stage 11). Its presence is what holds the schedule back.
+pub fn recovery_manifest() -> PathBuf {
+    data_dir().join("dr-job.json")
+}
+
+/// A disaster recovery's working files: the folder being fetched, the files
+/// set aside for the summary, and the record of what it added
+/// (`<data_dir>/recovery`, Stage 11). Not under `staging_dir`, which is
+/// cleared at every start, because a recovery carries on across one.
+pub fn recovery_dir() -> PathBuf {
+    data_dir().join("recovery")
+}
+
 /// Preview extraction cache: `<data_dir>/cache` (Stage 3, `PreviewFile`).
 pub fn cache_dir() -> PathBuf {
     data_dir().join("cache")

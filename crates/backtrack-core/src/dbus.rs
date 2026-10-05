@@ -78,6 +78,51 @@ pub struct Status {
     pub reason: String,
     /// When the current state began.
     pub since: u64,
+    /// The disaster recovery under way, running or paused, or 0. What a window
+    /// opened in the middle of one reattaches to.
+    pub recovery_job: u64,
+}
+
+/// One step of a disaster recovery, as `GetRecovery` reports it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+pub struct RecoveryStep {
+    /// The folder's name, or `.` for the hidden folders and loose files
+    /// together.
+    pub key: String,
+    /// Bytes it brings back.
+    pub bytes: u64,
+    /// `pending`, `current` or `done`.
+    pub status: String,
+}
+
+/// What `GetRecovery` answers with: everything the progress window shows.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+pub struct RecoveryStatus {
+    /// `none`; `running` or `paused`; `stopped`, when it failed and can be
+    /// tried again; or `review`, when it has finished and files that clash
+    /// with this computer's are waiting to be asked about.
+    pub state: String,
+    /// The job running it, or 0 when there is none.
+    pub job: u64,
+    /// The backup being restored, by name, and when it was taken.
+    pub archive: String,
+    pub taken: i64,
+    /// Bytes restored so far, of `total`.
+    pub done: u64,
+    pub total: u64,
+    /// Seconds left at the rate of the last minute, or -1 while that cannot
+    /// honestly be said: paused, just started, or nothing moving.
+    pub eta: i64,
+    /// The file being restored, relative to the home folder.
+    pub current: String,
+    pub steps: Vec<RecoveryStep>,
+    /// Files restored so far.
+    pub restored: u64,
+    /// Files that clash with what is on this computer, set aside for the one
+    /// summary at the end.
+    pub conflicts: u64,
+    /// Why it stopped, when it has.
+    pub error: String,
 }
 
 /// Why the health state is what it is.
