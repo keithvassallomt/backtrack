@@ -154,6 +154,12 @@
     recovery's summary, carrying out a prepared restore, undoing one, and
     cancelling a recovery) now take no part in the repository's locking.
     That also stops a Stage 7 "Replace" waiting for an hourly backup.
+  - **Found: the dropdown reached further than it looked.** Mockup 21 puts
+    the backup dropdown inside the "Restore everything" card, but it also
+    chose which backup "Restore selected folders…" listed. Keith's call: the
+    two are separate choices. The dropdown is now that card's alone and
+    greys out with it; the checklist starts on the newest backup and has a
+    "Folders as of" dropdown of its own.
 
 - 2026-10-05 (Stage 11: disaster recovery): what the stage decided, and what
   it found. The drill through the window is Keith's and follows
