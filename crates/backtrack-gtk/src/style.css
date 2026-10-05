@@ -247,12 +247,12 @@ banner.error {
     --banner-color: var(--error-bg-color);
 }
 
-/* Mockup 22's row of folders: a filled circle with a tick for each one that
- * is back, the accent with a play mark for the one under way, and an empty
- * ring for the rest. The name under each says the same in words. */
+/* The restore window's list of folders: a filled circle with a tick for each
+ * one that is back, the accent with a play mark for the one under way, and an
+ * empty ring for the rest. The word under each name says the same. */
 image.recovery-step {
-    min-width: 40px;
-    min-height: 40px;
+    min-width: 32px;
+    min-height: 32px;
     border-radius: 9999px;
 }
 
@@ -268,15 +268,15 @@ image.recovery-step.current {
 
 image.recovery-step.pending {
     border: 2px solid alpha(currentColor, 0.35);
-    min-width: 36px;
-    min-height: 36px;
+    min-width: 28px;
+    min-height: 28px;
 }
 
-label.recovery-step-name.current {
+row.recovery-row.current .title {
     color: var(--accent-color);
 }
 
-label.recovery-step-name.pending {
+row.recovery-row.pending .title {
     opacity: 0.6;
 }
 

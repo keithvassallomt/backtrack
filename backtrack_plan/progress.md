@@ -12,7 +12,7 @@
 > tasks: add them here + to the stage file, then `just provision-board-apply`.
 > See [../CLAUDE.md](../CLAUDE.md) for the full workflow.
 
-**Current stage:** 11 (in progress)
+**Current stage:** 12 (not started)
 **Last updated:** 2026-10-05
 
 ## Stage 0 — Bootstrap ([stage file](stages/stage-00-bootstrap.md))
@@ -111,7 +111,7 @@
 
 ## Stage 11 — Disaster recovery ([stage file](stages/stage-11-disaster-recovery.md))
 - [x] S11-T1 RestoreEverything job: per-top-folder, resumable
-- [/] S11-T2 DR entry dialog (mockup 21) off the import path
+- [x] S11-T2 DR entry dialog (mockup 21) off the import path
 - [x] S11-T3 Progress window, pause/cancel, honest ETA (mockup 22)
 - [x] S11-T4 Post-restore: enable schedule only after completion
 
@@ -160,6 +160,18 @@
     two are separate choices. The dropdown is now that card's alone and
     greys out with it; the checklist starts on the newest backup and has a
     "Folders as of" dropdown of its own.
+  - **The rest of the drill passed through the window.** The checklist's
+    own dropdown restored the 08:00 backup with Videos unticked, and
+    Cancel then Keep left the finished folders and no record; a folder
+    being fetched when the restore is cancelled brings nothing, because
+    files move into place only once their whole folder is fetched. Just
+    browse restored nothing and set up nothing. Restore everything as of
+    08:00 restored that backup, then backed up.
+  - **Keith's call: the folders are a list, not mockup 22's row.** The row
+    clipped "Settings and other files" at the window's default width and
+    hid it in a narrower one, and a real home folder has more folders than
+    a row of circles fits. Each folder is now a row with its mark, its
+    name, its size and its state in words.
 
 - 2026-10-05 (Stage 11: disaster recovery): what the stage decided, and what
   it found. The drill through the window is Keith's and follows

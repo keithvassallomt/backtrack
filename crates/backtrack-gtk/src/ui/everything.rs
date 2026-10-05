@@ -65,7 +65,7 @@ struct Progress {
     percent: Label,
     line: Label,
     current: Label,
-    steps: GtkBox,
+    steps: gtk4::ListBox,
     pause: Button,
     pause_content: adw::ButtonContent,
     cancel: Button,
@@ -87,7 +87,7 @@ impl Progress {
             .application(app)
             .title("Restoring Your Files")
             .default_width(760)
-            .default_height(420)
+            .default_height(640)
             .width_request(360)
             .height_request(300)
             .build();
@@ -153,16 +153,14 @@ impl Progress {
         current.add_css_class("dim-label");
         body.append(&current);
 
-        let steps = GtkBox::new(Orientation::Horizontal, 0);
-        steps.set_halign(Align::Center);
+        // A list rather than mockup 22's row: a real home folder has more
+        // folders than a row of circles fits across any window, and a row
+        // either clips the last of them or scrolls them out of sight.
+        let steps = gtk4::ListBox::new();
+        steps.set_selection_mode(gtk4::SelectionMode::None);
+        steps.add_css_class("boxed-list");
         steps.set_margin_top(18);
-        let strip = gtk4::ScrolledWindow::builder()
-            .hscrollbar_policy(gtk4::PolicyType::Automatic)
-            .vscrollbar_policy(gtk4::PolicyType::Never)
-            .propagate_natural_height(true)
-            .child(&steps)
-            .build();
-        body.append(&strip);
+        body.append(&steps);
 
         let action = Button::builder()
             .halign(Align::Center)
@@ -354,7 +352,7 @@ impl Progress {
         self.action.set_sensitive(true);
     }
 
-    /// The row of folders along the bottom: done, under way, still to come.
+    /// The list of folders: done, under way, still to come.
     fn draw_steps(&self, status: &RecoveryStatus) {
         let wanted: Vec<(String, String)> = status
             .steps
@@ -364,37 +362,32 @@ impl Progress {
         if *self.drawn_steps.borrow() == wanted {
             return;
         }
-        while let Some(child) = self.steps.first_child() {
-            self.steps.remove(&child);
-        }
-        for (i, (key, state)) in wanted.iter().enumerate() {
-            if i > 0 {
-                let joint = gtk4::Separator::new(Orientation::Horizontal);
-                joint.set_valign(Align::Start);
-                joint.set_margin_top(22);
-                joint.set_size_request(48, -1);
-                joint.add_css_class("recovery-joint");
-                self.steps.append(&joint);
-            }
-            let step = GtkBox::new(Orientation::Vertical, 8);
-            step.set_margin_start(6);
-            step.set_margin_end(6);
-            let (icon, class) = match state.as_str() {
-                "done" => ("object-select-symbolic", "done"),
-                "current" => ("media-playback-start-symbolic", "current"),
-                _ => ("", "pending"),
+        self.steps.remove_all();
+        for (step, (_, state)) in status.steps.iter().zip(&wanted) {
+            // The mark is the second signal; the word is the first, so the
+            // list still reads in a screenshot or to a colour-blind reader.
+            let (icon, class, word) = match state.as_str() {
+                "done" => ("object-select-symbolic", "done", "Restored"),
+                "current" => ("media-playback-start-symbolic", "current", "Restoring"),
+                _ => ("", "pending", "Waiting"),
             };
             let mark = Image::from_icon_name(icon);
-            mark.set_pixel_size(20);
-            mark.set_halign(Align::Center);
+            mark.set_pixel_size(16);
+            mark.set_valign(Align::Center);
             mark.add_css_class("recovery-step");
             mark.add_css_class(class);
-            step.append(&mark);
-            let name = Label::new(Some(&copy::step_name(key)));
-            name.add_css_class("recovery-step-name");
-            name.add_css_class(class);
-            step.append(&name);
-            self.steps.append(&step);
+            let size = Label::new(Some(&copy::size(step.bytes)));
+            size.add_css_class("dim-label");
+            size.add_css_class("numeric");
+            let row = adw::ActionRow::builder()
+                .title(copy::step_name(&step.key))
+                .subtitle(word)
+                .build();
+            row.add_prefix(&mark);
+            row.add_suffix(&size);
+            row.add_css_class("recovery-row");
+            row.add_css_class(class);
+            self.steps.append(&row);
         }
         *self.drawn_steps.borrow_mut() = wanted;
     }

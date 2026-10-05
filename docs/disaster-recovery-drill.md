@@ -55,9 +55,10 @@ paths, which no real computer does.
    The dropdown lists *Yesterday, 22:00* and *Yesterday, 08:00*.
 4. **Start Restore.** The wizard closes and the progress window opens:
    "Restoring your files…", the bar, a line like "41% · 5 of 12 GB · less than
-   a minute left", the file being restored, and the folders in the order they
-   run, smallest first: Desktop, Documents, Downloads, Music, Videos, Pictures,
-   Settings and other files. A tick marks each folder that is back.
+   a minute left", the file being restored, and a list of the folders in the order
+   they run, smallest first: Desktop, Documents, Downloads, Music, Videos, Pictures,
+   Settings and other files. Each says whether it is restored, restoring or
+   waiting, with its size.
 5. **Pause, then Resume.** The bar holds still and the line says "paused".
    The file Borg was writing when Pause was pressed is finished first, so the
    bar does not go backwards. Resume carries on from the same place.
