@@ -121,6 +121,7 @@
 - [ ] S12-T3 StatusNotifierItem tray for non-GNOME (status, actions)
 - [ ] S12-T4 Background portal presence (GNOME quick-settings launch path)
 - [ ] S12-T5 App detects missing plugins → hints distro package (prefs General)
+- [/] S12-T6 Development VMs: one-command setup and push for GNOME and Plasma
 
 ## Stage 13 — Packaging & release ([stage file](stages/stage-13-packaging-release.md))
 - [ ] S13-T1 Flatpak manifest (GNOME runtime, portals, bundled borg)
@@ -137,6 +138,31 @@
 ## Notes / decisions made during implementation
 
 (append dated entries here; never delete)
+
+- 2026-10-05 (S12-T6: development VMs): added to the stage. The tray and
+  GNOME's background apps cannot be tried on Keith's Hyprland machine, and
+  Keith's call is to iterate on them in a GNOME VM and a Plasma VM. Decisions:
+  - **The VMs are test machines driven over SSH, not workspaces.** Keith
+    chose this over developing inside the VMs (which needs every change
+    pushed through GitHub) and a virtiofs share (which needs each VM's
+    libvirt definition changed). Code is edited here; `just vm-push` copies
+    it in with rsync and builds it there, and Claude can read the VM's logs
+    and D-Bus state over the same SSH.
+  - **The VM builds from source.** Binaries built on Arch would need a glibc
+    at least as new as Arch's, which Fedora may not have. The first build
+    takes minutes; later ones are incremental.
+  - **One script for the package lists.** `scripts/dev-machine packages`
+    holds the dnf, apt and pacman lists, and `just setup` calls it, so a
+    dependency is added in one place.
+  - **The first push needs the VM's sudo password; no later one does.**
+    Packages are installed only when missing, and `vm push` gives the remote
+    command a terminal when it has one, so the first push from Keith's own
+    terminal can ask. Run without a terminal (by Claude), a push that needs
+    packages stops and says where to run it.
+  - **The demo backups are adopted through `ImportRepo`**, the same call the
+    wizard makes, with a fixed passphrase for the local spool, rather than by
+    writing `config.toml`, so the keyring and the catalogue are set up the
+    way a real import sets them up.
 
 - 2026-10-05 (S12-T1: the Nautilus extension): a launcher and nothing more,
   as the stage asks. Decisions:

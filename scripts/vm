@@ -1,0 +1,130 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-3.0-or-later
+# SPDX-FileCopyrightText: 2026 Keith Vassallo <keith@vassallo.cloud>
+#
+# Drive a development VM from this checkout over SSH: copy the source in, and
+# build and run it there. See docs/development-vms.md.
+#
+# <vm> is a libvirt domain name on qemu:///system (its address is looked up),
+# or any SSH destination. The user is $BACKTRACK_VM_USER, else yours; write
+# user@vm for another.
+#
+#   vm push <vm>            copy this checkout into the VM and bring it up to
+#                           date there (scripts/dev-machine)
+#   vm app <vm> [ARGS]      open Backtrack on the VM's screen
+#   vm run <vm> COMMAND...  run a command in the VM's copy of the checkout
+#   vm address <vm>         the SSH destination <vm> stands for
+
+set -euo pipefail
+trap 'echo "vm: stopped at line $LINENO: $BASH_COMMAND" >&2' ERR
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+CONNECT=qemu:///system
+# Relative to the VM user's home.
+CHECKOUT=backtrack
+# A VM's host key is learned on first contact; a changed one is still refused.
+SSH=(-o StrictHostKeyChecking=accept-new -o ConnectTimeout=5)
+
+address() {
+    local name="$1" user host state ip
+    if [[ "$name" == *@* ]]; then
+        user="${name%@*}"
+        host="${name#*@}"
+    else
+        user="${BACKTRACK_VM_USER:-$USER}"
+        host="$name"
+    fi
+    if command -v virsh >/dev/null && virsh -c "$CONNECT" domstate "$host" >/dev/null 2>&1; then
+        state="$(virsh -c "$CONNECT" domstate "$host")"
+        if [[ "$state" != running ]]; then
+            echo "$host is $state. Start it, log in on its screen, and try again." >&2
+            exit 1
+        fi
+        ip="$(virsh -c "$CONNECT" domifaddr "$host" \
+            | awk '$3 == "ipv4" { split($4, a, "/"); print a[1]; exit }')"
+        if [[ -z "$ip" ]]; then
+            echo "$host has no network address yet; give it a moment to boot." >&2
+            exit 1
+        fi
+        host="$ip"
+    fi
+    echo "$user@$host"
+}
+
+# Stop early, and say what to do, when SSH cannot get in without a password.
+reachable() {
+    local destination="$1"
+    if ssh "${SSH[@]}" -o BatchMode=yes "$destination" true 2>/dev/null; then
+        return
+    fi
+    echo "Cannot log in to $destination over SSH without a password." >&2
+    echo "Once per VM:" >&2
+    echo "  1. In the VM:  sudo systemctl enable --now sshd" >&2
+    echo "  2. Here:       ssh-copy-id $destination" >&2
+    exit 1
+}
+
+# A terminal for the remote command when this one has one, so that sudo can
+# ask for the VM's password on the first push.
+terminal() {
+    if [[ -t 0 && -t 1 ]]; then
+        echo -t
+    fi
+}
+
+copy() {
+    local destination="$1"
+    if ssh "${SSH[@]}" "$destination" 'command -v rsync' >/dev/null 2>&1; then
+        # .gitignore decides what travels, as for a commit; the VM's own build
+        # output is excluded on both sides, so --delete leaves it alone.
+        rsync -az --delete -e "ssh ${SSH[*]}" \
+            --exclude=/.git --exclude=/target --filter=':- .gitignore' \
+            "$ROOT/" "$destination:$CHECKOUT/"
+    else
+        # The first push, before scripts/dev-machine has installed rsync.
+        (cd "$ROOT" && git ls-files -z --cached --others --exclude-standard) \
+            | tar -C "$ROOT" --null --ignore-failed-read -T - -czf - \
+            | ssh "${SSH[@]}" "$destination" "mkdir -p $CHECKOUT && tar -xzf - -C $CHECKOUT"
+    fi
+}
+
+push() {
+    local destination
+    destination="$(address "$1")"
+    reachable "$destination"
+    echo "Copying the checkout to $destination:$CHECKOUT…"
+    copy "$destination"
+    # shellcheck disable=SC2046
+    ssh "${SSH[@]}" $(terminal) "$destination" "cd $CHECKOUT && scripts/dev-machine"
+}
+
+run() {
+    local destination
+    destination="$(address "$1")"
+    shift
+    reachable "$destination"
+    # shellcheck disable=SC2046
+    ssh "${SSH[@]}" $(terminal) "$destination" "cd $CHECKOUT && $*"
+}
+
+case "${1:-}" in
+    push)
+        [[ -n "${2:-}" ]] || { echo "usage: vm push <vm>" >&2; exit 2; }
+        push "$2" ;;
+    app)
+        [[ -n "${2:-}" ]] || { echo "usage: vm app <vm> [ARGS]" >&2; exit 2; }
+        vm="$2"
+        shift 2
+        run "$vm" "scripts/dev-machine app $(printf '%q ' "$@")" ;;
+    run)
+        [[ -n "${2:-}" && -n "${3:-}" ]] || { echo "usage: vm run <vm> COMMAND..." >&2; exit 2; }
+        vm="$2"
+        shift 2
+        run "$vm" "$@" ;;
+    address)
+        [[ -n "${2:-}" ]] || { echo "usage: vm address <vm>" >&2; exit 2; }
+        address "$2" ;;
+    *)
+        sed -n '/^#   vm push/,/^$/s/^#   //p' "$0" >&2
+        exit 2 ;;
+esac

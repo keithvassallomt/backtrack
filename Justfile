@@ -67,35 +67,9 @@ setup FAMILY="":
         source "${HOME}/.cargo/env"
     fi
 
-    case "${family}" in
-        dnf)
-            echo "Installing dependencies with dnf…"
-            sudo dnf install -y \
-                gcc pkgconf-pkg-config \
-                gtk4-devel libadwaita-devel sqlite-devel dbus-devel \
-                borgbackup flatpak-builder python3-gobject ruff
-            ;;
-        apt)
-            echo "Installing dependencies with apt…"
-            sudo apt-get update
-            sudo apt-get install -y \
-                build-essential pkg-config \
-                libgtk-4-dev libadwaita-1-dev libsqlite3-dev libdbus-1-dev \
-                borgbackup flatpak-builder python3-gi
-            ;;
-        pacman)
-            echo "Installing dependencies with pacman…"
-            sudo pacman -S --needed --noconfirm \
-                gcc pkgconf \
-                gtk4 libadwaita sqlite dbus \
-                borg flatpak-builder python-gobject ruff
-            ;;
-        *)
-            echo "Unknown installation type '${family}'." >&2
-            echo "Expected one of: dnf, apt, pacman." >&2
-            exit 1
-            ;;
-    esac
+    echo "Installing dependencies with ${family}…"
+    # The lists live in the script, which the development VMs use too.
+    scripts/dev-machine packages "${family}"
 
     echo "Dependencies installed. Running checks…"
     just check
@@ -554,6 +528,7 @@ uninstall-units:
 
 # Install the Nautilus extension for this checkout: it launches the debug
 # build and reads the development daemon's roots. Idempotent.
+[doc("Install the Nautilus extension for this checkout (debug build, dev daemon).")]
 install-nautilus-dev:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -601,6 +576,25 @@ uninstall-nautilus-dev:
     # Python's cache folder, if this extension was all that was in it.
     rmdir "${dir}/__pycache__" 2>/dev/null || true
     echo "Removed. Quit Nautilus (nautilus -q) so it lets go of the extension."
+
+# ─── Development VMs (see docs/development-vms.md) ───────────────────────────
+
+# Copy this checkout into a VM and bring it up to date there: packages, build,
+# units, demo backups, file-manager integration. VM is a libvirt domain name
+# or an SSH destination. The first push asks for the VM's sudo password.
+[doc("Copy this checkout into a VM and build, install and configure it there.")]
+vm-push VM:
+    scripts/vm push {{VM}}
+
+# Open Backtrack on a VM's screen, with the window's usual arguments.
+vm-app VM *ARGS:
+    scripts/vm app {{VM}} {{ARGS}}
+
+# Set this computer up for Backtrack development, or bring it up to date.
+# What vm-push runs inside the VM.
+[doc("Set this computer up for Backtrack development, or bring it up to date.")]
+dev-machine:
+    scripts/dev-machine
 
 # Remove build artifacts.
 clean:

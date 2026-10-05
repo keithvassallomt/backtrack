@@ -68,6 +68,22 @@ desktop) → Preferences General rows show Installed / Install… (opens distro
 package instructions page; exact package names from Stage 13) per mockup 15.
 **Accept:** detection correct in all four combinations (each plugin present/absent).
 
+### S12-T6 — Development VMs
+Added during the stage: the tray (T3) and GNOME's background apps (T4) can
+only be tried on their own desktops, and iterating on them means a VM per
+desktop that follows the checkout. `scripts/vm` on the host and
+`scripts/dev-machine` in the VM, behind `just vm-push <vm>`, `just vm-app
+<vm>` and `just dev-machine`: one command takes a fresh Fedora VM (GNOME or
+Plasma) to a built checkout, the development daemon installed and pointed at
+the demo backups, and the desktop's file-manager integration installed; later
+pushes copy the change in and rebuild with no prompt. `just setup` takes its
+package lists from the same script. Documented in `docs/development-vms.md`.
+**Accept:** on Keith's GNOME VM and on a Plasma VM, after enabling sshd and
+copying a key: the first `just vm-push` (from a terminal, for sudo) leaves
+`dev-machine status` reporting a running daemon on the demo backups; a second
+push after a source change rebuilds with no prompt; `just vm-app` opens the
+window on the VM's screen.
+
 ## Definition of Done
 Demo videos/screenshots for GNOME (menu + background presence) and KDE (menu +
 tray) attached to the PR; the outside-roots friendly state implemented; CI green
