@@ -218,6 +218,12 @@ All notable changes to Backtrack are documented here. This project adheres to
 - Backups start again once a whole-computer restore has finished, never during
   it, and the first one runs straight away. A computer set up by importing
   from the Welcome page backs up what the old one did.
+- Right-click in GNOME Files (Nautilus): "Restore Previous Version…" on a
+  file or folder opens Backtrack on it, and "Browse Backups of This Folder…"
+  opens Backtrack on the folder. The items appear only inside the folders
+  Backtrack backs up, never on network locations or disks mounted inside
+  them, and the switch in Preferences takes them away without restarting
+  Files. Needs nautilus-python.
 - Project bootstrap: Cargo workspace (core library plus daemon, GTK app, and CLI
   binaries), structured logging with JSONL rotation, developer task runner,
   versioning policy, and continuous integration.

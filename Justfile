@@ -73,7 +73,7 @@ setup FAMILY="":
             sudo dnf install -y \
                 gcc pkgconf-pkg-config \
                 gtk4-devel libadwaita-devel sqlite-devel dbus-devel \
-                borgbackup flatpak-builder python3-gobject
+                borgbackup flatpak-builder python3-gobject ruff
             ;;
         apt)
             echo "Installing dependencies with apt…"
@@ -88,7 +88,7 @@ setup FAMILY="":
             sudo pacman -S --needed --noconfirm \
                 gcc pkgconf \
                 gtk4 libadwaita sqlite dbus \
-                borg flatpak-builder python-gobject
+                borg flatpak-builder python-gobject ruff
             ;;
         *)
             echo "Unknown installation type '${family}'." >&2
@@ -119,6 +119,32 @@ check:
     cargo test --workspace
     just check-license-headers
     just check-prints
+    just check-integrations
+
+# Lint and test the file-manager extensions. Ruff comes from PATH, else uvx or
+# pipx; without any of them the lint is skipped with a warning, except in CI.
+check-integrations:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if command -v ruff >/dev/null 2>&1; then
+        ruff=(ruff)
+    elif command -v uvx >/dev/null 2>&1; then
+        ruff=(uvx --quiet ruff)
+    elif command -v pipx >/dev/null 2>&1; then
+        ruff=(pipx run --quiet ruff)
+    else
+        ruff=()
+    fi
+    if (( ${#ruff[@]} > 0 )); then
+        "${ruff[@]}" check integrations
+        "${ruff[@]}" format --check integrations
+    elif [[ -n "${CI:-}" ]]; then
+        echo "ruff not found, and CI must lint the extensions." >&2
+        exit 1
+    else
+        echo "ruff not found (install it, or uv or pipx); skipping the lint." >&2
+    fi
+    python3 -m unittest discover --start-directory integrations/nautilus
 
 # Fail if any Rust source file under crates/ lacks an SPDX license header.
 check-license-headers:
@@ -523,6 +549,56 @@ uninstall-units:
     rm -f "${dbus_dir}/org.backtrack.Daemon1.Dev.service"
     systemctl --user daemon-reload
     echo "Dev units removed."
+
+# ─── File-manager integration (development install) ─────────────────────────
+
+# Install the Nautilus extension for this checkout: it launches the debug
+# build and reads the development daemon's roots. Idempotent.
+install-nautilus-dev:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    root="{{justfile_directory()}}"
+    app="${root}/target/debug/backtrack-gtk"
+    dir="${XDG_DATA_HOME:-${HOME}/.local/share}/nautilus-python/extensions"
+
+    if ! python3 -c 'import gi; gi.require_version("Nautilus", "4.1")' 2>/dev/null \
+        && ! python3 -c 'import gi; gi.require_version("Nautilus", "4.0")' 2>/dev/null; then
+        echo "nautilus-python is not installed, so Nautilus would not load the" >&2
+        echo "extension. Install it first: nautilus-python (Fedora)," >&2
+        echo "python3-nautilus (Ubuntu), python-nautilus (Arch)." >&2
+        exit 1
+    fi
+
+    echo "Building the window so the extension points at something that exists…"
+    cargo build -p backtrack-gtk
+
+    # The shipped extension is the one installed, with two lines rewritten, so
+    # what is tried here is the file that will be packaged.
+    mkdir -p "${dir}"
+    sed -e "s|^APP = \".*\"$|APP = \"${app}\"|" \
+        -e "s|^DEVELOPMENT = False$|DEVELOPMENT = True|" \
+        "${root}/integrations/nautilus/backtrack.py" > "${dir}/backtrack.py.tmp"
+    if ! grep -qx "APP = \"${app}\"" "${dir}/backtrack.py.tmp" \
+        || ! grep -qx "DEVELOPMENT = True" "${dir}/backtrack.py.tmp"; then
+        rm -f "${dir}/backtrack.py.tmp"
+        echo "The extension's APP or DEVELOPMENT line has changed shape; update this recipe." >&2
+        exit 1
+    fi
+    mv "${dir}/backtrack.py.tmp" "${dir}/backtrack.py"
+
+    echo "Installed ${dir}/backtrack.py"
+    echo
+    echo "Nautilus loads extensions when it starts. Quit it so the next window"
+    echo "loads this one:"
+    echo "  nautilus -q"
+
+# Remove the development Nautilus extension.
+uninstall-nautilus-dev:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    dir="${XDG_DATA_HOME:-${HOME}/.local/share}/nautilus-python/extensions"
+    rm -f "${dir}/backtrack.py"
+    echo "Removed. Quit Nautilus (nautilus -q) so it lets go of the extension."
 
 # Remove build artifacts.
 clean:

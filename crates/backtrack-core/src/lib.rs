@@ -21,6 +21,7 @@ pub mod paths;
 pub mod pattern;
 pub mod recovery;
 pub mod restore;
+pub mod roots;
 pub mod secret;
 pub mod state;
 pub mod walk;

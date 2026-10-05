@@ -12,7 +12,7 @@
 > tasks: add them here + to the stage file, then `just provision-board-apply`.
 > See [../CLAUDE.md](../CLAUDE.md) for the full workflow.
 
-**Current stage:** 12 (not started)
+**Current stage:** 12 (in progress)
 **Last updated:** 2026-10-05
 
 ## Stage 0 — Bootstrap ([stage file](stages/stage-00-bootstrap.md))
@@ -116,7 +116,7 @@
 - [x] S11-T4 Post-restore: enable schedule only after completion
 
 ## Stage 12 — Integrations & tray ([stage file](stages/stage-12-integrations-tray.md))
-- [ ] S12-T1 Nautilus python extension (mockup 2)
+- [/] S12-T1 Nautilus python extension (mockup 2)
 - [ ] S12-T2 Dolphin service menu (mockup 3, menu part only)
 - [ ] S12-T3 StatusNotifierItem tray for non-GNOME (status, actions)
 - [ ] S12-T4 Background portal presence (GNOME quick-settings launch path)
@@ -137,6 +137,44 @@
 ## Notes / decisions made during implementation
 
 (append dated entries here; never delete)
+
+- 2026-10-05 (S12-T1: the Nautilus extension): a launcher and nothing more,
+  as the stage asks. Decisions:
+  - **`roots.json` lives in the data folder, not `~/.config/backtrack/`.**
+    Backtrack keeps everything in one directory (see `paths.rs`), and a
+    second one for a single file the daemon writes would break that. It sits
+    beside `config.toml`, so it follows `XDG_DATA_HOME` and the development
+    split like everything else. The daemon writes it at every start and on
+    every configuration change, and only when its contents change. It also
+    carries the Preferences switch for Nautilus, so switching it off takes
+    the items away without restarting Nautilus.
+  - **The launch command is `backtrack-gtk`, not `backtrack`.** The stage
+    file names `backtrack --path`, but `backtrack` is the CLI; the window's
+    launch contract (`--path`, `--select`) is `backtrack-gtk`'s, and the
+    daemon's notifications already launch it by that name.
+  - **A selected folder gets both items**, as Dolphin's submenu does in
+    mockup 3: Restore Previous Version… opens its parent with it selected,
+    and Browse Backups of This Folder… opens it. The empty space of the
+    folder being shown gets Browse alone.
+  - **"Local" means on the same filesystem as the backed-up folder.**
+    Backups run with `--one-file-system`, so a USB stick or a network share
+    mounted inside a backed-up folder is not in them; the extension compares
+    the device of the item with the device of its root, which is the same
+    rule Borg applies. Non-`file://` locations (network, trash, recent) are
+    excluded first.
+  - **Exclusions are not checked.** Borg's patterns would need
+    reimplementing in Python, and an excluded folder opens in the window
+    anyway, where its history says what there is.
+  - **Development install rewrites two lines** of the shipped file (the
+    debug build's path, and `DEVELOPMENT = True` for `backtrack-dev` and
+    `BACKTRACK_DEV=1`), the way `install-units` rewrites the units, so the
+    file tried is the file that ships.
+  - **Checks:** `just check-integrations` (ruff, and unit tests with
+    stand-ins for the GObject modules) joins `just check` and CI; CI
+    installs ruff. A launch through the installed extension was smoke-tested
+    in a headless compositor against the development daemon: the window
+    opened on `Documents` with `report.odt` selected, and a second launch
+    went to the window already open.
 
 - 2026-10-05 (Stage 11: Keith's drill through the window): Keith ran the
   walkthrough at 12 GB and every step worked: the offer, Start Restore,

@@ -43,6 +43,7 @@ use backtrack_core::engine::{
 use backtrack_core::index::{IndexReader, IndexWriter, Kind};
 use backtrack_core::paths;
 use backtrack_core::restore::{self, Decision, Decisions};
+use backtrack_core::roots::Roots;
 use backtrack_core::secret::{SecretStore, SessionSecretStore};
 use backtrack_core::state::RuntimeState;
 use futures::future::BoxFuture;
@@ -127,6 +128,9 @@ pub struct Shared {
     /// developer's own configuration, pointing their daemon at a temporary
     /// directory that no longer exists.
     config_path: PathBuf,
+    /// Where the backup roots are published for the file-manager plugins. A
+    /// field for the same reason `config_path` is one.
+    roots_path: PathBuf,
     /// Where that bookkeeping is written. A field rather than a call to
     /// [`paths::state_file`] at each use, so tests exercise the real persistence
     /// path without writing into the developer's own data directory.
@@ -231,6 +235,7 @@ impl Shared {
             secrets,
             Layout {
                 config_path: paths::config_file(),
+                roots_path: paths::roots_file(),
                 index_path: paths::index_db(),
                 cache_dir: paths::cache_dir(),
                 state_path: paths::state_file(),
@@ -260,6 +265,7 @@ impl Shared {
             secrets,
             Layout {
                 config_path: dir.join("config.toml"),
+                roots_path: dir.join("roots.json"),
                 index_path: dir.join("index.db"),
                 cache_dir: dir.join("cache"),
                 state_path: dir.join("state.toml"),
@@ -285,6 +291,7 @@ impl Shared {
         ));
         let Layout {
             config_path,
+            roots_path,
             index_path,
             cache_dir,
             state_path,
@@ -303,6 +310,7 @@ impl Shared {
             preview: PreviewCache::new(cache_dir),
             index_path,
             config_path,
+            roots_path,
             engine: Mutex::new(None),
             last_archive: Mutex::new(None),
             last_backup: Mutex::new(None),
@@ -1720,7 +1728,32 @@ impl Shared {
     fn store_config(&self, config: Config) -> Result<()> {
         config.save_to(&self.config_path)?;
         *self.config.lock().unwrap() = config;
+        self.publish_roots();
         Ok(())
+    }
+
+    /// Tell the file-manager plugins which folders are backed up, and whether
+    /// they are wanted. See [`backtrack_core::roots`].
+    ///
+    /// A failure is logged and otherwise ignored: the plugins are a shortcut
+    /// into the window, and a file they cannot read only means they offer
+    /// nothing.
+    pub fn publish_roots(&self) {
+        let roots = Roots::of(&self.config());
+        match roots.save_to(&self.roots_path) {
+            Ok(true) => info!(
+                path = %self.roots_path.display(),
+                roots = roots.roots.len(),
+                nautilus = roots.nautilus,
+                "published the backup roots for the file manager"
+            ),
+            Ok(false) => {}
+            Err(error) => warn!(
+                path = %self.roots_path.display(),
+                %error,
+                "could not publish the backup roots for the file manager"
+            ),
+        }
     }
 
     /// The current health, computed fresh from facts.
@@ -2148,6 +2181,7 @@ struct LocalProtection {
 /// surprise.
 struct Layout {
     config_path: PathBuf,
+    roots_path: PathBuf,
     index_path: PathBuf,
     cache_dir: PathBuf,
     state_path: PathBuf,
@@ -3883,6 +3917,30 @@ mod tests {
             "all of it while the backup was still going"
         );
         shared.jobs.cancel(backup).unwrap();
+    }
+
+    #[test]
+    fn every_configuration_change_republishes_the_roots_for_the_file_manager() {
+        let dir = tempfile::tempdir().unwrap();
+        let shared = configured(dir.path());
+        let published = || -> Roots {
+            serde_json::from_str(&std::fs::read_to_string(dir.path().join("roots.json")).unwrap())
+                .unwrap()
+        };
+
+        shared.publish_roots();
+        assert_eq!(published().roots, vec![dir.path().join("src")]);
+        assert!(published().nautilus);
+
+        let mut config = shared.config();
+        config.backup.include.push(dir.path().join("photos"));
+        config.general.nautilus_integration = false;
+        shared.store_config(config).unwrap();
+        assert_eq!(
+            published().roots,
+            vec![dir.path().join("src"), dir.path().join("photos")]
+        );
+        assert!(!published().nautilus);
     }
 
     #[test]

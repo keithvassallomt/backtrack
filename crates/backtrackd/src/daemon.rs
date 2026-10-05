@@ -129,6 +129,9 @@ pub async fn run() -> Result<Outcome, StartupError> {
     let secrets = backtrack_core::secret::default_store().map_err(StartupError::Secrets)?;
     let shared = Shared::new(config, Arc::clone(&jobs), secrets);
     shared.set_index(index);
+    // Every change goes through the daemon and republishes this, but a
+    // configuration edited by hand while it was stopped does not.
+    shared.publish_roots();
     // Rebuilt by the reconciliation that every start runs, once the name is
     // won; until it finishes, health says so.
     if damaged {

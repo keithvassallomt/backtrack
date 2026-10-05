@@ -81,6 +81,12 @@ pub fn recovery_dir() -> PathBuf {
     data_dir().join("recovery")
 }
 
+/// The backup roots, published for the file-manager plugins:
+/// `<data_dir>/roots.json` (Stage 12). See [`crate::roots`].
+pub fn roots_file() -> PathBuf {
+    data_dir().join("roots.json")
+}
+
 /// Preview extraction cache: `<data_dir>/cache` (Stage 3, `PreviewFile`).
 pub fn cache_dir() -> PathBuf {
     data_dir().join("cache")
