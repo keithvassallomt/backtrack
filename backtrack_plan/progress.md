@@ -110,10 +110,10 @@
 - [x] S10-T7 Local snapshot badges say whether the destination has them
 
 ## Stage 11 — Disaster recovery ([stage file](stages/stage-11-disaster-recovery.md))
-- [/] S11-T1 RestoreEverything job: per-top-folder, resumable
-- [ ] S11-T2 DR entry dialog (mockup 21) off the import path
-- [ ] S11-T3 Progress window, pause/cancel, honest ETA (mockup 22)
-- [ ] S11-T4 Post-restore: enable schedule only after completion
+- [x] S11-T1 RestoreEverything job: per-top-folder, resumable
+- [/] S11-T2 DR entry dialog (mockup 21) off the import path
+- [/] S11-T3 Progress window, pause/cancel, honest ETA (mockup 22)
+- [/] S11-T4 Post-restore: enable schedule only after completion
 
 ## Stage 12 — Integrations & tray ([stage file](stages/stage-12-integrations-tray.md))
 - [ ] S12-T1 Nautilus python extension (mockup 2)
@@ -137,6 +137,80 @@
 ## Notes / decisions made during implementation
 
 (append dated entries here; never delete)
+
+- 2026-10-05 (Stage 11: disaster recovery): what the stage decided, and what
+  it found. The drill through the window is Keith's and follows
+  (docs/disaster-recovery-drill.md); until then T2 to T4 stay in progress.
+  - **The backup's home folder is mapped onto this computer's.** A new
+    computer's home may be elsewhere or under another name, so a recovery
+    first decides which folder of the backup was the home folder: one
+    inside or holding this computer's home, then the folder named after
+    this person, then any `home/<name>`, then whatever holds every root.
+    Everything below it comes back into `$HOME`. Roots outside it are not
+    restored. The daemon and the window both work this out with
+    `backtrack_core::recovery`, so they cannot disagree about a step.
+  - **Steps are folders, smallest first, then the rest together.** Each
+    visible folder is a step; the hidden folders and loose files are one
+    last step, "Settings and other files", rather than twenty steps of
+    dot-folders. Smallest first brings most folders back soonest.
+    Backtrack's own data directory (release and development) is never
+    restored over the running daemon.
+  - **Resuming goes inside the folder, not back to its start.** The stage
+    file allowed a restart to redo the interrupted folder. On a remote
+    destination that can be hours, so a restart and a pause both keep every
+    staged file whose size and modification time match the catalogue (Borg
+    sets the time last, so a half-written file never passes) and fetch only
+    the rest, through a Borg patterns file. A name a patterns file cannot
+    hold falls back to fetching the folder whole.
+  - **Pause finishes the file being fetched first, for up to 20 seconds.**
+    Stopping Borg at once threw away the file in flight and the bar went
+    backwards (30% to 20% on a 3 GB video in the drill). Now the file is
+    finished and kept; a file too big to wait for is let go and fetched
+    again.
+  - **Clashes wait for one summary at the end.** A file already here that
+    differs is never touched; the backup's copy is set aside and asked about
+    with the Stage 7 summary once everything else is back
+    (`PrepareRecoveryReview`, then the usual preview and execute calls).
+    Cancel on that summary loses nothing: the copies wait. Backups start at
+    the end of the restore, not at the end of the summary, because a
+    question nobody answers must not stop the computer being backed up.
+  - **What a computer imported from the Welcome page backs up.** Nothing
+    had been chosen there, so "New backups start after the restore
+    finishes" could not be true. At the end it backs up what the old one
+    did, mapped onto this home; an existing choice is left alone. The
+    attempt clock is cleared so the first backup is due at once.
+  - **Progress is measured without Borg's.** `--progress` costs Borg a
+    second pass over the archive's file list per folder, which over a slow
+    link is minutes per step. Bytes come from the catalogue's totals and
+    the files as they land, including the size of the file being written.
+    The time left is the rate over the last minute, across steps, restarted
+    only after a resume's jump.
+  - **Found on the way.** The job registry turned every pause into a
+    cancel, and its test passed because it never yielded to the runtime;
+    runs are now counted. A restore's space check asked for room for files
+    that arrive by rename, refusing a large folder on a disk without twice
+    its size free. Borg's `--list` lines are item events, not log lines.
+  - **Acceptance.** Real Borg: a whole computer restored and compared file by
+    file; a daemon stopped dead half-way (its runtime shut down, Borg
+    killed) and a new one finishing it; a resume proving kept files keep
+    their inodes; pause, resume, both cancels, and a seeded clash reaching
+    the summary. The schedule is held across a mock clock, and from the
+    record alone after a restart. The drill, scripted over D-Bus against
+    the real daemon with 12 GB: killed with SIGKILL at 50%, systemd
+    restarted it, and it kept 7 photographs and fetched 37; nothing missing
+    afterwards, the seeded `.bashrc` clash waiting, and the first backup
+    started the second the restore ended. The logged estimate said 22 s
+    left at 5.4 GB of 12 with about 23 to go. The window reattached
+    headless with no panic or GTK critical, in the running and review
+    states. **Not checked by machine:** the entry page and the buttons,
+    which only Keith's drill clicks.
+  - **Known limits.** The demo fixture (`just demo-repo`) cannot be
+    restored this way: it lives inside the development data directory,
+    which a recovery never restores, so the drill builds its own. Files set
+    aside for the summary wait in `recovery/held` until it is answered, with
+    no expiry. There is no command-line verb for a recovery yet.
+  - Suite: **821 unit tests** and **878 with real Borg**, `just check`
+    green.
 
 - 2026-09-28 (Stage 10: Definition of Done): Keith ran the kill-switch drill
   on the development machine with the app open, and it passed on the second

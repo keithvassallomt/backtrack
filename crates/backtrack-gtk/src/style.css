@@ -246,3 +246,43 @@ banner.warning {
 banner.error {
     --banner-color: var(--error-bg-color);
 }
+
+/* Mockup 22's row of folders: a filled circle with a tick for each one that
+ * is back, the accent with a play mark for the one under way, and an empty
+ * ring for the rest. The name under each says the same in words. */
+image.recovery-step {
+    min-width: 40px;
+    min-height: 40px;
+    border-radius: 9999px;
+}
+
+image.recovery-step.done {
+    background-color: var(--success-bg-color);
+    color: var(--success-fg-color);
+}
+
+image.recovery-step.current {
+    background-color: var(--accent-bg-color);
+    color: var(--accent-fg-color);
+}
+
+image.recovery-step.pending {
+    border: 2px solid alpha(currentColor, 0.35);
+    min-width: 36px;
+    min-height: 36px;
+}
+
+label.recovery-step-name.current {
+    color: var(--accent-color);
+}
+
+label.recovery-step-name.pending {
+    opacity: 0.6;
+}
+
+/* The restore's bar is the window's main subject, so it is drawn thick. */
+progressbar.recovery-bar trough,
+progressbar.recovery-bar progress {
+    min-height: 14px;
+    border-radius: 9999px;
+}

@@ -34,3 +34,5 @@ tempfile = "3"
 # socket pair, so it needs no bus daemon. Production builds do not carry it.
 zbus = { workspace = true, features = ["p2p"] }
 backtrack-testkit = { path = "../backtrack-testkit" }
+# A paused clock, so tests of timing behaviour take no time and never race it.
+tokio = { workspace = true, features = ["test-util"] }

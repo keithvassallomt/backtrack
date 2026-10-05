@@ -64,6 +64,10 @@ const RATE_WINDOW: Duration = Duration::from_secs(60);
 /// How long a rate has to have been measured before it is worth saying.
 const RATE_SETTLES: Duration = Duration::from_secs(10);
 
+/// How long a pause waits for the file being fetched to be whole. Long
+/// enough for a photograph over a slow link; a film is fetched again.
+const FINISH_WITHIN: Duration = Duration::from_secs(20);
+
 /// How often the estimate is written to the log, so a run can be checked
 /// against it afterwards.
 const LOG_EVERY: Duration = Duration::from_secs(30);
@@ -434,10 +438,11 @@ impl Recovery {
             (Stage::Restoring, _) => "stopped",
         };
         let total = manifest.total();
-        // The live count while a run is measuring, and the record otherwise:
-        // after a restart the live count starts from nothing.
-        let done = if state == "running" {
-            live.done.max(manifest.done())
+        // The live count while a run is measuring or has just stopped, which
+        // includes the whole files of the folder under way; the record
+        // otherwise, after a restart, when the live count starts from nothing.
+        let done = if matches!(state, "running" | "paused" | "stopped") {
+            live.done.max(manifest.done()).min(manifest.total())
         } else {
             manifest.done()
         };
@@ -529,7 +534,13 @@ impl Driver {
         self.recovery.set_pausing(false);
         manifest.paused = false;
         self.save(&manifest)?;
-        self.recovery.live.lock().unwrap().error = None;
+        {
+            // A run after a pause or a restart measures its own rate: the
+            // minutes spent stopped were not slow, they were stopped.
+            let mut live = self.recovery.live.lock().unwrap();
+            live.error = None;
+            live.samples.clear();
+        }
 
         let outcome = self.steps(&mut manifest, sink).await;
         if matches!(outcome, Err(EngineError::Cancelled)) {
@@ -933,10 +944,6 @@ struct Meter {
 
 impl Meter {
     fn new(recovery: Arc<Recovery>, before: u64, total: u64) -> Meter {
-        // A new step starts a new measurement: a resumed one arrives with
-        // bytes already whole, and counting them as moved in the last minute
-        // would promise a rate nothing is achieving.
-        recovery.live.lock().unwrap().samples.clear();
         Meter {
             recovery,
             before,
@@ -953,6 +960,12 @@ impl Meter {
     fn already(&mut self, bytes: u64) {
         self.have = bytes;
         self.fetched = 0;
+        // Files found whole after a stop are counted at once, and counting
+        // that jump as bytes moved in the last minute would promise a rate
+        // nothing is achieving. The measurement starts again after it.
+        if bytes > 0 {
+            self.recovery.live.lock().unwrap().samples.clear();
+        }
     }
 
     fn fetched(&mut self, bytes: u64) {
@@ -990,6 +1003,14 @@ impl Meter {
             }
         };
         (self.before + step).min(self.total)
+    }
+
+    /// Write down what a stop keeps: the files fetched whole, and nothing of
+    /// the one that was not, so a paused bar shows what resuming starts from.
+    fn stopped(&mut self) {
+        let mut live = self.recovery.live.lock().unwrap();
+        live.done = self.done();
+        live.current.clear();
     }
 
     /// Measure, tell the registry, and now and then the log.
@@ -1042,6 +1063,12 @@ impl Meter {
     }
 
     /// Follow an extraction to its end, measuring as it goes.
+    ///
+    /// Asked to stop, it lets Borg finish the file it is writing first, as a
+    /// pause promises: the file is whole and kept, and only the files after
+    /// it are fetched next time. Borg says it has finished a file by starting
+    /// the next. A file that takes longer than [`FINISH_WITHIN`] to finish is
+    /// let go, and fetched again.
     async fn watch(
         &mut self,
         mut stream: JobStream,
@@ -1052,20 +1079,42 @@ impl Meter {
         self.source = source.to_string();
         let stop = sink.token();
         let mut tick = tokio::time::interval(TICK);
+        let mut finishing: Option<tokio::time::Instant> = None;
         loop {
+            let deadline = finishing.unwrap_or_else(|| tokio::time::Instant::now() + FINISH_WITHIN);
             tokio::select! {
                 biased;
-                _ = stop.cancelled() => {
-                    // Dropping the stream stops Borg. What it had finished
-                    // stays in the working folder for the next run.
+                _ = stop.cancelled(), if finishing.is_none() => {
+                    if self.writing.is_none() {
+                        self.stopped();
+                        return Err(EngineError::Cancelled);
+                    }
+                    info!("stopping once the file being fetched is whole");
+                    finishing = Some(tokio::time::Instant::now() + FINISH_WITHIN);
+                }
+                _ = tokio::time::sleep_until(deadline), if finishing.is_some() => {
+                    // Dropping the stream stops Borg. The file it was writing
+                    // is fetched again next time; everything before it stays.
+                    info!("the file being fetched is too big to wait for; it will be fetched again");
                     drop(stream);
+                    self.writing = None;
+                    self.stopped();
                     return Err(EngineError::Cancelled);
                 }
-                _ = tick.tick() => self.report(sink).await?,
+                _ = tick.tick(), if finishing.is_none() => self.report(sink).await?,
                 event = stream.next() => match event {
-                    Some(JobEvent::ItemDone { path }) => self.reached(staging.join(path)),
+                    Some(JobEvent::ItemDone { path }) => {
+                        if finishing.is_some() {
+                            self.settle_writing();
+                            drop(stream);
+                            self.stopped();
+                            return Err(EngineError::Cancelled);
+                        }
+                        self.reached(staging.join(path));
+                    }
                     Some(JobEvent::Log { level, msg }) => {
-                        if !sink.send(JobEvent::Log { level, msg }).await {
+                        // Nobody is listening once the stop has been asked for.
+                        if finishing.is_none() && !sink.send(JobEvent::Log { level, msg }).await {
                             return Err(EngineError::Cancelled);
                         }
                     }
@@ -1495,6 +1544,90 @@ mod tests {
             std::fs::read(home.join("mine.txt")).unwrap(),
             b"was here before"
         );
+    }
+
+    /// An extraction fed by hand, and the sink a run reports to.
+    #[allow(clippy::type_complexity)]
+    fn by_hand(
+        dir: &Path,
+    ) -> (
+        Arc<Recovery>,
+        Meter,
+        backtrack_core::engine::JobSink,
+        JobStream,
+        JobSink,
+        JobStream,
+    ) {
+        let recovery = Arc::new(recovery(dir));
+        let meter = Meter::new(Arc::clone(&recovery), 0, 1_000);
+        let (borg, extraction) = JobStream::channel(8);
+        let (run, registry) = JobStream::channel(8);
+        (recovery, meter, borg, extraction, run, registry)
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_pause_lets_the_file_being_fetched_finish_first() {
+        let dir = tempfile::tempdir().unwrap();
+        let staging = dir.path().join("staging");
+        std::fs::create_dir_all(&staging).unwrap();
+        std::fs::write(staging.join("big.jpg"), vec![0u8; 700]).unwrap();
+        let (recovery, mut meter, borg, extraction, run, registry) = by_hand(dir.path());
+
+        borg.send(JobEvent::ItemDone {
+            path: "big.jpg".into(),
+        })
+        .await;
+        let watching = tokio::spawn(async move {
+            let outcome = meter.watch(extraction, &run, &staging, "").await;
+            (outcome, meter.fetched)
+        });
+        tokio::task::yield_now().await;
+        // The pause: the registry lets go of the run's stream.
+        drop(registry);
+
+        // Borg is still writing big.jpg, and is let finish it.
+        tokio::time::sleep(Duration::from_secs(5)).await;
+        assert!(!watching.is_finished(), "stopped before the file was whole");
+
+        // Borg starts the next file: big.jpg is whole, and that is where it
+        // stops.
+        borg.send(JobEvent::ItemDone {
+            path: "next.jpg".into(),
+        })
+        .await;
+        let (outcome, fetched) = watching.await.unwrap();
+        assert!(matches!(outcome, Err(EngineError::Cancelled)));
+        assert_eq!(fetched, 700, "the finished file counts as fetched");
+        assert_eq!(
+            recovery.live.lock().unwrap().done,
+            700,
+            "and a paused bar shows it kept"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_file_too_big_to_wait_for_is_let_go() {
+        let dir = tempfile::tempdir().unwrap();
+        let staging = dir.path().join("staging");
+        std::fs::create_dir_all(&staging).unwrap();
+        let (_recovery, mut meter, borg, extraction, run, registry) = by_hand(dir.path());
+        borg.send(JobEvent::ItemDone {
+            path: "film.mp4".into(),
+        })
+        .await;
+        let watching =
+            tokio::spawn(async move { meter.watch(extraction, &run, &staging, "").await });
+        tokio::task::yield_now().await;
+        drop(registry);
+
+        let started = tokio::time::Instant::now();
+        let outcome = watching.await.unwrap();
+        assert!(matches!(outcome, Err(EngineError::Cancelled)));
+        assert!(
+            started.elapsed() >= FINISH_WITHIN,
+            "it waited as long as it promised"
+        );
+        drop(borg);
     }
 
     #[test]
