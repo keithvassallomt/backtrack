@@ -65,12 +65,12 @@ reachable() {
 }
 
 # A terminal for the remote command when this one has one, so that sudo can
-# ask for the VM's password on the first push.
-terminal() {
-    if [[ -t 0 && -t 1 ]]; then
-        echo -t
-    fi
-}
+# ask for the VM's password on the first push. Worked out once, here: inside
+# a $(…) standard output is a pipe, so a function asked there never sees one.
+TTY=()
+if [[ -t 0 && -t 1 ]]; then
+    TTY=(-t)
+fi
 
 copy() {
     local destination="$1"
@@ -94,8 +94,7 @@ push() {
     reachable "$destination"
     echo "Copying the checkout to $destination:$CHECKOUT…"
     copy "$destination"
-    # shellcheck disable=SC2046
-    ssh "${SSH[@]}" $(terminal) "$destination" "cd $CHECKOUT && scripts/dev-machine"
+    ssh "${SSH[@]}" "${TTY[@]}" "$destination" "cd $CHECKOUT && scripts/dev-machine"
 }
 
 run() {
@@ -103,8 +102,7 @@ run() {
     destination="$(address "$1")"
     shift
     reachable "$destination"
-    # shellcheck disable=SC2046
-    ssh "${SSH[@]}" $(terminal) "$destination" "cd $CHECKOUT && $*"
+    ssh "${SSH[@]}" "${TTY[@]}" "$destination" "cd $CHECKOUT && $*"
 }
 
 case "${1:-}" in
