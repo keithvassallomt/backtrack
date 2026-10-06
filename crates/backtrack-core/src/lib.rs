@@ -23,6 +23,7 @@ pub mod recovery;
 pub mod restore;
 pub mod roots;
 pub mod secret;
+pub mod servicemenu;
 pub mod state;
 pub mod walk;
 

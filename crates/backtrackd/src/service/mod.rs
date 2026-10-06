@@ -131,6 +131,10 @@ pub struct Shared {
     /// Where the backup roots are published for the file-manager plugins. A
     /// field for the same reason `config_path` is one.
     roots_path: PathBuf,
+    /// Dolphin's list of service-menu actions to leave out, which the Dolphin
+    /// switch writes. A field so that a test does not hide the developer's
+    /// own Dolphin menu.
+    service_menu_path: PathBuf,
     /// Where that bookkeeping is written. A field rather than a call to
     /// [`paths::state_file`] at each use, so tests exercise the real persistence
     /// path without writing into the developer's own data directory.
@@ -236,6 +240,7 @@ impl Shared {
             Layout {
                 config_path: paths::config_file(),
                 roots_path: paths::roots_file(),
+                service_menu_path: paths::kservicemenurc(),
                 index_path: paths::index_db(),
                 cache_dir: paths::cache_dir(),
                 state_path: paths::state_file(),
@@ -266,6 +271,7 @@ impl Shared {
             Layout {
                 config_path: dir.join("config.toml"),
                 roots_path: dir.join("roots.json"),
+                service_menu_path: dir.join("kservicemenurc"),
                 index_path: dir.join("index.db"),
                 cache_dir: dir.join("cache"),
                 state_path: dir.join("state.toml"),
@@ -292,6 +298,7 @@ impl Shared {
         let Layout {
             config_path,
             roots_path,
+            service_menu_path,
             index_path,
             cache_dir,
             state_path,
@@ -311,6 +318,7 @@ impl Shared {
             index_path,
             config_path,
             roots_path,
+            service_menu_path,
             engine: Mutex::new(None),
             last_archive: Mutex::new(None),
             last_backup: Mutex::new(None),
@@ -1727,9 +1735,40 @@ impl Shared {
     /// Persist a new configuration and reconnect anything that depends on it.
     fn store_config(&self, config: Config) -> Result<()> {
         config.save_to(&self.config_path)?;
-        *self.config.lock().unwrap() = config;
+        let dolphin_was = std::mem::replace(&mut *self.config.lock().unwrap(), config)
+            .general
+            .dolphin_integration;
         self.publish_roots();
+        self.apply_dolphin_switch(Some(dolphin_was));
         Ok(())
+    }
+
+    /// Hide Backtrack's Dolphin items, or stop hiding them, as the switch in
+    /// Preferences says. See [`backtrack_core::servicemenu`]. `before` is
+    /// the switch before a change, or `None` at startup.
+    ///
+    /// Written only when the switch changes, and at startup only when it is
+    /// off, which covers a configuration edited by hand while the daemon was
+    /// stopped. A switch left on never writes, so an item somebody hid from
+    /// Dolphin's own settings stays hidden.
+    pub fn apply_dolphin_switch(&self, before: Option<bool>) {
+        let on = self.config().general.dolphin_integration;
+        if before.map_or(on, |before| before == on) {
+            return;
+        }
+        match backtrack_core::servicemenu::apply(&self.service_menu_path, on) {
+            Ok(true) => info!(
+                path = %self.service_menu_path.display(),
+                shown = on,
+                "applied the Dolphin switch to Dolphin's menu"
+            ),
+            Ok(false) => {}
+            Err(error) => warn!(
+                path = %self.service_menu_path.display(),
+                %error,
+                "could not apply the Dolphin switch to Dolphin's menu"
+            ),
+        }
     }
 
     /// Tell the file-manager plugins which folders are backed up, and whether
@@ -2182,6 +2221,7 @@ struct LocalProtection {
 struct Layout {
     config_path: PathBuf,
     roots_path: PathBuf,
+    service_menu_path: PathBuf,
     index_path: PathBuf,
     cache_dir: PathBuf,
     state_path: PathBuf,
@@ -3941,6 +3981,48 @@ mod tests {
             vec![dir.path().join("src"), dir.path().join("photos")]
         );
         assert!(!published().nautilus);
+    }
+
+    #[test]
+    fn the_dolphin_switch_hides_the_menu_only_when_it_changes_or_is_off() {
+        let dir = tempfile::tempdir().unwrap();
+        let shared = configured(dir.path());
+        let menu = dir.path().join("kservicemenurc");
+        let hidden = || {
+            std::fs::read_to_string(&menu)
+                .unwrap_or_default()
+                .contains("backtrackPreviousVersion=false")
+        };
+
+        // On, at startup: nothing written, so an item hidden from Dolphin's
+        // own settings would stay hidden.
+        shared.apply_dolphin_switch(None);
+        assert!(!menu.exists());
+
+        let mut config = shared.config();
+        config.general.dolphin_integration = false;
+        shared.store_config(config).unwrap();
+        assert!(hidden());
+
+        // Some other setting changing leaves it as it is.
+        let mut config = shared.config();
+        config.general.nautilus_integration = false;
+        shared.store_config(config).unwrap();
+        assert!(hidden());
+
+        let mut config = shared.config();
+        config.general.dolphin_integration = true;
+        shared.store_config(config).unwrap();
+        assert!(!hidden());
+
+        // Off at startup is applied again, for a configuration edited by
+        // hand while the daemon was stopped.
+        let mut config = shared.config();
+        config.general.dolphin_integration = false;
+        config.save_to(&dir.path().join("config.toml")).unwrap();
+        *shared.config.lock().unwrap() = config;
+        shared.apply_dolphin_switch(None);
+        assert!(hidden());
     }
 
     #[test]

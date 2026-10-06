@@ -26,7 +26,7 @@ use gtk4::{gio, glib, Align, Box as GtkBox, Button, Label, Orientation};
 use libadwaita as adw;
 use libadwaita::prelude::*;
 use serde::Serialize;
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 
 use crate::daemon::Daemon1Proxy;
 use crate::model::prefs::{self as model, Setting};
@@ -410,6 +410,24 @@ impl Prefs {
         });
     }
 
+    /// [`Prefs::switch`] for a switch that is not a whole row.
+    fn toggle(
+        self: &Rc<Self>,
+        setting: Setting,
+        toggle: &gtk4::Switch,
+        get: impl Fn(&Config) -> bool + 'static,
+    ) {
+        self.bind(setting);
+        let shown = toggle.clone();
+        self.show(move |config| shown.set_active(get(config)));
+        let this = Rc::clone(self);
+        toggle.connect_active_notify(move |toggle| {
+            if !this.loading.get() {
+                this.write(setting, &toggle.is_active());
+            }
+        });
+    }
+
     fn combo<T: Copy + PartialEq + Serialize + 'static>(
         self: &Rc<Self>,
         setting: Setting,
@@ -516,21 +534,10 @@ impl Prefs {
         behaviour.add(&notifications);
         page.add(&behaviour);
 
-        // Whether each plugin is installed, and the Install… hint when it is
-        // not, is Stage 12's: the plugins are what it ships.
         let integration = Self::group("File manager integration");
-        let nautilus = adw::SwitchRow::builder()
-            .title("GNOME Files (Nautilus)")
-            .build();
-        self.switch(Setting::NautilusIntegration, &nautilus, |c| {
-            c.general.nautilus_integration
-        });
-        integration.add(&nautilus);
-        let dolphin = adw::SwitchRow::builder().title("Dolphin").build();
-        self.switch(Setting::DolphinIntegration, &dolphin, |c| {
-            c.general.dolphin_integration
-        });
-        integration.add(&dolphin);
+        for plugin in model::Plugin::ALL {
+            integration.add(&self.plugin_row(plugin));
+        }
         page.add(&integration);
 
         let setup = Self::group("Setup");
@@ -545,6 +552,62 @@ impl Prefs {
         setup.add(&again);
         page.add(&setup);
         page
+    }
+
+    /// A file-manager integration: *Installed* and its switch, as mockup 15
+    /// draws GNOME Files, or *Not installed* and Install…, as it draws
+    /// Dolphin. Looked for again whenever the window shows what is true now,
+    /// so one installed while Preferences is open appears on returning to it.
+    ///
+    /// An action row with a switch of its own rather than a switch row: a
+    /// switch row puts its switch first among the suffixes, and the badge
+    /// belongs before it.
+    fn plugin_row(self: &Rc<Self>, plugin: model::Plugin) -> adw::ActionRow {
+        let row = adw::ActionRow::builder().title(plugin.title()).build();
+        let badge = Label::new(Some("Installed"));
+        badge.add_css_class("badge");
+        badge.add_css_class("recommended");
+        badge.set_valign(Align::Center);
+        row.add_suffix(&badge);
+        let toggle = gtk4::Switch::builder().valign(Align::Center).build();
+        row.add_suffix(&toggle);
+        let install = Button::with_label("Install…");
+        install.set_valign(Align::Center);
+        let owner = self.window.clone();
+        install.connect_clicked(move |_| {
+            gtk4::UriLauncher::new(&model::install_page()).launch(
+                Some(&owner),
+                gio::Cancellable::NONE,
+                |result: Result<(), glib::Error>| {
+                    if let Err(error) = result {
+                        warn!(%error, "the install instructions could not be opened");
+                    }
+                },
+            );
+        });
+        row.add_suffix(&install);
+
+        self.toggle(plugin.setting(), &toggle, move |config| {
+            plugin.enabled(config)
+        });
+        let shown = row.clone();
+        self.show(move |_| {
+            let data_dirs: Vec<PathBuf> = std::iter::once(glib::user_data_dir())
+                .chain(glib::system_data_dirs())
+                .collect();
+            let installed = plugin.installed_in(&data_dirs);
+            debug!(?plugin, installed, "looked for a file-manager integration");
+            badge.set_visible(installed);
+            toggle.set_visible(installed);
+            install.set_visible(!installed);
+            shown.set_subtitle(if installed { "" } else { "Not installed" });
+            if installed {
+                shown.set_activatable_widget(Some(&toggle));
+            } else {
+                shown.set_activatable_widget(Some(&install));
+            }
+        });
+        row
     }
 
     /// The wizard again, starting from what is configured now, over this

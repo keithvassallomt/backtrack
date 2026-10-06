@@ -190,7 +190,8 @@
     -gtk-icon-size: 22px;
 }
 
-/* "Recommended" and "Detected" read as good news, like "on this computer". */
+/* "Recommended", "Detected" and "Installed" read as good news, like "on this
+ * computer". */
 .badge.recommended {
     background-color: alpha(@success_color, 0.15);
     color: @success_color;

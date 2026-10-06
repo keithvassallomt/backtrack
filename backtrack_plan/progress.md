@@ -120,7 +120,7 @@
 - [/] S12-T2 Dolphin service menu (mockup 3, menu part only)
 - [ ] S12-T3 StatusNotifierItem tray for non-GNOME (status, actions)
 - [ ] S12-T4 Background portal presence (GNOME quick-settings launch path)
-- [ ] S12-T5 App detects missing plugins → hints distro package (prefs General)
+- [x] S12-T5 App detects missing plugins → hints distro package (prefs General)
 - [x] S12-T6 Development VMs: one-command setup and push for GNOME and Plasma
 
 ## Stage 13 — Packaging & release ([stage file](stages/stage-13-packaging-release.md))
@@ -138,6 +138,39 @@
 ## Notes / decisions made during implementation
 
 (append dated entries here; never delete)
+
+- 2026-10-06 (S12-T5: plugin detection): Preferences → General shows each
+  integration as *Installed* with its switch, or *Not installed* with
+  Install…, per mockup 15. Decisions:
+  - **Detected by the file each file manager loads**, in the user's data
+    directory or a system one (`glib::user_data_dir` and
+    `system_data_dirs`, which are the directories nautilus-python and KIO
+    search): `nautilus-python/extensions/backtrack.py` and
+    `kio/servicemenus/backtrack.desktop`. Looked for again each time the
+    window refreshes on regaining focus. A Flatpak build sees neither
+    directory of the host's; Stage 13's permissions audit (S13-T3) has to
+    settle how it looks.
+  - **Install… opens `docs/file-manager-integration.md#installing`** on
+    GitHub, the page the stage asks for. It names nautilus-python's package
+    on each distribution now; Backtrack's own package names come with the
+    packages (S13-T4). A test checks the heading the link points at exists.
+  - **An action row with its own switch**, not a switch row: a switch row
+    puts its switch first among the suffixes, and the badge goes before it,
+    as the wizard's "Recommended" and "Detected" do (and in their green).
+    The badge sits at the end of the row rather than beside the title as
+    the mockup draws it; libadwaita rows have no place there.
+  - **The Dolphin switch now works** (left here from S12-T2). The daemon
+    lists Backtrack's two actions as `false` under `[Show]` in
+    `~/.config/kservicemenurc`, which is what Dolphin's own Context Menu
+    settings write and what KIO reads for every menu, and removes them
+    when the switch is turned on. It writes only when the switch changes,
+    and at startup only when it is off, so an item hidden from Dolphin's
+    own settings is not brought back.
+  - Checked in the real app on the GNOME VM: with the development
+    integrations installed and removed in turn, Preferences found neither,
+    Nautilus only, both, and Dolphin only. On the Plasma VM, `SetConfig`
+    of the switch wrote and then removed the two entries. Whether Dolphin
+    then hides the submenu is step 10 of the Dolphin checklist.
 
 - 2026-10-06 (S12-T2: the Dolphin menu): the same two items as Nautilus,
   in a Backtrack submenu, and the window's answer for folders outside the

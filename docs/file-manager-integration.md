@@ -6,6 +6,30 @@ integration is a trap: Nautilus removed the API that let extensions put widgets
 in its window, and Déjà Dup dropped its own Nautilus plugin because it broke
 with each GNOME release. See `backtrack_plan/reference/open-questions.md`, Q1.
 
+## Installing
+
+Preferences → General lists both integrations. One that is installed shows
+*Installed* and a switch that takes its items away without uninstalling it;
+one that is not shows **Install…**, which opens this section.
+
+- **GNOME Files (Nautilus)** needs nautilus-python (`nautilus-python` on
+  Fedora, `python3-nautilus` on Ubuntu, `python-nautilus` on Arch) and
+  Backtrack's Nautilus package. Nautilus loads extensions when it starts, so
+  quit it afterwards: `nautilus -q`.
+- **Dolphin** needs Backtrack's Dolphin package only, and shows the items from
+  the next right-click.
+
+Backtrack's own packages, and their names for each distribution, come with
+the packaging (Stage 13). From a checkout, `just install-nautilus-dev` and
+`just install-dolphin-dev` install the development copies described below.
+
+Preferences finds an integration by its file in the user's data directory
+(`~/.local/share`) or a system one (`/usr/share`):
+`nautilus-python/extensions/backtrack.py` and
+`kio/servicemenus/backtrack.desktop`. It looks again each time the
+Preferences window comes back into focus, so an integration installed while it
+is open shows when you return to it.
+
 ## Nautilus
 
 `integrations/nautilus/backtrack.py`, a nautilus-python extension (API 4.x).
@@ -154,6 +178,25 @@ folder above with this one selected.
 Neither appears on more than one item, outside `file://` (network locations
 and the trash), or anywhere KIO does not offer service menus.
 
+### The switch
+
+A service menu cannot read a setting, but Dolphin keeps its own list of
+service-menu actions to leave out: `~/.config/kservicemenurc`, which its
+Settings → Context Menu page writes and KIO reads each time it builds a menu.
+The daemon writes Backtrack's two actions there as hidden when the
+Preferences switch is turned off, and removes them when it is turned back on:
+
+```ini
+[Show]
+backtrackPreviousVersion=false
+backtrackThisFolder=false
+```
+
+It writes only when the switch changes, and at startup only when the switch
+is off (for a configuration edited by hand while the daemon was stopped). A
+switch left on never writes, so an item somebody hid from Dolphin's own
+settings stays hidden. The change shows from the next right-click.
+
 ### Everywhere else, the window explains
 
 A service menu is a fixed file: KIO decides whether to show it from the file
@@ -228,7 +271,11 @@ on its screen, in its checkout:
    no Backtrack submenu.
 9. **Two items.** Select `report.odt` and `notes.txt` together and
    right-click: no Backtrack submenu.
-10. `scripts/fm-check reset` unmounts the stick, empties the draft from the
+10. **The switch.** In Backtrack, Preferences → General shows Dolphin as
+    *Installed*. Turn its switch off, then right-click `report.odt`: no
+    Backtrack submenu. Turn it on again: the submenu is back at the next
+    right-click.
+11. `scripts/fm-check reset` unmounts the stick, empties the draft from the
     trash and uninstalls the menu.
 
 Note while doing it which icon the submenu has. KIO takes it from the first
