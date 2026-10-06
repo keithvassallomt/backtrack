@@ -9,6 +9,9 @@
 # or any SSH destination. The user is $BACKTRACK_VM_USER, else yours; write
 # user@vm for another.
 #
+#   vm start <vm>           start the VM, and wait until its desktop has
+#                           logged in and its keyring is open
+#   vm stop <vm>            shut the VM down
 #   vm push <vm>            copy this checkout into the VM and bring it up to
 #                           date there (scripts/dev-machine)
 #   vm app <vm> [ARGS]      open Backtrack on the VM's screen
@@ -37,7 +40,7 @@ address() {
     if command -v virsh >/dev/null && virsh -c "$CONNECT" domstate "$host" >/dev/null 2>&1; then
         state="$(virsh -c "$CONNECT" domstate "$host")"
         if [[ "$state" != running ]]; then
-            echo "$host is $state. Start it, log in on its screen, and try again." >&2
+            echo "$host is $state. Start it with: just vm-start \"$host\"" >&2
             exit 1
         fi
         ip="$(virsh -c "$CONNECT" domifaddr "$host" \
@@ -62,6 +65,83 @@ reachable() {
     echo "  1. In the VM:  sudo systemctl enable --now sshd" >&2
     echo "  2. Here:       ssh-copy-id -f $destination" >&2
     exit 1
+}
+
+# The libvirt domain <vm> names; only a libvirt VM can be started or stopped.
+domain() {
+    local host="${1#*@}"
+    if command -v virsh >/dev/null && virsh -c "$CONNECT" domstate "$host" >/dev/null 2>&1; then
+        echo "$host"
+        return
+    fi
+    echo "$host is not a libvirt domain on $CONNECT, so it cannot be started or stopped here." >&2
+    exit 1
+}
+
+# Run a command every two seconds until it succeeds or $1 seconds have passed.
+patiently() {
+    local deadline=$((SECONDS + $1))
+    shift
+    until "$@"; do
+        ((SECONDS < deadline)) || return 1
+        sleep 2
+    done
+}
+
+booted() {
+    destination="$(address "$1" 2>/dev/null)" \
+        && ssh "${SSH[@]}" -o BatchMode=yes "$destination" true 2>/dev/null
+}
+
+# Someone is logged in on the screen, not only over SSH.
+logged_in() {
+    [[ -n "$(ssh "${SSH[@]}" -o BatchMode=yes "$1" \
+        'loginctl show-user "$USER" -p Display --value' 2>/dev/null)" ]]
+}
+
+shut_off() {
+    [[ "$(virsh -c "$CONNECT" domstate "$1")" == "shut off" ]]
+}
+
+start() {
+    local name="$1" host
+    host="$(domain "$name")"
+    case "$(virsh -c "$CONNECT" domstate "$host")" in
+        running) ;;
+        paused) virsh -c "$CONNECT" resume "$host" >/dev/null ;;
+        *)
+            echo "Starting $host…"
+            virsh -c "$CONNECT" start "$host" >/dev/null ;;
+    esac
+    if ! patiently 120 booted "$name"; then
+        # Whichever of these fails says why.
+        destination="$(address "$name")"
+        reachable "$destination"
+    fi
+    if ! patiently 90 logged_in "$destination"; then
+        echo "Nobody has logged in on $host's screen. Backtrack's daemon runs in the" >&2
+        echo "desktop session, so turn on automatic login there: see docs/development-vms.md." >&2
+        exit 1
+    fi
+    # Over standard input, so that it works before the first push too.
+    ssh "${SSH[@]}" "$destination" python3 - unlock <"$ROOT/scripts/vm-keyring"
+    echo "$host is up at $destination, logged in, with its keyring open."
+}
+
+stop() {
+    local host
+    host="$(domain "$1")"
+    if shut_off "$host"; then
+        echo "$host is already shut off."
+        return
+    fi
+    virsh -c "$CONNECT" shutdown "$host" >/dev/null
+    echo "Shutting $host down…"
+    if ! patiently 120 shut_off "$host"; then
+        echo "$host is still $(virsh -c "$CONNECT" domstate "$host") after two minutes." >&2
+        exit 1
+    fi
+    echo "$host is shut off."
 }
 
 # A terminal for the remote command when this one has one, so that sudo can
@@ -106,6 +186,12 @@ run() {
 }
 
 case "${1:-}" in
+    start)
+        [[ -n "${2:-}" ]] || { echo "usage: vm start <vm>" >&2; exit 2; }
+        start "$2" ;;
+    stop)
+        [[ -n "${2:-}" ]] || { echo "usage: vm stop <vm>" >&2; exit 2; }
+        stop "$2" ;;
     push)
         [[ -n "${2:-}" ]] || { echo "usage: vm push <vm>" >&2; exit 2; }
         push "$2" ;;

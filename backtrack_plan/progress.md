@@ -178,6 +178,20 @@
     set it up, including storing the demo passphrase in KWallet, a
     push with nothing changed did nothing, a daemon change compiled and
     restarted once, and `just vm-app` opened the window on its screen.
+  - **2026-10-06: the VMs run without anyone at their screens.** `just
+    vm-start` boots a VM and waits for SSH, the desktop and the keyring;
+    `just vm-stop` shuts it down. Each VM logs in automatically and has
+    passwordless sudo, so Claude can start, push, test and stop one
+    unattended. An automatic login leaves the keyring locked, which needed a
+    different answer on each desktop. KWallet opens a wallet with an empty
+    password without asking. Fedora 45's GNOME uses oo7-daemon, which (per
+    its source) never opens a keyring at startup without a password, even
+    an empty one, so `scripts/vm-keyring` gives the login keyring the fixed
+    development password and opens it through oo7's PAM socket after every
+    boot. Both VMs passed a stop and cold start with the keyring open (14 s
+    GNOME, 17 s Plasma); the first Plasma run found that its Secret Service
+    appears a few seconds after the session does, so `vm-keyring` waits
+    for it.
 
 - 2026-10-05 (S12-T1: the Nautilus extension): a launcher and nothing more,
   as the stage asks. Decisions:

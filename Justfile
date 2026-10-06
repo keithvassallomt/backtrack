@@ -583,6 +583,18 @@ uninstall-nautilus-dev:
 
 # ─── Development VMs (see docs/development-vms.md) ───────────────────────────
 
+# Start a libvirt VM, and wait until its desktop has logged in automatically
+# and its keyring is open. Does nothing to a VM that is already up.
+[doc("Start a VM and wait for its desktop and keyring.")]
+[positional-arguments]
+vm-start VM:
+    scripts/vm start "$1"
+
+# Shut a libvirt VM down, and wait until it is off.
+[positional-arguments]
+vm-stop VM:
+    scripts/vm stop "$1"
+
 # Copy this checkout into a VM and bring it up to date there: packages, build,
 # units, demo backups, file-manager integration. VM is a libvirt domain name
 # (quote one with spaces) or an SSH destination. The first push asks for the

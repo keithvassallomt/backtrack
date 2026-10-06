@@ -1,0 +1,173 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-3.0-or-later
+# SPDX-FileCopyrightText: 2026 Keith Vassallo <keith@vassallo.cloud>
+"""Open a development VM's keyring without anyone at its screen.
+
+A VM that logs in automatically types no password, so nothing opens the
+keyring at login, and the first program that wants a secret puts a prompt on
+a screen nobody is watching. See docs/development-vms.md.
+
+On GNOME, Fedora's Secret Service is oo7-daemon, which keeps every keyring
+locked until it is given a password, even an empty one. This gives the login
+keyring a fixed development password, and opens it with that over the socket
+that oo7's PAM module uses. Nothing in it is private: it holds the
+development passphrase, which is fixed too.
+
+KWallet opens a wallet with an empty password without asking, so on Plasma
+this only asks it to, to find out early when the wallet has a password.
+
+  vm-keyring rekey    change oo7's login keyring password from your login
+                      password to the development one; asks for yours, once
+  vm-keyring unlock   open the default keyring, whichever service holds it
+"""
+
+import getpass
+import os
+import socket
+import struct
+import sys
+import time
+
+from gi.repository import Gio, GLib
+
+PASSWORD = b"backtrack dev"
+OO7_SOCKET = f"/run/user/{os.getuid()}/oo7-pam.sock"
+# The operations oo7's PAM listener understands.
+UNLOCK = 0
+CHANGE_PASSWORD = 1
+# Long enough for KWallet to open a wallet; a dialog waits for ever.
+PROMPT_SECONDS = 10
+# Plasma starts its Secret Service a few seconds into the session, and until
+# then nothing answers for it.
+SERVICE_SECONDS = 30
+
+BUS = Gio.bus_get_sync(Gio.BusType.SESSION)
+
+
+def fail(message):
+    print(f"vm-keyring: {message}", file=sys.stderr)
+    sys.exit(1)
+
+
+def call(path, interface, method, parameters, reply_type=None):
+    reply = BUS.call_sync(
+        "org.freedesktop.secrets", path, interface, method, parameters,
+        GLib.VariantType(reply_type) if reply_type else None,
+        Gio.DBusCallFlags.NONE, -1, None,
+    )
+    return reply.unpack() if reply_type else None
+
+
+def service(method, parameters, reply_type):
+    return call("/org/freedesktop/secrets", "org.freedesktop.Secret.Service",
+                method, parameters, reply_type)
+
+
+def wait_for_service():
+    deadline = time.monotonic() + SERVICE_SECONDS
+    while True:
+        names = []
+        for method in ("ListNames", "ListActivatableNames"):
+            names += BUS.call_sync(
+                "org.freedesktop.DBus", "/org/freedesktop/DBus", "org.freedesktop.DBus",
+                method, None, GLib.VariantType("(as)"), Gio.DBusCallFlags.NONE, -1, None,
+            ).unpack()[0]
+        if "org.freedesktop.secrets" in names:
+            return
+        if time.monotonic() > deadline:
+            fail(f"no Secret Service appeared within {SERVICE_SECONDS} seconds.")
+        time.sleep(1)
+
+
+def default_collection():
+    wait_for_service()
+    # Asking also starts the Secret Service if nothing has yet.
+    (path,) = service("ReadAlias", GLib.Variant("(s)", ("default",)), "(o)")
+    return None if path == "/" else path
+
+
+def locked(collection):
+    (value,) = call(
+        collection, "org.freedesktop.DBus.Properties", "Get",
+        GLib.Variant("(ss)", ("org.freedesktop.Secret.Collection", "Locked")), "(v)",
+    )
+    return value
+
+
+def send(operation, old, new):
+    """Send one request, as pam_oo7 does: a length, then a GVariant."""
+    message = GLib.Variant(
+        "(ysayay)", (operation, getpass.getuser(), old, new),
+    ).get_data_as_bytes().get_data()
+    with socket.socket(socket.AF_UNIX) as stream:
+        stream.connect(OO7_SOCKET)
+        stream.sendall(struct.pack("<I", len(message)) + message)
+        reader = stream.makefile("rb")
+        (length,) = struct.unpack("<I", reader.read(4))
+        reply = GLib.Variant.new_from_bytes(
+            GLib.VariantType("(bs)"), GLib.Bytes.new(reader.read(length)), False,
+        )
+    success, error = reply.unpack()
+    if not success:
+        fail(f"oo7-daemon refused: {error}")
+
+
+def prompt(collection):
+    """Unlock as any program would: the service decides whether to ask."""
+    _, path = service("Unlock", GLib.Variant("(ao)", ([collection],)), "(aoo)")
+    if path == "/":
+        return
+    loop = GLib.MainLoop()
+    BUS.signal_subscribe(
+        "org.freedesktop.secrets", "org.freedesktop.Secret.Prompt", "Completed",
+        path, None, Gio.DBusSignalFlags.NONE, lambda *_: loop.quit(),
+    )
+    call(path, "org.freedesktop.Secret.Prompt", "Prompt", GLib.Variant("(s)", ("",)))
+    GLib.timeout_add_seconds(PROMPT_SECONDS, loop.quit)
+    loop.run()
+
+
+def unlock():
+    collection = default_collection()
+    if collection is None or not locked(collection):
+        return
+    if os.path.exists(OO7_SOCKET):
+        send(UNLOCK, b"", PASSWORD)
+        # oo7 answers success whether or not the password fit, so look.
+        if locked(collection):
+            fail("the development password does not open the login keyring. "
+                 "Give it that password once: see docs/development-vms.md.")
+    else:
+        prompt(collection)
+        if locked(collection):
+            fail("the keyring did not open without a password, and may be "
+                 "asking for one on the VM's screen. Give it an empty "
+                 "password once: see docs/development-vms.md.")
+
+
+def rekey():
+    if not os.path.exists(OO7_SOCKET):
+        fail("this desktop's Secret Service is not oo7-daemon; there is "
+             "nothing to change.")
+    collection = default_collection()
+    old = getpass.getpass("Your password in this VM: ").encode()
+    send(CHANGE_PASSWORD, old, PASSWORD)
+    # A wrong password changes nothing and is still answered with success;
+    # locking and opening again is how to tell.
+    service("Lock", GLib.Variant("(ao)", ([collection],)), "(aoo)")
+    send(UNLOCK, b"", PASSWORD)
+    if locked(collection):
+        fail("that password did not open the login keyring; nothing changed.")
+    print("The login keyring now opens with the development password.")
+
+
+def main():
+    commands = {"rekey": rekey, "unlock": unlock}
+    if len(sys.argv) != 2 or sys.argv[1] not in commands:
+        print(__doc__.split("\n\n")[-1], file=sys.stderr)
+        sys.exit(2)
+    commands[sys.argv[1]]()
+
+
+if __name__ == "__main__":
+    main()
