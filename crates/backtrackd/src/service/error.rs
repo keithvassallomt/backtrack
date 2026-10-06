@@ -85,6 +85,10 @@ pub enum DaemonError {
     /// reading the message needs to know which side of the operation went
     /// wrong.
     RestoreFailed(String),
+    /// A disaster recovery is bringing this computer back, and this has to
+    /// wait for it: a backup of a half-restored home folder, or a second
+    /// recovery on top of the first.
+    RecoveryUnderWay(String),
 }
 
 /// A convenience alias for anything the interface returns.

@@ -99,9 +99,41 @@ pub fn free_space(path: &Path) -> std::io::Result<u64> {
     }
 }
 
+/// Whether `a` and `b` are on the same filesystem, judged by the nearest
+/// ancestor of each that exists. `false` when either cannot be looked at, which
+/// errs towards counting space a rename would not have needed.
+///
+/// What decides whether a move is a rename, which takes no room, or a copy,
+/// which takes as much again.
+pub fn same_filesystem(a: &Path, b: &Path) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    let device = |path: &Path| {
+        path.ancestors()
+            .find_map(|p| std::fs::symlink_metadata(p).ok())
+            .map(|facts| facts.dev())
+    };
+    match (device(a), device(b)) {
+        (Some(a), Some(b)) => a == b,
+        _ => false,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn two_folders_side_by_side_share_a_filesystem() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::create_dir(root.path().join("a")).unwrap();
+        // One that does not exist yet is judged by the folder it would be in.
+        assert!(same_filesystem(
+            &root.path().join("a"),
+            &root.path().join("not-yet/b")
+        ));
+        // The kernel's own filesystem is not where anybody's home folder is.
+        assert!(!same_filesystem(root.path(), Path::new("/proc/self")));
+    }
 
     #[test]
     fn a_plain_relative_path_is_fine() {

@@ -15,6 +15,7 @@ mod offline;
 mod pipeline;
 mod preflight;
 mod reachability;
+mod recovery;
 mod restore;
 mod schedule;
 mod service;

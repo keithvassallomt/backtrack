@@ -178,6 +178,14 @@ impl BackupEngine for MockEngine {
     async fn extract(&self, _id: &ArchiveId, _paths: &[String], _dest: &Path) -> Result<JobStream> {
         self.job(vec![JobEvent::Finished(Ok(Default::default()))])
     }
+    async fn extract_patterns(
+        &self,
+        _id: &ArchiveId,
+        _patterns: &Path,
+        _dest: &Path,
+    ) -> Result<JobStream> {
+        self.job(vec![JobEvent::Finished(Ok(Default::default()))])
+    }
     async fn extract_stdout(
         &self,
         _id: &ArchiveId,

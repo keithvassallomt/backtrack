@@ -5,8 +5,8 @@
 //!
 //! Two ways in. From the Welcome page, somebody's backups arriving on a new
 //! computer: nothing has been chosen to back up there yet, and nothing is,
-//! because restoring comes first (the guided restore is Stage 11; until then
-//! this lands on the timeline). From step 3, a destination that turned out to
+//! because restoring comes first, and the next page offers it. From step 3, a
+//! destination that turned out to
 //! hold backups already: the choices made on step 2 apply, and backing up
 //! carries on into the same repository.
 //!
@@ -196,7 +196,11 @@ fn passphrase_page(wizard: &Rc<Wizard>) -> adw::NavigationPage {
             let outcome = open_backups(&this, &passphrase).await;
             button.set_label("Open Backups");
             button.set_sensitive(true);
+            let adopting = this.import.borrow().as_ref().is_some_and(|i| i.adopting);
             match outcome {
+                // Somebody's backups, arriving on a new computer: restoring
+                // it comes first, if they want it.
+                Ok(()) if !adopting => super::everything::offer(&this).await,
                 Ok(()) => this.open_timeline().await,
                 Err(message) => {
                     problem.set_label(&message);

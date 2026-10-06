@@ -30,6 +30,29 @@ pub struct Entry {
     pub changed_since: bool,
 }
 
+/// One entry directly inside a folder, with the size of everything below it.
+/// See [`IndexReader::sizes_inside`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Contents {
+    pub name: String,
+    pub kind: Kind,
+    /// Bytes of the files at or below it.
+    pub bytes: u64,
+    /// How many files are at or below it.
+    pub files: u64,
+}
+
+/// One entry of an archive, by its whole archive path. See
+/// [`IndexReader::each_member`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Member {
+    pub path: String,
+    pub kind: Kind,
+    pub size: i64,
+    /// Epoch microseconds, as everywhere in the catalogue.
+    pub mtime: i64,
+}
+
 /// One version interval in a file's history.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VersionSpan {
@@ -463,6 +486,131 @@ impl IndexReader {
         Ok(changed)
     }
 
+    /// What `folder` held at archive `seq`: one row for each entry directly
+    /// inside it, carrying the bytes and the number of files at or below it.
+    ///
+    /// The totals a whole-computer restore is measured against. Asked of the
+    /// catalogue rather than of Borg because Borg can only answer by reading
+    /// the archive's whole file list, once per question.
+    pub fn sizes_inside(&self, folder: &str, seq: i64) -> Result<Vec<Contents>> {
+        let Some(folder_id) = self.folder_id(folder)? else {
+            return Ok(Vec::new());
+        };
+        // Every path ever seen below each child, then only the versions alive
+        // at `seq`. The walk follows `paths_parent_name`; the join follows
+        // `versions_path_seq`.
+        let mut totals = self.conn.prepare_cached(
+            "WITH RECURSIVE below(id, top) AS (
+                 SELECT id, id FROM paths WHERE parent_id = ?1
+                 UNION ALL
+                 SELECT p.id, below.top FROM paths p JOIN below ON p.parent_id = below.id
+             )
+             SELECT below.top,
+                    SUM(CASE WHEN v.kind = 'file' THEN COALESCE(v.size, 0) ELSE 0 END),
+                    SUM(CASE WHEN v.kind = 'file' THEN 1 ELSE 0 END)
+             FROM below JOIN versions v ON v.path_id = below.id
+             WHERE v.first_seq <= ?2 AND v.last_seq >= ?2
+             GROUP BY below.top",
+        )?;
+        let rows: Vec<(i64, i64, i64)> = totals
+            .query_map(params![folder_id, seq], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+            })?
+            .collect::<std::result::Result<_, _>>()?;
+
+        let mut name_of = self
+            .conn
+            .prepare_cached("SELECT name FROM paths WHERE id = ?1")?;
+        let mut kind_of = self.conn.prepare_cached(
+            "SELECT kind FROM versions WHERE path_id = ?1 AND first_seq <= ?2 AND last_seq >= ?2",
+        )?;
+        let mut contents = Vec::with_capacity(rows.len());
+        for (id, bytes, files) in rows {
+            let name: String = name_of.query_row(params![id], |r| r.get(0))?;
+            // A child with nothing of its own at `seq` but something below it
+            // is a folder Borg was asked into rather than for.
+            let kind = kind_of
+                .query_row(params![id, seq], |r| r.get::<_, String>(0))
+                .optional()?
+                .map_or(Kind::Dir, |token| Kind::from_token(&token));
+            contents.push(Contents {
+                name,
+                kind,
+                bytes: bytes.max(0) as u64,
+                files: files.max(0) as u64,
+            });
+        }
+        contents.sort_by(|a, b| a.name.cmp(&b.name));
+        Ok(contents)
+    }
+
+    /// The bytes and files at or below `path` at archive `seq`. Zeros when the
+    /// path is not in the catalogue.
+    pub fn size_of(&self, path: &str, seq: i64) -> Result<(u64, u64)> {
+        let Some(id) = self.resolve_path(path)? else {
+            return Ok((0, 0));
+        };
+        let (bytes, files): (i64, i64) = self.conn.query_row(
+            "WITH RECURSIVE below(id) AS (
+                 SELECT ?1
+                 UNION ALL
+                 SELECT p.id FROM paths p JOIN below ON p.parent_id = below.id
+             )
+             SELECT COALESCE(SUM(CASE WHEN v.kind = 'file' THEN COALESCE(v.size, 0) ELSE 0 END), 0),
+                    COALESCE(SUM(CASE WHEN v.kind = 'file' THEN 1 ELSE 0 END), 0)
+             FROM below JOIN versions v ON v.path_id = below.id
+             WHERE v.first_seq <= ?2 AND v.last_seq >= ?2",
+            params![id, seq],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )?;
+        Ok((bytes.max(0) as u64, files.max(0) as u64))
+    }
+
+    /// Hand every entry at or below `root` at archive `seq` to `each`, without
+    /// collecting them: a home folder's hidden directories alone can run to
+    /// hundreds of thousands of entries.
+    pub fn each_member(&self, root: &str, seq: i64, mut each: impl FnMut(Member)) -> Result<()> {
+        let root = root.trim_matches('/');
+        let Some(id) = self.resolve_path(root)? else {
+            return Ok(());
+        };
+        let mut stmt = self.conn.prepare_cached(
+            "WITH RECURSIVE below(id, path) AS (
+                 SELECT ?1, ?2
+                 UNION ALL
+                 SELECT p.id, below.path || '/' || p.name
+                 FROM paths p JOIN below ON p.parent_id = below.id
+             )
+             SELECT below.path, v.kind, v.size, v.mtime
+             FROM below JOIN versions v ON v.path_id = below.id
+             WHERE v.first_seq <= ?3 AND v.last_seq >= ?3",
+        )?;
+        let mut rows = stmt.query(params![id, root, seq])?;
+        while let Some(row) = rows.next()? {
+            each(Member {
+                path: row.get(0)?,
+                kind: Kind::from_token(&row.get::<_, String>(1)?),
+                size: row.get::<_, Option<i64>>(2)?.unwrap_or(0),
+                mtime: row.get::<_, Option<i64>>(3)?.unwrap_or(0),
+            });
+        }
+        Ok(())
+    }
+
+    /// The `seq` of the backup at the destination called `name`, if the
+    /// catalogue has it. Sequence numbers are the catalogue's own and change
+    /// when it is rebuilt; an archive's name is what stays put.
+    pub fn seq_of(&self, name: &str) -> Result<Option<i64>> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT seq FROM archives WHERE name = ?1 AND repo = 'primary'",
+                params![name],
+                |r| r.get(0),
+            )
+            .optional()?)
+    }
+
     /// Cross-snapshot filename search over FTS5. Each hit aggregates a path's
     /// whole history: lifespan, version count, and whether it still exists.
     /// Results are ranked deleted-first, then by most-recent existence, then by
@@ -679,6 +827,107 @@ mod tests {
     }
     fn find<'a>(entries: &'a [Entry], name: &str) -> &'a Entry {
         entries.iter().find(|e| e.name == name).unwrap()
+    }
+
+    /// A home folder as a whole-computer restore sees it, twice: the second
+    /// backup has grown Pictures and lost a download.
+    fn a_home() -> (tempfile::TempDir, IndexReader) {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("index.db");
+        {
+            let mut w = IndexWriter::open(&path).unwrap();
+            let first = vec![
+                dir("home/k"),
+                dir("home/k/Documents"),
+                file("home/k/Documents/report.odt", 300),
+                dir("home/k/Documents/tax"),
+                file("home/k/Documents/tax/2025.pdf", 700),
+                dir("home/k/Pictures"),
+                file("home/k/Pictures/beach.jpg", 5_000),
+                dir("home/k/Downloads"),
+                file("home/k/Downloads/setup.iso", 9_000),
+                file("home/k/.bashrc", 20),
+                item("home/k/link", Kind::Symlink, 0),
+            ];
+            w.ingest_archive(&meta("a1", 1_000), Repo::Primary, first.clone().into_iter())
+                .unwrap();
+            let mut second: Vec<BorgItem> = first
+                .into_iter()
+                .filter(|i| i.path != "home/k/Downloads/setup.iso")
+                .collect();
+            second.push(file("home/k/Pictures/dunes.jpg", 4_000));
+            w.ingest_archive(&meta("a2", 2_000), Repo::Primary, second.into_iter())
+                .unwrap();
+        }
+        let reader = IndexReader::open(&path).unwrap();
+        (tmp, reader)
+    }
+
+    #[test]
+    fn what_a_folder_held_is_totalled_per_entry_inside_it() {
+        let (_tmp, r) = a_home();
+        let inside = r.sizes_inside("home/k", 1).unwrap();
+        let summary: Vec<(&str, Kind, u64, u64)> = inside
+            .iter()
+            .map(|c| (c.name.as_str(), c.kind, c.bytes, c.files))
+            .collect();
+        assert_eq!(
+            summary,
+            vec![
+                (".bashrc", Kind::File, 20, 1),
+                ("Documents", Kind::Dir, 1_000, 2),
+                ("Downloads", Kind::Dir, 9_000, 1),
+                ("Pictures", Kind::Dir, 5_000, 1),
+                ("link", Kind::Symlink, 0, 0),
+            ]
+        );
+    }
+
+    #[test]
+    fn totals_are_of_the_backup_asked_about_not_of_every_version() {
+        let (_tmp, r) = a_home();
+        let later = r.sizes_inside("home/k", 2).unwrap();
+        let pictures = later.iter().find(|c| c.name == "Pictures").unwrap();
+        assert_eq!((pictures.bytes, pictures.files), (9_000, 2));
+        // Empty at the second backup, so it is a folder with nothing in it
+        // rather than a folder with last week's download in it.
+        let downloads = later.iter().find(|c| c.name == "Downloads").unwrap();
+        assert_eq!((downloads.bytes, downloads.files), (0, 0));
+        assert_eq!(r.size_of("home/k/Pictures", 2).unwrap(), (9_000, 2));
+        assert_eq!(r.size_of("home/k", 1).unwrap(), (15_020, 5));
+        assert_eq!(r.size_of("home/nobody", 1).unwrap(), (0, 0));
+    }
+
+    #[test]
+    fn every_member_below_a_folder_is_handed_over_by_its_whole_path() {
+        let (_tmp, r) = a_home();
+        let mut seen = Vec::new();
+        r.each_member("home/k/Documents", 2, |m| {
+            seen.push((m.path, m.kind, m.size))
+        })
+        .unwrap();
+        seen.sort_by(|a, b| a.0.cmp(&b.0));
+        assert_eq!(
+            seen,
+            vec![
+                ("home/k/Documents".to_string(), Kind::Dir, 0),
+                ("home/k/Documents/report.odt".to_string(), Kind::File, 300),
+                ("home/k/Documents/tax".to_string(), Kind::Dir, 0),
+                ("home/k/Documents/tax/2025.pdf".to_string(), Kind::File, 700),
+            ]
+        );
+
+        let mut none = 0;
+        r.each_member("home/k/Downloads/setup.iso", 2, |_| none += 1)
+            .unwrap();
+        assert_eq!(none, 0, "gone by the second backup");
+    }
+
+    #[test]
+    fn an_archive_is_found_by_its_name() {
+        let (_tmp, r) = a_home();
+        assert_eq!(r.seq_of("a2").unwrap(), Some(2));
+        assert_eq!(r.seq_of("never").unwrap(), None);
     }
 
     #[test]

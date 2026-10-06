@@ -367,6 +367,22 @@ impl BackupEngine for BorgCli {
         spawn_streamed(cmd)
     }
 
+    async fn extract_patterns(
+        &self,
+        id: &ArchiveId,
+        patterns: &Path,
+        dest: &Path,
+    ) -> Result<JobStream> {
+        let mut cmd = self.cmd().await?;
+        cmd.current_dir(dest)
+            .arg("extract")
+            .arg("--list")
+            .arg("--patterns-from")
+            .arg(patterns)
+            .arg(self.archive_ref(id));
+        spawn_streamed(cmd)
+    }
+
     async fn extract_stdout(
         &self,
         id: &ArchiveId,

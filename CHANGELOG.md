@@ -198,6 +198,26 @@ All notable changes to Backtrack are documented here. This project adheres to
   sooner if backups keep failing for no known reason.
 - `backtrack doctor` now includes how the backups' health has changed, the last
   error from each part of Backtrack, and which notifications have gone out.
+- Restore a whole computer. After importing your backups onto a new computer
+  from the Welcome page, Backtrack offers to bring everything back: your home
+  folder as it was at any backup, only the folders you choose, or nothing for
+  now. It works when the new computer's home folder is somewhere else or under
+  another name.
+- The restore runs a folder at a time, smallest first, in a window that shows
+  how much is back, how long is left, the file being restored, and which
+  folders are done. The window can be closed: the restore carries on, and
+  opening Backtrack comes back to it.
+- A whole-computer restore can be paused, and survives Backtrack or the
+  computer being restarted: it carries on from where it was, keeping the files
+  it had already fetched. Pausing finishes the file it is on first.
+- Files already on the new computer are never overwritten without asking. Any
+  that differ from the backup are set aside and asked about all at once, with
+  the same summary as restoring a folder, once everything else is back.
+- Cancelling a whole-computer restore keeps what has been restored so far, or
+  takes away exactly what the restore added and nobody has changed since.
+- Backups start again once a whole-computer restore has finished, never during
+  it, and the first one runs straight away. A computer set up by importing
+  from the Welcome page backs up what the old one did.
 - Project bootstrap: Cargo workspace (core library plus daemon, GTK app, and CLI
   binaries), structured logging with JSONL rotation, developer task runner,
   versioning policy, and continuous integration.
@@ -263,6 +283,10 @@ All notable changes to Backtrack are documented here. This project adheres to
 - Protection on this computer that has gone over its space limit is now
   reported for as long as it is over, rather than forgotten at the next
   backup with nothing to save.
+- Restoring a folder no longer asks for free space for a second copy of it.
+  The restored files are moved into place from a working copy on the same
+  disk, which takes no extra room, but a large folder was refused on any disk
+  with less than twice its size free.
 
 ## [0.1.0] - TBD
 

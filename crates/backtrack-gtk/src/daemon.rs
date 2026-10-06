@@ -13,7 +13,8 @@
 //! daemon running?" check anywhere in the app. Asking for it starts it.
 
 use backtrack_core::dbus::{
-    HealthReport, LocalStorage, ReplacedFile, RestorePreview, SearchResult, Status, StorageInfo,
+    HealthReport, LocalStorage, RecoveryStatus, ReplacedFile, RestorePreview, SearchResult, Status,
+    StorageInfo,
 };
 use tracing::warn;
 
@@ -75,6 +76,16 @@ pub trait Daemon1 {
     /// Answers with where whatever was in its place went, or "" if nothing was.
     fn put_back_replaced(&self, stashed: &str) -> zbus::Result<String>;
     fn cancel_job(&self, id: u64) -> zbus::Result<()>;
+    fn pause_job(&self, id: u64) -> zbus::Result<()>;
+
+    /// Restore this computer from `archive`: everything, or only `folders`.
+    fn restore_everything(&self, archive: &str, policy: &str) -> zbus::Result<u64>;
+    fn restore_folders(&self, archive: &str, folders: &[String], policy: &str)
+        -> zbus::Result<u64>;
+    fn get_recovery(&self) -> zbus::Result<RecoveryStatus>;
+    fn resume_recovery(&self) -> zbus::Result<u64>;
+    fn cancel_recovery(&self, discard: bool) -> zbus::Result<u64>;
+    fn prepare_recovery_review(&self) -> zbus::Result<u64>;
 
     /// The whole configuration, as the TOML `config.toml` holds.
     fn get_config(&self) -> zbus::Result<String>;

@@ -71,6 +71,8 @@ pub enum Kind {
     FirstBackup,
     /// A backup that went well.
     Success,
+    /// The end of a disaster recovery, either way.
+    Recovery,
 }
 
 /// Whether the person's choice lets this kind of notification through.
@@ -81,7 +83,10 @@ pub enum Kind {
 pub fn permits(policy: Notifications, kind: Kind) -> bool {
     match (policy, kind) {
         (Notifications::None, _) => false,
-        (_, Kind::Attention | Kind::FirstBackup) => true,
+        // A recovery is announced on the same terms as the first backup, and
+        // for the same reason: the person was told they could close the window
+        // while it ran.
+        (_, Kind::Attention | Kind::FirstBackup | Kind::Recovery) => true,
         (Notifications::All, Kind::Success) => true,
         (Notifications::AttentionOnly, Kind::Success) => false,
     }
@@ -163,6 +168,47 @@ pub fn first_backup(outcome: &str) -> Option<Note> {
         body: body.to_string(),
         fix: None,
     })
+}
+
+/// What to say when a disaster recovery has brought everything back.
+/// `waiting` is how many files clash with this computer's and are waiting to
+/// be asked about.
+pub fn recovered(restored: u64, waiting: u64) -> Note {
+    let body = match waiting {
+        0 => format!(
+            "{} restored. Backups start again now.",
+            files(restored)
+        ),
+        n => format!(
+            "{} restored. {} already on this computer {} different in the backup: open Backtrack to choose which to keep.",
+            files(restored),
+            files(n),
+            if n == 1 { "is" } else { "are" }
+        ),
+    };
+    Note {
+        topic: Topic::Backup,
+        title: "Your files are back".to_string(),
+        body,
+        fix: None,
+    }
+}
+
+/// What to say when a disaster recovery stopped on an error.
+pub fn recovery_stopped() -> Note {
+    Note {
+        topic: Topic::Backup,
+        title: "Restoring your files stopped".to_string(),
+        body: "Open Backtrack to see why and carry on from where it stopped.".to_string(),
+        fix: None,
+    }
+}
+
+fn files(count: u64) -> String {
+    match count {
+        1 => "1 file".to_string(),
+        n => format!("{n} files"),
+    }
 }
 
 /// The note after a backup that went well, for somebody who asked for one.

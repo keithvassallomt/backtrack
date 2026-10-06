@@ -22,6 +22,11 @@ pub enum RepoAccess {
     Exclusive,
     /// Reads the repository; may run beside other readers.
     Shared,
+    /// Never opens the repository: moves files between staging, the stash and
+    /// the places they are restored to. Runs beside anything, so carrying out
+    /// a restore that has already been worked out does not wait for a backup
+    /// that has nothing to do with it.
+    Local,
 }
 
 /// What is currently holding the repository.
@@ -55,6 +60,7 @@ impl RepoGuard {
             RepoAccess::Exclusive => !self.exclusive && self.shared == 0,
             // Readers coexist, but never with a writer.
             RepoAccess::Shared => !self.exclusive,
+            RepoAccess::Local => true,
         }
     }
 
@@ -63,6 +69,7 @@ impl RepoGuard {
         match access {
             RepoAccess::Exclusive => self.exclusive = true,
             RepoAccess::Shared => self.shared += 1,
+            RepoAccess::Local => {}
         }
     }
 
@@ -113,6 +120,15 @@ mod tests {
             !both.admits(JobKind::Backup.access()),
             "but a backup waits for the readers to drain"
         );
+    }
+
+    #[test]
+    fn work_on_this_computer_alone_runs_beside_anything_and_holds_nothing() {
+        let busy = RepoGuard::from_running([JobKind::Backup.access(), RepoAccess::Local]);
+        assert!(busy.admits(RepoAccess::Local), "beside a backup");
+        let local = RepoGuard::from_running([RepoAccess::Local, RepoAccess::Local]);
+        assert!(local.is_idle(), "the repository is not held by it");
+        assert!(local.admits(RepoAccess::Exclusive));
     }
 
     #[test]

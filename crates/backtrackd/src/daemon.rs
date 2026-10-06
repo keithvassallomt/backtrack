@@ -250,6 +250,10 @@ pub async fn run() -> Result<Outcome, StartupError> {
     if let Some(job) = shared.reconcile_catalogue().await {
         info!(job, "reconciling the catalogue against the repository");
     }
+    // A restore of this computer that a previous daemon was part-way
+    // through, or had finished without handing over. After the name, like
+    // everything else that reads the repository.
+    shared.recovery_at_start();
 
     // Starting at login follows the "Run in background" setting. Checked on
     // every start as well as when the setting changes, so a unit enabled or

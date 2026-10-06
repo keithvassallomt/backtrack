@@ -53,6 +53,9 @@ struct Raw {
     original_size: Option<i64>,
     #[serde(default)]
     path: Option<String>,
+    /// The logger a `log_message` came from.
+    #[serde(default)]
+    name: Option<String>,
 }
 
 fn level_from(name: Option<&str>) -> LogLevel {
@@ -85,6 +88,13 @@ pub fn parse_log_line(line: &str) -> Parsed {
             phase: "archiving".to_string(),
         },
         "file_status" => match raw.path {
+            Some(path) => Parsed::ItemDone { path },
+            None => Parsed::Ignore,
+        },
+        // `--list` output arrives as log messages from this one logger, one
+        // per item, as borg reaches it. For an extraction that is the only
+        // per-file signal there is.
+        "log_message" if raw.name.as_deref() == Some("borg.output.list") => match raw.message {
             Some(path) => Parsed::ItemDone { path },
             None => Parsed::Ignore,
         },
@@ -149,6 +159,17 @@ mod tests {
             parse_log_line(line),
             Parsed::ItemDone {
                 path: "home/report.odt".into()
+            }
+        );
+    }
+
+    #[test]
+    fn a_listed_item_is_an_item_not_a_log_line() {
+        let line = r#"{"type": "log_message", "time": 1791184590.635686, "message": "home/keith/Pictures/a.jpg", "levelname": "INFO", "name": "borg.output.list"}"#;
+        assert_eq!(
+            parse_log_line(line),
+            Parsed::ItemDone {
+                path: "home/keith/Pictures/a.jpg".into()
             }
         );
     }

@@ -28,7 +28,8 @@ use rusqlite::Connection;
 pub use item::{parse_borg_mtime, ArchiveMeta, BorgItem, ItemParseError, Kind, Repo, ITEM_FORMAT};
 pub use local::{removed_at, EXPIRE_AFTER_CATCH_UP, SNAPSHOT_RETENTION};
 pub use reader::{
-    ArchiveSummary, Direction, Entry, IndexReader, LiveEntry, SearchHit, VersionSpan,
+    ArchiveSummary, Contents, Direction, Entry, IndexReader, LiveEntry, Member, SearchHit,
+    VersionSpan, MTIME_TOLERANCE_MICROS,
 };
 pub use schema::SCHEMA_VERSION;
 pub use writer::{

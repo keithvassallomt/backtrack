@@ -560,6 +560,103 @@ fn the_space_a_restore_needs_is_counted_before_it_starts() {
     assert_eq!(skipping.stash, 0, "nothing is overwritten");
 }
 
+#[test]
+fn a_file_that_arrives_by_rename_needs_no_room_it_does_not_already_have() {
+    // Staging and the destination share a filesystem, so restoring a file is
+    // a rename. A copy as big as two terabytes, which no test machine has
+    // free, must not be refused for want of two terabytes more.
+    let f = fixture();
+    let huge = f.staging.join("disk-image.raw");
+    let file = std::fs::File::create(&huge).unwrap();
+    if let Err(error) = file.set_len(2 << 40) {
+        panic!("this filesystem cannot hold a sparse file this size: {error}");
+    }
+    drop(file);
+    let plan = plan("snapshot-01", &f.staging, &f.dest, &asked_for(&f.staging)).unwrap();
+    assert!(
+        free_space(&f.dest).unwrap() < 2 << 40,
+        "the test only means something on a disk smaller than the file"
+    );
+
+    let report = execute(&plan, &Decisions::all(Decision::Skip), &f.stash, at(0))
+        .expect("a rename needs no free space");
+
+    assert_eq!(report.restored, 1);
+    assert_eq!(
+        std::fs::metadata(f.dest.join("disk-image.raw"))
+            .unwrap()
+            .len(),
+        2 << 40
+    );
+}
+
+// ── Stopping, and setting aside ─────────────────────────────────────────────
+
+#[test]
+fn a_watched_restore_stops_between_files_and_says_what_it_moved() {
+    let f = fixture();
+    for name in ["a.txt", "b.txt", "c.txt", "d.txt"] {
+        write(&f.staging, name, name, at(0));
+    }
+    let plan = plan("snapshot-01", &f.staging, &f.dest, &asked_for(&f.staging)).unwrap();
+
+    let mut told = Vec::new();
+    let stop = std::cell::Cell::new(false);
+    let report = execute_watched(
+        &plan,
+        &Decisions::all(Decision::Skip),
+        &f.stash,
+        at(0),
+        &|| stop.get(),
+        &mut |moved| {
+            told.push(moved.clone());
+            // Asked to stop while the second file is being moved: it lands,
+            // and the third is never started.
+            if told.len() == 2 {
+                stop.set(true);
+            }
+        },
+    )
+    .unwrap();
+
+    assert!(report.stopped);
+    assert_eq!(report.restored, 2);
+    assert_eq!(told, report.log.moves, "everything moved was told");
+    let landed: Vec<_> = snapshot(&f.dest).into_keys().collect();
+    assert_eq!(landed, [PathBuf::from("a.txt"), PathBuf::from("b.txt")]);
+    // The rest is still waiting in staging, whole, for the restore to go on.
+    assert_eq!(snapshot(&f.staging).len(), 2);
+}
+
+#[test]
+fn what_needs_an_answer_is_set_aside_and_everything_else_restored() {
+    let f = fixture();
+    let aside = f.dest.parent().unwrap().join("aside");
+    write(&f.staging, "Notes/new.txt", "only in the backup", at(0));
+    write(&f.staging, "Notes/clash.txt", "the backup's", at(0));
+    write(&f.dest, "Notes/clash.txt", "this computer's", at(100));
+    write(&f.dest, "Notes/mine.txt", "only on disk", at(100));
+    // A folder in the backup where this computer has a file.
+    write(&f.staging, "Thing/inside.txt", "in a folder", at(0));
+    write(&f.dest, "Thing", "a file", at(100));
+
+    let plan = plan("snapshot-01", &f.staging, &f.dest, &asked_for(&f.staging)).unwrap();
+    execute(&plan, &Decisions::all(Decision::Skip), &f.stash, at(0)).unwrap();
+    let report = set_aside(&plan, &aside);
+
+    assert_eq!(report.failures, []);
+    let on_disk = snapshot(&f.dest);
+    assert_eq!(on_disk[Path::new("Notes/new.txt")], "only in the backup");
+    assert_eq!(on_disk[Path::new("Notes/clash.txt")], "this computer's");
+    assert_eq!(on_disk[Path::new("Notes/mine.txt")], "only on disk");
+    assert_eq!(on_disk[Path::new("Thing")], "a file");
+
+    let kept = snapshot(&aside);
+    assert_eq!(kept[Path::new("Notes/clash.txt")], "the backup's");
+    assert_eq!(kept[Path::new("Thing/inside.txt")], "in a folder");
+    assert_eq!(kept.len(), 2);
+}
+
 // ── The merge property ──────────────────────────────────────────────────────
 
 #[test]

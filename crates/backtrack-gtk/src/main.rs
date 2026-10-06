@@ -205,10 +205,26 @@ fn open_first_window(
             Some(daemon) => daemon.get_status().await.ok(),
             None => None,
         };
+        // A restore of this computer under way, or waiting for an answer, is
+        // what a plain launch comes back to: the window that was watching it
+        // may have been closed hours ago. A launch that asked for something
+        // else still gets it.
+        let recovering = match &daemon {
+            Some(daemon) if target.is_none() && fix.is_none() => daemon
+                .get_recovery()
+                .await
+                .ok()
+                .filter(ui::everything::wants_attention),
+            _ => None,
+        };
         match (daemon, status) {
             (Some(daemon), Some(status)) if !status.configured => {
                 info!("nothing is set up yet; opening the welcome wizard");
                 ui::wizard::present(&app, daemon, None, None, None);
+            }
+            (Some(daemon), _) if recovering.is_some() => {
+                info!("a restore of this computer is under way; reopening it");
+                ui::everything::present(&app, daemon);
             }
             _ => {
                 let target = match target {

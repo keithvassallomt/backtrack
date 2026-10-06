@@ -18,6 +18,7 @@
 pub mod calendar;
 pub mod compare;
 pub mod density;
+pub mod everything;
 pub mod exclusions;
 pub mod format;
 pub mod group;

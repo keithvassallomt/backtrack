@@ -1,0 +1,286 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-3.0-or-later
+# SPDX-FileCopyrightText: 2026 Keith Vassallo <keith@vassallo.cloud>
+#
+# The Stage 11 disaster-recovery drill: a laptop that is gone, its backups,
+# and a new computer to bring them back to. See docs/disaster-recovery-drill.md
+# for the walkthrough this drives.
+#
+# Everything lives under /var/tmp/backtrack-drill, outside /home on purpose:
+# a scratch home inside the real one would sit inside the old laptop's
+# archive paths, which no real computer does.
+#
+# The development daemon unit is pointed at the scratch home with a drop-in
+# rather than run beside it. D-Bus activation goes through that unit, so a
+# daemon killed mid-drill comes back into the drill, never into the real
+# development data. `reset` takes the drop-in away again.
+#
+#   dr-drill setup [GB]   build the old laptop (default 6 GB) and back it up
+#   dr-drill daemon       point the dev daemon at the new computer
+#   dr-drill app          open Backtrack as the new computer
+#   dr-drill kill         kill the daemon hard; systemd restarts it in 5 s
+#   dr-drill status       where the restore is
+#   dr-drill check        compare the new home with the old one, and report
+#   dr-drill again        a fresh new computer, keeping the old laptop's backups
+#   dr-drill reset        put the dev daemon back and delete the drill
+
+set -euo pipefail
+# Say where it stopped: under -e a failing command ends the script without a
+# word, and the next command in `dr-drill again && dr-drill app` never runs.
+trap 'echo "dr-drill: stopped at line $LINENO: $BASH_COMMAND" >&2' ERR
+
+ROOT=/var/tmp/backtrack-drill
+OLD="$ROOT/old"
+OLD_HOME="$OLD/home/keith"
+REPO="$ROOT/old-laptop-backups"
+NEW_HOME="$ROOT/new/home/keith"
+PASSPHRASE="drill passphrase"
+HOST=oldlaptop
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+DROPIN="$HOME/.config/systemd/user/backtrackd.service.d/dr-drill.conf"
+DATA="$NEW_HOME/.local/share/backtrack-dev"
+
+say() { printf '\033[1m%s\033[0m\n' "$*"; }
+
+dbus_call() {
+    gdbus call --session --dest org.backtrack.Daemon1.Dev \
+        --object-path /org/backtrack/Daemon1 --method "org.backtrack.Daemon1.$1" "${@:2}"
+}
+
+setup() {
+    local gigabytes="${1:-6}"
+    if [[ -e "$ROOT" ]]; then
+        echo "$ROOT exists; run 'dr-drill reset' first." >&2
+        exit 1
+    fi
+    command -v borg >/dev/null || { echo "borg is not installed" >&2; exit 1; }
+    say "Building the old laptop's home folder (about $gigabytes GB)…"
+    mkdir -p "$OLD_HOME" "$NEW_HOME"
+    python3 - "$OLD_HOME" "$gigabytes" <<'PY'
+import os, sys, random
+home, gigabytes = sys.argv[1], float(sys.argv[2])
+random.seed(11)
+def put(rel, data):
+    path = os.path.join(home, rel)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "wb") as f:
+        f.write(data)
+def noise(n):
+    out = bytearray()
+    while len(out) < n:
+        out += os.urandom(min(n - len(out), 64 << 20))
+    return bytes(out)
+for i in range(1500):
+    put(f"Documents/notes/note-{i:04}.txt", f"Note {i}\n".encode() * random.randint(20, 400))
+put("Documents/report.odt", noise(180_000))
+put("Documents/tax/2025.pdf", noise(900_000))
+put("Desktop/todo.txt", b"buy milk\ncall the bank\n")
+for i in range(30):
+    put(f"Music/album/track-{i:02}.ogg", noise(int(gigabytes * 1e9 * 0.15 / 30)))
+for i in range(40):
+    put(f"Pictures/2025/holiday/IMG_{2000 + i}.jpg", noise(int(gigabytes * 1e9 * 0.55 / 40)))
+put("Videos/birthday.mp4", noise(int(gigabytes * 1e9 * 0.25)))
+for i in range(10):
+    put(f"Downloads/setup-{i}.bin", noise(int(gigabytes * 1e9 * 0.05 / 10)))
+put(".bashrc", b"# the old laptop's shell\nexport EDITOR=vim\n")
+put(".config/app/settings.ini", b"[app]\ntheme=dark\n")
+put(".ssh/config", b"Host nas\n  HostName 192.168.1.20\n")
+put(".local/share/notes.db", noise(2_000_000))
+# The old laptop's own Backtrack: never restored over the new one's.
+put(".local/share/backtrack/config.toml", b"[storage]\nrepository = \"/mnt/backup\"\n")
+PY
+
+    say "Backing it up, twice, as the old laptop did…"
+    export BORG_PASSPHRASE="$PASSPHRASE"
+    borg init --encryption repokey-blake2 "$REPO"
+    # Yesterday at 08:00 and 22:00 on this computer's clock, so the dropdown
+    # reads "Yesterday, 08:00" and "Yesterday, 22:00" wherever the drill runs.
+    # Borg takes the time in UTC and refuses an offset, so the same instant is
+    # handed over in UTC.
+    local morning evening
+    morning="$(date -d 'yesterday 08:00' +%s)"
+    evening="$(date -d 'yesterday 22:00' +%s)"
+    archive() {
+        (cd "$OLD" && borg create --compression zstd \
+            --timestamp "$(date -u -d "@$1" +%Y-%m-%dT%H:%M:%S)" \
+            "$REPO::bt-$HOST-$(date -u -d "@$1" +%Y%m%dT%H%M%SZ)" home/keith)
+    }
+    archive "$morning"
+    echo "edited later that day" >> "$OLD_HOME/Desktop/todo.txt"
+    head -c 3000000 /dev/urandom > "$OLD_HOME/Pictures/2025/holiday/IMG_2100.jpg"
+    archive "$evening"
+    unset BORG_PASSPHRASE
+
+    new_computer
+    say "Done."
+    echo "  Old laptop:  $OLD_HOME ($(du -sh "$OLD_HOME" | cut -f1))"
+    echo "  Backups:     $REPO (passphrase: $PASSPHRASE)"
+    echo "  New home:    $NEW_HOME"
+    echo "Next: dr-drill daemon, then dr-drill app."
+}
+
+new_computer() {
+    say "Setting up the new computer's home…"
+    mkdir -p "$NEW_HOME"
+    # A new computer is not empty: it has a shell profile of its own, which
+    # clashes with the old one's and is what the summary at the end asks
+    # about, and a file the old laptop never had, which is never touched.
+    printf '# the new computer'"'"'s shell\n' > "$NEW_HOME/.bashrc"
+    mkdir -p "$NEW_HOME/Desktop"
+    echo "made on the new computer" > "$NEW_HOME/Desktop/welcome.txt"
+}
+
+again() {
+    [[ -d "$REPO" ]] || { echo "run 'dr-drill setup' first" >&2; exit 1; }
+    pkill -x backtrack-gtk 2>/dev/null || true
+    systemctl --user stop backtrackd.service
+    say "Throwing away the new computer, and starting it again…"
+    rm -rf "$ROOT/new"
+    new_computer
+    # The backups the first attempt made from the new computer go too, so the
+    # old laptop's are all there is to import again.
+    # Often there are none, and grep finding nothing is not a failure here.
+    local others
+    others="$(BORG_PASSPHRASE="$PASSPHRASE" borg list --short "$REPO" | grep -v "^bt-$HOST-" || true)"
+    while read -r name; do
+        [[ -n "$name" ]] && BORG_PASSPHRASE="$PASSPHRASE" borg delete "$REPO::$name"
+    done <<<"$others"
+    if [[ -f "$DROPIN" ]]; then
+        systemctl --user start backtrackd.service
+    fi
+    say "Ready. Next: dr-drill app."
+}
+
+daemon() {
+    [[ -d "$NEW_HOME" ]] || { echo "run 'dr-drill setup' first" >&2; exit 1; }
+    mkdir -p "$(dirname "$DROPIN")"
+    cat > "$DROPIN" <<EOF
+# The Stage 11 drill. Remove with 'dr-drill reset'.
+[Service]
+Environment=HOME=$NEW_HOME
+Environment=XDG_DATA_HOME=$NEW_HOME/.local/share
+Environment=XDG_CONFIG_HOME=$NEW_HOME/.config
+EOF
+    systemctl --user daemon-reload
+    systemctl --user restart backtrackd.service
+    say "The development daemon is now the new computer's ($DATA)."
+}
+
+app() {
+    if pgrep -x backtrack-gtk >/dev/null; then
+        echo "Backtrack is already open; close it first, so this one is the new computer's." >&2
+        exit 1
+    fi
+    [[ -f "$DROPIN" ]] || { echo "run 'dr-drill daemon' first" >&2; exit 1; }
+    say "Opening Backtrack as the new computer…"
+    HOME="$NEW_HOME" XDG_DATA_HOME="$NEW_HOME/.local/share" XDG_CONFIG_HOME="$NEW_HOME/.config" \
+        BACKTRACK_DEV=1 RUST_LOG=info nohup "$REPO_ROOT/target/debug/backtrack-gtk" \
+        >"$ROOT/app.log" 2>&1 &
+    echo "The backups to import are in $REPO; the passphrase is: $PASSPHRASE"
+}
+
+kill_daemon() {
+    say "Killing the daemon hard at $(date +%H:%M:%S)…"
+    systemctl --user kill --signal=KILL backtrackd.service
+    echo "systemd restarts it in about 5 seconds; the restore carries on from where it was."
+}
+
+status() {
+    dbus_call GetRecovery
+}
+
+check() {
+    say "Comparing the new home with the old laptop's…"
+    python3 - "$OLD_HOME" "$NEW_HOME" <<'PY'
+import os, sys, hashlib
+old, new = sys.argv[1], sys.argv[2]
+skip = (".local/share/backtrack", ".local/share/backtrack-dev")
+def tree(root):
+    found = {}
+    for here, dirs, files in os.walk(root):
+        rel_here = os.path.relpath(here, root)
+        for name in dirs + files:
+            rel = os.path.normpath(os.path.join(rel_here, name))
+            if any(rel == s or rel.startswith(s + "/") for s in skip):
+                continue
+            path = os.path.join(root, rel)
+            st = os.lstat(path)
+            if os.path.islink(path):
+                found[rel] = "link " + os.readlink(path)
+            elif os.path.isdir(path):
+                found[rel] = "folder"
+            else:
+                with open(path, "rb") as f:
+                    digest = hashlib.blake2b(f.read(), digest_size=12).hexdigest()
+                found[rel] = f"{st.st_size} {digest} {int(st.st_mtime)}"
+    return found
+a, b = tree(old), tree(new)
+missing = sorted(set(a) - set(b))
+extra = sorted(set(b) - set(a))
+differ = sorted(k for k in set(a) & set(b) if a[k] != b[k] and a[k] != "folder")
+print(f"  old laptop: {len(a)} entries; new home: {len(b)} entries")
+print(f"  missing from the new home: {len(missing)}", *missing[:10], sep="\n    ")
+print(f"  only on the new computer:  {len(extra)}", *extra[:10], sep="\n    ")
+print(f"  different:                 {len(differ)}", *differ[:10], sep="\n    ")
+PY
+    say "Recovery record:"
+    if [[ -f "$DATA/dr-job.json" ]]; then
+        echo "  still there: $(grep -o '"stage": "[a-z-]*"' "$DATA/dr-job.json")"
+    else
+        echo "  none"
+    fi
+    say "What the new computer backs up now:"
+    grep '^include' "$DATA/config.toml" || echo "  (nothing yet)"
+    say "Archives in the backups:"
+    BORG_PASSPHRASE="$PASSPHRASE" borg list --short "$REPO"
+    say "Timings, from the daemon's log:"
+    python3 - "$DATA/logs" <<'PY'
+import json, os, sys, glob
+lines = []
+for path in sorted(glob.glob(os.path.join(sys.argv[1], "backtrackd*"))):
+    with open(path, errors="replace") as f:
+        for line in f:
+            try:
+                lines.append(json.loads(line))
+            except ValueError:
+                pass
+for e in lines:
+    m = e.get("message", "")
+    kind = e.get("kind", "")
+    keep = (
+        m in ("restoring this computer", "restoring a step", "step restored",
+              "carrying on from where the fetch stopped", "everything was fetched before the stop",
+              "carrying on with the restore of this computer", "the recovery has finished",
+              "the recovery has stopped where it was", "recovery progress",
+              "backing up what the old computer backed up", "scheduled backup started",
+              "backtrackd starting")
+        or (m in ("job started", "job settled") and kind in ("restore-everything", "backup"))
+    )
+    if keep:
+        extra = {k: v for k, v in e.items() if k not in ("message", "timestamp", "level", "target")}
+        print(f"  {e.get('timestamp', '')[11:19]}  {m}  {extra}")
+PY
+}
+
+reset() {
+    say "Putting the development daemon back…"
+    rm -f "$DROPIN"
+    rmdir "$(dirname "$DROPIN")" 2>/dev/null || true
+    systemctl --user daemon-reload
+    systemctl --user restart backtrackd.service
+    pkill -x backtrack-gtk 2>/dev/null || true
+    say "Deleting $ROOT…"
+    rm -rf "$ROOT"
+}
+
+case "${1:-}" in
+    setup) setup "${2:-6}" ;;
+    daemon) daemon ;;
+    app) app ;;
+    kill) kill_daemon ;;
+    status) status ;;
+    check) check ;;
+    again) again ;;
+    reset) reset ;;
+    *) sed -n '2,25p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
+esac

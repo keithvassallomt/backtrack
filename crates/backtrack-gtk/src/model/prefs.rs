@@ -348,6 +348,7 @@ mod tests {
             configured: true,
             reason: String::new(),
             since: 0,
+            recovery_job: 0,
         }
     }
 

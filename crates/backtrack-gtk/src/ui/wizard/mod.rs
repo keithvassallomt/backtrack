@@ -16,6 +16,7 @@
 //! point leaves a working setup behind rather than half of one.
 
 mod destination;
+mod everything;
 mod first_backup;
 
 pub use destination::display;
