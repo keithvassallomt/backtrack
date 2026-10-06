@@ -53,7 +53,8 @@ regenerate reproducibly (recipe is idempotent — second run yields no diff).
 Documented checklist executed on GNOME and KDE hosts, Flatpak build:
 FileChooser portal (Restore To…, recovery-key save), Notification portal
 (health states), Background portal (daemon survives session login, appears in
-GNOME background apps), keyring access, SMB destination via gvfs, ssh destination,
+GNOME background apps, and activating it there opens the main window: S12-T4's
+acceptance, which only a Flatpak can meet), keyring access, SMB destination via gvfs, ssh destination,
 Wayland + Xorg session each. Failures become issues; matrix result committed to
 `packaging/flatpak/TEST-MATRIX.md` with date.
 **Accept:** matrix fully green, committed, dated.

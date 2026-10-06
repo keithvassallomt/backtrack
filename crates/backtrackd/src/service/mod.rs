@@ -43,6 +43,7 @@ use backtrack_core::engine::{
 use backtrack_core::index::{IndexReader, IndexWriter, Kind};
 use backtrack_core::paths;
 use backtrack_core::restore::{self, Decision, Decisions};
+use backtrack_core::roots::Roots;
 use backtrack_core::secret::{SecretStore, SessionSecretStore};
 use backtrack_core::state::RuntimeState;
 use futures::future::BoxFuture;
@@ -127,6 +128,16 @@ pub struct Shared {
     /// developer's own configuration, pointing their daemon at a temporary
     /// directory that no longer exists.
     config_path: PathBuf,
+    /// Where the backup roots are published for the file-manager plugins. A
+    /// field for the same reason `config_path` is one.
+    roots_path: PathBuf,
+    /// Dolphin's list of service-menu actions to leave out, which the Dolphin
+    /// switch writes. A field so that a test does not hide the developer's
+    /// own Dolphin menu.
+    service_menu_path: PathBuf,
+    /// The session bus, once the daemon is on it: what tells a running
+    /// Dolphin that its list changed. Never set in tests.
+    session: std::sync::OnceLock<zbus::Connection>,
     /// Where that bookkeeping is written. A field rather than a call to
     /// [`paths::state_file`] at each use, so tests exercise the real persistence
     /// path without writing into the developer's own data directory.
@@ -231,6 +242,8 @@ impl Shared {
             secrets,
             Layout {
                 config_path: paths::config_file(),
+                roots_path: paths::roots_file(),
+                service_menu_path: paths::kservicemenurc(),
                 index_path: paths::index_db(),
                 cache_dir: paths::cache_dir(),
                 state_path: paths::state_file(),
@@ -260,6 +273,8 @@ impl Shared {
             secrets,
             Layout {
                 config_path: dir.join("config.toml"),
+                roots_path: dir.join("roots.json"),
+                service_menu_path: dir.join("kservicemenurc"),
                 index_path: dir.join("index.db"),
                 cache_dir: dir.join("cache"),
                 state_path: dir.join("state.toml"),
@@ -285,6 +300,8 @@ impl Shared {
         ));
         let Layout {
             config_path,
+            roots_path,
+            service_menu_path,
             index_path,
             cache_dir,
             state_path,
@@ -303,6 +320,9 @@ impl Shared {
             preview: PreviewCache::new(cache_dir),
             index_path,
             config_path,
+            roots_path,
+            service_menu_path,
+            session: std::sync::OnceLock::new(),
             engine: Mutex::new(None),
             last_archive: Mutex::new(None),
             last_backup: Mutex::new(None),
@@ -882,6 +902,12 @@ impl Shared {
             );
         }
         Ok(())
+    }
+
+    /// The session bus the daemon is on, for what it has to announce to other
+    /// programs outside its own interface.
+    pub fn set_session(&self, connection: &zbus::Connection) {
+        let _ = self.session.set(connection.clone());
     }
 
     /// Send notifications here from now on.
@@ -1719,8 +1745,69 @@ impl Shared {
     /// Persist a new configuration and reconnect anything that depends on it.
     fn store_config(&self, config: Config) -> Result<()> {
         config.save_to(&self.config_path)?;
-        *self.config.lock().unwrap() = config;
+        let dolphin_was = std::mem::replace(&mut *self.config.lock().unwrap(), config)
+            .general
+            .dolphin_integration;
+        self.publish_roots();
+        self.apply_dolphin_switch(Some(dolphin_was));
         Ok(())
+    }
+
+    /// Hide Backtrack's Dolphin items, or stop hiding them, as the switch in
+    /// Preferences says. See [`backtrack_core::servicemenu`]. `before` is
+    /// the switch before a change, or `None` at startup.
+    ///
+    /// Written only when the switch changes, and at startup only when it is
+    /// off, which covers a configuration edited by hand while the daemon was
+    /// stopped. A switch left on never writes, so an item somebody hid from
+    /// Dolphin's own settings stays hidden.
+    pub fn apply_dolphin_switch(&self, before: Option<bool>) {
+        let on = self.config().general.dolphin_integration;
+        if before.map_or(on, |before| before == on) {
+            return;
+        }
+        match backtrack_core::servicemenu::apply(&self.service_menu_path, on) {
+            Ok(true) => {
+                info!(
+                    path = %self.service_menu_path.display(),
+                    shown = on,
+                    "applied the Dolphin switch to Dolphin's menu"
+                );
+                if let Some(connection) = self.session.get() {
+                    tokio::spawn(announce_service_menu(connection.clone()));
+                }
+            }
+            Ok(false) => {}
+            Err(error) => warn!(
+                path = %self.service_menu_path.display(),
+                %error,
+                "could not apply the Dolphin switch to Dolphin's menu"
+            ),
+        }
+    }
+
+    /// Tell the file-manager plugins which folders are backed up, and whether
+    /// they are wanted. See [`backtrack_core::roots`].
+    ///
+    /// A failure is logged and otherwise ignored: the plugins are a shortcut
+    /// into the window, and a file they cannot read only means they offer
+    /// nothing.
+    pub fn publish_roots(&self) {
+        let roots = Roots::of(&self.config());
+        match roots.save_to(&self.roots_path) {
+            Ok(true) => info!(
+                path = %self.roots_path.display(),
+                roots = roots.roots.len(),
+                nautilus = roots.nautilus,
+                "published the backup roots for the file manager"
+            ),
+            Ok(false) => {}
+            Err(error) => warn!(
+                path = %self.roots_path.display(),
+                %error,
+                "could not publish the backup roots for the file manager"
+            ),
+        }
     }
 
     /// The current health, computed fresh from facts.
@@ -2148,6 +2235,8 @@ struct LocalProtection {
 /// surprise.
 struct Layout {
     config_path: PathBuf,
+    roots_path: PathBuf,
+    service_menu_path: PathBuf,
     index_path: PathBuf,
     cache_dir: PathBuf,
     state_path: PathBuf,
@@ -2234,6 +2323,10 @@ impl Daemon1 {
         self.shared
             .update_persisted(|s| s.paused_until = backtrack_core::state::to_epoch(Some(until)));
         self.shared.wake_scheduler();
+        // PAUSED is a health state: announced now, not at the next minute's
+        // reassessment, for the clients that follow `StatusChanged` rather
+        // than reading the status after their own call (the tray).
+        self.shared.health_changed.notify_one();
         info!(until = to_epoch(Some(until)), "backups paused");
         Ok(())
     }
@@ -2243,6 +2336,7 @@ impl Daemon1 {
         self.shared.pause.lock().unwrap().resume();
         self.shared.update_persisted(|s| s.paused_until = None);
         self.shared.wake_scheduler();
+        self.shared.health_changed.notify_one();
         info!("backups resumed");
         Ok(())
     }
@@ -3507,6 +3601,31 @@ pub async fn fan_out_signals(shared: Arc<Shared>, emitter: SignalEmitter<'static
     }
 }
 
+/// Tell a running Dolphin that `kservicemenurc` has changed, as KConfig does
+/// for a file written with its notify flag. Dolphin watches the file through
+/// a `KConfigWatcher`, which listens for this signal and nothing else, and
+/// rebuilds its menu actions when it hears it; without it the switch took
+/// effect only when Dolphin was next started.
+async fn announce_service_menu(connection: zbus::Connection) {
+    let keys: Vec<&[u8]> = backtrack_core::servicemenu::ACTIONS
+        .iter()
+        .map(|key| key.as_bytes())
+        .collect();
+    let changes = std::collections::HashMap::from([("Show", keys)]);
+    if let Err(error) = connection
+        .emit_signal(
+            None::<zbus::names::BusName<'_>>,
+            "/kservicemenurc",
+            "org.kde.kconfig.notify",
+            "ConfigChanged",
+            &(changes,),
+        )
+        .await
+    {
+        warn!(%error, "could not tell Dolphin that its menu changed");
+    }
+}
+
 /// Tell every client the state and its reason.
 async fn announce(emitter: &SignalEmitter<'_>, health: Health) {
     let _ = Daemon1::status_changed(emitter, health.state.as_str(), health.reason_str()).await;
@@ -3886,6 +4005,72 @@ mod tests {
     }
 
     #[test]
+    fn every_configuration_change_republishes_the_roots_for_the_file_manager() {
+        let dir = tempfile::tempdir().unwrap();
+        let shared = configured(dir.path());
+        let published = || -> Roots {
+            serde_json::from_str(&std::fs::read_to_string(dir.path().join("roots.json")).unwrap())
+                .unwrap()
+        };
+
+        shared.publish_roots();
+        assert_eq!(published().roots, vec![dir.path().join("src")]);
+        assert!(published().nautilus);
+
+        let mut config = shared.config();
+        config.backup.include.push(dir.path().join("photos"));
+        config.general.nautilus_integration = false;
+        shared.store_config(config).unwrap();
+        assert_eq!(
+            published().roots,
+            vec![dir.path().join("src"), dir.path().join("photos")]
+        );
+        assert!(!published().nautilus);
+    }
+
+    #[test]
+    fn the_dolphin_switch_hides_the_menu_only_when_it_changes_or_is_off() {
+        let dir = tempfile::tempdir().unwrap();
+        let shared = configured(dir.path());
+        let menu = dir.path().join("kservicemenurc");
+        let hidden = || {
+            std::fs::read_to_string(&menu)
+                .unwrap_or_default()
+                .contains("backtrackPreviousVersion=false")
+        };
+
+        // On, at startup: nothing written, so an item hidden from Dolphin's
+        // own settings would stay hidden.
+        shared.apply_dolphin_switch(None);
+        assert!(!menu.exists());
+
+        let mut config = shared.config();
+        config.general.dolphin_integration = false;
+        shared.store_config(config).unwrap();
+        assert!(hidden());
+
+        // Some other setting changing leaves it as it is.
+        let mut config = shared.config();
+        config.general.nautilus_integration = false;
+        shared.store_config(config).unwrap();
+        assert!(hidden());
+
+        let mut config = shared.config();
+        config.general.dolphin_integration = true;
+        shared.store_config(config).unwrap();
+        assert!(!hidden());
+
+        // Off at startup is applied again, for a configuration edited by
+        // hand while the daemon was stopped.
+        let mut config = shared.config();
+        config.general.dolphin_integration = false;
+        config.save_to(&dir.path().join("config.toml")).unwrap();
+        *shared.config.lock().unwrap() = config;
+        shared.apply_dolphin_switch(None);
+        assert!(hidden());
+    }
+
+    #[test]
     fn the_end_of_a_recovery_hands_over_once_and_starts_the_backups() {
         let dir = tempfile::tempdir().unwrap();
         let shared = configured(dir.path());
@@ -4178,6 +4363,25 @@ mod tests {
             "the pause is bypassed for this run, not cancelled"
         );
         shared.jobs.cancel(job).unwrap();
+    }
+
+    #[tokio::test]
+    async fn pausing_and_resuming_are_announced_at_once() {
+        // The signal fan-out reassesses health when woken, and otherwise once
+        // a minute; a pause that waited for the minute left the tray saying
+        // backups were running for up to a minute after they had stopped.
+        let dir = tempfile::tempdir().unwrap();
+        let shared = configured(dir.path());
+        let daemon = Daemon1::new(Arc::clone(&shared));
+        let woken = shared.health_waker();
+        let soon = Duration::from_millis(100);
+
+        let until = SystemTime::now() + Duration::from_secs(3_600);
+        daemon.pause(to_epoch(Some(until))).await.unwrap();
+        assert!(tokio::time::timeout(soon, woken.notified()).await.is_ok());
+
+        daemon.resume().await.unwrap();
+        assert!(tokio::time::timeout(soon, woken.notified()).await.is_ok());
     }
 
     #[tokio::test]

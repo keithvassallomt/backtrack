@@ -14,58 +14,7 @@ use gtk4::{gio, glib, MenuButton};
 use libadwaita as adw;
 use tracing::warn;
 
-use crate::model::status::INDEFINITE_PAUSE_THRESHOLD;
-
-/// How long "For 1 hour" actually lasts.
-///
-/// One minute under `BACKTRACK_DEV`, because a self-expiring pause that takes
-/// an hour to expire cannot be tested in a working session, and an untested
-/// expiry is one that does not work.
-pub fn hour_pause() -> u64 {
-    if std::env::var_os("BACKTRACK_DEV").is_some() {
-        60
-    } else {
-        3_600
-    }
-}
-
-/// Seconds from `now` until the pause each menu option asks for lifts.
-///
-/// "Until I resume" has no natural end, but the daemon's `Pause` takes a time
-/// and refuses one in the past — by design, so that "off forever" cannot be
-/// set from a menu. It is expressed here as a date far enough out that nothing
-/// will reach it, and the status line recognises that and says "until you
-/// resume" rather than reading the date back.
-pub fn pause_duration(option: &str, now: i64, tz: &glib::TimeZone) -> Option<u64> {
-    match option {
-        "hour" => Some(hour_pause()),
-        "tomorrow" => tomorrow_morning(now, tz).map(|until| (until - now).max(60) as u64),
-        "indefinite" => Some(INDEFINITE_PAUSE_THRESHOLD * 100),
-        _ => None,
-    }
-}
-
-/// 09:00 tomorrow, local — the start of the next working day rather than
-/// midnight, which is when "until tomorrow" would otherwise lift while nobody
-/// is there to notice.
-fn tomorrow_morning(now: i64, tz: &glib::TimeZone) -> Option<i64> {
-    let today = glib::DateTime::from_unix_local(now)
-        .ok()?
-        .to_timezone(tz)
-        .ok()?;
-    let tomorrow = today.add_days(1).ok()?;
-    glib::DateTime::new(
-        tz,
-        tomorrow.year(),
-        tomorrow.month(),
-        tomorrow.day_of_month(),
-        9,
-        0,
-        0.0,
-    )
-    .ok()
-    .map(|dt| dt.to_unix())
-}
+use crate::model::pause;
 
 /// The menu model, in mockup 14's order.
 pub fn model() -> gio::Menu {
@@ -74,11 +23,11 @@ pub fn model() -> gio::Menu {
     let actions = gio::Menu::new();
     actions.append(Some("Back Up Now"), Some("win.backup-now"));
 
-    let pause = gio::Menu::new();
-    pause.append(Some("For 1 hour"), Some("win.pause::hour"));
-    pause.append(Some("Until tomorrow"), Some("win.pause::tomorrow"));
-    pause.append(Some("Until I resume"), Some("win.pause::indefinite"));
-    actions.append_submenu(Some("Pause Backups"), &pause);
+    let pauses = gio::Menu::new();
+    for (option, label) in pause::OPTIONS {
+        pauses.append(Some(label), Some(&format!("win.pause::{option}")));
+    }
+    actions.append_submenu(Some("Pause Backups"), &pauses);
     actions.append(Some("Resume Backups"), Some("win.resume"));
     menu.append_section(None, &actions);
 
@@ -222,43 +171,6 @@ pub fn set_enabled(window: &impl IsA<gio::ActionMap>, name: &str, enabled: bool)
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn utc() -> glib::TimeZone {
-        glib::TimeZone::utc()
-    }
-
-    /// Wednesday 2026-06-10 12:00:00 UTC.
-    const NOW: i64 = 1_781_092_800;
-
-    #[test]
-    fn until_tomorrow_lands_on_tomorrow_morning_not_on_midnight() {
-        let seconds = pause_duration("tomorrow", NOW, &utc()).unwrap();
-        // 12:00 today to 09:00 tomorrow is 21 hours.
-        assert_eq!(seconds, 21 * 3_600);
-    }
-
-    #[test]
-    fn until_tomorrow_is_still_in_the_future_late_at_night() {
-        // 23:30, when "tomorrow at 09:00" is only nine and a half hours away —
-        // and, more to the point, has not already gone.
-        let late = NOW + 11 * 3_600 + 1_800;
-        let seconds = pause_duration("tomorrow", late, &utc()).unwrap();
-        assert_eq!(seconds, 9 * 3_600 + 1_800);
-    }
-
-    #[test]
-    fn until_i_resume_is_far_enough_out_to_read_as_indefinite() {
-        let seconds = pause_duration("indefinite", NOW, &utc()).unwrap();
-        assert!(
-            seconds > INDEFINITE_PAUSE_THRESHOLD,
-            "the status line has to recognise it as open-ended"
-        );
-    }
-
-    #[test]
-    fn an_unknown_option_pauses_nothing() {
-        assert_eq!(pause_duration("forever", NOW, &utc()), None);
-    }
 
     #[test]
     fn the_menu_has_no_way_to_switch_backups_off() {

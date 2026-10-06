@@ -12,7 +12,7 @@
 > tasks: add them here + to the stage file, then `just provision-board-apply`.
 > See [../CLAUDE.md](../CLAUDE.md) for the full workflow.
 
-**Current stage:** 12 (not started)
+**Current stage:** 12 (in progress)
 **Last updated:** 2026-10-05
 
 ## Stage 0 — Bootstrap ([stage file](stages/stage-00-bootstrap.md))
@@ -116,11 +116,12 @@
 - [x] S11-T4 Post-restore: enable schedule only after completion
 
 ## Stage 12 — Integrations & tray ([stage file](stages/stage-12-integrations-tray.md))
-- [ ] S12-T1 Nautilus python extension (mockup 2)
-- [ ] S12-T2 Dolphin service menu (mockup 3, menu part only)
-- [ ] S12-T3 StatusNotifierItem tray for non-GNOME (status, actions)
-- [ ] S12-T4 Background portal presence (GNOME quick-settings launch path)
-- [ ] S12-T5 App detects missing plugins → hints distro package (prefs General)
+- [x] S12-T1 Nautilus python extension (mockup 2)
+- [x] S12-T2 Dolphin service menu (mockup 3, menu part only)
+- [x] S12-T3 StatusNotifierItem tray for non-GNOME (status, actions)
+- [!] S12-T4 Background portal presence (GNOME quick-settings launch path)
+- [x] S12-T5 App detects missing plugins → hints distro package (prefs General)
+- [x] S12-T6 Development VMs: one-command setup and push for GNOME and Plasma
 
 ## Stage 13 — Packaging & release ([stage file](stages/stage-13-packaging-release.md))
 - [ ] S13-T1 Flatpak manifest (GNOME runtime, portals, bundled borg)
@@ -132,11 +133,290 @@
 
 ## Blocked
 
-(nothing)
+- **S12-T4**: written, and waiting on the Flatpak (S13-T1) for its
+  acceptance. GNOME's Background Apps list holds Flatpak instances only, so
+  only the Flatpak build can appear there; the check is in S13-T3's matrix.
 
 ## Notes / decisions made during implementation
 
 (append dated entries here; never delete)
+
+- 2026-10-06 (S12-T4: GNOME background presence): written, and blocked on
+  S13-T1 for its acceptance; Keith's call, over pulling a development
+  Flatpak forward into Stage 12. Documented in
+  `docs/tray-and-background.md`. Decisions:
+  - **GNOME's Background Apps list is Flatpak-only.** gnome-shell 51 reads
+    it from xdg-desktop-portal's `org.freedesktop.background.Monitor`, and
+    xdg-desktop-portal 1.22.1 builds that from `flatpak_instance_get_all`
+    and nothing else (`src/background.c`; `SetStatus` refuses host apps
+    outright). A packaged or checkout build is never listed, and the
+    acceptance can only be run in the Flatpak. S13-T3's matrix already had
+    "appears in GNOME background apps"; it now also says that activating
+    the entry opens the window, and that this is S12-T4's acceptance.
+  - **The portal only when sandboxed.** `background::apply`, which already
+    ran at startup and on every change to "Run in background", asks the
+    Background portal (through `ashpd`: reason "Hourly backups", autostart
+    as the setting says, command `backtrackd`) inside a sandbox, and enables
+    the systemd unit outside one as before. The portal works only for
+    sandboxed apps, and on the host the unit already starts the daemon at
+    login. The request is spawned rather than awaited, because the portal
+    may put a question on screen and a settings change must not wait for
+    it. On the GNOME VM the host path is unchanged: unit enabled, no
+    portal call.
+  - **The launcher, `packaging/desktop/io.github.keithvassallomt.Backtrack.desktop`,**
+    named for the application ID the window registers, which is how the
+    shell finds a background app's launcher. Validated with the other
+    `.desktop` files; packages install it (S13-T4).
+  - A product consequence for Stage 13: on GNOME, Backtrack installed from
+    an RPM or deb has no background presence at all, since GNOME has no
+    tray and lists only Flatpaks. The window remains the way to see the
+    status there.
+
+- 2026-10-06 (S12-T3: the tray icon): `backtrack-tray`, documented in
+  `docs/tray-and-background.md`. Decisions:
+  - **A binary of its own, in the `backtrack-gtk` package.** The stage left
+    a separate binary or a mode of the window to binary size; what decides
+    it is that the tray runs all session. Started, a release build linked
+    against GTK peaks at 60 to 95 MB, the tray at 9 MB (about 20 MB
+    running). It shares `model/format.rs` and the new `model/pause.rs` with
+    the window by `#[path]`, rather than through a new crate for two small
+    files; both now name `glib` directly, and the tray links GLib and no
+    GTK (`readelf -d`). The pause choices moved out of `ui/menu.rs` into
+    `model/pause.rs` so that both menus offer the same ones.
+  - **Its own small proxy**, as the CLI has: the four calls and three
+    signals it uses.
+  - **It reads the status without starting the daemon.** With "Run in
+    background" off the daemon leaves when idle; a tray that woke it to
+    ask would keep it running all session. It refreshes on `StatusChanged`,
+    `JobFinished`, a backup's first `BackupProgress`, the daemon's name
+    changing owner, and its menu opening. Its menu's actions do start the
+    daemon.
+  - **Times of day, not "2 hours ago"**: a tray menu is built when opened,
+    and a time of day cannot go stale while it waits.
+  - **Attention is the SNI `NeedsAttention` status** with `dialog-warning`
+    for `AT_RISK` and `dialog-error` for `BROKEN`; every other state is
+    drawn normally. The normal icon is the app's own where a package
+    installed it, else `document-open-recent`.
+  - **Resume Backups is in the menu while paused**, though the stage lists
+    only Pause ▸: a paused tray with no way back is a trap, and the window's
+    menu has it. "Quit Tray Icon" rather than "Quit tray", so that it does
+    not read as stopping backups.
+  - **One icon per session** through a bus name, `org.backtrack.Tray`.
+  - **Autostart with `NotShowIn=GNOME;`**, the stage's "OnlyShowIn excluding
+    GNOME" in the key that says it. `just install-tray-dev` installs the
+    development copy; `dev-machine` installs it and starts the icon, or
+    restarts it onto a new build, except on GNOME.
+  - **Found and fixed in the daemon:** `Pause` and `Resume` did not wake the
+    health fan-out, so `StatusChanged` reached clients up to a minute late.
+    The window never noticed because it reads the status after its own
+    calls. They now announce at once; a test fails without the fix.
+  - Checked: `scripts/tray-check` passed every step on the Plasma VM
+    (Fedora 45, Plasma 6.7), driving the icon through the
+    StatusNotifierWatcher and `com.canonical.dbusmenu`; after a cold boot
+    the autostart unit started the icon and it registered. On the GNOME VM
+    after a cold boot, with the autostart file installed, no tray was
+    started. The panel's drawing of the icon is left to a look at the VM's
+    screen.
+  - **Known limitation, left as it is (Keith's call):** on Wayland, a click
+    on the icon or on Open Backtrack does not bring an already-open window
+    forward. Raising needs the click's activation token; Plasma offers it
+    to an icon through `ProvideXdgActivationToken`, which `ksni` 0.3.6 does
+    not implement, and offers none for a menu click. Keith's look at the
+    panel otherwise passed.
+
+- 2026-10-06 (S12-T5: plugin detection): Preferences → General shows each
+  integration as *Installed* with its switch, or *Not installed* with
+  Install…, per mockup 15. Decisions:
+  - **Detected by the file each file manager loads**, in the user's data
+    directory or a system one (`glib::user_data_dir` and
+    `system_data_dirs`, which are the directories nautilus-python and KIO
+    search): `nautilus-python/extensions/backtrack.py` and
+    `kio/servicemenus/backtrack.desktop`. Looked for again each time the
+    window refreshes on regaining focus. A Flatpak build sees neither
+    directory of the host's; Stage 13's permissions audit (S13-T3) has to
+    settle how it looks.
+  - **Install… opens `docs/file-manager-integration.md#installing`** on
+    GitHub, the page the stage asks for. It names nautilus-python's package
+    on each distribution now; Backtrack's own package names come with the
+    packages (S13-T4). A test checks the heading the link points at exists.
+  - **An action row with its own switch**, not a switch row: a switch row
+    puts its switch first among the suffixes, and the badge goes before it,
+    as the wizard's "Recommended" and "Detected" do (and in their green).
+    The badge sits at the end of the row rather than beside the title as
+    the mockup draws it; libadwaita rows have no place there.
+  - **The Dolphin switch now works** (left here from S12-T2). The daemon
+    lists Backtrack's two actions as `false` under `[Show]` in
+    `~/.config/kservicemenurc`, which is what Dolphin's own Context Menu
+    settings write and what KIO reads for every menu, and removes them
+    when the switch is turned on. It writes only when the switch changes,
+    and at startup only when it is off, so an item hidden from Dolphin's
+    own settings is not brought back.
+  - Checked in the real app on the GNOME VM: with the development
+    integrations installed and removed in turn, Preferences found neither,
+    Nautilus only, both, and Dolphin only. On the Plasma VM, `SetConfig`
+    of the switch wrote and then removed the two entries. Whether Dolphin
+    then hides the submenu is step 10 of the Dolphin checklist.
+
+- 2026-10-06 (S12-T2: the Dolphin menu): the same two items as Nautilus,
+  in a Backtrack submenu, and the window's answer for folders outside the
+  backups. Decisions:
+  - **Two service menus, not the one file the stage names.** KIO matches
+    file types per file, not per action, and Browse Backups of This
+    Folder… is for folders only, as in Nautilus. Both files name the same
+    `X-KDE-Submenu`, which KIO merges into one submenu (read in KIO's
+    `kfileitemactions.cpp`). KIO sorts a submenu by action name, so the
+    names (`backtrackPreviousVersion`, `backtrackThisFolder`) put Restore
+    first as mockup 3 does.
+  - **`Type=Application` with `NoDisplay=true`, not `Type=Service`.** The
+    Definition of Done asks for `desktop-file-validate`, which rejects
+    `Service`, its `MimeType` and its `Actions`. KIO never reads `Type`.
+    `just check-integrations` now validates them, and CI installs
+    desktop-file-utils for it.
+  - **The window says why a folder is empty, and only what it knows.** Four
+    states (`model/empty.rs`): outside every backed-up folder, with Add to
+    Backups…; in a folder added since the latest backup, "will be in the
+    next backup"; in a backed-up folder but not in the latest backup, which
+    may be new, excluded or on another disk; and the old "Not in this
+    backup" for an empty folder or an older backup. The third exists
+    because Dolphin offers its menu on `~/.cache`, on excluded folders and
+    on disks mounted inside a backed-up folder, which Nautilus never does;
+    only the daemon applies those rules, so the window does not promise
+    them to the next backup.
+  - **Add to Backups… adds the folder, then opens Preferences on Backup.**
+    The stage says a link to Preferences; landing there with the folder
+    already listed, with its × to take it out, saves choosing the same
+    folder again in a file chooser. Preferences raised while already open
+    now turns to the page asked for.
+  - **The file pane reloads when the daemon answers.** A window a file
+    manager opens draws the folder before the daemon has said what the
+    backed-up folders are; without the reload it stayed on the neutral
+    state. The same reload fills in the "not on your disk" column for the
+    first folder shown, which until now waited for the next navigation.
+  - **The Dolphin switch in Preferences is left to S12-T5.** Dolphin hides
+    service-menu actions listed as false under `[Show]` in
+    `kservicemenurc`, which is what its own Context Menu settings write;
+    the switch belongs with T5's rework of those rows.
+  - Machine-checked on the Plasma VM: the window opened on `/etc`, a folder
+    created since the last backup, `Documents`, and a folder just added to
+    the backups logged the expected state for each. The menu itself is
+    checked by hand (`docs/file-manager-integration.md`, Dolphin
+    checklist).
+  - **Keith's run of the Dolphin checklist passed (2026-10-06), after two
+    fixes it found.** The submenu was not in the menu at all, but inside
+    KIO's **Actions** submenu, into which KIO folds every service menu once
+    there are more than four (a stock Plasma has more); both files are now
+    `X-KDE-Priority=TopLevel`, as mockup 3 draws it. A KIO probe built on
+    the VM (`KFileItemActions::addActionsTo`, offscreen) confirmed the
+    menu KIO builds before Keith looked again. And the Dolphin switch
+    reached a running Dolphin only on restart: Dolphin reads
+    `kservicemenurc` once, then again only when a `KConfigWatcher` hears
+    KConfig's `org.kde.kconfig.notify.ConfigChanged` signal, so the daemon
+    now sends that signal after each write (seen leaving it with
+    `dbus-monitor`; Keith's step 10 then passed without a restart).
+
+- 2026-10-05 (S12-T6: development VMs): added to the stage. The tray and
+  GNOME's background apps cannot be tried on Keith's Hyprland machine, and
+  Keith's call is to iterate on them in a GNOME VM and a Plasma VM. Decisions:
+  - **The VMs are test machines driven over SSH, not workspaces.** Keith
+    chose this over developing inside the VMs (which needs every change
+    pushed through GitHub) and a virtiofs share (which needs each VM's
+    libvirt definition changed). Code is edited here; `just vm-push` copies
+    it in with rsync and builds it there, and Claude can read the VM's logs
+    and D-Bus state over the same SSH.
+  - **The VM builds from source.** Binaries built on Arch would need a glibc
+    at least as new as Arch's, which Fedora may not have. The first build
+    takes minutes; later ones are incremental.
+  - **One script for the package lists.** `scripts/dev-machine packages`
+    holds the dnf, apt and pacman lists, and `just setup` calls it, so a
+    dependency is added in one place.
+  - **The first push needs the VM's sudo password; no later one does.**
+    Packages are installed only when missing, and `vm push` gives the remote
+    command a terminal when it has one, so the first push from Keith's own
+    terminal can ask. Run without a terminal (by Claude), a push that needs
+    packages stops and says where to run it.
+  - **The demo backups are adopted through `ImportRepo`**, the same call the
+    wizard makes, with a fixed passphrase for the local spool, rather than by
+    writing `config.toml`, so the keyring and the catalogue are set up the
+    way a real import sets them up.
+  - **GNOME VM passed** (Fedora 45, GNOME 51 libraries): the first push
+    installed, built and configured it; a push with nothing changed takes
+    2.5 s with no prompt and no restart; a push after a daemon change
+    compiles it once and restarts it once; `just vm-app` opens the window.
+    Keith's run found four faults, all fixed: `vm push` decided whether it
+    had a terminal inside a `$(…)`, so sudo could never ask; `ssh-copy-id`
+    without `-f` is refused by OpenSSH's penalties for its own trial
+    logins; `just install-units` built `-p backtrackd`, whose features
+    differ from a workspace build, so two daemon binaries replaced each
+    other and every push restarted the daemon (on the host too); and
+    `vm app` passed the window an empty argument.
+  - **Plasma VM passed** (Fedora 45 KDE, same libraries): the first push
+    set it up, including storing the demo passphrase in KWallet, a
+    push with nothing changed did nothing, a daemon change compiled and
+    restarted once, and `just vm-app` opened the window on its screen.
+  - **2026-10-06: the VMs run without anyone at their screens.** `just
+    vm-start` boots a VM and waits for SSH, the desktop and the keyring;
+    `just vm-stop` shuts it down. Each VM logs in automatically and has
+    passwordless sudo, so Claude can start, push, test and stop one
+    unattended. An automatic login leaves the keyring locked, which needed a
+    different answer on each desktop. KWallet opens a wallet with an empty
+    password without asking. Fedora 45's GNOME uses oo7-daemon, which (per
+    its source) never opens a keyring at startup without a password, even
+    an empty one, so `scripts/vm-keyring` gives the login keyring the fixed
+    development password and opens it through oo7's PAM socket after every
+    boot. Both VMs passed a stop and cold start with the keyring open (14 s
+    GNOME, 17 s Plasma); the first Plasma run found that its Secret Service
+    appears a few seconds after the session does, so `vm-keyring` waits
+    for it.
+
+- 2026-10-05 (S12-T1: the Nautilus extension): a launcher and nothing more,
+  as the stage asks. Decisions:
+  - **`roots.json` lives in the data folder, not `~/.config/backtrack/`.**
+    Backtrack keeps everything in one directory (see `paths.rs`), and a
+    second one for a single file the daemon writes would break that. It sits
+    beside `config.toml`, so it follows `XDG_DATA_HOME` and the development
+    split like everything else. The daemon writes it at every start and on
+    every configuration change, and only when its contents change. It also
+    carries the Preferences switch for Nautilus, so switching it off takes
+    the items away without restarting Nautilus.
+  - **The launch command is `backtrack-gtk`, not `backtrack`.** The stage
+    file names `backtrack --path`, but `backtrack` is the CLI; the window's
+    launch contract (`--path`, `--select`) is `backtrack-gtk`'s, and the
+    daemon's notifications already launch it by that name.
+  - **A selected folder gets both items**, as Dolphin's submenu does in
+    mockup 3: Restore Previous Version… opens its parent with it selected,
+    and Browse Backups of This Folder… opens it. The empty space of the
+    folder being shown gets Browse alone.
+  - **"Local" means on the same filesystem as the backed-up folder.**
+    Backups run with `--one-file-system`, so a USB stick or a network share
+    mounted inside a backed-up folder is not in them; the extension compares
+    the device of the item with the device of its root, which is the same
+    rule Borg applies. Non-`file://` locations (network, trash, recent) are
+    excluded first.
+  - **Exclusions are not checked.** Borg's patterns would need
+    reimplementing in Python, and an excluded folder opens in the window
+    anyway, where its history says what there is.
+  - **Development install rewrites two lines** of the shipped file (the
+    debug build's path, and `DEVELOPMENT = True` for `backtrack-dev` and
+    `BACKTRACK_DEV=1`), the way `install-units` rewrites the units, so the
+    file tried is the file that ships.
+  - **A change shows from the next click in Nautilus, not instantly.**
+    Found in Keith's check: with `report.odt` selected throughout, turning
+    the Preferences switch back on left the item missing. Nautilus builds the
+    menu when the selection changes and keeps it until it changes again. It
+    has a signal for an extension to say its items changed, but
+    nautilus-python wraps each Python extension in a C object of its own,
+    Nautilus connects to that, and nothing forwards a signal emitted from
+    Python: a handler count on the Python object inside a running Nautilus
+    50.3 was zero, and no rebuild followed. Documented rather than worked
+    around; the cost is one stale menu after a settings change.
+  - **Checks:** `just check-integrations` (ruff, and unit tests with
+    stand-ins for the GObject modules) joins `just check` and CI; CI
+    installs ruff. A launch through the installed extension was smoke-tested
+    in a headless compositor against the development daemon: the window
+    opened on `Documents` with `report.odt` selected, and a second launch
+    went to the window already open. Keith's run of the manual checklist
+    (`docs/file-manager-integration.md`) passed every step; Nautilus 50
+    draws no icons on extension items, so mockup 2's clock is absent.
 
 - 2026-10-05 (Stage 11: Keith's drill through the window): Keith ran the
   walkthrough at 12 GB and every step worked: the offer, Start Restore,

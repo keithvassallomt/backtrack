@@ -81,9 +81,28 @@ pub fn recovery_dir() -> PathBuf {
     data_dir().join("recovery")
 }
 
+/// The backup roots, published for the file-manager plugins:
+/// `<data_dir>/roots.json` (Stage 12). See [`crate::roots`].
+pub fn roots_file() -> PathBuf {
+    data_dir().join("roots.json")
+}
+
 /// Preview extraction cache: `<data_dir>/cache` (Stage 3, `PreviewFile`).
 pub fn cache_dir() -> PathBuf {
     data_dir().join("cache")
+}
+
+/// Dolphin's list of service-menu actions to leave out:
+/// `$XDG_CONFIG_HOME/kservicemenurc`, else `~/.config/kservicemenurc`
+/// (Stage 12). See [`crate::servicemenu`]. KDE's file rather than Backtrack's,
+/// so `BACKTRACK_DEV` does not move it: the development menu is hidden in the
+/// same Dolphin that a packaged one is.
+pub fn kservicemenurc() -> PathBuf {
+    config_home_from(
+        std::env::var_os("XDG_CONFIG_HOME").as_deref(),
+        std::env::var_os("HOME").as_deref(),
+    )
+    .join("kservicemenurc")
 }
 
 /// Pure path resolution, split out so it can be tested without touching the
@@ -96,6 +115,16 @@ fn data_dir_from(dev: bool, xdg_data_home: Option<&OsStr>, home: Option<&OsStr>)
         .or_else(|| home.map(|h| PathBuf::from(h).join(".local/share")))
         .unwrap_or_else(|| PathBuf::from("."));
     base.join(leaf)
+}
+
+/// `$XDG_CONFIG_HOME`, else `~/.config`, as [`data_dir_from`] resolves the data
+/// home.
+fn config_home_from(xdg_config_home: Option<&OsStr>, home: Option<&OsStr>) -> PathBuf {
+    xdg_config_home
+        .filter(|p| !p.is_empty())
+        .map(PathBuf::from)
+        .or_else(|| home.map(|h| PathBuf::from(h).join(".config")))
+        .unwrap_or_else(|| PathBuf::from("."))
 }
 
 #[cfg(test)]
@@ -131,6 +160,14 @@ mod tests {
         assert_eq!(p, PathBuf::from("/home/k/.local/share/backtrack-dev"));
         // The real location must never be a prefix match of the dev one.
         assert!(!p.starts_with("/home/k/.local/share/backtrack/"));
+    }
+
+    #[test]
+    fn the_config_home_follows_the_same_rules() {
+        let p = config_home_from(Some(&os("/x/config")), Some(&os("/home/k")));
+        assert_eq!(p, PathBuf::from("/x/config"));
+        let p = config_home_from(Some(&os("")), Some(&os("/home/k")));
+        assert_eq!(p, PathBuf::from("/home/k/.config"));
     }
 
     #[test]

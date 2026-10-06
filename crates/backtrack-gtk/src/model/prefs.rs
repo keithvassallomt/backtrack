@@ -13,7 +13,7 @@
 
 use std::path::{Path, PathBuf};
 
-use backtrack_core::config::{Compression, Notifications};
+use backtrack_core::config::{Compression, Config, Notifications};
 use backtrack_core::dbus::{Status, StorageInfo};
 use gtk4::glib;
 
@@ -260,6 +260,65 @@ pub fn with_folders(include: &[PathBuf], added: &[PathBuf]) -> Vec<PathBuf> {
     out
 }
 
+/// A file-manager integration Backtrack ships, as General lists it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Plugin {
+    Nautilus,
+    Dolphin,
+}
+
+impl Plugin {
+    pub const ALL: [Plugin; 2] = [Plugin::Nautilus, Plugin::Dolphin];
+
+    pub fn title(self) -> &'static str {
+        match self {
+            Plugin::Nautilus => "GNOME Files (Nautilus)",
+            Plugin::Dolphin => "Dolphin",
+        }
+    }
+
+    /// The switch that turns its items off without uninstalling it.
+    pub fn setting(self) -> Setting {
+        match self {
+            Plugin::Nautilus => Setting::NautilusIntegration,
+            Plugin::Dolphin => Setting::DolphinIntegration,
+        }
+    }
+
+    /// What its switch says in `config`.
+    pub fn enabled(self, config: &Config) -> bool {
+        match self {
+            Plugin::Nautilus => config.general.nautilus_integration,
+            Plugin::Dolphin => config.general.dolphin_integration,
+        }
+    }
+
+    /// Its file, relative to a data directory: `~/.local/share` for one
+    /// installed for development, `/usr/share` for a package's. Dolphin's
+    /// second file always comes with the first.
+    fn file(self) -> &'static str {
+        match self {
+            Plugin::Nautilus => "nautilus-python/extensions/backtrack.py",
+            Plugin::Dolphin => "kio/servicemenus/backtrack.desktop",
+        }
+    }
+
+    /// Whether it is installed in any of `data_dirs`, the directories both
+    /// file managers load these from: the user's data directory, then the
+    /// system's.
+    pub fn installed_in(self, data_dirs: &[PathBuf]) -> bool {
+        data_dirs.iter().any(|dir| dir.join(self.file()).is_file())
+    }
+}
+
+/// The page Install… opens: how to install either integration.
+pub fn install_page() -> String {
+    format!(
+        "{}/blob/main/docs/file-manager-integration.md#installing",
+        env!("CARGO_PKG_REPOSITORY")
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -426,6 +485,48 @@ mod tests {
             with_folders(&now, &[home.join("Music")]),
             vec![home.join("Documents"), home.join("Music")]
         );
+    }
+
+    #[test]
+    fn each_integration_is_detected_on_its_own() {
+        // S12-T5's acceptance: all four combinations, with one in the user's
+        // data directory and the other where a package puts it.
+        let user = tempfile::tempdir().unwrap();
+        let system = tempfile::tempdir().unwrap();
+        let dirs = vec![user.path().to_path_buf(), system.path().to_path_buf()];
+        let install = |dir: &Path, plugin: Plugin| {
+            let file = dir.join(plugin.file());
+            std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+            std::fs::write(file, "").unwrap();
+        };
+        let found = || Plugin::ALL.map(|plugin| plugin.installed_in(&dirs));
+
+        assert_eq!(found(), [false, false]);
+        install(user.path(), Plugin::Nautilus);
+        assert_eq!(found(), [true, false]);
+        install(system.path(), Plugin::Dolphin);
+        assert_eq!(found(), [true, true]);
+        std::fs::remove_file(user.path().join(Plugin::Nautilus.file())).unwrap();
+        assert_eq!(found(), [false, true]);
+    }
+
+    #[test]
+    fn the_install_page_is_a_section_of_the_integration_doc() {
+        let doc = include_str!("../../../../docs/file-manager-integration.md");
+        let anchor = install_page().rsplit_once('#').unwrap().1.to_string();
+        assert!(
+            doc.lines()
+                .any(|line| line == format!("## {}", capitalised(&anchor))),
+            "docs/file-manager-integration.md has no heading for #{anchor}"
+        );
+    }
+
+    fn capitalised(word: &str) -> String {
+        let mut chars = word.chars();
+        chars
+            .next()
+            .map(|first| first.to_uppercase().collect::<String>() + chars.as_str())
+            .unwrap_or_default()
     }
 
     #[test]

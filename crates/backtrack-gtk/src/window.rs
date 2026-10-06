@@ -601,7 +601,7 @@ impl Window {
         };
         let now = glib::DateTime::now_utc().map(|d| d.to_unix()).unwrap_or(0);
         let tz = glib::TimeZone::local();
-        let Some(seconds) = ui::menu::pause_duration(option, now, &tz) else {
+        let Some(seconds) = crate::model::pause::duration(option, now, &tz) else {
             warn!(option, "unknown pause option");
             return;
         };
@@ -950,7 +950,10 @@ impl Window {
         self.sidebar_slot.append(&sidebar.widget());
         *self.sidebar.borrow_mut() = Some(sidebar);
 
-        let files = ui::files::build(&self.state, &self.index, &self.daemon);
+        let adder = Rc::clone(self);
+        let files = ui::files::build(&self.state, &self.index, &self.daemon, move |folder| {
+            adder.add_to_backups(folder)
+        });
         self.files_slot.append(&files.widget());
         *self.files.borrow_mut() = Some(files);
 
@@ -1089,6 +1092,15 @@ impl Window {
                     if let Some(preview) = preview {
                         preview.refresh_now();
                     }
+                    // Likewise the file pane, which asks the daemon what is
+                    // still on the disk and, for a folder with nothing to show,
+                    // whether it is backed up at all: a window a file manager
+                    // opened on a folder outside the backups says so only once
+                    // the daemon can say what the backed-up folders are.
+                    let files = this.files.borrow().clone();
+                    if let Some(files) = files {
+                        files.reload();
+                    }
                     this.refresh_restore_action();
                     ui::menu::set_enabled(&this.window, "backup-now", true);
                     ui::menu::set_enabled(&this.window, "pause", true);
@@ -1155,6 +1167,64 @@ impl Window {
             mtime: 0,
             on_disk: 0,
         }));
+    }
+
+    /// Back up `folder` (an archive path) from now on, and open Preferences on
+    /// the list it has joined, where it can be taken out again. The file
+    /// pane offers this for a folder outside the backups.
+    fn add_to_backups(self: &Rc<Self>, folder: &str) {
+        let Some(proxy) = self.daemon.borrow().clone() else {
+            self.toast(NO_SERVICE);
+            return;
+        };
+        let path = crate::path::to_filesystem(folder);
+        let name = crate::path::name(folder).to_string();
+        let this = Rc::clone(self);
+        ui::spawn(async move {
+            let include = match proxy.get_config().await {
+                Ok(text) => match backtrack_core::config::Config::parse(&text) {
+                    Ok((config, _)) => {
+                        crate::model::prefs::with_folders(&config.backup.include, &[path])
+                    }
+                    Err(error) => {
+                        warn!(error, "the settings could not be read");
+                        this.toast(&error);
+                        return;
+                    }
+                },
+                Err(error) => {
+                    warn!(%error, "the settings could not be read");
+                    this.toast(&clean(&error.to_string()));
+                    return;
+                }
+            };
+            let literal = match backtrack_core::config::toml_literal(&include) {
+                Ok(literal) => literal,
+                Err(error) => {
+                    warn!(%error, "the folder list could not be written out");
+                    return;
+                }
+            };
+            let key = crate::model::prefs::Setting::Include.key();
+            if let Err(error) = proxy.set_config(key, &literal).await {
+                warn!(%error, folder = name, "the folder was not added to the backups");
+                this.toast(&clean(&error.to_string()));
+                return;
+            }
+            info!(folder = name, "folder added to the backups");
+            this.toast(&format!("“{name}” added to your backups"));
+            let files = this.files.borrow().clone();
+            if let Some(files) = files {
+                files.reload();
+            }
+            let app = this
+                .window
+                .application()
+                .and_then(|app| app.downcast::<adw::Application>().ok());
+            if let Some(app) = app {
+                ui::prefs::present(&app, &this.window, proxy, Some("backup"));
+            }
+        });
     }
 
     /// Say something in passing, in the window it concerns.

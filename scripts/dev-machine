@@ -1,0 +1,298 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-3.0-or-later
+# SPDX-FileCopyrightText: 2026 Keith Vassallo <keith@vassallo.cloud>
+#
+# Set this computer up for Backtrack development, or bring it up to date.
+# Written for the test VMs (see docs/development-vms.md), where `scripts/vm
+# push` runs it after copying the checkout in, but it works on any machine.
+#
+# Every step is skipped when it has nothing to do, so running it again after
+# a change is the way to rebuild: only the first run installs packages, and
+# only that one needs sudo.
+#
+#   dev-machine                  packages, Rust, build, units, demo backups,
+#                                file-manager integration, tray icon
+#   dev-machine packages FAMILY  install the build dependencies (dnf, apt or
+#                                pacman); what `just setup` uses
+#   dev-machine app [ARGS]       open the window on this computer's screen,
+#                                even from an SSH session
+#   dev-machine status           what is installed and running
+
+set -euo pipefail
+trap 'echo "dev-machine: stopped at line $LINENO: $BASH_COMMAND" >&2' ERR
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+DATA="${XDG_DATA_HOME:-$HOME/.local/share}/backtrack-dev"
+BUS=org.backtrack.Daemon1.Dev
+# The demo repository is unencrypted; this protects the local spool only.
+PASSPHRASE="backtrack dev"
+
+export PATH="$HOME/.cargo/bin:$PATH"
+
+say() { printf '\033[1m%s\033[0m\n' "$*"; }
+
+daemon() {
+    busctl --user call "$BUS" /org/backtrack/Daemon1 org.backtrack.Daemon1 "$@"
+}
+
+family() {
+    if [[ -r /etc/os-release ]]; then
+        # shellcheck disable=SC1091
+        source /etc/os-release
+        for id in "${ID:-}" ${ID_LIKE:-}; do
+            case "$id" in
+                fedora|rhel|centos|rocky|almalinux) echo dnf; return ;;
+                ubuntu|debian|pop|linuxmint)        echo apt; return ;;
+                arch|archlinux|manjaro|endeavouros) echo pacman; return ;;
+            esac
+        done
+    fi
+    echo "Cannot tell which package manager this system uses." >&2
+    exit 1
+}
+
+# What Backtrack needs to build and run its checks.
+base_packages() {
+    case "$1" in
+        dnf)
+            echo gcc pkgconf-pkg-config gtk4-devel libadwaita-devel sqlite-devel \
+                dbus-devel borgbackup flatpak-builder python3-gobject ruff ;;
+        apt)
+            echo build-essential pkg-config libgtk-4-dev libadwaita-1-dev \
+                libsqlite3-dev libdbus-1-dev borgbackup flatpak-builder python3-gi ;;
+        pacman)
+            echo gcc pkgconf gtk4 libadwaita sqlite dbus borg flatpak-builder \
+                python-gobject ruff ;;
+        *)
+            echo "Unknown package manager '$1'; expected dnf, apt or pacman." >&2
+            exit 1 ;;
+    esac
+}
+
+# What a development machine needs on top: the task runner, the copy that
+# `scripts/vm push` makes, and nautilus-python where there is a Nautilus to
+# load the extension.
+extra_packages() {
+    local extras=(just rsync)
+    if command -v nautilus >/dev/null; then
+        case "$1" in
+            dnf) extras+=(nautilus-python) ;;
+            apt) extras+=(python3-nautilus) ;;
+            pacman) extras+=(python-nautilus) ;;
+        esac
+    fi
+    echo "${extras[@]}"
+}
+
+missing() {
+    local family="$1"
+    shift
+    case "$family" in
+        dnf) ! rpm -q "$@" >/dev/null 2>&1 ;;
+        apt) ! dpkg -s "$@" >/dev/null 2>&1 ;;
+        pacman) ! pacman -T "$@" >/dev/null 2>&1 ;;
+    esac
+}
+
+install() {
+    local family="$1"
+    shift
+    case "$family" in
+        dnf) sudo dnf install -y --setopt=install_weak_deps=False "$@" ;;
+        apt) sudo apt-get update && sudo apt-get install -y "$@" ;;
+        pacman) sudo pacman -S --needed --noconfirm "$@" ;;
+    esac
+}
+
+packages() {
+    local family="$1"
+    # shellcheck disable=SC2046
+    install "$family" $(base_packages "$family")
+}
+
+ensure_packages() {
+    local family wanted
+    family="$(family)"
+    read -ra wanted <<< "$(base_packages "$family") $(extra_packages "$family")"
+    if ! missing "$family" "${wanted[@]}"; then
+        return
+    fi
+    if [[ ! -t 0 ]] && ! sudo -n true 2>/dev/null; then
+        echo "Packages are missing, and installing them needs the password for" >&2
+        echo "$USER on $(hostname). Run this once where sudo can ask:" >&2
+        echo "  just vm-push <vm>       from your own terminal, or" >&2
+        echo "  $ROOT/scripts/dev-machine   at this computer's terminal." >&2
+        exit 3
+    fi
+    say "Installing packages ($family)…"
+    install "$family" "${wanted[@]}"
+}
+
+ensure_rust() {
+    if command -v cargo >/dev/null; then
+        return
+    fi
+    say "Installing Rust with rustup…"
+    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+}
+
+# Backtrack is built against GNOME 50's libraries, on every desktop.
+ensure_libraries() {
+    if ! pkg-config --atleast-version=4.22 gtk4 \
+        || ! pkg-config --atleast-version=1.9 libadwaita-1; then
+        echo "Backtrack needs GTK 4.22 and libadwaita 1.9 (GNOME 50); this has" >&2
+        echo "GTK $(pkg-config --modversion gtk4) and libadwaita $(pkg-config --modversion libadwaita-1)." >&2
+        exit 1
+    fi
+}
+
+build() {
+    say "Building…"
+    (cd "$ROOT" && cargo build --workspace)
+}
+
+units() {
+    say "Installing the development daemon's units…"
+    (cd "$ROOT" && just install-units >/dev/null)
+    # A running daemon is restarted only when it is not the build just made:
+    # a rebuild replaces the file, which leaves the old process running a
+    # deleted one. Restarting every time would interrupt whatever is being
+    # watched in the VM for a change that did not touch the daemon.
+    local pid exe
+    pid="$(systemctl --user show -p MainPID --value backtrackd.service)"
+    if [[ "$pid" != 0 ]]; then
+        exe="$(readlink "/proc/$pid/exe" || true)"
+        if [[ "$exe" != "$ROOT/target/debug/backtrackd" ]]; then
+            say "Restarting the daemon onto the new build…"
+            systemctl --user restart backtrackd.service
+        fi
+    fi
+}
+
+configured() {
+    grep -q '^repository' "$DATA/config.toml" 2>/dev/null
+}
+
+demo() {
+    if configured; then
+        return
+    fi
+    say "Building the demo backups and pointing the daemon at them…"
+    # The demo builder writes the catalogue the daemon owns, so the daemon is
+    # stopped first; the calls below start it again.
+    systemctl --user stop backtrackd.service 2>/dev/null || true
+    (cd "$ROOT" && just demo-repo)
+    daemon ImportRepo ss "$DATA/demo-repo" "$PASSPHRASE" >/dev/null
+    daemon SetConfig ss backup.include "[\"$DATA/demo-src\"]" >/dev/null
+}
+
+integrations() {
+    if command -v nautilus >/dev/null; then
+        say "Installing the Nautilus extension…"
+        (cd "$ROOT" && just install-nautilus-dev >/dev/null)
+        # Nautilus loads extensions when it starts.
+        nautilus -q 2>/dev/null || true
+    fi
+    if command -v dolphin >/dev/null; then
+        say "Installing the Dolphin menu…"
+        (cd "$ROOT" && just install-dolphin-dev >/dev/null)
+    fi
+}
+
+# The tray icon: started at login by its autostart file, except on GNOME,
+# and started now where it would be. A running icon is restarted only when it
+# is not the build just made, as the daemon is.
+tray() {
+    say "Installing the tray icon's autostart file…"
+    (cd "$ROOT" && just install-tray-dev >/dev/null)
+    if [[ "$(desktop)" == *GNOME* ]] \
+        || ! systemctl --user show-environment | grep -qE '^(WAYLAND_DISPLAY|DISPLAY)='; then
+        return
+    fi
+    local pid
+    pid="$(pgrep -u "$USER" -x backtrack-tray || true)"
+    if [[ -n "$pid" ]]; then
+        if [[ "$(readlink "/proc/$pid/exe" || true)" == "$ROOT/target/debug/backtrack-tray" ]]; then
+            return
+        fi
+        say "Restarting the tray icon onto the new build…"
+        kill "$pid"
+        while kill -0 "$pid" 2>/dev/null; do sleep 0.2; done
+    else
+        say "Starting the tray icon…"
+    fi
+    # From SSH there is no display in the environment; the session's manager
+    # has one, as for the window.
+    systemd-run --user --collect --quiet --unit="backtrack-tray-dev-$(date +%s)" \
+        --setenv=BACKTRACK_DEV=1 "$ROOT/target/debug/backtrack-tray"
+}
+
+desktop() {
+    systemctl --user show-environment 2>/dev/null \
+        | sed -n 's/^XDG_CURRENT_DESKTOP=//p'
+}
+
+status() {
+    echo "Desktop:    $(desktop || true)"
+    echo "Libraries:  GTK $(pkg-config --modversion gtk4 2>/dev/null || echo none)," \
+        "libadwaita $(pkg-config --modversion libadwaita-1 2>/dev/null || echo none)"
+    echo "Build:      $(ls -1 "$ROOT"/target/debug/backtrack{d,-gtk,-tray,} 2>/dev/null | wc -l) of 4 binaries"
+    echo "Daemon:     $(systemctl --user is-active backtrackd.service 2>/dev/null || true)"
+    if configured; then
+        echo "Backups:    $(sed -n 's/^repository = //p' "$DATA/config.toml")"
+        BACKTRACK_DEV=1 "$ROOT/target/debug/backtrack" status 2>&1 | sed -n '1p' | sed 's/^/            /'
+    else
+        echo "Backups:    not configured"
+    fi
+    if [[ -f "${XDG_DATA_HOME:-$HOME/.local/share}/nautilus-python/extensions/backtrack.py" ]]; then
+        echo "Nautilus:   extension installed"
+    fi
+    if [[ -f "${XDG_DATA_HOME:-$HOME/.local/share}/kio/servicemenus/backtrack.desktop" ]]; then
+        echo "Dolphin:    menu installed"
+    fi
+    if pgrep -u "$USER" -x backtrack-tray >/dev/null; then
+        echo "Tray:       showing"
+    fi
+}
+
+# Open the window on this computer's screen. From SSH there is no display in
+# the environment, but the desktop session exports it to the user's systemd
+# manager, so the window is started as a transient unit of that manager.
+app() {
+    if ! systemctl --user show-environment | grep -qE '^(WAYLAND_DISPLAY|DISPLAY)='; then
+        echo "No desktop session for $USER: log in on the screen first." >&2
+        exit 1
+    fi
+    local unit
+    unit="backtrack-gtk-dev-$(date +%s)"
+    systemd-run --user --collect --quiet --unit="$unit" \
+        --setenv=BACKTRACK_DEV=1 --setenv=RUST_LOG=debug \
+        "$ROOT/target/debug/backtrack-gtk" "$@"
+    echo "Opened. Its output: journalctl --user -u $unit"
+}
+
+everything() {
+    ensure_packages
+    ensure_rust
+    ensure_libraries
+    build
+    units
+    demo
+    integrations
+    tray
+    echo
+    say "Ready."
+    status
+}
+
+case "${1:-}" in
+    "") everything ;;
+    packages)
+        [[ -n "${2:-}" ]] || { echo "usage: dev-machine packages dnf|apt|pacman" >&2; exit 2; }
+        packages "$2" ;;
+    app) shift; app "$@" ;;
+    status) status ;;
+    *)
+        sed -n '/^#   dev-machine/,/^$/s/^#   //p' "$0" >&2
+        exit 2 ;;
+esac

@@ -151,7 +151,7 @@ pub fn at_risk(status: &Status, now: i64) -> String {
 /// "Backups are paused until 17:00", or until they are resumed.
 fn paused(status: &Status, now: i64, tz: &glib::TimeZone) -> String {
     let until = status.paused_until as i64;
-    if until - now > super::status::INDEFINITE_PAUSE_THRESHOLD as i64 {
+    if until - now > super::pause::INDEFINITE_PAUSE_THRESHOLD as i64 {
         "Backups are paused until you resume them".to_string()
     } else {
         format!("Backups are paused until {}", format::clock(until, tz))

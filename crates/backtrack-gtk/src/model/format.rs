@@ -7,9 +7,11 @@
 //! units the rest of the desktop uses (`1.2 kB`, not `1.2 KiB` or `1229 bytes`).
 //! Dates go through `GDateTime`, which knows the user's locale and timezone;
 //! the format strings keep the field order from the mockups.
+//!
+//! The tray includes this file by path for its times, so it names `glib`
+//! itself rather than through `gtk4`.
 
 use backtrack_core::index::Kind;
-use gtk4::glib;
 
 /// Format `ts` (epoch seconds) in `tz` with a `strftime` pattern, collapsing the
 /// double space `%e` leaves in front of a single-digit day.

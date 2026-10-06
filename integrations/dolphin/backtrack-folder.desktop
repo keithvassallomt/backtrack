@@ -1,0 +1,22 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# SPDX-FileCopyrightText: 2026 Keith Vassallo <keith@vassallo.cloud>
+#
+# "Browse Backups of This Folder…" on a selected folder in Dolphin, or on the
+# empty space of the folder being shown, in the same Backtrack submenu as
+# backtrack.desktop. A file of its own because KIO filters by type per file,
+# not per action, and this item is for folders only.
+[Desktop Entry]
+Type=Application
+Name=Backtrack
+NoDisplay=true
+MimeType=inode/directory;
+X-KDE-Submenu=Backtrack
+X-KDE-Priority=TopLevel
+X-KDE-Protocols=file
+X-KDE-RequiredNumberOfUrls=1
+Actions=backtrackThisFolder
+
+[Desktop Action backtrackThisFolder]
+Name=Browse Backups of This Folder…
+Icon=folder-open-recent
+Exec=backtrack-gtk --path %f

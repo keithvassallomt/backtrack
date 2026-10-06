@@ -1,6 +1,6 @@
 [package]
 name = "backtrack-gtk"
-description = "Backtrack GTK4/libadwaita app: timeline, wizard, preferences, compare."
+description = "Backtrack's desktop programs: the GTK4/libadwaita app (timeline, wizard, preferences, compare) and the tray icon."
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -14,6 +14,11 @@ workspace = true
 backtrack-core.workspace = true
 gtk4.workspace = true
 libadwaita.workspace = true
+# The same GLib `gtk4` re-exports, named directly by the modules the tray
+# shares with the window, so that the tray links GLib and no GTK.
+glib = "0.22"
+# The tray's StatusNotifierItem. Only `backtrack-tray` uses it.
+ksni = "0.3"
 tracing.workspace = true
 clap.workspace = true
 zbus.workspace = true

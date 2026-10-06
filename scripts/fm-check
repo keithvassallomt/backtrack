@@ -1,0 +1,165 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-3.0-or-later
+# SPDX-FileCopyrightText: 2026 Keith Vassallo <keith@vassallo.cloud>
+#
+# The Stage 12 file-manager checks: the Nautilus extension and the Dolphin
+# menu against the development daemon's demo fixture. See
+# docs/file-manager-integration.md for the checklists this sets up.
+#
+# `setup` installs the development integration for whichever of the two file
+# managers is here, and gives the backed-up folder the two things the menus
+# must stay out of, or handle: a disk mounted inside it (an unprivileged FUSE
+# mount, so no sudo) and a file in the trash.
+#
+#   fm-check setup      install the integration, mount the stick, trash a file
+#   fm-check nautilus   restart Nautilus on the backed-up Documents folder
+#   fm-check dolphin    open Dolphin on the backed-up Documents folder
+#   fm-check status     what is installed and published
+#   fm-check reset      undo everything setup did
+
+set -euo pipefail
+trap 'echo "fm-check: stopped at line $LINENO: $BASH_COMMAND" >&2' ERR
+
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+DATA="${XDG_DATA_HOME:-$HOME/.local/share}/backtrack-dev"
+ROOTS="$DATA/roots.json"
+EXTENSION="${XDG_DATA_HOME:-$HOME/.local/share}/nautilus-python/extensions/backtrack.py"
+SERVICE_MENU="${XDG_DATA_HOME:-$HOME/.local/share}/kio/servicemenus/backtrack.desktop"
+SCRATCH=/var/tmp/backtrack-fm-check
+TRASHED_NAME="backtrack-fm-check-draft.txt"
+
+say() { printf '\033[1m%s\033[0m\n' "$*"; }
+
+# The one backup root the development daemon publishes. The checks are
+# written for the demo fixture, which has exactly one.
+root() {
+    if [[ ! -f "$ROOTS" ]]; then
+        echo "No $ROOTS. Is the development daemon built from this checkout and running?" >&2
+        echo "  cargo build -p backtrackd && systemctl --user restart backtrackd.service" >&2
+        exit 1
+    fi
+    python3 - "$ROOTS" <<'PY'
+import json, sys
+roots = json.load(open(sys.argv[1]))["roots"]
+if len(roots) != 1:
+    sys.exit(f"expected the demo fixture's one root, found {roots}")
+print(roots[0])
+PY
+}
+
+stick() { echo "$(root)/home/usb-stick"; }
+
+setup() {
+    local base
+    base="$(root)"
+    [[ -d "$base/home/Documents" ]] || {
+        echo "$base/home/Documents is missing; run 'just demo-repo' first." >&2
+        exit 1
+    }
+
+    if ! command -v nautilus >/dev/null && ! command -v dolphin >/dev/null; then
+        echo "Neither Nautilus nor Dolphin is installed here." >&2
+        exit 1
+    fi
+    if command -v nautilus >/dev/null; then
+        say "Installing the development Nautilus extension…"
+        (cd "$REPO_ROOT" && just install-nautilus-dev >/dev/null)
+    fi
+    if command -v dolphin >/dev/null; then
+        say "Installing the development Dolphin menu…"
+        (cd "$REPO_ROOT" && just install-dolphin-dev >/dev/null)
+    fi
+
+    say "Mounting a stick inside the backed-up folder…"
+    local mount
+    mount="$(stick)"
+    if ! mountpoint -q "$mount" 2>/dev/null; then
+        mkdir -p "$SCRATCH/stick" "$mount"
+        printf 'A photograph on a USB stick.\n' > "$SCRATCH/stick/holiday.jpg"
+        fuse-overlayfs -o "lowerdir=$SCRATCH/stick" "$mount"
+    fi
+
+    say "Putting a file from the backed-up folder in the trash…"
+    if ! gio list trash:/// 2>/dev/null | grep -qx "$TRASHED_NAME"; then
+        printf 'An old draft.\n' > "$base/home/Documents/$TRASHED_NAME"
+        gio trash "$base/home/Documents/$TRASHED_NAME"
+    fi
+
+    echo
+    say "Ready. The backed-up folder is:"
+    echo "  $base"
+    echo
+    echo "Next: scripts/fm-check nautilus or scripts/fm-check dolphin, then work"
+    echo "through that file manager's checklist in docs/file-manager-integration.md."
+}
+
+nautilus_here() {
+    local folder
+    folder="$(root)/home/Documents"
+    nautilus -q 2>/dev/null || true
+    # Detached, so Nautilus outlives this script and its output stays out of
+    # the terminal.
+    setsid nautilus --new-window "$folder" >/dev/null 2>&1 < /dev/null &
+    echo "Nautilus opened on $folder"
+}
+
+dolphin_here() {
+    local folder
+    folder="$(root)/home/Documents"
+    setsid dolphin --new-window "$folder" >/dev/null 2>&1 < /dev/null &
+    echo "Dolphin opened on $folder"
+}
+
+status() {
+    if [[ -f "$EXTENSION" ]]; then
+        echo "Extension:  $EXTENSION"
+        grep -E '^(APP|DEVELOPMENT) = ' "$EXTENSION" | sed 's/^/            /'
+    else
+        echo "Extension:  not installed"
+    fi
+    if [[ -f "$SERVICE_MENU" ]]; then
+        echo "Menu:       $SERVICE_MENU"
+        sed -n 's/^Exec=/            /p' "$SERVICE_MENU"
+    else
+        echo "Menu:       not installed"
+    fi
+    if [[ -f "$ROOTS" ]]; then
+        echo "Published:  $ROOTS"
+        sed 's/^/            /' "$ROOTS"
+    else
+        echo "Published:  nothing ($ROOTS is missing)"
+    fi
+    if mountpoint -q "$(stick)" 2>/dev/null; then
+        echo "Stick:      mounted at $(stick)"
+    else
+        echo "Stick:      not mounted"
+    fi
+}
+
+reset() {
+    local mount
+    mount="$(stick)"
+    if mountpoint -q "$mount" 2>/dev/null; then
+        fusermount3 -u "$mount"
+    fi
+    rmdir "$mount" 2>/dev/null || true
+    rm -rf "$SCRATCH"
+    # The trashed draft, wherever the trash keeps it.
+    local trash="${XDG_DATA_HOME:-$HOME/.local/share}/Trash"
+    rm -f "$trash/files/$TRASHED_NAME" "$trash/info/$TRASHED_NAME.trashinfo"
+    (cd "$REPO_ROOT" && just uninstall-nautilus-dev >/dev/null && just uninstall-dolphin-dev >/dev/null)
+    nautilus -q 2>/dev/null || true
+    echo "Removed the stick, the trashed draft, the extension and the menu, and quit Nautilus."
+}
+
+case "${1:-}" in
+    setup) setup ;;
+    nautilus) nautilus_here ;;
+    dolphin) dolphin_here ;;
+    status) status ;;
+    reset) reset ;;
+    *)
+        sed -n '/^#   fm-check/s/^#   //p' "$0" >&2
+        exit 2
+        ;;
+esac

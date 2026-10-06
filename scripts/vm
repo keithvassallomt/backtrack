@@ -1,0 +1,220 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-3.0-or-later
+# SPDX-FileCopyrightText: 2026 Keith Vassallo <keith@vassallo.cloud>
+#
+# Drive a development VM from this checkout over SSH: copy the source in, and
+# build and run it there. See docs/development-vms.md.
+#
+# <vm> is a libvirt domain name on qemu:///system (its address is looked up),
+# or any SSH destination. The user is $BACKTRACK_VM_USER, else yours; write
+# user@vm for another.
+#
+#   vm start <vm>           start the VM, and wait until its desktop has
+#                           logged in and its keyring is open
+#   vm stop <vm>            shut the VM down
+#   vm push <vm>            copy this checkout into the VM and bring it up to
+#                           date there (scripts/dev-machine)
+#   vm app <vm> [ARGS]      open Backtrack on the VM's screen
+#   vm run <vm> COMMAND...  run a command in the VM's copy of the checkout
+#   vm address <vm>         the SSH destination <vm> stands for
+
+set -euo pipefail
+trap 'echo "vm: stopped at line $LINENO: $BASH_COMMAND" >&2' ERR
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+CONNECT=qemu:///system
+# Relative to the VM user's home.
+CHECKOUT=backtrack
+# A VM's host key is learned on first contact; a changed one is still refused.
+SSH=(-o StrictHostKeyChecking=accept-new -o ConnectTimeout=5)
+
+address() {
+    local name="$1" user host state ip
+    if [[ "$name" == *@* ]]; then
+        user="${name%@*}"
+        host="${name#*@}"
+    else
+        user="${BACKTRACK_VM_USER:-$USER}"
+        host="$name"
+    fi
+    if command -v virsh >/dev/null && virsh -c "$CONNECT" domstate "$host" >/dev/null 2>&1; then
+        state="$(virsh -c "$CONNECT" domstate "$host")"
+        if [[ "$state" != running ]]; then
+            echo "$host is $state. Start it with: just vm-start \"$host\"" >&2
+            exit 1
+        fi
+        ip="$(virsh -c "$CONNECT" domifaddr "$host" \
+            | awk '$3 == "ipv4" { split($4, a, "/"); print a[1]; exit }')"
+        if [[ -z "$ip" ]]; then
+            echo "$host has no network address yet; give it a moment to boot." >&2
+            exit 1
+        fi
+        host="$ip"
+    fi
+    echo "$user@$host"
+}
+
+# Stop early, and say what to do, when SSH cannot get in without a password.
+reachable() {
+    local destination="$1"
+    if ssh "${SSH[@]}" -o BatchMode=yes "$destination" true 2>/dev/null; then
+        return
+    fi
+    echo "Cannot log in to $destination over SSH without a password." >&2
+    echo "Once per VM:" >&2
+    echo "  1. In the VM:  sudo systemctl enable --now sshd" >&2
+    echo "  2. Here:       ssh-copy-id -f $destination" >&2
+    exit 1
+}
+
+# The libvirt domain <vm> names; only a libvirt VM can be started or stopped.
+domain() {
+    local host="${1#*@}"
+    if command -v virsh >/dev/null && virsh -c "$CONNECT" domstate "$host" >/dev/null 2>&1; then
+        echo "$host"
+        return
+    fi
+    echo "$host is not a libvirt domain on $CONNECT, so it cannot be started or stopped here." >&2
+    exit 1
+}
+
+# Run a command every two seconds until it succeeds or $1 seconds have passed.
+patiently() {
+    local deadline=$((SECONDS + $1))
+    shift
+    until "$@"; do
+        ((SECONDS < deadline)) || return 1
+        sleep 2
+    done
+}
+
+booted() {
+    destination="$(address "$1" 2>/dev/null)" \
+        && ssh "${SSH[@]}" -o BatchMode=yes "$destination" true 2>/dev/null
+}
+
+# Someone is logged in on the screen, not only over SSH.
+logged_in() {
+    [[ -n "$(ssh "${SSH[@]}" -o BatchMode=yes "$1" \
+        'loginctl show-user "$USER" -p Display --value' 2>/dev/null)" ]]
+}
+
+shut_off() {
+    [[ "$(virsh -c "$CONNECT" domstate "$1")" == "shut off" ]]
+}
+
+start() {
+    local name="$1" host
+    host="$(domain "$name")"
+    case "$(virsh -c "$CONNECT" domstate "$host")" in
+        running) ;;
+        paused) virsh -c "$CONNECT" resume "$host" >/dev/null ;;
+        *)
+            echo "Starting $host…"
+            virsh -c "$CONNECT" start "$host" >/dev/null ;;
+    esac
+    if ! patiently 120 booted "$name"; then
+        # Whichever of these fails says why.
+        destination="$(address "$name")"
+        reachable "$destination"
+    fi
+    if ! patiently 90 logged_in "$destination"; then
+        echo "Nobody has logged in on $host's screen. Backtrack's daemon runs in the" >&2
+        echo "desktop session, so turn on automatic login there: see docs/development-vms.md." >&2
+        exit 1
+    fi
+    # Over standard input, so that it works before the first push too.
+    ssh "${SSH[@]}" "$destination" python3 - unlock <"$ROOT/scripts/vm-keyring"
+    echo "$host is up at $destination, logged in, with its keyring open."
+}
+
+stop() {
+    local host
+    host="$(domain "$1")"
+    if shut_off "$host"; then
+        echo "$host is already shut off."
+        return
+    fi
+    virsh -c "$CONNECT" shutdown "$host" >/dev/null
+    echo "Shutting $host down…"
+    if ! patiently 120 shut_off "$host"; then
+        echo "$host is still $(virsh -c "$CONNECT" domstate "$host") after two minutes." >&2
+        exit 1
+    fi
+    echo "$host is shut off."
+}
+
+# A terminal for the remote command when this one has one, so that sudo can
+# ask for the VM's password on the first push. Worked out once, here: inside
+# a $(…) standard output is a pipe, so a function asked there never sees one.
+TTY=()
+if [[ -t 0 && -t 1 ]]; then
+    TTY=(-t)
+fi
+
+copy() {
+    local destination="$1"
+    if ssh "${SSH[@]}" "$destination" 'command -v rsync' >/dev/null 2>&1; then
+        # .gitignore decides what travels, as for a commit; the VM's own build
+        # output is excluded on both sides, so --delete leaves it alone.
+        rsync -az --delete -e "ssh ${SSH[*]}" \
+            --exclude=/.git --exclude=/target --filter=':- .gitignore' \
+            "$ROOT/" "$destination:$CHECKOUT/"
+    else
+        # The first push, before scripts/dev-machine has installed rsync.
+        (cd "$ROOT" && git ls-files -z --cached --others --exclude-standard) \
+            | tar -C "$ROOT" --null --ignore-failed-read -T - -czf - \
+            | ssh "${SSH[@]}" "$destination" "mkdir -p $CHECKOUT && tar -xzf - -C $CHECKOUT"
+    fi
+}
+
+push() {
+    local destination
+    destination="$(address "$1")"
+    reachable "$destination"
+    echo "Copying the checkout to $destination:$CHECKOUT…"
+    copy "$destination"
+    ssh "${SSH[@]}" "${TTY[@]}" "$destination" "cd $CHECKOUT && scripts/dev-machine"
+}
+
+run() {
+    local destination
+    destination="$(address "$1")"
+    shift
+    reachable "$destination"
+    ssh "${SSH[@]}" "${TTY[@]}" "$destination" "cd $CHECKOUT && $*"
+}
+
+case "${1:-}" in
+    start)
+        [[ -n "${2:-}" ]] || { echo "usage: vm start <vm>" >&2; exit 2; }
+        start "$2" ;;
+    stop)
+        [[ -n "${2:-}" ]] || { echo "usage: vm stop <vm>" >&2; exit 2; }
+        stop "$2" ;;
+    push)
+        [[ -n "${2:-}" ]] || { echo "usage: vm push <vm>" >&2; exit 2; }
+        push "$2" ;;
+    app)
+        [[ -n "${2:-}" ]] || { echo "usage: vm app <vm> [ARGS]" >&2; exit 2; }
+        vm="$2"
+        shift 2
+        # Quoted for the remote shell; nothing at all when there are none, as
+        # printf would otherwise pass one empty argument.
+        arguments=""
+        if (( $# > 0 )); then
+            arguments="$(printf ' %q' "$@")"
+        fi
+        run "$vm" "scripts/dev-machine app$arguments" ;;
+    run)
+        [[ -n "${2:-}" && -n "${3:-}" ]] || { echo "usage: vm run <vm> COMMAND..." >&2; exit 2; }
+        vm="$2"
+        shift 2
+        run "$vm" "$@" ;;
+    address)
+        [[ -n "${2:-}" ]] || { echo "usage: vm address <vm>" >&2; exit 2; }
+        address "$2" ;;
+    *)
+        sed -n '/^#   vm push/,/^$/s/^#   //p' "$0" >&2
+        exit 2 ;;
+esac

@@ -67,35 +67,9 @@ setup FAMILY="":
         source "${HOME}/.cargo/env"
     fi
 
-    case "${family}" in
-        dnf)
-            echo "Installing dependencies with dnf…"
-            sudo dnf install -y \
-                gcc pkgconf-pkg-config \
-                gtk4-devel libadwaita-devel sqlite-devel dbus-devel \
-                borgbackup flatpak-builder python3-gobject
-            ;;
-        apt)
-            echo "Installing dependencies with apt…"
-            sudo apt-get update
-            sudo apt-get install -y \
-                build-essential pkg-config \
-                libgtk-4-dev libadwaita-1-dev libsqlite3-dev libdbus-1-dev \
-                borgbackup flatpak-builder python3-gi
-            ;;
-        pacman)
-            echo "Installing dependencies with pacman…"
-            sudo pacman -S --needed --noconfirm \
-                gcc pkgconf \
-                gtk4 libadwaita sqlite dbus \
-                borg flatpak-builder python-gobject
-            ;;
-        *)
-            echo "Unknown installation type '${family}'." >&2
-            echo "Expected one of: dnf, apt, pacman." >&2
-            exit 1
-            ;;
-    esac
+    echo "Installing dependencies with ${family}…"
+    # The lists live in the script, which the development VMs use too.
+    scripts/dev-machine packages "${family}"
 
     echo "Dependencies installed. Running checks…"
     just check
@@ -119,6 +93,42 @@ check:
     cargo test --workspace
     just check-license-headers
     just check-prints
+    just check-integrations
+
+# Lint and test the file-manager extensions. Ruff comes from PATH, else uvx or
+# pipx; without any of them the lint is skipped with a warning, except in CI.
+# The .desktop files (Dolphin menus, launcher, autostart) are checked with
+# desktop-file-validate on the same terms.
+check-integrations:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if command -v ruff >/dev/null 2>&1; then
+        ruff=(ruff)
+    elif command -v uvx >/dev/null 2>&1; then
+        ruff=(uvx --quiet ruff)
+    elif command -v pipx >/dev/null 2>&1; then
+        ruff=(pipx run --quiet ruff)
+    else
+        ruff=()
+    fi
+    if (( ${#ruff[@]} > 0 )); then
+        "${ruff[@]}" check integrations
+        "${ruff[@]}" format --check integrations
+    elif [[ -n "${CI:-}" ]]; then
+        echo "ruff not found, and CI must lint the extensions." >&2
+        exit 1
+    else
+        echo "ruff not found (install it, or uv or pipx); skipping the lint." >&2
+    fi
+    python3 -m unittest discover --start-directory integrations/nautilus
+    if command -v desktop-file-validate >/dev/null 2>&1; then
+        desktop-file-validate integrations/dolphin/*.desktop packaging/*/*.desktop
+    elif [[ -n "${CI:-}" ]]; then
+        echo "desktop-file-validate not found, and CI must check the .desktop files." >&2
+        exit 1
+    else
+        echo "desktop-file-validate not found (desktop-file-utils); skipping the .desktop files." >&2
+    fi
 
 # Fail if any Rust source file under crates/ lacks an SPDX license header.
 check-license-headers:
@@ -474,7 +484,11 @@ install-units:
     dbus_dir="${XDG_DATA_HOME:-${HOME}/.local/share}/dbus-1/services"
 
     echo "Building the daemon so the unit points at something that exists…"
-    cargo build -p backtrackd
+    # The whole workspace, not `-p backtrackd`: the window turns on features
+    # of a shared crate, so the two builds make different daemon binaries and
+    # each replaces the other at target/debug/backtrackd. The one the unit
+    # runs is the one `just build` makes.
+    cargo build --workspace
 
     mkdir -p "${systemd_dir}" "${dbus_dir}"
 
@@ -523,6 +537,170 @@ uninstall-units:
     rm -f "${dbus_dir}/org.backtrack.Daemon1.Dev.service"
     systemctl --user daemon-reload
     echo "Dev units removed."
+
+# ─── File-manager integration (development install) ─────────────────────────
+
+# Install the Nautilus extension for this checkout: it launches the debug
+# build and reads the development daemon's roots. Idempotent.
+[doc("Install the Nautilus extension for this checkout (debug build, dev daemon).")]
+install-nautilus-dev:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    root="{{justfile_directory()}}"
+    app="${root}/target/debug/backtrack-gtk"
+    dir="${XDG_DATA_HOME:-${HOME}/.local/share}/nautilus-python/extensions"
+
+    if ! python3 -c 'import gi; gi.require_version("Nautilus", "4.1")' 2>/dev/null \
+        && ! python3 -c 'import gi; gi.require_version("Nautilus", "4.0")' 2>/dev/null; then
+        echo "nautilus-python is not installed, so Nautilus would not load the" >&2
+        echo "extension. Install it first: nautilus-python (Fedora)," >&2
+        echo "python3-nautilus (Ubuntu), python-nautilus (Arch)." >&2
+        exit 1
+    fi
+
+    echo "Building the window so the extension points at something that exists…"
+    cargo build -p backtrack-gtk
+
+    # The shipped extension is the one installed, with two lines rewritten, so
+    # what is tried here is the file that will be packaged.
+    mkdir -p "${dir}"
+    sed -e "s|^APP = \".*\"$|APP = \"${app}\"|" \
+        -e "s|^DEVELOPMENT = False$|DEVELOPMENT = True|" \
+        "${root}/integrations/nautilus/backtrack.py" > "${dir}/backtrack.py.tmp"
+    if ! grep -qx "APP = \"${app}\"" "${dir}/backtrack.py.tmp" \
+        || ! grep -qx "DEVELOPMENT = True" "${dir}/backtrack.py.tmp"; then
+        rm -f "${dir}/backtrack.py.tmp"
+        echo "The extension's APP or DEVELOPMENT line has changed shape; update this recipe." >&2
+        exit 1
+    fi
+    mv "${dir}/backtrack.py.tmp" "${dir}/backtrack.py"
+
+    echo "Installed ${dir}/backtrack.py"
+    echo
+    echo "Nautilus loads extensions when it starts. Quit it so the next window"
+    echo "loads this one:"
+    echo "  nautilus -q"
+
+# Remove the development Nautilus extension.
+uninstall-nautilus-dev:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    dir="${XDG_DATA_HOME:-${HOME}/.local/share}/nautilus-python/extensions"
+    rm -f "${dir}/backtrack.py" "${dir}"/__pycache__/backtrack.*.pyc
+    # Python's cache folder, if this extension was all that was in it.
+    rmdir "${dir}/__pycache__" 2>/dev/null || true
+    echo "Removed. Quit Nautilus (nautilus -q) so it lets go of the extension."
+
+# Install the Dolphin menu for this checkout: it launches the debug build
+# against the development daemon. Idempotent.
+[doc("Install the Dolphin menu for this checkout (debug build, dev daemon).")]
+install-dolphin-dev:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    root="{{justfile_directory()}}"
+    app="${root}/target/debug/backtrack-gtk"
+    dir="${XDG_DATA_HOME:-${HOME}/.local/share}/kio/servicemenus"
+
+    echo "Building the window so the menu points at something that exists…"
+    cargo build -p backtrack-gtk
+
+    # The shipped files are the ones installed, with the command rewritten, so
+    # what is tried here is what will be packaged. KIO runs a menu from the
+    # home folder only if its file is executable; packages install to
+    # /usr/share, where that does not apply.
+    mkdir -p "${dir}"
+    for file in "${root}"/integrations/dolphin/*.desktop; do
+        name="$(basename "${file}")"
+        sed "s|^Exec=backtrack-gtk |Exec=env BACKTRACK_DEV=1 ${app} |" "${file}" > "${dir}/${name}.tmp"
+        if ! grep -q "^Exec=env BACKTRACK_DEV=1 ${app} " "${dir}/${name}.tmp"; then
+            rm -f "${dir}/${name}.tmp"
+            echo "${name}'s Exec line has changed shape; update this recipe." >&2
+            exit 1
+        fi
+        chmod +x "${dir}/${name}.tmp"
+        mv "${dir}/${name}.tmp" "${dir}/${name}"
+        echo "Installed ${dir}/${name}"
+    done
+    echo
+    echo "Dolphin reads its menus each time it opens one; there is nothing to restart."
+
+# Remove the development Dolphin menu.
+uninstall-dolphin-dev:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    dir="${XDG_DATA_HOME:-${HOME}/.local/share}/kio/servicemenus"
+    for file in "{{justfile_directory()}}"/integrations/dolphin/*.desktop; do
+        rm -f "${dir}/$(basename "${file}")"
+    done
+    echo "Removed."
+
+# Start the tray icon at login, for this checkout: the debug build, against
+# the development daemon. Idempotent.
+[doc("Start the tray icon at login (debug build, dev daemon).")]
+install-tray-dev:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    root="{{justfile_directory()}}"
+    tray="${root}/target/debug/backtrack-tray"
+    dir="${XDG_CONFIG_HOME:-${HOME}/.config}/autostart"
+
+    echo "Building the tray so autostart points at something that exists…"
+    cargo build -p backtrack-gtk
+
+    # The shipped autostart file, with the command rewritten, so what is tried
+    # here is what will be packaged.
+    mkdir -p "${dir}"
+    sed "s|^Exec=backtrack-tray$|Exec=env BACKTRACK_DEV=1 ${tray}|" \
+        "${root}/packaging/autostart/backtrack-tray.desktop" > "${dir}/backtrack-tray.desktop.tmp"
+    if ! grep -qx "Exec=env BACKTRACK_DEV=1 ${tray}" "${dir}/backtrack-tray.desktop.tmp"; then
+        rm -f "${dir}/backtrack-tray.desktop.tmp"
+        echo "The autostart file's Exec line has changed shape; update this recipe." >&2
+        exit 1
+    fi
+    mv "${dir}/backtrack-tray.desktop.tmp" "${dir}/backtrack-tray.desktop"
+    echo "Installed ${dir}/backtrack-tray.desktop"
+    echo
+    echo "The icon starts at the next login on desktops other than GNOME. To start"
+    echo "it now: BACKTRACK_DEV=1 ${tray}"
+
+# Stop starting the development tray icon at login.
+uninstall-tray-dev:
+    rm -f "${XDG_CONFIG_HOME:-${HOME}/.config}/autostart/backtrack-tray.desktop"
+    @echo "Removed. An icon already showing stays until it is quit or the session ends."
+
+# ─── Development VMs (see docs/development-vms.md) ───────────────────────────
+
+# Start a libvirt VM, and wait until its desktop has logged in automatically
+# and its keyring is open. Does nothing to a VM that is already up.
+[doc("Start a VM and wait for its desktop and keyring.")]
+[positional-arguments]
+vm-start VM:
+    scripts/vm start "$1"
+
+# Shut a libvirt VM down, and wait until it is off.
+[positional-arguments]
+vm-stop VM:
+    scripts/vm stop "$1"
+
+# Copy this checkout into a VM and bring it up to date there: packages, build,
+# units, demo backups, file-manager integration. VM is a libvirt domain name
+# (quote one with spaces) or an SSH destination. The first push asks for the
+# VM's sudo password.
+[doc("Copy this checkout into a VM and build, install and configure it there.")]
+[positional-arguments]
+vm-push VM:
+    scripts/vm push "$1"
+
+# Open Backtrack on a VM's screen, with the window's usual arguments.
+[positional-arguments]
+vm-app VM *ARGS:
+    scripts/vm app "$@"
+
+# Set this computer up for Backtrack development, or bring it up to date.
+# What vm-push runs inside the VM.
+[doc("Set this computer up for Backtrack development, or bring it up to date.")]
+dev-machine:
+    scripts/dev-machine
 
 # Remove build artifacts.
 clean:
