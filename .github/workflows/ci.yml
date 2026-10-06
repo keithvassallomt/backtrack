@@ -21,7 +21,7 @@ jobs:
           dnf install -y --setopt=install_weak_deps=False \
             just cargo clippy rustfmt gcc pkgconf-pkg-config \
             gtk4-devel libadwaita-devel sqlite-devel dbus-devel \
-            borgbackup python3 git openssl-devel ruff
+            borgbackup python3 git openssl-devel ruff desktop-file-utils
 
       - name: Quality gate (fmt, clippy -D warnings, tests, license headers, extensions)
         run: just check

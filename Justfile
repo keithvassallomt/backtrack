@@ -97,6 +97,7 @@ check:
 
 # Lint and test the file-manager extensions. Ruff comes from PATH, else uvx or
 # pipx; without any of them the lint is skipped with a warning, except in CI.
+# The Dolphin menus are checked with desktop-file-validate on the same terms.
 check-integrations:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -119,6 +120,14 @@ check-integrations:
         echo "ruff not found (install it, or uv or pipx); skipping the lint." >&2
     fi
     python3 -m unittest discover --start-directory integrations/nautilus
+    if command -v desktop-file-validate >/dev/null 2>&1; then
+        desktop-file-validate integrations/dolphin/*.desktop
+    elif [[ -n "${CI:-}" ]]; then
+        echo "desktop-file-validate not found, and CI must check the Dolphin menus." >&2
+        exit 1
+    else
+        echo "desktop-file-validate not found (desktop-file-utils); skipping the Dolphin menus." >&2
+    fi
 
 # Fail if any Rust source file under crates/ lacks an SPDX license header.
 check-license-headers:
@@ -580,6 +589,49 @@ uninstall-nautilus-dev:
     # Python's cache folder, if this extension was all that was in it.
     rmdir "${dir}/__pycache__" 2>/dev/null || true
     echo "Removed. Quit Nautilus (nautilus -q) so it lets go of the extension."
+
+# Install the Dolphin menu for this checkout: it launches the debug build
+# against the development daemon. Idempotent.
+[doc("Install the Dolphin menu for this checkout (debug build, dev daemon).")]
+install-dolphin-dev:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    root="{{justfile_directory()}}"
+    app="${root}/target/debug/backtrack-gtk"
+    dir="${XDG_DATA_HOME:-${HOME}/.local/share}/kio/servicemenus"
+
+    echo "Building the window so the menu points at something that exists…"
+    cargo build -p backtrack-gtk
+
+    # The shipped files are the ones installed, with the command rewritten, so
+    # what is tried here is what will be packaged. KIO runs a menu from the
+    # home folder only if its file is executable; packages install to
+    # /usr/share, where that does not apply.
+    mkdir -p "${dir}"
+    for file in "${root}"/integrations/dolphin/*.desktop; do
+        name="$(basename "${file}")"
+        sed "s|^Exec=backtrack-gtk |Exec=env BACKTRACK_DEV=1 ${app} |" "${file}" > "${dir}/${name}.tmp"
+        if ! grep -q "^Exec=env BACKTRACK_DEV=1 ${app} " "${dir}/${name}.tmp"; then
+            rm -f "${dir}/${name}.tmp"
+            echo "${name}'s Exec line has changed shape; update this recipe." >&2
+            exit 1
+        fi
+        chmod +x "${dir}/${name}.tmp"
+        mv "${dir}/${name}.tmp" "${dir}/${name}"
+        echo "Installed ${dir}/${name}"
+    done
+    echo
+    echo "Dolphin reads its menus each time it opens one; there is nothing to restart."
+
+# Remove the development Dolphin menu.
+uninstall-dolphin-dev:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    dir="${XDG_DATA_HOME:-${HOME}/.local/share}/kio/servicemenus"
+    for file in "{{justfile_directory()}}"/integrations/dolphin/*.desktop; do
+        rm -f "${dir}/$(basename "${file}")"
+    done
+    echo "Removed."
 
 # ─── Development VMs (see docs/development-vms.md) ───────────────────────────
 

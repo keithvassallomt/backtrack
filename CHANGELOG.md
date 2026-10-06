@@ -224,6 +224,13 @@ All notable changes to Backtrack are documented here. This project adheres to
   Backtrack backs up, never on network locations or disks mounted inside
   them, and the switch in Preferences takes them away without restarting
   Files. Needs nautilus-python.
+- Right-click in Dolphin: the same two items, in a Backtrack submenu. Dolphin
+  cannot tell which folders are backed up, so they appear on every file and
+  folder on this computer.
+- A folder with nothing to show now says why: it is not one of the folders
+  Backtrack backs up (with a button to add it), it will be in the next
+  backup, or it was not in the latest one and may be excluded or on another
+  disk.
 - Project bootstrap: Cargo workspace (core library plus daemon, GTK app, and CLI
   binaries), structured logging with JSONL rotation, developer task runner,
   versioning policy, and continuous integration.

@@ -15,12 +15,13 @@
 //! S01-T3, computed in SQL over the interval encoding.
 
 use std::cell::{Cell, RefCell};
+use std::path::PathBuf;
 use std::rc::Rc;
 
-use backtrack_core::index::{Entry, Kind};
+use backtrack_core::index::{Entry, IndexReader, Kind};
 use gtk4::prelude::*;
 use gtk4::{
-    gio, glib, Align, Box as GtkBox, ColumnView, ColumnViewColumn, Image, Label, ListItem,
+    gio, glib, Align, Box as GtkBox, Button, ColumnView, ColumnViewColumn, Image, Label, ListItem,
     Orientation, ScrolledWindow, SignalListItemFactory, SingleSelection, Stack, Widget,
 };
 use libadwaita as adw;
@@ -28,6 +29,7 @@ use tracing::{debug, warn};
 
 use crate::daemon::Daemon1Proxy;
 use crate::index::Index;
+use crate::model::empty::{self, Coverage, Empty};
 use crate::path;
 use crate::state::{AppState, Change, Selected};
 
@@ -54,6 +56,9 @@ pub struct Files {
     rows: gio::ListStore,
     selection: SingleSelection,
     empty: adw::StatusPage,
+    /// "Add to Backups…", on the empty page only when the folder is outside
+    /// the backups.
+    add: Button,
     state: Rc<AppState>,
     index: Index,
     /// `None` until the daemon answers, and if it never does. Browsing works
@@ -67,11 +72,14 @@ pub struct Files {
     syncing: Cell<bool>,
 }
 
-/// Build the file pane for `state`.
+/// Build the file pane for `state`. `add_to_backups` is given the folder
+/// being shown when somebody asks for a folder outside the backups to be
+/// backed up.
 pub fn build(
     state: &Rc<AppState>,
     index: &Index,
     daemon: &Rc<RefCell<Option<Daemon1Proxy<'static>>>>,
+    add_to_backups: impl Fn(&str) + 'static,
 ) -> Rc<Files> {
     let rows = gio::ListStore::new::<glib::BoxedAnyObject>();
     let selection = SingleSelection::builder()
@@ -96,9 +104,19 @@ pub fn build(
         .vexpand(true)
         .build();
 
+    let add = Button::builder()
+        .label("Add to Backups…")
+        .halign(Align::Center)
+        .visible(false)
+        .build();
+    add.add_css_class("pill");
+    let adder = Rc::clone(state);
+    add.connect_clicked(move |_| add_to_backups(&adder.view().folder));
+
     let empty = adw::StatusPage::builder()
         .icon_name("folder-symbolic")
         .title("Nothing here")
+        .child(&add)
         .build();
     empty.add_css_class("compact");
 
@@ -111,6 +129,7 @@ pub fn build(
         rows,
         selection,
         empty,
+        add,
         state: Rc::clone(state),
         index: index.clone(),
         daemon: Rc::clone(daemon),
@@ -176,7 +195,7 @@ impl Files {
     }
 
     /// Re-read the folder at the current backup.
-    fn reload(self: &Rc<Self>) {
+    pub fn reload(self: &Rc<Self>) {
         let view = self.state.view();
         let Some(seq) = view.seq else {
             self.show_empty(
@@ -186,6 +205,7 @@ impl Files {
             return;
         };
         let folder = view.folder.clone();
+        let newest = view.newer().is_none();
         let wanted = self.generation.get() + 1;
         self.generation.set(wanted);
 
@@ -194,14 +214,34 @@ impl Files {
         crate::ui::spawn(async move {
             let answer = this
                 .index
-                .query(move |reader| reader.folder_at(&query_folder, seq))
+                .query(move |reader| {
+                    let entries = reader.folder_at(&query_folder, seq)?;
+                    // Only an empty list needs to know whether the folder
+                    // itself is in the backup: if it is, it was empty then.
+                    let in_backup = !entries.is_empty() || present_at(reader, &query_folder, seq)?;
+                    Ok((entries, in_backup))
+                })
                 .await;
             if this.generation.get() != wanted {
                 // Superseded while the query was in flight.
                 return;
             }
             match answer {
-                Ok(entries) => {
+                Ok((entries, in_backup)) if entries.is_empty() => {
+                    let coverage = if in_backup || !newest {
+                        // Settled already: see `empty::why`.
+                        Coverage::Unknown
+                    } else {
+                        this.coverage(&folder, seq).await
+                    };
+                    if this.generation.get() != wanted {
+                        return;
+                    }
+                    let why = empty::why(in_backup, newest, coverage);
+                    debug!(folder, seq, ?why, "nothing to show");
+                    this.show_why(why, &folder);
+                }
+                Ok((entries, _)) => {
                     // Asked before painting rather than after, so the status
                     // column is right the first time it is drawn. It is one
                     // directory read on the other side of a local socket, and
@@ -220,7 +260,7 @@ impl Files {
                         gone_from_disk = on_disk.iter().filter(|a| **a == ABSENT).count(),
                         "folder loaded"
                     );
-                    this.show(entries, on_disk, &folder)
+                    this.show(entries, on_disk)
                 }
                 Err(error) => {
                     warn!(%error, folder, seq, "the folder could not be read");
@@ -262,16 +302,50 @@ impl Files {
         }
     }
 
-    fn show(self: &Rc<Self>, entries: Vec<Entry>, on_disk: Vec<u8>, folder: &str) {
-        if entries.is_empty() {
-            let name = path::name(folder);
-            self.show_empty(
-                "Not in this backup",
-                &format!("“{name}” has nothing in it at this point in time. Step forward, or pick a more recent backup."),
-            );
-            return;
+    /// Where `folder` stands with the folders Backtrack backs up, and whether
+    /// the one it is in is in backup `seq`.
+    async fn coverage(&self, folder: &str, seq: i64) -> Coverage {
+        let Some(roots) = self.roots().await else {
+            return Coverage::Unknown;
+        };
+        let Some(root) = empty::root_of(folder, &roots) else {
+            return Coverage::Outside;
+        };
+        let root = path::to_archive(root);
+        if root.is_empty() {
+            // The filesystem root is in every backup there is.
+            return Coverage::Inside {
+                root_in_backup: true,
+            };
         }
+        match self
+            .index
+            .query(move |reader| present_at(reader, &root, seq))
+            .await
+        {
+            Ok(root_in_backup) => Coverage::Inside { root_in_backup },
+            Err(error) => {
+                debug!(%error, folder, "the backed-up folder could not be looked up");
+                Coverage::Unknown
+            }
+        }
+    }
 
+    /// The folders Backtrack backs up, or `None` with no daemon to ask.
+    async fn roots(&self) -> Option<Vec<PathBuf>> {
+        let proxy = self.daemon.borrow().clone()?;
+        let text = match proxy.get_config().await {
+            Ok(text) => text,
+            Err(error) => {
+                debug!(%error, "the backed-up folders could not be read");
+                return None;
+            }
+        };
+        let (config, _) = backtrack_core::config::Config::parse(&text).ok()?;
+        Some(backtrack_core::roots::Roots::of(&config).roots)
+    }
+
+    fn show(self: &Rc<Self>, entries: Vec<Entry>, on_disk: Vec<u8>) {
         let previously = self.state.view().selected.map(|s| s.name);
 
         self.syncing.set(true);
@@ -317,7 +391,13 @@ impl Files {
         self.rows.remove_all();
         self.empty.set_title(title);
         self.empty.set_description(Some(description));
+        self.add.set_visible(false);
         self.stack.set_visible_child_name("empty");
+    }
+
+    fn show_why(&self, why: Empty, folder: &str) {
+        self.show_empty(why.title(), &why.description(path::name(folder)));
+        self.add.set_visible(why.offers_to_add());
     }
 
     fn position_of(&self, name: &str) -> Option<u32> {
@@ -325,6 +405,15 @@ impl Files {
             row_of(self.rows.item(*index).as_ref()).is_some_and(|row| row.entry.name == name)
         })
     }
+}
+
+/// Whether `path` itself, rather than only something inside it, is in backup
+/// `seq`.
+fn present_at(reader: &IndexReader, path: &str, seq: i64) -> backtrack_core::index::Result<bool> {
+    Ok(reader
+        .file_history(path)?
+        .iter()
+        .any(|span| span.first_seq <= seq && seq <= span.last_seq))
 }
 
 /// The row behind a list item.

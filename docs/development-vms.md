@@ -84,7 +84,8 @@ up takes under a second.
      the daemon at them, with a fixed development passphrase for the local
      spool,
    - installs the Nautilus extension where there is a Nautilus, and quits
-     Nautilus so the next window loads it.
+     Nautilus so the next window loads it, and the Dolphin menu where there
+     is a Dolphin.
 
 `scripts/dev-machine` works the same at the VM's own terminal (`just
 dev-machine` there), or on any other computer being set up for development.

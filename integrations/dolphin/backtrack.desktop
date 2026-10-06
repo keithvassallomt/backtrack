@@ -1,0 +1,27 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# SPDX-FileCopyrightText: 2026 Keith Vassallo <keith@vassallo.cloud>
+#
+# "Restore Previous Version…" on a selected file or folder in Dolphin, in a
+# Backtrack submenu. backtrack-folder.desktop adds the folder-only item to the
+# same submenu. See docs/file-manager-integration.md.
+#
+# Type is Application, not the Service of older service menus, so that
+# desktop-file-validate accepts the file. KIO reads the actions and filters
+# below and ignores Type, and NoDisplay keeps the file out of any launcher.
+[Desktop Entry]
+Type=Application
+Name=Backtrack
+NoDisplay=true
+MimeType=application/octet-stream;inode/directory;
+X-KDE-Submenu=Backtrack
+X-KDE-Protocols=file
+X-KDE-RequiredNumberOfUrls=1
+Actions=backtrackPreviousVersion
+
+# KIO sorts a submenu's items by these action names, so they are chosen to
+# put Restore before Browse, as mockup 3 does. They are also the keys Dolphin
+# writes to kservicemenurc to hide an item.
+[Desktop Action backtrackPreviousVersion]
+Name=Restore Previous Version…
+Icon=document-open-recent
+Exec=backtrack-gtk --select %f

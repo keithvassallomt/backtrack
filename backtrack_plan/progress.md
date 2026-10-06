@@ -117,7 +117,7 @@
 
 ## Stage 12 — Integrations & tray ([stage file](stages/stage-12-integrations-tray.md))
 - [x] S12-T1 Nautilus python extension (mockup 2)
-- [ ] S12-T2 Dolphin service menu (mockup 3, menu part only)
+- [/] S12-T2 Dolphin service menu (mockup 3, menu part only)
 - [ ] S12-T3 StatusNotifierItem tray for non-GNOME (status, actions)
 - [ ] S12-T4 Background portal presence (GNOME quick-settings launch path)
 - [ ] S12-T5 App detects missing plugins → hints distro package (prefs General)
@@ -138,6 +138,51 @@
 ## Notes / decisions made during implementation
 
 (append dated entries here; never delete)
+
+- 2026-10-06 (S12-T2: the Dolphin menu): the same two items as Nautilus,
+  in a Backtrack submenu, and the window's answer for folders outside the
+  backups. Decisions:
+  - **Two service menus, not the one file the stage names.** KIO matches
+    file types per file, not per action, and Browse Backups of This
+    Folder… is for folders only, as in Nautilus. Both files name the same
+    `X-KDE-Submenu`, which KIO merges into one submenu (read in KIO's
+    `kfileitemactions.cpp`). KIO sorts a submenu by action name, so the
+    names (`backtrackPreviousVersion`, `backtrackThisFolder`) put Restore
+    first as mockup 3 does.
+  - **`Type=Application` with `NoDisplay=true`, not `Type=Service`.** The
+    Definition of Done asks for `desktop-file-validate`, which rejects
+    `Service`, its `MimeType` and its `Actions`. KIO never reads `Type`.
+    `just check-integrations` now validates them, and CI installs
+    desktop-file-utils for it.
+  - **The window says why a folder is empty, and only what it knows.** Four
+    states (`model/empty.rs`): outside every backed-up folder, with Add to
+    Backups…; in a folder added since the latest backup, "will be in the
+    next backup"; in a backed-up folder but not in the latest backup, which
+    may be new, excluded or on another disk; and the old "Not in this
+    backup" for an empty folder or an older backup. The third exists
+    because Dolphin offers its menu on `~/.cache`, on excluded folders and
+    on disks mounted inside a backed-up folder, which Nautilus never does;
+    only the daemon applies those rules, so the window does not promise
+    them to the next backup.
+  - **Add to Backups… adds the folder, then opens Preferences on Backup.**
+    The stage says a link to Preferences; landing there with the folder
+    already listed, with its × to take it out, saves choosing the same
+    folder again in a file chooser. Preferences raised while already open
+    now turns to the page asked for.
+  - **The file pane reloads when the daemon answers.** A window a file
+    manager opens draws the folder before the daemon has said what the
+    backed-up folders are; without the reload it stayed on the neutral
+    state. The same reload fills in the "not on your disk" column for the
+    first folder shown, which until now waited for the next navigation.
+  - **The Dolphin switch in Preferences is left to S12-T5.** Dolphin hides
+    service-menu actions listed as false under `[Show]` in
+    `kservicemenurc`, which is what its own Context Menu settings write;
+    the switch belongs with T5's rework of those rows.
+  - Machine-checked on the Plasma VM: the window opened on `/etc`, a folder
+    created since the last backup, `Documents`, and a folder just added to
+    the backups logged the expected state for each. The menu itself is
+    checked by hand (`docs/file-manager-integration.md`, Dolphin
+    checklist).
 
 - 2026-10-05 (S12-T6: development VMs): added to the stage. The tray and
   GNOME's background apps cannot be tried on Keith's Hyprland machine, and

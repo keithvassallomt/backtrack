@@ -193,6 +193,10 @@ integrations() {
         # Nautilus loads extensions when it starts.
         nautilus -q 2>/dev/null || true
     fi
+    if command -v dolphin >/dev/null; then
+        say "Installing the Dolphin menu…"
+        (cd "$ROOT" && just install-dolphin-dev >/dev/null)
+    fi
 }
 
 desktop() {
@@ -214,6 +218,9 @@ status() {
     fi
     if [[ -f "${XDG_DATA_HOME:-$HOME/.local/share}/nautilus-python/extensions/backtrack.py" ]]; then
         echo "Nautilus:   extension installed"
+    fi
+    if [[ -f "${XDG_DATA_HOME:-$HOME/.local/share}/kio/servicemenus/backtrack.desktop" ]]; then
+        echo "Dolphin:    menu installed"
     fi
 }
 

@@ -36,8 +36,9 @@ use crate::ui::wizard::display;
 
 thread_local! {
     /// The one Preferences window, so a second "Preferences" raises it
-    /// rather than opening another that could disagree with it.
-    static OPEN: RefCell<Option<adw::Window>> = const { RefCell::new(None) };
+    /// rather than opening another that could disagree with it, and its
+    /// pages, so that raising it can still turn to the one asked for.
+    static OPEN: RefCell<Option<(adw::Window, adw::ViewStack)>> = const { RefCell::new(None) };
 }
 
 type Show = Box<dyn Fn(&Config)>;
@@ -70,7 +71,10 @@ pub fn present(
     daemon: Daemon1Proxy<'static>,
     page: Option<&'static str>,
 ) {
-    if let Some(open) = OPEN.with(|open| open.borrow().clone()) {
+    if let Some((open, pages)) = OPEN.with(|open| open.borrow().clone()) {
+        if let Some(page) = page {
+            pages.set_visible_child_name(page);
+        }
         open.present();
         return;
     }
@@ -231,7 +235,7 @@ fn build(
         OPEN.with(|open| *open.borrow_mut() = None);
         glib::Propagation::Proceed
     });
-    OPEN.with(|open| *open.borrow_mut() = Some(window.clone()));
+    OPEN.with(|open| *open.borrow_mut() = Some((window.clone(), stack.clone())));
 
     let first = Rc::clone(&prefs);
     crate::ui::spawn(async move {

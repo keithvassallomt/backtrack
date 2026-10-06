@@ -2,16 +2,18 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # SPDX-FileCopyrightText: 2026 Keith Vassallo <keith@vassallo.cloud>
 #
-# The Stage 12 file-manager checks: the Nautilus extension against the
-# development daemon's demo fixture. See docs/file-manager-integration.md for
-# the checklist this sets up.
+# The Stage 12 file-manager checks: the Nautilus extension and the Dolphin
+# menu against the development daemon's demo fixture. See
+# docs/file-manager-integration.md for the checklists this sets up.
 #
-# `setup` installs the development extension and gives the backed-up folder
-# the two things the extension must stay out of: a disk mounted inside it (an
-# unprivileged FUSE mount, so no sudo) and a file in the trash.
+# `setup` installs the development integration for whichever of the two file
+# managers is here, and gives the backed-up folder the two things the menus
+# must stay out of, or handle: a disk mounted inside it (an unprivileged FUSE
+# mount, so no sudo) and a file in the trash.
 #
-#   fm-check setup      install the extension, mount the stick, trash a file
+#   fm-check setup      install the integration, mount the stick, trash a file
 #   fm-check nautilus   restart Nautilus on the backed-up Documents folder
+#   fm-check dolphin    open Dolphin on the backed-up Documents folder
 #   fm-check status     what is installed and published
 #   fm-check reset      undo everything setup did
 
@@ -22,6 +24,7 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DATA="${XDG_DATA_HOME:-$HOME/.local/share}/backtrack-dev"
 ROOTS="$DATA/roots.json"
 EXTENSION="${XDG_DATA_HOME:-$HOME/.local/share}/nautilus-python/extensions/backtrack.py"
+SERVICE_MENU="${XDG_DATA_HOME:-$HOME/.local/share}/kio/servicemenus/backtrack.desktop"
 SCRATCH=/var/tmp/backtrack-fm-check
 TRASHED_NAME="backtrack-fm-check-draft.txt"
 
@@ -54,8 +57,18 @@ setup() {
         exit 1
     }
 
-    say "Installing the development extension…"
-    (cd "$REPO_ROOT" && just install-nautilus-dev >/dev/null)
+    if ! command -v nautilus >/dev/null && ! command -v dolphin >/dev/null; then
+        echo "Neither Nautilus nor Dolphin is installed here." >&2
+        exit 1
+    fi
+    if command -v nautilus >/dev/null; then
+        say "Installing the development Nautilus extension…"
+        (cd "$REPO_ROOT" && just install-nautilus-dev >/dev/null)
+    fi
+    if command -v dolphin >/dev/null; then
+        say "Installing the development Dolphin menu…"
+        (cd "$REPO_ROOT" && just install-dolphin-dev >/dev/null)
+    fi
 
     say "Mounting a stick inside the backed-up folder…"
     local mount
@@ -76,8 +89,8 @@ setup() {
     say "Ready. The backed-up folder is:"
     echo "  $base"
     echo
-    echo "Next: scripts/fm-check nautilus, then work through the checklist in"
-    echo "docs/file-manager-integration.md."
+    echo "Next: scripts/fm-check nautilus or scripts/fm-check dolphin, then work"
+    echo "through that file manager's checklist in docs/file-manager-integration.md."
 }
 
 nautilus_here() {
@@ -90,12 +103,25 @@ nautilus_here() {
     echo "Nautilus opened on $folder"
 }
 
+dolphin_here() {
+    local folder
+    folder="$(root)/home/Documents"
+    setsid dolphin --new-window "$folder" >/dev/null 2>&1 < /dev/null &
+    echo "Dolphin opened on $folder"
+}
+
 status() {
     if [[ -f "$EXTENSION" ]]; then
         echo "Extension:  $EXTENSION"
         grep -E '^(APP|DEVELOPMENT) = ' "$EXTENSION" | sed 's/^/            /'
     else
         echo "Extension:  not installed"
+    fi
+    if [[ -f "$SERVICE_MENU" ]]; then
+        echo "Menu:       $SERVICE_MENU"
+        sed -n 's/^Exec=/            /p' "$SERVICE_MENU"
+    else
+        echo "Menu:       not installed"
     fi
     if [[ -f "$ROOTS" ]]; then
         echo "Published:  $ROOTS"
@@ -121,14 +147,15 @@ reset() {
     # The trashed draft, wherever the trash keeps it.
     local trash="${XDG_DATA_HOME:-$HOME/.local/share}/Trash"
     rm -f "$trash/files/$TRASHED_NAME" "$trash/info/$TRASHED_NAME.trashinfo"
-    (cd "$REPO_ROOT" && just uninstall-nautilus-dev >/dev/null)
+    (cd "$REPO_ROOT" && just uninstall-nautilus-dev >/dev/null && just uninstall-dolphin-dev >/dev/null)
     nautilus -q 2>/dev/null || true
-    echo "Removed the stick, the trashed draft and the extension, and quit Nautilus."
+    echo "Removed the stick, the trashed draft, the extension and the menu, and quit Nautilus."
 }
 
 case "${1:-}" in
     setup) setup ;;
     nautilus) nautilus_here ;;
+    dolphin) dolphin_here ;;
     status) status ;;
     reset) reset ;;
     *)

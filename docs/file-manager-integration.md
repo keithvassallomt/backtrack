@@ -129,3 +129,108 @@ passed. Nautilus 50 draws no icon beside extension items, so mockup 2's clock
 does not appear. The run found that a change to the switch shows from the
 next click rather than at once, which is now step 8 and "When a change
 shows".
+
+## Dolphin
+
+Two KDE service menus (KDE Frameworks 6), which put the same two items in a
+**Backtrack** submenu:
+
+| File | Item | Offered on |
+|---|---|---|
+| `integrations/dolphin/backtrack.desktop` | Restore Previous Version… | one file or folder |
+| `integrations/dolphin/backtrack-folder.desktop` | Browse Backups of This Folder… | one folder |
+
+They are two files because KIO matches file types per file, not per action,
+and Browse is for folders only. KIO merges submenus of the same name, and
+sorts a submenu's items by action name, so the action names put Restore first
+as mockup 3 does.
+
+*Restore Previous Version…* runs `backtrack-gtk --select <it>`, which opens
+the window on its folder with it selected; *Browse Backups of This Folder…*
+runs `backtrack-gtk --path <folder>`. Dolphin offers a folder's menus on the
+empty space of that folder too, so both items appear there: Restore opens the
+folder above with this one selected.
+
+Neither appears on more than one item, outside `file://` (network locations
+and the trash), or anywhere KIO does not offer service menus.
+
+### Everywhere else, the window explains
+
+A service menu is a fixed file: KIO decides whether to show it from the file
+type, the location's protocol and the number of items, and nothing else. It
+cannot read `roots.json`, so the Dolphin items appear on every local file and
+folder, backed up or not. The window makes up for it: a folder with nothing
+to show says why, and only says what it knows.
+
+| The folder | The window says |
+|---|---|
+| Outside every backed-up folder | *This folder is not backed up*, with **Add to Backups…** |
+| In a backed-up folder that was added since the latest backup | *Not backed up yet*: it will be in the next one |
+| In a backed-up folder, but not in the latest backup | *Not in the latest backup*: it may be newer than that backup, excluded, or on another disk |
+| Empty at the backup being viewed, or not there yet at an older one | *Not in this backup* |
+
+The window cannot tell an exclusion or a mounted disk from a folder created
+since the last backup, because only the daemon applies those rules, so it
+names all three rather than promising the next backup. **Add to Backups…**
+adds the folder to *What to back up* and opens Preferences on the Backup
+page, where the folder's × takes it out again. These states belong to the
+window, so they show however it was opened: `just run-app --path /etc` on
+any desktop shows the first.
+
+### Installing it for development
+
+```sh
+just install-dolphin-dev
+```
+
+The recipe installs both files to `~/.local/share/kio/servicemenus/` with the
+command rewritten to this checkout's debug build and `BACKTRACK_DEV=1`, and
+marks them executable: KIO runs a service menu from the home folder only if
+its file is executable. Dolphin reads service menus each time it builds a
+menu, so there is nothing to restart. `just uninstall-dolphin-dev` removes
+them.
+
+Packages install them unchanged to `/usr/share/kio/servicemenus/` (Stage 13),
+where the executable bit is not needed.
+
+The files use `Type=Application`, not the `Type=Service` of older service
+menus, so that `desktop-file-validate` accepts them: KIO ignores `Type`, and
+`NoDisplay=true` keeps them out of application launchers. `just
+check-integrations` validates them, and CI runs it.
+
+### Manual checklist
+
+On the Plasma development VM (see `docs/development-vms.md`), in a terminal
+on its screen, in its checkout:
+
+1. `scripts/fm-check setup`, then `scripts/fm-check dolphin`. Dolphin opens on
+   the fixture's `home/Documents`.
+2. **A file.** Right-click `report.odt`. The menu has a **Backtrack** submenu
+   holding *Restore Previous Version…*; compare with mockup 3. Choose it:
+   Backtrack opens on `Documents` with `report.odt` selected.
+3. **The folder being shown.** Right-click the empty space beside the files.
+   *Backtrack* holds both items, Restore first. Choose *Browse Backups of This
+   Folder…*: the window comes forward, still on `Documents`.
+4. **A folder.** Go up to the fixture's `home` and right-click `Pictures`.
+   Both items are there. *Browse…* opens `Pictures`; *Restore…* opens `home`
+   with `Pictures` selected.
+5. **Outside the backups.** Go to your own home folder, right-click
+   `Downloads` and choose *Browse Backups of This Folder…*. The window says
+   *This folder is not backed up*, with **Add to Backups…**.
+6. **Adding it.** Choose **Add to Backups…**. Preferences opens on Backup with
+   `Downloads` under *What to back up*, and the window now says *Not backed up
+   yet*. Take `Downloads` out again with its ×.
+7. **A disk mounted inside the backed-up folder.** In the fixture's `home`,
+   open `usb-stick`, right-click `holiday.jpg` and choose *Restore Previous
+   Version…*. The window opens on `usb-stick` and says *Not in the latest
+   backup*.
+8. **The trash.** Open Trash and right-click `backtrack-fm-check-draft.txt`:
+   no Backtrack submenu.
+9. **Two items.** Select `report.odt` and `notes.txt` together and
+   right-click: no Backtrack submenu.
+10. `scripts/fm-check reset` unmounts the stick, empties the draft from the
+    trash and uninstalls the menu.
+
+Note while doing it which icon the submenu has. KIO takes it from the first
+of the two files it reads, so it is the clock of *Restore Previous Version…*
+or the folder of *Browse Backups of This Folder…*.
