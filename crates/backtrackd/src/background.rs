@@ -10,9 +10,16 @@
 //! once nothing needs it, rather than carrying on backing up until logout,
 //! which is the thing the person switched off.
 //!
-//! Neither half is allowed to fail anything else. Under Flatpak there is no
-//! unit to enable (the Background portal is Stage 12's), and a desktop without
-//! a systemd user manager simply keeps the old behaviour: started on demand.
+//! Neither half is allowed to fail anything else. A desktop without a systemd
+//! user manager simply keeps the old behaviour: started on demand.
+//!
+//! Inside a Flatpak there is no unit to enable. There the Background portal
+//! grants running in the background and, when wanted, starts the daemon at
+//! login, and being a sandboxed app running without a window is also what
+//! lists Backtrack under GNOME's quick settings → background apps: GNOME
+//! lists only Flatpak instances there (xdg-desktop-portal 1.22,
+//! `background.c`), so outside one Backtrack is never listed, whatever it
+//! asks for.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -61,12 +68,22 @@ trait Manager {
 /// end of the connection and never will.
 const PATIENCE: Duration = Duration::from_secs(5);
 
+/// What the Background portal shows when it asks whether Backtrack may run
+/// in the background.
+const REASON: &str = "Hourly backups";
+
 /// Enable or disable starting at login, to match `wanted`.
 ///
 /// Compared against what systemd reports rather than applied blindly, so the
 /// common case (nothing has changed) writes nothing, and a unit the user has
 /// deliberately masked is reported rather than fought with.
 pub async fn apply(connection: &zbus::Connection, wanted: bool) {
+    if ashpd::is_sandboxed() {
+        // The portal may ask on screen first, and nothing that changed a
+        // setting should wait for somebody to answer it.
+        tokio::spawn(ask_portal(wanted));
+        return;
+    }
     if tokio::time::timeout(PATIENCE, reconcile(connection, wanted))
         .await
         .is_err()
@@ -127,6 +144,29 @@ async fn reconcile(connection: &zbus::Connection, wanted: bool) {
             );
         }
         Err(error) => warn!(%error, unit = UNIT, "could not change starting at login"),
+    }
+}
+
+/// Ask the Background portal to let the daemon run in the background, and to
+/// start it at login if `wanted`. Asked every time, rather than compared
+/// first as the unit is: the portal says what it granted, and asking again is
+/// how a change of `wanted` reaches it.
+async fn ask_portal(wanted: bool) {
+    let answer = ashpd::desktop::background::Background::request()
+        .reason(REASON)
+        .auto_start(wanted)
+        .command(["backtrackd"])
+        .dbus_activatable(false)
+        .send()
+        .await
+        .and_then(|request| request.response());
+    match answer {
+        Ok(granted) => info!(
+            background = granted.run_in_background(),
+            at_login = granted.auto_start(),
+            "the Background portal answered"
+        ),
+        Err(error) => warn!(%error, "the Background portal did not answer"),
     }
 }
 

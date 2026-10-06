@@ -119,7 +119,7 @@
 - [x] S12-T1 Nautilus python extension (mockup 2)
 - [/] S12-T2 Dolphin service menu (mockup 3, menu part only)
 - [x] S12-T3 StatusNotifierItem tray for non-GNOME (status, actions)
-- [ ] S12-T4 Background portal presence (GNOME quick-settings launch path)
+- [!] S12-T4 Background portal presence (GNOME quick-settings launch path)
 - [x] S12-T5 App detects missing plugins → hints distro package (prefs General)
 - [x] S12-T6 Development VMs: one-command setup and push for GNOME and Plasma
 
@@ -133,11 +133,44 @@
 
 ## Blocked
 
-(nothing)
+- **S12-T4**: written, and waiting on the Flatpak (S13-T1) for its
+  acceptance. GNOME's Background Apps list holds Flatpak instances only, so
+  only the Flatpak build can appear there; the check is in S13-T3's matrix.
 
 ## Notes / decisions made during implementation
 
 (append dated entries here; never delete)
+
+- 2026-10-06 (S12-T4: GNOME background presence): written, and blocked on
+  S13-T1 for its acceptance; Keith's call, over pulling a development
+  Flatpak forward into Stage 12. Documented in
+  `docs/tray-and-background.md`. Decisions:
+  - **GNOME's Background Apps list is Flatpak-only.** gnome-shell 51 reads
+    it from xdg-desktop-portal's `org.freedesktop.background.Monitor`, and
+    xdg-desktop-portal 1.22.1 builds that from `flatpak_instance_get_all`
+    and nothing else (`src/background.c`; `SetStatus` refuses host apps
+    outright). A packaged or checkout build is never listed, and the
+    acceptance can only be run in the Flatpak. S13-T3's matrix already had
+    "appears in GNOME background apps"; it now also says that activating
+    the entry opens the window, and that this is S12-T4's acceptance.
+  - **The portal only when sandboxed.** `background::apply`, which already
+    ran at startup and on every change to "Run in background", asks the
+    Background portal (through `ashpd`: reason "Hourly backups", autostart
+    as the setting says, command `backtrackd`) inside a sandbox, and enables
+    the systemd unit outside one as before. The portal works only for
+    sandboxed apps, and on the host the unit already starts the daemon at
+    login. The request is spawned rather than awaited, because the portal
+    may put a question on screen and a settings change must not wait for
+    it. On the GNOME VM the host path is unchanged: unit enabled, no
+    portal call.
+  - **The launcher, `packaging/desktop/io.github.keithvassallomt.Backtrack.desktop`,**
+    named for the application ID the window registers, which is how the
+    shell finds a background app's launcher. Validated with the other
+    `.desktop` files; packages install it (S13-T4).
+  - A product consequence for Stage 13: on GNOME, Backtrack installed from
+    an RPM or deb has no background presence at all, since GNOME has no
+    tray and lists only Flatpaks. The window remains the way to see the
+    status there.
 
 - 2026-10-06 (S12-T3: the tray icon): `backtrack-tray`, documented in
   `docs/tray-and-background.md`. Decisions:

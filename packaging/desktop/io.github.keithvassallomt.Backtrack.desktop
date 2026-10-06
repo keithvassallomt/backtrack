@@ -1,0 +1,18 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# SPDX-FileCopyrightText: 2026 Keith Vassallo <keith@vassallo.cloud>
+#
+# The window's launcher, named for the application ID it registers. That name
+# is how the desktop matches a running window or a background app to it:
+# GNOME's quick settings look a background app up as `<app ID>.desktop` and
+# launch this to open it. Packages install it to /usr/share/applications
+# (Stage 13).
+[Desktop Entry]
+Type=Application
+Name=Backtrack
+Comment=Browse your backups as if they were folders, and put back what you lost
+Exec=backtrack-gtk
+Icon=io.github.keithvassallomt.Backtrack
+Terminal=false
+Categories=Utility;Archiving;
+Keywords=backup;restore;history;snapshot;borg;
+StartupNotify=true

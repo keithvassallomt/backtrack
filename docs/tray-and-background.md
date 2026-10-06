@@ -2,7 +2,8 @@
 
 How Backtrack shows that it is there while its window is closed. Desktops
 with a system tray (Plasma, Xfce, Cinnamon and the rest) get a tray icon.
-GNOME has no tray.
+GNOME has no tray; there, quick settings' background apps list Backtrack,
+and only for the Flatpak build (see [GNOME](#gnome)).
 
 ## The tray icon
 
@@ -115,3 +116,41 @@ scripts/vm run "fedora45 (KDE)" busctl --user call org.backtrack.Daemon1.Dev \
 On the Plasma VM (Fedora 45, Plasma 6.7), 2026-10-06: every `tray-check`
 step passed, and after a cold boot the icon was started by its autostart
 unit and registered with the panel.
+
+## GNOME
+
+GNOME 44 and later list applications running without a window under quick
+settings → **Background Apps**, and choosing one there opens it. That is
+Backtrack's presence on GNOME: one click opens the window, whose status line
+and banner say how backups are doing.
+
+The list holds **Flatpak instances only**. gnome-shell reads it from
+xdg-desktop-portal's `org.freedesktop.background.Monitor`, and the portal
+builds it from the running Flatpak instances and nothing else (checked
+against xdg-desktop-portal 1.22.1, `src/background.c`, and gnome-shell 51,
+`js/ui/status/backgroundApps.js`, on Fedora 45). A Backtrack installed from a
+distribution package, or run from a checkout, is never listed, whatever it
+asks for, and GNOME offers such an application nothing in its place.
+
+For the Flatpak build:
+
+- **The daemon asks the Background portal** to run in the background, with
+  the reason "Hourly backups", and to be started at login (`backtrackd`, as
+  the autostart command) when *Run in background* is on. It asks at startup
+  and whenever that setting changes, in place of enabling the systemd unit,
+  which a sandbox does not have (`crates/backtrackd/src/background.rs`). The
+  request runs on its own, because the portal may ask on screen first.
+- **The launcher is named for the application ID**,
+  `packaging/desktop/io.github.keithvassallomt.Backtrack.desktop`: the shell
+  looks a background app up as `<app ID>.desktop` and launches it.
+
+Outside a sandbox, nothing here changes: the systemd unit starts the daemon
+at login, as before, and the portal is not asked.
+
+### Checking it
+
+Only in the Flatpak, so with the packaging (S13-T3's test matrix): with
+*Run in background* on and the window closed, Backtrack is listed under
+quick settings → Background Apps while the daemon runs, and choosing it there
+opens the main window.
+

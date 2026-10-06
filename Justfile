@@ -97,7 +97,7 @@ check:
 
 # Lint and test the file-manager extensions. Ruff comes from PATH, else uvx or
 # pipx; without any of them the lint is skipped with a warning, except in CI.
-# The Dolphin menus and the tray's autostart file are checked with
+# The .desktop files (Dolphin menus, launcher, autostart) are checked with
 # desktop-file-validate on the same terms.
 check-integrations:
     #!/usr/bin/env bash
@@ -122,7 +122,7 @@ check-integrations:
     fi
     python3 -m unittest discover --start-directory integrations/nautilus
     if command -v desktop-file-validate >/dev/null 2>&1; then
-        desktop-file-validate integrations/dolphin/*.desktop packaging/autostart/*.desktop
+        desktop-file-validate integrations/dolphin/*.desktop packaging/*/*.desktop
     elif [[ -n "${CI:-}" ]]; then
         echo "desktop-file-validate not found, and CI must check the .desktop files." >&2
         exit 1

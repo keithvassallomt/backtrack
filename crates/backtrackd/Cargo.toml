@@ -23,6 +23,9 @@ toml.workspace = true
 tokio-util.workspace = true
 rustix.workspace = true
 async-trait.workspace = true
+# The Background portal, which is how a Flatpak build runs in the background
+# and starts at login; outside a sandbox the systemd unit does both.
+ashpd = { version = "0.13", default-features = false, features = ["tokio", "background"] }
 
 [features]
 # Enables tests that shell out to a real `borg` (run via `just test-integration`).
