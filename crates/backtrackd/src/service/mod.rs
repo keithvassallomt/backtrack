@@ -2308,6 +2308,10 @@ impl Daemon1 {
         self.shared
             .update_persisted(|s| s.paused_until = backtrack_core::state::to_epoch(Some(until)));
         self.shared.wake_scheduler();
+        // PAUSED is a health state: announced now, not at the next minute's
+        // reassessment, for the clients that follow `StatusChanged` rather
+        // than reading the status after their own call (the tray).
+        self.shared.health_changed.notify_one();
         info!(until = to_epoch(Some(until)), "backups paused");
         Ok(())
     }
@@ -2317,6 +2321,7 @@ impl Daemon1 {
         self.shared.pause.lock().unwrap().resume();
         self.shared.update_persisted(|s| s.paused_until = None);
         self.shared.wake_scheduler();
+        self.shared.health_changed.notify_one();
         info!("backups resumed");
         Ok(())
     }
@@ -4318,6 +4323,25 @@ mod tests {
             "the pause is bypassed for this run, not cancelled"
         );
         shared.jobs.cancel(job).unwrap();
+    }
+
+    #[tokio::test]
+    async fn pausing_and_resuming_are_announced_at_once() {
+        // The signal fan-out reassesses health when woken, and otherwise once
+        // a minute; a pause that waited for the minute left the tray saying
+        // backups were running for up to a minute after they had stopped.
+        let dir = tempfile::tempdir().unwrap();
+        let shared = configured(dir.path());
+        let daemon = Daemon1::new(Arc::clone(&shared));
+        let woken = shared.health_waker();
+        let soon = Duration::from_millis(100);
+
+        let until = SystemTime::now() + Duration::from_secs(3_600);
+        daemon.pause(to_epoch(Some(until))).await.unwrap();
+        assert!(tokio::time::timeout(soon, woken.notified()).await.is_ok());
+
+        daemon.resume().await.unwrap();
+        assert!(tokio::time::timeout(soon, woken.notified()).await.is_ok());
     }
 
     #[tokio::test]

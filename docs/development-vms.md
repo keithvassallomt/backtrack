@@ -85,7 +85,10 @@ up takes under a second.
      spool,
    - installs the Nautilus extension where there is a Nautilus, and quits
      Nautilus so the next window loads it, and the Dolphin menu where there
-     is a Dolphin.
+     is a Dolphin,
+   - installs the tray icon's autostart file, and on a desktop other than
+     GNOME starts the icon, or restarts it onto a new build (see
+     `docs/tray-and-background.md`).
 
 `scripts/dev-machine` works the same at the VM's own terminal (`just
 dev-machine` there), or on any other computer being set up for development.

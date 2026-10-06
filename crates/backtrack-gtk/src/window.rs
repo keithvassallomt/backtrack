@@ -601,7 +601,7 @@ impl Window {
         };
         let now = glib::DateTime::now_utc().map(|d| d.to_unix()).unwrap_or(0);
         let tz = glib::TimeZone::local();
-        let Some(seconds) = ui::menu::pause_duration(option, now, &tz) else {
+        let Some(seconds) = crate::model::pause::duration(option, now, &tz) else {
             warn!(option, "unknown pause option");
             return;
         };

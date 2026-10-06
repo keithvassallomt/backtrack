@@ -230,6 +230,10 @@ All notable changes to Backtrack are documented here. This project adheres to
   right-click.
 - Preferences → General says whether the Nautilus and Dolphin integrations
   are installed, and offers Install… with instructions when one is not.
+- A tray icon on desktops that have a system tray (Plasma, Xfce, Cinnamon and
+  others; not GNOME). It says when the last backup was, asks for attention
+  only when backups are at risk or stopped, and offers Back Up Now, Pause
+  Backups, Resume Backups and Open Backtrack. It starts at login.
 - A folder with nothing to show now says why: it is not one of the folders
   Backtrack backs up (with a button to add it), it will be in the next
   backup, or it was not in the latest one and may be excluded or on another
@@ -266,6 +270,8 @@ All notable changes to Backtrack are documented here. This project adheres to
   removed; one holding nothing of its own is no longer marked at all.
 
 ### Fixed
+- Pausing or resuming backups is announced to other programs straight away,
+  rather than up to a minute later.
 - A file could be shown as "deleted after this" while it still existed, in the
   window between a backup finishing and its file list being read. On a first
   run, which reads that list for every backup in turn, this could have been the

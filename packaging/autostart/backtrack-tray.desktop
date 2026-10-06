@@ -1,0 +1,17 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# SPDX-FileCopyrightText: 2026 Keith Vassallo <keith@vassallo.cloud>
+#
+# Starts the tray icon at login. Packages install this to /etc/xdg/autostart
+# (Stage 13); `just install-tray-dev` installs a development copy to
+# ~/.config/autostart.
+#
+# Not on GNOME, which has no tray: there, quick settings' background apps
+# list Backtrack instead.
+[Desktop Entry]
+Type=Application
+Name=Backtrack Tray Icon
+Comment=Shows how Backtrack's backups are doing in the system tray
+Exec=backtrack-tray
+Icon=io.github.keithvassallomt.Backtrack
+NotShowIn=GNOME;
+NoDisplay=true

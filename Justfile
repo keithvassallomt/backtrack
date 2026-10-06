@@ -97,7 +97,8 @@ check:
 
 # Lint and test the file-manager extensions. Ruff comes from PATH, else uvx or
 # pipx; without any of them the lint is skipped with a warning, except in CI.
-# The Dolphin menus are checked with desktop-file-validate on the same terms.
+# The Dolphin menus and the tray's autostart file are checked with
+# desktop-file-validate on the same terms.
 check-integrations:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -121,12 +122,12 @@ check-integrations:
     fi
     python3 -m unittest discover --start-directory integrations/nautilus
     if command -v desktop-file-validate >/dev/null 2>&1; then
-        desktop-file-validate integrations/dolphin/*.desktop
+        desktop-file-validate integrations/dolphin/*.desktop packaging/autostart/*.desktop
     elif [[ -n "${CI:-}" ]]; then
-        echo "desktop-file-validate not found, and CI must check the Dolphin menus." >&2
+        echo "desktop-file-validate not found, and CI must check the .desktop files." >&2
         exit 1
     else
-        echo "desktop-file-validate not found (desktop-file-utils); skipping the Dolphin menus." >&2
+        echo "desktop-file-validate not found (desktop-file-utils); skipping the .desktop files." >&2
     fi
 
 # Fail if any Rust source file under crates/ lacks an SPDX license header.
@@ -632,6 +633,40 @@ uninstall-dolphin-dev:
         rm -f "${dir}/$(basename "${file}")"
     done
     echo "Removed."
+
+# Start the tray icon at login, for this checkout: the debug build, against
+# the development daemon. Idempotent.
+[doc("Start the tray icon at login (debug build, dev daemon).")]
+install-tray-dev:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    root="{{justfile_directory()}}"
+    tray="${root}/target/debug/backtrack-tray"
+    dir="${XDG_CONFIG_HOME:-${HOME}/.config}/autostart"
+
+    echo "Building the tray so autostart points at something that exists…"
+    cargo build -p backtrack-gtk
+
+    # The shipped autostart file, with the command rewritten, so what is tried
+    # here is what will be packaged.
+    mkdir -p "${dir}"
+    sed "s|^Exec=backtrack-tray$|Exec=env BACKTRACK_DEV=1 ${tray}|" \
+        "${root}/packaging/autostart/backtrack-tray.desktop" > "${dir}/backtrack-tray.desktop.tmp"
+    if ! grep -qx "Exec=env BACKTRACK_DEV=1 ${tray}" "${dir}/backtrack-tray.desktop.tmp"; then
+        rm -f "${dir}/backtrack-tray.desktop.tmp"
+        echo "The autostart file's Exec line has changed shape; update this recipe." >&2
+        exit 1
+    fi
+    mv "${dir}/backtrack-tray.desktop.tmp" "${dir}/backtrack-tray.desktop"
+    echo "Installed ${dir}/backtrack-tray.desktop"
+    echo
+    echo "The icon starts at the next login on desktops other than GNOME. To start"
+    echo "it now: BACKTRACK_DEV=1 ${tray}"
+
+# Stop starting the development tray icon at login.
+uninstall-tray-dev:
+    rm -f "${XDG_CONFIG_HOME:-${HOME}/.config}/autostart/backtrack-tray.desktop"
+    @echo "Removed. An icon already showing stays until it is quit or the session ends."
 
 # ─── Development VMs (see docs/development-vms.md) ───────────────────────────
 

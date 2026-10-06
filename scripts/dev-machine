@@ -11,7 +11,7 @@
 # only that one needs sudo.
 #
 #   dev-machine                  packages, Rust, build, units, demo backups,
-#                                file-manager integration
+#                                file-manager integration, tray icon
 #   dev-machine packages FAMILY  install the build dependencies (dnf, apt or
 #                                pacman); what `just setup` uses
 #   dev-machine app [ARGS]       open the window on this computer's screen,
@@ -199,6 +199,34 @@ integrations() {
     fi
 }
 
+# The tray icon: started at login by its autostart file, except on GNOME,
+# and started now where it would be. A running icon is restarted only when it
+# is not the build just made, as the daemon is.
+tray() {
+    say "Installing the tray icon's autostart file…"
+    (cd "$ROOT" && just install-tray-dev >/dev/null)
+    if [[ "$(desktop)" == *GNOME* ]] \
+        || ! systemctl --user show-environment | grep -qE '^(WAYLAND_DISPLAY|DISPLAY)='; then
+        return
+    fi
+    local pid
+    pid="$(pgrep -u "$USER" -x backtrack-tray || true)"
+    if [[ -n "$pid" ]]; then
+        if [[ "$(readlink "/proc/$pid/exe" || true)" == "$ROOT/target/debug/backtrack-tray" ]]; then
+            return
+        fi
+        say "Restarting the tray icon onto the new build…"
+        kill "$pid"
+        while kill -0 "$pid" 2>/dev/null; do sleep 0.2; done
+    else
+        say "Starting the tray icon…"
+    fi
+    # From SSH there is no display in the environment; the session's manager
+    # has one, as for the window.
+    systemd-run --user --collect --quiet --unit="backtrack-tray-dev-$(date +%s)" \
+        --setenv=BACKTRACK_DEV=1 "$ROOT/target/debug/backtrack-tray"
+}
+
 desktop() {
     systemctl --user show-environment 2>/dev/null \
         | sed -n 's/^XDG_CURRENT_DESKTOP=//p'
@@ -208,7 +236,7 @@ status() {
     echo "Desktop:    $(desktop || true)"
     echo "Libraries:  GTK $(pkg-config --modversion gtk4 2>/dev/null || echo none)," \
         "libadwaita $(pkg-config --modversion libadwaita-1 2>/dev/null || echo none)"
-    echo "Build:      $(ls -1 "$ROOT"/target/debug/backtrack{d,-gtk,} 2>/dev/null | wc -l) of 3 binaries"
+    echo "Build:      $(ls -1 "$ROOT"/target/debug/backtrack{d,-gtk,-tray,} 2>/dev/null | wc -l) of 4 binaries"
     echo "Daemon:     $(systemctl --user is-active backtrackd.service 2>/dev/null || true)"
     if configured; then
         echo "Backups:    $(sed -n 's/^repository = //p' "$DATA/config.toml")"
@@ -221,6 +249,9 @@ status() {
     fi
     if [[ -f "${XDG_DATA_HOME:-$HOME/.local/share}/kio/servicemenus/backtrack.desktop" ]]; then
         echo "Dolphin:    menu installed"
+    fi
+    if pgrep -u "$USER" -x backtrack-tray >/dev/null; then
+        echo "Tray:       showing"
     fi
 }
 
@@ -248,6 +279,7 @@ everything() {
     units
     demo
     integrations
+    tray
     echo
     say "Ready."
     status

@@ -1,0 +1,219 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-3.0-or-later
+# SPDX-FileCopyrightText: 2026 Keith Vassallo <keith@vassallo.cloud>
+"""The Stage 12 tray checks: the development tray icon, driven the way a
+panel drives it, against the development daemon. See
+docs/tray-and-background.md.
+
+Runs in a desktop session with a system tray (the Plasma development VM:
+`scripts/vm run "fedora45 (KDE)" scripts/tray-check`). It finds the icon
+through the StatusNotifierWatcher, reads what the panel would draw, clicks its
+menu through com.canonical.dbusmenu, and checks what each click did. It
+pauses and resumes backups, runs one, forces two health states, and stops and
+starts the daemon; everything is put back as it was, and the icon is left
+showing.
+"""
+
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+from gi.repository import Gio, GLib
+
+APP = "io.github.keithvassallomt.Backtrack"
+DAEMON = "org.backtrack.Daemon1.Dev"
+DAEMON_PATH = "/org/backtrack/Daemon1"
+SNI = "org.kde.StatusNotifierItem"
+MENU = "com.canonical.dbusmenu"
+TRAY = Path(__file__).resolve().parent.parent / "target/debug/backtrack-tray"
+
+bus = Gio.bus_get_sync(Gio.BusType.SESSION)
+failures = []
+
+
+def call(name, path, iface, method, args=None, reply=None):
+    result = bus.call_sync(name, path, iface, method, args,
+                           GLib.VariantType(reply) if reply else None,
+                           Gio.DBusCallFlags.NONE, 10_000, None)
+    return result.unpack() if reply else None
+
+
+def prop(name, path, iface, key):
+    return call(name, path, "org.freedesktop.DBus.Properties", "Get",
+                GLib.Variant("(ss)", (iface, key)), "(v)")[0]
+
+
+def daemon(method, signature=None, *args, iface="org.backtrack.Daemon1"):
+    return call(DAEMON, DAEMON_PATH, iface, method,
+                GLib.Variant(signature, args) if signature else None)
+
+
+def force(state, reason=""):
+    daemon("ForceHealth", "(ss)", state, reason, iface="org.backtrack.Daemon1.Dev")
+
+
+def last_backup():
+    return call(DAEMON, DAEMON_PATH, "org.backtrack.Daemon1", "GetStatus", None,
+                "(sttbtsuuttbstt)")[1]
+
+
+def running(process):
+    return subprocess.run(["pgrep", "-x", process], capture_output=True,
+                          text=True).stdout.split()
+
+
+def find():
+    """The icon's bus name and path, as the watcher lists it, or None."""
+    for entry in prop("org.kde.StatusNotifierWatcher", "/StatusNotifierWatcher",
+                      "org.kde.StatusNotifierWatcher", "RegisteredStatusNotifierItems"):
+        name, _, path = entry.partition("/")
+        try:
+            if prop(name, "/" + path, SNI, "Id") == APP:
+                return name, "/" + path
+        except GLib.Error:
+            pass
+    return None
+
+
+def start():
+    subprocess.run(["systemd-run", "--user", "--collect", "--quiet",
+                    f"--unit=backtrack-tray-dev-{int(time.time())}",
+                    "--setenv=BACKTRACK_DEV=1", str(TRAY)], check=True)
+    return until(find, "the icon to register")
+
+
+def until(condition, what, seconds=10):
+    """Wait for `condition` to return something true, and return it."""
+    deadline = time.monotonic() + seconds
+    while time.monotonic() < deadline:
+        found = condition()
+        if found:
+            return found
+        time.sleep(0.25)
+    sys.exit(f"gave up waiting for {what}")
+
+
+class Icon:
+    """What a panel reads from the icon."""
+
+    def __init__(self, where):
+        self.name, self.path = where
+
+    def get(self, key):
+        return prop(self.name, self.path, SNI, key)
+
+    def line(self):
+        return self.get("ToolTip")[3]
+
+    def items(self):
+        """Every menu item, by label: (id, enabled, visible)."""
+        menu = self.get("Menu")
+        _, (_, _, children) = call(self.name, menu, MENU, "GetLayout",
+                                   GLib.Variant("(iias)", (0, -1, [])), "(u(ia{sv}av))")
+        found = {}
+
+        def walk(nodes):
+            for ident, props, sub in nodes:
+                if "label" in props:
+                    found[props["label"]] = (ident, props.get("enabled", True),
+                                             props.get("visible", True))
+                walk(sub)
+
+        walk(children)
+        return found
+
+    def click(self, label):
+        ident = self.items()[label][0]
+        call(self.name, self.get("Menu"), MENU, "Event",
+             GLib.Variant("(isvu)", (ident, "clicked", GLib.Variant("s", ""), 0)))
+
+
+def check(what, condition):
+    print(("ok    " if condition else "FAIL  ") + what)
+    if not condition:
+        failures.append(what)
+
+
+def says(icon, start, seconds=5):
+    """Whether the status line comes to start with `start`."""
+    deadline = time.monotonic() + seconds
+    while time.monotonic() < deadline:
+        if icon.line().startswith(start):
+            return True
+        time.sleep(0.25)
+    print(f"      the line says {icon.line()!r}")
+    return False
+
+
+icon = Icon(find() or start())
+print(f"The icon: {icon.name}, resident "
+      + Path(f"/proc/{running('backtrack-tray')[0]}/status").read_text()
+      .split("VmRSS:")[1].split("\n")[0].strip())
+
+check("it is drawn normally", icon.get("Status") == "Active")
+check("its line says when the last backup was", says(icon, "Last backup: "))
+items = icon.items()
+check("its menu has the items",
+      all(label in items for label in ("Back Up Now", "Pause Backups", "For 1 hour",
+                                       "Until tomorrow", "Until I resume", "Resume Backups",
+                                       "Open Backtrack", "Quit Tray Icon")))
+check("Resume is hidden while nothing is paused", not items["Resume Backups"][2])
+
+daemon("Pause", "(t)", int(time.time()) + 600)
+check("a pause made elsewhere shows at once", says(icon, "Backups are paused until "))
+check("and Resume is offered", icon.items()["Resume Backups"][2])
+icon.click("Resume Backups")
+check("Resume Backups resumes", says(icon, "Last backup: "))
+
+icon.click("For 1 hour")
+check("Pause Backups ▸ For 1 hour pauses", says(icon, "Backups are paused until "))
+icon.click("Resume Backups")
+says(icon, "Last backup: ")
+
+before = last_backup()
+icon.click("Back Up Now")
+until(lambda: last_backup() > before, "the backup to finish", seconds=120)
+check("Back Up Now backs up, and the line follows",
+      says(icon, "Last backup: ") and "Backing up" not in icon.line())
+
+force("AT_RISK")
+check("AT_RISK asks for attention with a warning",
+      until(lambda: icon.get("Status") == "NeedsAttention", "attention")
+      and icon.get("AttentionIconName") == "dialog-warning"
+      and icon.line() == "Backups need your attention")
+force("BROKEN", "passphrase-missing")
+check("BROKEN asks for attention with an error",
+      until(lambda: icon.get("AttentionIconName") == "dialog-error", "the error icon"))
+force("")
+check("the real state again is drawn normally",
+      until(lambda: icon.get("Status") == "Active", "the normal icon"))
+
+subprocess.run(["systemctl", "--user", "stop", "backtrackd.service"], check=True)
+check("a stopped daemon is said to be not running",
+      says(icon, "The Backtrack service is not running"))
+check("and the icon did not start it again",
+      subprocess.run(["systemctl", "--user", "is-active", "--quiet",
+                      "backtrackd.service"]).returncode != 0)
+subprocess.run(["systemctl", "--user", "start", "backtrackd.service"], check=True)
+check("a daemon that comes back is followed", says(icon, "Last backup: "))
+daemon("Pause", "(t)", int(time.time()) + 600)
+check("and its signals still reach the icon", says(icon, "Backups are paused until "))
+daemon("Resume")
+says(icon, "Last backup: ")
+
+windows = set(running("backtrack-gtk"))
+icon.click("Open Backtrack")
+opened = until(lambda: set(running("backtrack-gtk")) - windows, "the window", seconds=10)
+check("Open Backtrack opens the window", bool(opened))
+for pid in opened:
+    subprocess.run(["kill", pid])
+
+icon.click("Quit Tray Icon")
+check("Quit Tray Icon takes the icon away",
+      until(lambda: not running("backtrack-tray") and not find(), "the icon to go"))
+start()
+print("The icon is showing again.")
+
+if failures:
+    sys.exit(f"{len(failures)} check(s) failed")

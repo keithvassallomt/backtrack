@@ -118,7 +118,7 @@
 ## Stage 12 — Integrations & tray ([stage file](stages/stage-12-integrations-tray.md))
 - [x] S12-T1 Nautilus python extension (mockup 2)
 - [/] S12-T2 Dolphin service menu (mockup 3, menu part only)
-- [ ] S12-T3 StatusNotifierItem tray for non-GNOME (status, actions)
+- [x] S12-T3 StatusNotifierItem tray for non-GNOME (status, actions)
 - [ ] S12-T4 Background portal presence (GNOME quick-settings launch path)
 - [x] S12-T5 App detects missing plugins → hints distro package (prefs General)
 - [x] S12-T6 Development VMs: one-command setup and push for GNOME and Plasma
@@ -138,6 +138,52 @@
 ## Notes / decisions made during implementation
 
 (append dated entries here; never delete)
+
+- 2026-10-06 (S12-T3: the tray icon): `backtrack-tray`, documented in
+  `docs/tray-and-background.md`. Decisions:
+  - **A binary of its own, in the `backtrack-gtk` package.** The stage left
+    a separate binary or a mode of the window to binary size; what decides
+    it is that the tray runs all session. Started, a release build linked
+    against GTK peaks at 60 to 95 MB, the tray at 9 MB (about 20 MB
+    running). It shares `model/format.rs` and the new `model/pause.rs` with
+    the window by `#[path]`, rather than through a new crate for two small
+    files; both now name `glib` directly, and the tray links GLib and no
+    GTK (`readelf -d`). The pause choices moved out of `ui/menu.rs` into
+    `model/pause.rs` so that both menus offer the same ones.
+  - **Its own small proxy**, as the CLI has: the four calls and three
+    signals it uses.
+  - **It reads the status without starting the daemon.** With "Run in
+    background" off the daemon leaves when idle; a tray that woke it to
+    ask would keep it running all session. It refreshes on `StatusChanged`,
+    `JobFinished`, a backup's first `BackupProgress`, the daemon's name
+    changing owner, and its menu opening. Its menu's actions do start the
+    daemon.
+  - **Times of day, not "2 hours ago"**: a tray menu is built when opened,
+    and a time of day cannot go stale while it waits.
+  - **Attention is the SNI `NeedsAttention` status** with `dialog-warning`
+    for `AT_RISK` and `dialog-error` for `BROKEN`; every other state is
+    drawn normally. The normal icon is the app's own where a package
+    installed it, else `document-open-recent`.
+  - **Resume Backups is in the menu while paused**, though the stage lists
+    only Pause ▸: a paused tray with no way back is a trap, and the window's
+    menu has it. "Quit Tray Icon" rather than "Quit tray", so that it does
+    not read as stopping backups.
+  - **One icon per session** through a bus name, `org.backtrack.Tray`.
+  - **Autostart with `NotShowIn=GNOME;`**, the stage's "OnlyShowIn excluding
+    GNOME" in the key that says it. `just install-tray-dev` installs the
+    development copy; `dev-machine` installs it and starts the icon, or
+    restarts it onto a new build, except on GNOME.
+  - **Found and fixed in the daemon:** `Pause` and `Resume` did not wake the
+    health fan-out, so `StatusChanged` reached clients up to a minute late.
+    The window never noticed because it reads the status after its own
+    calls. They now announce at once; a test fails without the fix.
+  - Checked: `scripts/tray-check` passed every step on the Plasma VM
+    (Fedora 45, Plasma 6.7), driving the icon through the
+    StatusNotifierWatcher and `com.canonical.dbusmenu`; after a cold boot
+    the autostart unit started the icon and it registered. On the GNOME VM
+    after a cold boot, with the autostart file installed, no tray was
+    started. The panel's drawing of the icon is left to a look at the VM's
+    screen.
 
 - 2026-10-06 (S12-T5: plugin detection): Preferences → General shows each
   integration as *Installed* with its switch, or *Not installed* with

@@ -17,11 +17,7 @@ use backtrack_core::dbus::Status;
 use gtk4::glib;
 
 use super::format;
-
-/// A pause this far ahead is not a date anybody wants read back to them — it
-/// is what "until I resume" has to be expressed as, because the interface
-/// deliberately has no way to say "off forever".
-pub const INDEFINITE_PAUSE_THRESHOLD: u64 = 365 * 86_400;
+use super::pause::INDEFINITE_PAUSE_THRESHOLD;
 
 /// What the status line reads, given the daemon's answer and the time now.
 pub fn line(status: &Status, now: i64, tz: &glib::TimeZone) -> String {
