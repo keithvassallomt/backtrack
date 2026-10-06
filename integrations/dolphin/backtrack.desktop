@@ -8,12 +8,17 @@
 # Type is Application, not the Service of older service menus, so that
 # desktop-file-validate accepts the file. KIO reads the actions and filters
 # below and ignores Type, and NoDisplay keeps the file out of any launcher.
+#
+# TopLevel keeps the submenu in the menu itself, as mockup 3 draws it. Without
+# it KIO folds every service menu into an Actions submenu once there are more
+# than four of them, which a stock Plasma already has.
 [Desktop Entry]
 Type=Application
 Name=Backtrack
 NoDisplay=true
 MimeType=application/octet-stream;inode/directory;
 X-KDE-Submenu=Backtrack
+X-KDE-Priority=TopLevel
 X-KDE-Protocols=file
 X-KDE-RequiredNumberOfUrls=1
 Actions=backtrackPreviousVersion

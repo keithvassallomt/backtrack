@@ -135,6 +135,9 @@ pub struct Shared {
     /// switch writes. A field so that a test does not hide the developer's
     /// own Dolphin menu.
     service_menu_path: PathBuf,
+    /// The session bus, once the daemon is on it: what tells a running
+    /// Dolphin that its list changed. Never set in tests.
+    session: std::sync::OnceLock<zbus::Connection>,
     /// Where that bookkeeping is written. A field rather than a call to
     /// [`paths::state_file`] at each use, so tests exercise the real persistence
     /// path without writing into the developer's own data directory.
@@ -319,6 +322,7 @@ impl Shared {
             config_path,
             roots_path,
             service_menu_path,
+            session: std::sync::OnceLock::new(),
             engine: Mutex::new(None),
             last_archive: Mutex::new(None),
             last_backup: Mutex::new(None),
@@ -898,6 +902,12 @@ impl Shared {
             );
         }
         Ok(())
+    }
+
+    /// The session bus the daemon is on, for what it has to announce to other
+    /// programs outside its own interface.
+    pub fn set_session(&self, connection: &zbus::Connection) {
+        let _ = self.session.set(connection.clone());
     }
 
     /// Send notifications here from now on.
@@ -1757,11 +1767,16 @@ impl Shared {
             return;
         }
         match backtrack_core::servicemenu::apply(&self.service_menu_path, on) {
-            Ok(true) => info!(
-                path = %self.service_menu_path.display(),
-                shown = on,
-                "applied the Dolphin switch to Dolphin's menu"
-            ),
+            Ok(true) => {
+                info!(
+                    path = %self.service_menu_path.display(),
+                    shown = on,
+                    "applied the Dolphin switch to Dolphin's menu"
+                );
+                if let Some(connection) = self.session.get() {
+                    tokio::spawn(announce_service_menu(connection.clone()));
+                }
+            }
             Ok(false) => {}
             Err(error) => warn!(
                 path = %self.service_menu_path.display(),
@@ -3583,6 +3598,31 @@ pub async fn fan_out_signals(shared: Arc<Shared>, emitter: SignalEmitter<'static
                 }
             }
         }
+    }
+}
+
+/// Tell a running Dolphin that `kservicemenurc` has changed, as KConfig does
+/// for a file written with its notify flag. Dolphin watches the file through
+/// a `KConfigWatcher`, which listens for this signal and nothing else, and
+/// rebuilds its menu actions when it hears it; without it the switch took
+/// effect only when Dolphin was next started.
+async fn announce_service_menu(connection: zbus::Connection) {
+    let keys: Vec<&[u8]> = backtrack_core::servicemenu::ACTIONS
+        .iter()
+        .map(|key| key.as_bytes())
+        .collect();
+    let changes = std::collections::HashMap::from([("Show", keys)]);
+    if let Err(error) = connection
+        .emit_signal(
+            None::<zbus::names::BusName<'_>>,
+            "/kservicemenurc",
+            "org.kde.kconfig.notify",
+            "ConfigChanged",
+            &(changes,),
+        )
+        .await
+    {
+        warn!(%error, "could not tell Dolphin that its menu changed");
     }
 }
 

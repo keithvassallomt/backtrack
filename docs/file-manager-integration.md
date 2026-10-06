@@ -152,7 +152,8 @@ nautilus-python 4.2.0, against the development daemon: every step above
 passed. Nautilus 50 draws no icon beside extension items, so mockup 2's clock
 does not appear. The run found that a change to the switch shows from the
 next click rather than at once, which is now step 8 and "When a change
-shows".
+shows". Screenshot, on the GNOME VM (Fedora 45, GNOME 51, Nautilus 50) on
+2026-10-06: `backtrack_plan/screenshots/stage-12-nautilus-file-menu.png`.
 
 ## Dolphin
 
@@ -167,7 +168,9 @@ Two KDE service menus (KDE Frameworks 6), which put the same two items in a
 They are two files because KIO matches file types per file, not per action,
 and Browse is for folders only. KIO merges submenus of the same name, and
 sorts a submenu's items by action name, so the action names put Restore first
-as mockup 3 does.
+as mockup 3 does. Both are `X-KDE-Priority=TopLevel`: otherwise KIO folds
+every service menu into an **Actions** submenu once there are more than four,
+which a stock Plasma already has, and the Backtrack submenu ends up inside it.
 
 *Restore Previous Version…* runs `backtrack-gtk --select <it>`, which opens
 the window on its folder with it selected; *Browse Backups of This Folder…*
@@ -182,9 +185,9 @@ and the trash), or anywhere KIO does not offer service menus.
 
 A service menu cannot read a setting, but Dolphin keeps its own list of
 service-menu actions to leave out: `~/.config/kservicemenurc`, which its
-Settings → Context Menu page writes and KIO reads each time it builds a menu.
-The daemon writes Backtrack's two actions there as hidden when the
-Preferences switch is turned off, and removes them when it is turned back on:
+Settings → Context Menu page writes. The daemon writes Backtrack's two actions
+there as hidden when the Preferences switch is turned off, and removes them
+when it is turned back on:
 
 ```ini
 [Show]
@@ -195,7 +198,15 @@ backtrackThisFolder=false
 It writes only when the switch changes, and at startup only when the switch
 is off (for a configuration edited by hand while the daemon was stopped). A
 switch left on never writes, so an item somebody hid from Dolphin's own
-settings stays hidden. The change shows from the next right-click.
+settings stays hidden.
+
+A running Dolphin reads the list once, when its window is created, and again
+only when a `KConfigWatcher` tells it the file changed. That watcher listens
+for the D-Bus signal KConfig sends for a write made with its notify flag, so
+after each write the daemon sends the same signal itself:
+`org.kde.kconfig.notify.ConfigChanged` on `/kservicemenurc`, naming the two
+keys under `Show`. The change shows from the next right-click, without
+restarting Dolphin.
 
 ### Everywhere else, the window explains
 
@@ -278,6 +289,17 @@ on its screen, in its checkout:
 11. `scripts/fm-check reset` unmounts the stick, empties the draft from the
     trash and uninstalls the menu.
 
-Note while doing it which icon the submenu has. KIO takes it from the first
-of the two files it reads, so it is the clock of *Restore Previous Version…*
-or the folder of *Browse Backups of This Folder…*.
+KIO takes the submenu's icon from the first of the two files it reads; on
+Fedora 45 that is *Restore Previous Version…*'s document with a clock.
+
+### Checked
+
+Keith's run on 2026-10-06, on the Plasma VM (Fedora 45, Plasma 6.7, Dolphin
+26.08, KDE Frameworks 6.31), against the development daemon: every step
+above passed. The run found two faults, both fixed: the submenu was inside
+**Actions** rather than in the menu itself, until both files were made
+`TopLevel`; and the switch took effect only when Dolphin was restarted, until
+the daemon sent KConfig's change signal. Screenshots:
+`backtrack_plan/screenshots/stage-12-dolphin-file-menu.png`,
+`stage-12-dolphin-folder-menu.png`, `stage-12-outside-backups.png` and
+`stage-12-prefs-integrations.png`.

@@ -59,6 +59,19 @@ reads the status again after its own calls.
 One icon per session: the tray claims `org.backtrack.Tray`
 (`org.backtrack.Tray.Dev` in development) and a second copy leaves.
 
+### Known limitation: an open window is not brought forward
+
+On Wayland, a click on the icon or on **Open Backtrack** opens the window,
+but a window already open behind another one stays behind it. A program may
+raise a window only with an activation token from the click that asked for
+it. Plasma offers one to a tray icon through `ProvideXdgActivationToken`, a
+KDE addition to StatusNotifierItem, and `ksni` 0.3.6 does not implement that
+method, so the token is never received; Plasma passes none for a menu click
+at all. With one, the tray would hand it to the window in
+`XDG_ACTIVATION_TOKEN`, which GTK forwards to the instance already running.
+Left as it is for now (Keith's call, 2026-10-06), rather than carrying a
+patched copy of `ksni`.
+
 ### Why a binary of its own
 
 It runs for the whole session. Started, the release build peaks at 9 MB and
@@ -115,7 +128,12 @@ scripts/vm run "fedora45 (KDE)" busctl --user call org.backtrack.Daemon1.Dev \
 
 On the Plasma VM (Fedora 45, Plasma 6.7), 2026-10-06: every `tray-check`
 step passed, and after a cold boot the icon was started by its autostart
-unit and registered with the panel.
+unit and registered with the panel. Keith's look at the panel the same day:
+the icon, its tooltip and menu read as above, `BROKEN` showed the red error
+sign, a pause from the menu lifted itself after its minute, and a click
+opened the window (see the limitation above for one already open).
+Screenshots: `backtrack_plan/screenshots/stage-12-tray-menu.png` and
+`stage-12-tray-attention.png`.
 
 ## GNOME
 

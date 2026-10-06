@@ -117,7 +117,7 @@
 
 ## Stage 12 — Integrations & tray ([stage file](stages/stage-12-integrations-tray.md))
 - [x] S12-T1 Nautilus python extension (mockup 2)
-- [/] S12-T2 Dolphin service menu (mockup 3, menu part only)
+- [x] S12-T2 Dolphin service menu (mockup 3, menu part only)
 - [x] S12-T3 StatusNotifierItem tray for non-GNOME (status, actions)
 - [!] S12-T4 Background portal presence (GNOME quick-settings launch path)
 - [x] S12-T5 App detects missing plugins → hints distro package (prefs General)
@@ -217,6 +217,12 @@
     after a cold boot, with the autostart file installed, no tray was
     started. The panel's drawing of the icon is left to a look at the VM's
     screen.
+  - **Known limitation, left as it is (Keith's call):** on Wayland, a click
+    on the icon or on Open Backtrack does not bring an already-open window
+    forward. Raising needs the click's activation token; Plasma offers it
+    to an icon through `ProvideXdgActivationToken`, which `ksni` 0.3.6 does
+    not implement, and offers none for a menu click. Keith's look at the
+    panel otherwise passed.
 
 - 2026-10-06 (S12-T5: plugin detection): Preferences → General shows each
   integration as *Installed* with its switch, or *Not installed* with
@@ -295,6 +301,18 @@
     the backups logged the expected state for each. The menu itself is
     checked by hand (`docs/file-manager-integration.md`, Dolphin
     checklist).
+  - **Keith's run of the Dolphin checklist passed (2026-10-06), after two
+    fixes it found.** The submenu was not in the menu at all, but inside
+    KIO's **Actions** submenu, into which KIO folds every service menu once
+    there are more than four (a stock Plasma has more); both files are now
+    `X-KDE-Priority=TopLevel`, as mockup 3 draws it. A KIO probe built on
+    the VM (`KFileItemActions::addActionsTo`, offscreen) confirmed the
+    menu KIO builds before Keith looked again. And the Dolphin switch
+    reached a running Dolphin only on restart: Dolphin reads
+    `kservicemenurc` once, then again only when a `KConfigWatcher` hears
+    KConfig's `org.kde.kconfig.notify.ConfigChanged` signal, so the daemon
+    now sends that signal after each write (seen leaving it with
+    `dbus-monitor`; Keith's step 10 then passed without a restart).
 
 - 2026-10-05 (S12-T6: development VMs): added to the stage. The tray and
   GNOME's background apps cannot be tried on Keith's Hyprland machine, and
