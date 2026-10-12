@@ -155,7 +155,7 @@ done; Claude removes ticked items.
 
 ## Stage 13 — Packaging & release ([stage file](stages/stage-13-packaging-release.md))
 - [/] S13-T1 Flatpak manifest (GNOME runtime, portals, bundled borg)
-- [/] S13-T2 cargo-sources.json generation recipe (offline flatpak build)
+- [x] S13-T2 cargo-sources.json generation recipe (offline flatpak build)
 - [ ] S13-T3 Portal permissions audit + test matrix
 - [/] S13-T4 RPM spec + COPR (Fedora 44+); deb + PPA (Ubuntu 26.04+)
 - [/] S13-T5 CI release artifacts on tag
