@@ -17,14 +17,14 @@ done; Claude removes ticked items.
 - [ ] Once the accounts above exist, a release-candidate run as RELEASING.md
   describes: `just bump-version 0.1.0-rc1`, commit, `just release` on the
   branch (S13-T5, S13-T6, S13-T9, S14-T9).
-- [ ] One hand-check session on the Flatpak in the VMs, once Stage 14's fixes
-  are in: the wizard clicked through (S13-T1), Backtrack's entry in GNOME's
-  Background Apps opening the window (S12-T4), a notification clicked and
-  the Fix page for a missing Borg read (S14-T2, S14-T5), Install and Remove
-  in Preferences with the Nautilus and Dolphin items they bring (S14-T4), the
-  native packages' smoke test (`packaging/SMOKE-TEST.md`: the RPM in the
-  Fedora VM, the AUR package on Keith's machine; S13-T4, S13-T8), and the
-  S13-T3 matrix. `scripts/flatpak-check` walks through it.
+- [ ] A second hand-check session, for what the first (2026-10-12,
+  `packaging/flatpak/TEST-MATRIX.md`) left: the folder actions of the
+  Nautilus and Dolphin integrations from the Flatpak (S14-T4), the native
+  packages' smoke test (`packaging/SMOKE-TEST.md`: the RPM in the Fedora VM,
+  the AUR package on Keith's machine; S13-T4, S13-T8, and S14-T4's native
+  half), and the matrix rows not yet run (S13-T3). Claude extends
+  `scripts/flatpak-check` for them first, and automates the rows that need
+  no one at the screen.
 
 > **Contract:** Update this file in the SAME COMMIT as the work it describes.
 > `[ ]` upcoming · `[/]` in progress · `[x]` done (acceptance criteria verified) ·
@@ -147,14 +147,14 @@ done; Claude removes ticked items.
 - [x] S12-T1 Nautilus python extension (mockup 2)
 - [x] S12-T2 Dolphin service menu (mockup 3, menu part only)
 - [x] S12-T3 StatusNotifierItem tray for non-GNOME (status, actions)
-- [/] S12-T4 Background portal presence (GNOME quick-settings launch path)
+- [x] S12-T4 Background portal presence (GNOME quick-settings launch path)
 - [x] S12-T5 App detects missing plugins → hints distro package (prefs General)
 - [x] S12-T6 Development VMs: one-command setup and push for GNOME and Plasma
 
 ## Stage 13 — Packaging & release ([stage file](stages/stage-13-packaging-release.md))
-- [/] S13-T1 Flatpak manifest (GNOME runtime, portals, bundled borg)
+- [x] S13-T1 Flatpak manifest (GNOME runtime, portals, bundled borg)
 - [x] S13-T2 cargo-sources.json generation recipe (offline flatpak build)
-- [ ] S13-T3 Portal permissions audit + test matrix
+- [/] S13-T3 Portal permissions audit + test matrix
 - [/] S13-T4 RPM spec + COPR (Fedora 44+); deb + PPA (Ubuntu 26.04+)
 - [/] S13-T5 CI release artifacts on tag
 - [/] S13-T6 Release runbook (human bumps version → just bump-version → just release)
