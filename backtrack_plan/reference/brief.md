@@ -52,7 +52,8 @@ guided full-home disaster recovery · health monitoring with honest failure UX.
 ## Project facts
 
 - **License:** GPL-3.0-or-later.
-- **Distribution:** public repo; Flatpak (Flathub) + Fedora COPR + Ubuntu PPA from v1.
+- **Distribution:** public repo; Flatpak (FriendlyHub, not Flathub: Keith, 2026-10-12) + Fedora COPR +
+  Ubuntu PPA from v1.
 - **App ID:** `io.github.keithvassallomt.Backtrack` (Flathub-compatible; revisit if a
   domain is acquired).
 - **Naming note:** "Backtrack" collides with the retired BackTrack Linux pentest distro

@@ -167,16 +167,16 @@ disk-only files.
 
 Launchers only, per research. Nautilus: nautilus-python extension adding
 *Restore Previous Version…* (selection) and *Browse Backups of This Folder…* (background).
-Dolphin: service-menu `.desktop` with the same two actions. Both ship **only in native
-packages**; the Flatpak app detects their absence and points to the distro package from
-Preferences → General. The compiled KF6 FileItemAction plugin and `backtrack:/` KIO
+Dolphin: service-menu `.desktop` with the same two actions. Native packages ship both
+system-wide; a Flatpak install offers per-user copies from Preferences → General
+(S14-T4, reversing the earlier "native packages only"). The compiled KF6 FileItemAction plugin and `backtrack:/` KIO
 worker are v1.x.
 
 ## 9. Packaging (both from day one)
 
 - **Flatpak:** app + daemon + bundled borg in one package; daemon autostart via the
-  Background portal; repo/destination access via filesystem permissions. Accepted
-  limitation: no file-manager plugins from the sandbox.
+  Background portal; repo/destination access via filesystem permissions. Published on
+  FriendlyHub; first-class, with the same behaviour as a native install (Stage 14).
 - **Native:** Fedora COPR + Ubuntu PPA initially; packages `backtrack`
   (app + daemon + CLI + systemd user units), `backtrack-nautilus`, `backtrack-dolphin`.
 - CI builds all artifacts on every merge so the two packaging paths cannot drift.
@@ -204,5 +204,5 @@ Rotating JSONL logs in `logs/`; `backtrack doctor` produces a redacted diagnosti
 | Milestone | Contents |
 |---|---|
 | **v1** | Core (hourly backups, timeline browser, restore + conflicts + stash/undo, onboarding, preferences, offline spool, Nautilus/Dolphin menus) + Compare view + btrfs snapshot mode + cross-snapshot search + guided disaster recovery + health model per [health.md](health.md) |
-| **v1.x** | `backtrack:/` KIO worker, compiled Dolphin plugin, Flathub listing polish, per-file "next change" power-step if not landed in v1 |
+| **v1.x** | `backtrack:/` KIO worker, compiled Dolphin plugin, FriendlyHub listing polish, per-file "next change" power-step if not landed in v1 |
 | **v2** | Borg 2 engine (repo migration, `borg transfer` spool consolidation), cloud destinations via borgstore/rclone |

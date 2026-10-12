@@ -9,6 +9,9 @@ building them since Stage 0 grew them — this stage completes and hardens them.
 ## Prerequisites
 All prior stages functional. Read [../reference/stack.md](../reference/stack.md)
 §9 and the app-id/license facts in [../reference/brief.md](../reference/brief.md).
+[Stage 14](stage-14-flatpak-first-class.md) (the Flatpak as a first-class build)
+runs in the middle of this one: S13-T1 and S13-T2 first, then Stage 14, then
+S13-T3. Its order of work says why.
 
 ## Tasks
 
@@ -17,26 +20,46 @@ All prior stages functional. Read [../reference/stack.md](../reference/stack.md)
 - Runtime `org.gnome.Platform` / SDK `org.gnome.Sdk` (current stable at
   implementation time; pin exact version in the manifest).
 - Modules: borgbackup (build from pip sources with its deps — msgpack etc. — as a
-  python module with generated `python3-requirements.json`; pin borg 1.4.x), then
-  backtrack (cargo, offline via T2 sources).
+  python module with generated `python3-requirements.json`; pin borg 1.4.x),
+  btrfs-progs (the command only, S14-T8), then backtrack (cargo, offline via T2
+  sources).
 - App + daemon in one Flatpak; daemon launched via the app's background portal
-  autostart (S12-T4), `--command=backtrackd` for the autostart entry.
+  autostart (S12-T4), `--command=backtrackd` for the autostart entry, through
+  S14-T7's supervisor.
 - **Portals over permissions** wherever a portal exists: FileChooser (Restore To…,
-  key export), Background/Autostart, Notification, OpenURI. Static permissions
-  kept minimal and justified in a comment per line:
-  `--filesystem=home` (the product's job is reading the home dir to back it up;
-  document why portal-per-file is impossible for a backup daemon),
-  `--filesystem=xdg-run/gvfs` + `--talk-name=org.gtk.vfs.*` (network shares),
-  `--share=network` (ssh destinations), `--talk-name=org.freedesktop.secrets`
-  (keyring), session bus own-name `org.backtrack.Daemon1`.
-  NO device=all, NO system-bus, NO x11-fallback beyond `--socket=wayland
-  --socket=fallback-x11`.
+  key export), Background/Autostart, OpenURI. Static permissions justified in a
+  comment per line. Corrected 2026-10-12: the first list read only
+  `--filesystem=home`, which misses removable drives under `/run/media` and
+  `/media`, folders chosen outside home, and every other Flatpak's data.
+  - `--filesystem=host`: reading everything the user chose to back up, wherever
+    it is, and restoring anywhere. Document why portal-per-file is impossible
+    for a backup daemon.
+  - `--filesystem=~/.var/app`: Flatpak hides it behind an empty tmpfs even with
+    `host`, so without this, other Flatpaks' data (mail, game saves) would be
+    left out of every backup with no warning.
+  - `--share=network`, `--socket=ssh-auth`: ssh destinations, with the user's
+    agent.
+  - `--talk-name=org.gtk.vfs.*`, `--filesystem=xdg-run/gvfs`,
+    `--filesystem=xdg-run/gvfsd`: network shares, and the wizard's drive list.
+  - `--talk-name=org.freedesktop.Notifications`: the daemon's notifications and
+    their click handling use this interface directly (Stage 10).
+  - `--talk-name=org.freedesktop.secrets` (S14-T6) and
+    `--talk-name=org.kde.StatusNotifierWatcher` (S14-T3).
+  - `--system-talk-name=org.freedesktop.UPower` and
+    `--system-talk-name=org.freedesktop.NetworkManager`: the battery and metered
+    checks. Without them both read as unknown, and backups run anyway.
+  - `--socket=wayland`, `--socket=fallback-x11`, `--share=ipc`.
+  - No `--own-name`: the daemon's bus name is under the application ID (S14-T1).
+
+  NO `--device=all`, NO `--socket=system-bus`, NO
+  `--talk-name=org.freedesktop.Flatpak`.
 - Metainfo: `packaging/io.github.keithvassallomt.Backtrack.metainfo.xml`
   (AppStream: screenshots = the mockups hosted in-repo, release notes fed from
   CHANGELOG at release time) + desktop file + icon set (symbolic + scalable —
   request icon assets from the human; placeholder acceptable until then).
 **Accept:** `flatpak-builder --install` produces a working app: wizard → backup to
-a `--filesystem`-visible destination → restore round-trip INSIDE the sandbox;
+a `--filesystem`-visible destination → restore round-trip INSIDE the sandbox
+(needs S14-T1, without which the window cannot start the daemon);
 `flatpak run --command=sh` probe confirms no println-era logging leaks to journal.
 
 ### S13-T2 — Offline sources
@@ -55,7 +78,10 @@ FileChooser portal (Restore To…, recovery-key save), Notification portal
 (health states), Background portal (daemon survives session login, appears in
 GNOME background apps, and activating it there opens the main window: S12-T4's
 acceptance, which only a Flatpak can meet), keyring access, SMB destination via gvfs, ssh destination,
-Wayland + Xorg session each. Failures become issues; matrix result committed to
+Wayland + Xorg session each. Also: a drive plugged in after the daemon started
+is seen and backed up to; another Flatpak's data under `~/.var/app` is in the
+backup; and every Stage 14 task's in-sandbox check, repeated on both desktops.
+Failures become issues; matrix result committed to
 `packaging/flatpak/TEST-MATRIX.md` with date.
 **Accept:** matrix fully green, committed, dated.
 
@@ -78,9 +104,8 @@ fresh-VM install → wizard runs (documented smoke checklist for each distro).
 CI on tag `v*`: verify tag == workspace version (`just verify-version` vs tag —
 mismatch fails loudly = human forgot bump-version or vice versa), build all three
 artifacts, attach to GitHub release with CHANGELOG section extracted as notes,
-trigger COPR. Flathub: prepare submission checklist doc
-(`packaging/flatpak/FLATHUB.md`: repo requirements, review gotchas — but actual
-submission is a human step, listed in the runbook).
+trigger COPR. The Flatpak artifact is a bundle (`.flatpak`). Publishing moved to
+S14-T9: Backtrack goes on FriendlyHub, not Flathub (Keith, 2026-10-12).
 **Accept:** dry-run tag `v0.1.0-rc1` on a branch produces the full artifact set.
 
 ### S13-T6 — Release runbook

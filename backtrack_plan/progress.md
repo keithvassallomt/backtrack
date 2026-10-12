@@ -13,7 +13,7 @@
 > See [../CLAUDE.md](../CLAUDE.md) for the full workflow.
 
 **Current stage:** 12 (in progress)
-**Last updated:** 2026-10-05
+**Last updated:** 2026-10-12
 
 ## Stage 0 — Bootstrap ([stage file](stages/stage-00-bootstrap.md))
 - [x] S00-T1 Git repo, license, .gitignore, README skeleton
@@ -128,18 +128,60 @@
 - [ ] S13-T2 cargo-sources.json generation recipe (offline flatpak build)
 - [ ] S13-T3 Portal permissions audit + test matrix
 - [ ] S13-T4 RPM spec + COPR; deb + PPA (app, nautilus, dolphin packages)
-- [ ] S13-T5 CI release artifacts on tag; Flathub submission checklist
+- [ ] S13-T5 CI release artifacts on tag
 - [ ] S13-T6 Release runbook (human bumps version → just bump-version → tag)
+
+## Stage 14 — Flatpak as a first-class build ([stage file](stages/stage-14-flatpak-first-class.md))
+- [ ] S14-T1 Daemon bus name under the application ID
+- [ ] S14-T2 Window opens through the session bus (notification clicks, tray)
+- [ ] S14-T3 Tray icon started by the daemon inside the sandbox
+- [ ] S14-T4 File-manager integration for Flatpak installs (per-user copies)
+- [ ] S14-T5 Read the host's os-release (Fix page, doctor)
+- [ ] S14-T6 Secret Service keyring in every build
+- [ ] S14-T7 Restart the daemon after a failure, as the unit does
+- [ ] S14-T8 Btrfs snapshots inside the Flatpak (bundled btrfs-progs)
+- [ ] S14-T9 Publish on FriendlyHub
 
 ## Blocked
 
 - **S12-T4**: written, and waiting on the Flatpak (S13-T1) for its
   acceptance. GNOME's Background Apps list holds Flatpak instances only, so
   only the Flatpak build can appear there; the check is in S13-T3's matrix.
+  It also needs S14-T1: until the session bus can start the daemon inside the
+  sandbox, nothing asks the Background portal for anything.
 
 ## Notes / decisions made during implementation
 
 (append dated entries here; never delete)
+
+- 2026-10-12 (Stage 14 planned: the Flatpak as a first-class build): an audit
+  of the code against a Flatpak sandbox, before S13-T1. Decisions:
+  - **FriendlyHub, not Flathub** (Keith's). Publishing is S14-T9; S13-T5 keeps the CI
+    bundle and loses its Flathub checklist. brief.md and stack.md say so.
+  - **The Flatpak is first-class and the main download** (Keith's). Debian 13 (GNOME 48)
+    and RHEL 10 (GNOME 47) are below the GNOME 50 floor and can neither build
+    nor install a native package; the Flatpak brings its own runtime.
+  - **A stage of its own, numbered 14** although it runs inside Stage 13
+    (after S13-T1 and S13-T2, before S13-T3). Renumbering would have rewritten
+    six live issues and the dated notes that cite them.
+  - **S13-T1's permissions were wrong.** `--filesystem=home` misses removable
+    drives (`/run/media`, `/media`), folders chosen outside home, and
+    `~/.var/app`, which Flatpak hides behind a tmpfs even with `host`: every
+    other Flatpak's data would have been left out of the backup with no
+    warning. Corrected to `host` plus `~/.var/app`, after Pika Backup's
+    manifest, the nearest precedent (Rust, GTK, Borg, a background process).
+    Backtrack needs none of Pika's FUSE permissions, since it never mounts a
+    repository.
+  - **What the audit found** (one task each, S14-T1 to S14-T6): the daemon's
+    bus name is outside the application ID, so Flatpak will not export its
+    activation file; notification clicks use `systemd-run`; the tray has no
+    autostart entry; the file-manager plugins call `backtrack-gtk` and read
+    `roots.json` from paths a Flatpak does not use; `/etc/os-release` is the
+    runtime's; oo7 changes keyring backend inside a sandbox. Two native
+    behaviours had no Flatpak equivalent: restart after a crash (S14-T7) and
+    btrfs snapshots (S14-T8).
+  - **stack.md §8's accepted limitation is reversed** (Keith's): a Flatpak install gets
+    per-user copies of the plugins (S14-T4).
 
 - 2026-10-06 (S12-T4: GNOME background presence): written, and blocked on
   S13-T1 for its acceptance; Keith's call, over pulling a development
