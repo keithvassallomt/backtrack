@@ -86,8 +86,8 @@ pub fn build(wizard: &Rc<Wizard>) -> adw::NavigationPage {
     let network_radio = radio(&group);
     network_radio.set_visible(false);
     let network = adw::ActionRow::builder()
-        .title("Network folder")
-        .subtitle("SMB or NFS share")
+        .title("Network/local folder")
+        .subtitle("SMB or NFS share, or a folder on this computer")
         .activatable(true)
         .build();
     network.add_prefix(&super::tile("folder-remote-symbolic"));
@@ -495,15 +495,47 @@ impl Page {
     }
 }
 
-/// The sub-page for a network folder: an address, mounted through GIO.
+/// The sub-page for a network or local folder: an address, mounted through
+/// GIO, or a folder picked in the file chooser.
 fn network_page(page: &Rc<Page>) -> adw::NavigationPage {
     let (nav_page, entry, button, problem) = address_page(
         "network",
-        "Network folder",
+        "Network/local folder",
         "The address of a shared folder, such as smb://nas.local/backups or \
-         nfs://nas.local/backups. A folder on this computer works too.",
+         nfs://nas.local/backups, or a folder on this computer.",
         "Connect",
     );
+    let browse = Button::from_icon_name("folder-open-symbolic");
+    browse.set_tooltip_text(Some("Choose Folder…"));
+    browse.update_property(&[gtk4::accessible::Property::Label("Choose Folder…")]);
+    browse.add_css_class("flat");
+    browse.set_valign(Align::Center);
+    entry.add_suffix(&browse);
+    let this = Rc::clone(page);
+    let field = entry.clone();
+    let connect = button.clone();
+    browse.connect_clicked(move |_| {
+        let this = Rc::clone(&this);
+        let field = field.clone();
+        let connect = connect.clone();
+        crate::ui::spawn(async move {
+            let dialog = gtk4::FileDialog::builder()
+                .title("Choose Where Backups Go")
+                .accept_label("Choose")
+                .modal(true)
+                .build();
+            let Ok(chosen) = dialog.select_folder_future(Some(&this.wizard.window)).await else {
+                return;
+            };
+            match chosen.path() {
+                Some(path) => {
+                    field.set_text(&path.to_string_lossy());
+                    connect.emit_clicked();
+                }
+                None => this.wizard.toast("That folder cannot be opened directly"),
+            }
+        });
+    });
     let this = Rc::clone(page);
     let field = entry.clone();
     button.connect_clicked(move |button| {

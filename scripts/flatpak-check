@@ -74,8 +74,8 @@ On the GNOME VM's screen:
   a. Open Activities, type Backtrack, open it. The Welcome page opens.
   b. Get Started. On the folders page choose "Let me choose folders…", then
      Choose Folders…, and pick Smoke → Documents.
-  c. Where backups go: Network folder, then Choose Folder…, and pick
-     Smoke → Backups.
+  c. Where backups go: Network/local folder, then the folder button at the
+     end of the Address row (Choose Folder…), and pick Smoke → Backups.
   d. Any passphrase that reads "strong"; leave Remember it on.
   e. Save Recovery Key…, and save it in Smoke.
   f. Start the first backup, and wait for its notification.
@@ -163,7 +163,7 @@ kde)
     install_fresh "$KDE"
     cat <<'EOF'
 On the Plasma VM's screen, open Backtrack from the launcher and walk the
-wizard as in step 1 (Smoke → Documents, Network folder Smoke → Backups).
+wizard as in step 1 (Smoke → Documents, Network/local folder Smoke → Backups).
 Then log out and back in, so the daemon starts from its autostart entry.
 EOF
     echo "Then: scripts/flatpak-check 7"
