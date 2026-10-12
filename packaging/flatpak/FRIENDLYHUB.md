@@ -37,8 +37,17 @@ so a set that builds this way is complete.
 
 ## Installing from FriendlyHub
 
-Backtrack runs on the GNOME 51 runtime, which comes from Flathub, so both
-remotes are needed:
+Backtrack runs on the GNOME 51 runtime, which comes from Flathub. The app's
+`.flatpakref`, which FriendlyHub's Install button opens, names Flathub as its
+`RuntimeRepo`, so installing from it adds both remotes by itself:
+
+```sh
+flatpak install --user https://dl.friendlyhub.org/repo/appstream/tools.backtrack.Backtrack.flatpakref
+```
+
+FriendlyHub's `.flatpakrepo` cannot do the same: Flatpak reads no
+`RuntimeRepo` key from a `.flatpakrepo` file, only from a `.flatpakref`. A
+user who adds the remote by hand therefore adds Flathub too:
 
 ```sh
 flatpak remote-add --user --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo

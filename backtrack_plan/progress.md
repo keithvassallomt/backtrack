@@ -24,11 +24,7 @@ done; Claude removes ticked items.
   in Preferences with the Nautilus and Dolphin items they bring (S14-T4), the
   native packages' smoke test (`packaging/SMOKE-TEST.md`: the RPM in the
   Fedora VM, the AUR package on Keith's machine; S13-T4, S13-T8), and the
-  S13-T3 matrix. Claude writes the walkthrough script first.
-- [ ] Optional, on FriendlyHub's side: its `.flatpakrepo` names no
-  `RuntimeRepo`, so a user who adds only FriendlyHub cannot install Backtrack,
-  whose GNOME runtime is on Flathub. `RuntimeRepo=https://dl.flathub.org/repo/flathub.flatpakrepo`
-  there lets Flatpak add it by itself.
+  S13-T3 matrix. `scripts/flatpak-check` walks through it.
 
 > **Contract:** Update this file in the SAME COMMIT as the work it describes.
 > `[ ]` upcoming · `[/]` in progress · `[x]` done (acceptance criteria verified) ·
