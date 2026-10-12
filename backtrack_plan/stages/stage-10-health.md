@@ -105,6 +105,29 @@ real output; with a local destination made read-only, the notification, banner
 and Fix page say it cannot be written to, and making it writable again returns
 to `HEALTHY`; an SSH server that refuses the key still reads "can't sign in".
 
+### S10-T9 — A locked keyring is not a wrong passphrase
+Found in the Flatpak hand checks (2026-10-12): with KWallet locked, the
+Secret Service hands back an empty secret for Backtrack's item instead of an
+`IsLocked` error, `oo7` passes it on, and Borg, given an empty passphrase,
+says it is wrong. The banner then reads "The saved passphrase no longer
+matches the backup.", and every retry is another failed wallet access, which
+KWallet reports as "repeated failed attempts". health.md's row for a locked
+keyring is "Backtrack needs your backup passphrase again.".
+- The keyring store checks the item's `Locked` property before reading it,
+  and treats a locked item, and an empty secret from any service, as no
+  passphrase (`PassphraseMissing`). A Backtrack passphrase is never empty.
+- While the passphrase is missing, scheduled work does not keep asking the
+  keyring; it asks again when the person acts on the banner, or after the
+  next login.
+- The Fix flow's re-store works on a locked keyring: the Secret Service's own
+  unlock prompt appears, and the passphrase is saved once it is unlocked.
+
+**Accept:** a unit test with a store that answers empty gets
+`PassphraseMissing`; on the Plasma VM with the wallet locked, the banner and
+notification ask for the passphrase again, KWallet shows no "repeated failed
+attempts" warning over an hour, and the Fix flow saves the passphrase and
+returns to `HEALTHY`; on the GNOME VM, a locked login keyring gives the same.
+
 ## Definition of Done
 Kill-switch drill: with the app running, (1) delete keyring entry, (2) make
 destination unwritable, (3) fill spool quota — each produces the documented state,
