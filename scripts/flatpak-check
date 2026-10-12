@@ -55,10 +55,14 @@ grep -l -e "flatpak run $APP" -e "\"flatpak\", \"run\", \"$APP\"" \
     ~/.local/share/kio/servicemenus/backtrack*.desktop 2>/dev/null | xargs -r rm -f
 # What is left is the development build's integrations: aside, so that the
 # Flatpak's Preferences find none and the menus open the Flatpak.
-mkdir -p ~/.local/share/backtrack-check-aside
+mkdir -p ~/.local/share/backtrack-check-aside/autostart
 mv ~/.local/share/nautilus-python/extensions/backtrack.py \
     ~/.local/share/kio/servicemenus/backtrack*.desktop \
     ~/.local/share/backtrack-check-aside/ 2>/dev/null
+# Its tray's autostart entry too, or it comes back beside the Flatpak's at
+# the next login.
+mv ~/.config/autostart/backtrack-tray.desktop \
+    ~/.local/share/backtrack-check-aside/autostart/ 2>/dev/null
 mkdir -p ~/Smoke/Documents/Reports ~/Smoke/Backups ~/Smoke/Restored
 echo "The quarterly report, first draft." > ~/Smoke/Documents/Reports/report.txt
 echo "Notes worth keeping." > ~/Smoke/Documents/notes.txt
@@ -82,7 +86,8 @@ aside=~/.local/share/backtrack-check-aside
 if [ -d "$aside" ]; then
     mv "$aside"/backtrack.py ~/.local/share/nautilus-python/extensions/ 2>/dev/null
     mv "$aside"/*.desktop ~/.local/share/kio/servicemenus/ 2>/dev/null
-    rmdir "$aside"
+    mv "$aside"/autostart/*.desktop ~/.config/autostart/ 2>/dev/null
+    rmdir "$aside"/autostart "$aside"
 fi
 systemctl --user start backtrackd.service
 EOF
