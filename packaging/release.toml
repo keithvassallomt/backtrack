@@ -1,0 +1,30 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# SPDX-FileCopyrightText: 2026 Keith Vassallo <keith@vassallo.cloud>
+#
+# Where `just release` publishes (S13-T9). Nothing here is secret: every
+# credential stays where its own tool keeps it (gh, copr-cli, gpg, ssh), on the
+# release machine. Release candidates go to the testing COPR and PPA, and stop
+# short of the AUR.
+
+[copr]
+# owner/project, as copr-cli names them.
+project = "keithvassallomt/backtrack"
+testing = "keithvassallomt/backtrack-testing"
+
+[ppa]
+release = "ppa:keithvassallomt/backtrack"
+testing = "ppa:keithvassallomt/backtrack-testing"
+# The fingerprint of the key Launchpad knows, which signs every upload.
+key = ""
+# One upload per Ubuntu series, oldest first: 26.04 LTS is the first that meets
+# Backtrack's GNOME 50 floor. Add each later release as it comes.
+series = [
+    { name = "resolute", version = "26.04" },
+]
+
+[aur]
+repository = "ssh://aur@aur.archlinux.org/backtrack.git"
+
+[friendlyhub]
+# Where the FriendlyHub files are written, for Keith to submit.
+directory = "~/Downloads"

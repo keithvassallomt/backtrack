@@ -5,9 +5,24 @@ Linux, built on [Borg Backup](https://www.borgbackup.org/). It is restore-first:
 you browse your folders back through time and bring files back, while the backups
 themselves stay quietly out of the way.
 
+## Installing
+
+From the first release:
+
+| Where | How |
+|---|---|
+| Any distribution | The Flatpak, from FriendlyHub: [packaging/flatpak/FRIENDLYHUB.md](packaging/flatpak/FRIENDLYHUB.md) |
+| Fedora 44 and later | COPR: `sudo dnf copr enable keithvassallomt/backtrack`, then `sudo dnf install backtrack` |
+| Ubuntu 26.04 and later | PPA: `sudo add-apt-repository ppa:keithvassallomt/backtrack`, then `sudo apt install backtrack` |
+| Arch | AUR: `backtrack` |
+
+The native packages have the file managers' integrations as `backtrack-nautilus`
+and `backtrack-dolphin`; the Flatpak installs them from Preferences.
+
 ## Building from source
 
-Backtrack targets Fedora and Ubuntu (24.04 LTS or newer) and uses
+Backtrack needs GTK 4.22 and libadwaita 1.9 (GNOME 50), so it builds on Fedora
+44, Ubuntu 26.04 and Arch, or newer, and uses
 [`just`](https://github.com/casey/just) as its task runner.
 
 ```sh

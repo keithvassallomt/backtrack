@@ -102,11 +102,16 @@ Failures become issues; matrix result committed to
 - deb: `packaging/deb/` (debhelper, vendored build, since Launchpad's builders
   have no network) same three-way split; `just deb`. PPA for Ubuntu 26.04 and
   later, and its description says so; one upload per supported series, listed
-  in `packaging/deb/series`. Uploads are signed and sent by `just release`
+  in `packaging/release.toml`. Uploads are signed and sent by `just release`
   (S13-T9) on Keith's machine, with his key, which never leaves it.
 - Check that Ubuntu 26.04's archive meets the floor (GTK 4.22, libadwaita 1.9,
   a rustc new enough for the workspace). If it does not, the PPA starts at the
-  first release that does, and its description says that instead.
+  first release that does, and its description says that instead. (Checked
+  2026-10-12: 26.04.1 has GTK 4.22.4, libadwaita 1.9.1 and rustc 1.93.1; the
+  workspace's newest requirement is 1.92.)
+- Both build offline from `just dist`'s two tarballs: the source, and every
+  crate vendored. `.gitattributes` leaves the plan and its mockups out of
+  release tarballs, GitHub's included.
 - Post-install behaviour verified: units enabled via preset on first install
   (`systemctl --user preset`), nautilus/dolphin pick up plugins after FM restart
   (documented in package READMEs).
@@ -186,14 +191,17 @@ shipped without nautilus-python would report an integration that does nothing.
   `dolphin`.
 - No install scriptlet enables units: the daemon enables its own when "Run in
   background" is on (`background::apply`).
-- `pkgver` is a version location: `just bump-version` updates it, `just
-  verify-version` checks it, and VERSIONING.md gains the row. `just release`
+- `_version` is a version location, the version as tagged: `just
+  bump-version` updates it, `just verify-version` checks it, and VERSIONING.md
+  gains the row. `pkgver` is derived from it without the hyphen, which Arch
+  does not allow (0.1.0-rc1 becomes 0.1.0rc1). `just release`
   (S13-T9) fills in the checksums in the AUR's own repository; the copy here
   carries none, so a release leaves nothing to commit.
 - The name `backtrack` is free on the AUR and in Arch's repositories (checked
   2026-10-12).
 
-**Accept:** `pkgctl build` builds all three packages in a clean chroot;
+**Accept:** `just aur-build` builds all three packages in a fresh Arch
+container, the clean environment `pkgctl build` gives in a clean chroot;
 `namcap` warnings are fixed or explained in the PKGBUILD; installed on Keith's
 Arch machine, the wizard runs and a backup completes; `.SRCINFO` regenerates
 with no diff.
@@ -215,7 +223,7 @@ anything disagrees with it.
    `SHA256SUMS`.
 3. **COPR.** Submits the release's source RPM for Fedora 44 and later, and waits
    for the builds.
-4. **PPA.** Builds a source package per series in `packaging/deb/series`, in an
+4. **PPA.** Builds a source package per series in `packaging/release.toml`, in an
    Ubuntu container, signs it on the host with Keith's key, uploads each with
    `dput`, and reports Launchpad's build state.
 5. **AUR.** Fills in the PKGBUILD's checksums from the release tarball,
@@ -238,7 +246,9 @@ anything disagrees with it.
   failure, fixing the cause and running `just release` again carries on from
   where it stopped. Every run writes a log under `dist/release/`.
 - **Pre-releases** (`X.Y.Z-rc1`) go to a testing COPR project and a testing
-  PPA, and stop short of the AUR, printing what they would have pushed. The
+  PPA, and stop short of the AUR, printing what they would have pushed. One
+  without a CHANGELOG section of its own takes the `[Unreleased]` entries as
+  its notes. The
   FriendlyHub files are written as for a release; whether a release candidate
   goes to FriendlyHub is Keith's call when he submits.
 - **`just release-dry`** runs the preflight and every build and generation step

@@ -112,8 +112,8 @@ check-integrations:
         ruff=()
     fi
     if (( ${#ruff[@]} > 0 )); then
-        "${ruff[@]}" check integrations
-        "${ruff[@]}" format --check integrations
+        "${ruff[@]}" check integrations scripts/release.py scripts/release_notes.py scripts/test_release.py scripts/test_release_notes.py
+        "${ruff[@]}" format --check integrations scripts/release.py scripts/release_notes.py scripts/test_release.py scripts/test_release_notes.py
     elif [[ -n "${CI:-}" ]]; then
         echo "ruff not found, and CI must lint the extensions." >&2
         exit 1
@@ -121,6 +121,7 @@ check-integrations:
         echo "ruff not found (install it, or uv or pipx); skipping the lint." >&2
     fi
     python3 -m unittest discover --start-directory integrations/nautilus
+    python3 -m unittest discover --start-directory scripts --pattern 'test_*.py'
     if command -v desktop-file-validate >/dev/null 2>&1; then
         desktop-file-validate integrations/dolphin/*.desktop packaging/*/*.desktop
     elif [[ -n "${CI:-}" ]]; then
@@ -191,8 +192,27 @@ bump-version NEW_VERSION:
     ' Cargo.toml > Cargo.toml.tmp && mv Cargo.toml.tmp Cargo.toml
     # Refresh the lockfile so the workspace crates record the new version.
     cargo update --workspace --quiet
+    # The AUR's PKGBUILD keeps the version as tagged; a new version starts at
+    # pkgrel 1. Its .SRCINFO follows (pkgver drops the hyphen, as Arch needs).
+    sed -i -e "s/^_version=.*/_version=${new}/" -e "s/^pkgrel=.*/pkgrel=1/" packaging/aur/PKGBUILD
+    sed -i -e "s/^\tpkgver = .*/\tpkgver = ${new//-/}/" -e "s/^\tpkgrel = .*/\tpkgrel = 1/" \
+        -e "s|backtrack-${old}\.tar\.gz::\(.*\)/v${old}\.tar\.gz|backtrack-${new}.tar.gz::\1/v${new}.tar.gz|" \
+        packaging/aur/.SRCINFO
+    # The RPM spec and the deb's changelog spell a pre-release with a tilde,
+    # which both sort before the release: 0.1.0-rc1 becomes 0.1.0~rc1.
+    tilde="${new/-/\~}"
+    sed -i -e "s/^Version:.*/Version:        ${tilde}/" -e "s/^Release:.*/Release:        1%{?dist}/" \
+        -e "s/^%changelog$/%changelog\n* $(LC_ALL=C date '+%a %b %d %Y') Keith Vassallo <keith@vassallo.cloud> - ${tilde}-1\n- New upstream release.\n/" \
+        packaging/rpm/backtrack.spec
+    {
+        printf 'backtrack (%s-1) resolute; urgency=medium\n\n  * New upstream release.\n\n' "${tilde}"
+        printf ' -- Keith Vassallo <keith@vassallo.cloud>  %s\n\n' "$(date -R)"
+        cat packaging/deb/changelog
+    } > packaging/deb/changelog.tmp && mv packaging/deb/changelog.tmp packaging/deb/changelog
     echo "Bumped version: $old -> $new"
-    echo "Locations updated: Cargo.toml (+ Cargo.lock). Review and commit manually:"
+    echo "Locations updated: Cargo.toml (+ Cargo.lock), packaging/aur/PKGBUILD (+ .SRCINFO),"
+    echo "packaging/rpm/backtrack.spec, packaging/deb/changelog."
+    echo "Review and commit manually:"
     git --no-pager diff --stat
 
 # Fail if version locations disagree (Cargo.toml vs the workspace crates in the lockfile).
@@ -208,11 +228,47 @@ verify-version:
     crates = {"backtrack-core", "backtrackd", "backtrack-gtk", "backtrack-cli"}
     bad = [(p["name"], p["version"]) for p in lock["package"]
            if p["name"] in crates and p["version"] != want]
+    import re
+    pkgbuild = open("packaging/aur/PKGBUILD").read()
+    srcinfo = open("packaging/aur/.SRCINFO").read()
+    tagged = re.search(r"^_version=(\S+)$", pkgbuild, re.M)
+    arch = re.search(r"^\tpkgver = (\S+)$", srcinfo, re.M)
+    if not tagged or tagged.group(1) != want:
+        bad.append(("packaging/aur/PKGBUILD _version", tagged and tagged.group(1)))
+    if not arch or arch.group(1) != want.replace("-", ""):
+        bad.append(("packaging/aur/.SRCINFO pkgver", arch and arch.group(1)))
+    if f"/v{want}.tar.gz" not in srcinfo:
+        bad.append(("packaging/aur/.SRCINFO source", "not v" + want))
+    tilde = want.replace("-", "~")
+    spec = re.search(r"^Version:\s*(\S+)$", open("packaging/rpm/backtrack.spec").read(), re.M)
+    if not spec or spec.group(1) != tilde:
+        bad.append(("packaging/rpm/backtrack.spec Version", spec and spec.group(1)))
+    entry = re.search(r"^%changelog\n\* .* - (\S+)$", open("packaging/rpm/backtrack.spec").read(), re.M)
+    if not entry or entry.group(1).rsplit("-", 1)[0] != tilde:
+        bad.append(("packaging/rpm/backtrack.spec %changelog", entry and entry.group(1)))
+    top = re.match(r"backtrack \(([^)]+)\)", open("packaging/deb/changelog").read())
+    if not top or top.group(1).rsplit("-", 1)[0] != tilde:
+        bad.append(("packaging/deb/changelog top entry", top and top.group(1)))
     if bad:
         print(f"Version mismatch (workspace is {want}): {bad}", file=sys.stderr)
         sys.exit(1)
-    print(f"verify-version OK: all workspace crates at {want}")
+    print(f"verify-version OK: workspace crates and every package at {want}")
     PY
+
+# Take a release from tag to every channel (scripts/release.py, RELEASING.md).
+# Human-only, like bump-version: run once the version bump and the CHANGELOG's
+# move are merged to main. DIR is where the FriendlyHub files go.
+release DIR="":
+    python3 scripts/release.py {{DIR}}
+
+# Everything `just release` does that can be done here: the preflight, every
+# build, the FriendlyHub files. Publishes nothing.
+release-dry DIR="":
+    python3 scripts/release.py --dry-run {{DIR}}
+
+# The FriendlyHub files for the version already tagged (S14-T9).
+friendlyhub-files DIR="":
+    python3 scripts/release.py --friendlyhub-only {{DIR}}
 
 # ─── Run ────────────────────────────────────────────────────────────────────
 
@@ -702,6 +758,83 @@ flatpak-bundle:
     flatpak build-bundle --runtime-repo=https://dl.flathub.org/repo/flathub.flatpakrepo \
         "{{justfile_directory()}}/target/flatpak/repo" \
         "{{justfile_directory()}}/target/flatpak/backtrack.flatpak" tools.backtrack.Backtrack
+
+# The release's two source tarballs, from this checkout's HEAD, in
+# target/dist: the source as GitHub would archive the tag, and every crate in
+# Cargo.lock vendored, which the RPM and the deb build from offline (Launchpad
+# has no network). The vendor tarball is written reproducibly.
+dist:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    root="{{justfile_directory()}}"
+    out="${root}/target/dist"
+    version="$(awk '/^\[workspace\.package\]/{p=1} p&&/^version = /{gsub(/[",]/,"",$3); print $3; exit}' "${root}/Cargo.toml")"
+    rm -rf "${out}" && mkdir -p "${out}/vendoring"
+    git -C "${root}" archive --format=tar.gz --prefix="backtrack-${version}/" \
+        -o "${out}/backtrack-${version}.tar.gz" HEAD
+    cargo vendor --locked --manifest-path "${root}/Cargo.toml" "${out}/vendoring/vendor" >/dev/null
+    tar --sort=name --mtime=@0 --owner=0 --group=0 --numeric-owner \
+        -C "${out}/vendoring" -cJf "${out}/backtrack-${version}-vendor.tar.xz" vendor
+    rm -rf "${out}/vendoring"
+    ls -l "${out}"
+
+# Build the RPMs and the source RPM from `just dist` in a fresh Fedora 44
+# container, lint them, and install the main one. Left in target/rpm.
+rpm: dist
+    #!/usr/bin/env bash
+    set -euo pipefail
+    root="{{justfile_directory()}}"
+    out="${root}/target/rpm"
+    rm -rf "${out}" && mkdir -p "${out}/SOURCES" "${out}/SPECS"
+    cp "${root}"/target/dist/*.tar.* "${out}/SOURCES/"
+    cp "${root}/packaging/rpm/backtrack.spec" "${out}/SPECS/"
+    podman run --rm -v "${out}:/root/rpmbuild:Z" \
+        -v "${root}/packaging/rpm/build-in-container.sh:/build.sh:ro,Z" \
+        registry.fedoraproject.org/fedora:44 /build.sh
+    ls "${out}"/RPMS/*/*.rpm "${out}"/SRPMS/*.rpm
+
+# Build the source package the PPA takes and the binary debs from `just dist`
+# in a fresh Ubuntu 26.04 container, lint them, and install the main one.
+# Left in target/deb. Debian spells a pre-release with a tilde (0.1.0~rc1).
+deb: dist
+    #!/usr/bin/env bash
+    set -euo pipefail
+    root="{{justfile_directory()}}"
+    out="${root}/target/deb"
+    version="$(awk '/^\[workspace\.package\]/{p=1} p&&/^version = /{gsub(/[",]/,"",$3); print $3; exit}' "${root}/Cargo.toml")"
+    upstream="${version/-/\~}"
+    rm -rf "${out}" && mkdir -p "${out}"
+    cp "${root}/target/dist/backtrack-${version}.tar.gz" "${out}/backtrack_${upstream}.orig.tar.gz"
+    cp "${root}/target/dist/backtrack-${version}-vendor.tar.xz" "${out}/backtrack_${upstream}.orig-vendor.tar.xz"
+    podman run --rm -v "${out}:/build:Z" \
+        -v "${root}/packaging/deb:/debian:ro,Z" \
+        -v "${root}/packaging/deb/build-in-container.sh:/build.sh:ro,Z" \
+        docker.io/library/ubuntu:26.04 /build.sh
+    ls "${out}"/*.deb "${out}"/*.dsc
+
+# Build the AUR packages from this checkout's HEAD in a fresh Arch container,
+# the clean environment `pkgctl build` gives, and run namcap over them. The
+# packages are left in target/aur.
+aur-build:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    root="{{justfile_directory()}}"
+    out="${root}/target/aur"
+    version="$(awk '/^\[workspace\.package\]/{p=1} p&&/^version = /{gsub(/[",]/,"",$3); print $3; exit}' "${root}/Cargo.toml")"
+    rm -rf "${out}" && mkdir -p "${out}"
+    # GitHub's tarball of a tag unpacks to the same folder name.
+    git -C "${root}" archive --format=tar.gz --prefix="backtrack-${version}/" \
+        -o "${out}/backtrack-${version}.tar.gz" HEAD
+    sed "s|^source=.*|source=(\"backtrack-${version}.tar.gz\")|" \
+        "${root}/packaging/aur/PKGBUILD" > "${out}/PKGBUILD"
+    podman run --rm -v "${out}:/build:Z" \
+        -v "${root}/packaging/aur/build-in-container.sh:/build.sh:ro,Z" \
+        docker.io/library/archlinux:latest /build.sh
+    ls "${out}"/*.pkg.tar.zst
+
+# Regenerate the AUR's .SRCINFO from the PKGBUILD. Idempotent.
+aur-srcinfo:
+    cd "{{justfile_directory()}}/packaging/aur" && makepkg --printsrcinfo > .SRCINFO
 
 # ─── Development VMs (see docs/development-vms.md) ───────────────────────────
 

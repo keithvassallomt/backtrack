@@ -9,16 +9,28 @@ done; Claude removes ticked items.
   `backtrack-testing` for release candidates (S13-T4, S13-T9).
 - [ ] Launchpad account with the PPA signing key registered, and two PPAs:
   `backtrack` and `backtrack-testing` (S13-T4, S13-T9). Launchpad may ask for
-  the Ubuntu Code of Conduct to be signed first.
+  the Ubuntu Code of Conduct to be signed first. The key's fingerprint goes in
+  `packaging/release.toml`.
 - [ ] AUR account with an SSH key (S13-T8, S13-T9).
+- [ ] Check the account names in `packaging/release.toml`: the COPR owner and
+  the Launchpad user are both guessed as `keithvassallomt` (S13-T9).
+- [ ] Once the accounts above exist, a release-candidate run as RELEASING.md
+  describes: `just bump-version 0.1.0-rc1`, commit, `just release` on the
+  branch (S13-T5, S13-T6, S13-T9, S14-T9).
 - [ ] Icons for `tools.backtrack.Backtrack`: a scalable one and a symbolic one
   (S13-T1; placeholders until then).
 - [ ] One hand-check session on the Flatpak in the VMs, once Stage 14's fixes
   are in: the wizard clicked through (S13-T1), Backtrack's entry in GNOME's
   Background Apps opening the window (S12-T4), a notification clicked and
   the Fix page for a missing Borg read (S14-T2, S14-T5), Install and Remove
-  in Preferences with the Nautilus and Dolphin items they bring (S14-T4), and
-  the S13-T3 matrix. Claude writes the walkthrough script first.
+  in Preferences with the Nautilus and Dolphin items they bring (S14-T4), the
+  native packages' smoke test (`packaging/SMOKE-TEST.md`: the RPM in the
+  Fedora VM, the AUR package on Keith's machine; S13-T4, S13-T8), and the
+  S13-T3 matrix. Claude writes the walkthrough script first.
+- [ ] Optional, on FriendlyHub's side: its `.flatpakrepo` names no
+  `RuntimeRepo`, so a user who adds only FriendlyHub cannot install Backtrack,
+  whose GNOME runtime is on Flathub. `RuntimeRepo=https://dl.flathub.org/repo/flathub.flatpakrepo`
+  there lets Flatpak add it by itself.
 
 > **Contract:** Update this file in the SAME COMMIT as the work it describes.
 > `[ ]` upcoming · `[/]` in progress · `[x]` done (acceptance criteria verified) ·
@@ -147,12 +159,12 @@ done; Claude removes ticked items.
 - [/] S13-T1 Flatpak manifest (GNOME runtime, portals, bundled borg)
 - [/] S13-T2 cargo-sources.json generation recipe (offline flatpak build)
 - [ ] S13-T3 Portal permissions audit + test matrix
-- [ ] S13-T4 RPM spec + COPR (Fedora 44+); deb + PPA (Ubuntu 26.04+)
-- [ ] S13-T5 CI release artifacts on tag
-- [ ] S13-T6 Release runbook (human bumps version → just bump-version → just release)
+- [/] S13-T4 RPM spec + COPR (Fedora 44+); deb + PPA (Ubuntu 26.04+)
+- [/] S13-T5 CI release artifacts on tag
+- [/] S13-T6 Release runbook (human bumps version → just bump-version → just release)
 - [x] S13-T7 Application ID tools.backtrack.Backtrack, daemon names under it
-- [ ] S13-T8 AUR packages (app, nautilus, dolphin)
-- [ ] S13-T9 just release: from tag to every channel in one command
+- [/] S13-T8 AUR packages (app, nautilus, dolphin)
+- [/] S13-T9 just release: from tag to every channel in one command
 
 ## Stage 14 — Flatpak as a first-class build ([stage file](stages/stage-14-flatpak-first-class.md))
 - [x] S14-T1 Daemon activation inside the Flatpak
@@ -163,7 +175,7 @@ done; Claude removes ticked items.
 - [x] S14-T6 Secret Service keyring in every build
 - [x] S14-T7 Restart the daemon after a failure, as the unit does
 - [x] S14-T8 Btrfs snapshots inside the Flatpak (bundled btrfs-progs)
-- [ ] S14-T9 Publish on FriendlyHub
+- [/] S14-T9 Publish on FriendlyHub
 
 ## Blocked
 

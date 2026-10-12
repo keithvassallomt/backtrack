@@ -1,0 +1,41 @@
+Source: backtrack
+Section: utils
+Priority: optional
+Maintainer: Keith Vassallo <keith@vassallo.cloud>
+Build-Depends: debhelper-compat (= 13),
+               cargo (>= 1.92),
+               rustc (>= 1.92),
+               pkgconf,
+               libgtk-4-dev (>= 4.22),
+               libadwaita-1-dev (>= 1.9),
+               desktop-file-utils,
+               appstream
+Standards-Version: 4.7.2
+Homepage: https://backtrack.tools
+Vcs-Browser: https://github.com/keithvassallomt/backtrack
+Vcs-Git: https://github.com/keithvassallomt/backtrack.git
+Rules-Requires-Root: no
+
+Package: backtrack
+Architecture: any
+Depends: ${shlibs:Depends}, ${misc:Depends}, borgbackup (>= 1.2)
+Suggests: backtrack-nautilus, backtrack-dolphin
+Description: browse your files as they were
+ Backtrack keeps your files backed up and lets you move back through time to
+ bring back what you lost. Pick a folder, step back to this morning or last
+ week, and restore a file without needing to know how backups work. It is
+ built on Borg Backup.
+
+Package: backtrack-nautilus
+Architecture: all
+Depends: ${misc:Depends}, backtrack (>= ${source:Version}), python3-nautilus
+Description: Restore Previous Version in GNOME Files, for Backtrack
+ Adds Restore Previous Version and Browse Backups of This Folder to GNOME
+ Files, opening Backtrack at the file or folder.
+
+Package: backtrack-dolphin
+Architecture: all
+Depends: ${misc:Depends}, backtrack (>= ${source:Version}), dolphin
+Description: Restore Previous Version in Dolphin, for Backtrack
+ Adds Restore Previous Version and Browse Backups of This Folder to Dolphin,
+ opening Backtrack at the file or folder.

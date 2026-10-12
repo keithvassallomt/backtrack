@@ -1,0 +1,4 @@
+# The release scripts run on the release machine only, and read TOML with the
+# standard library's tomllib, which needs 3.11. Everything else as at the root.
+extend = "../ruff.toml"
+target-version = "py311"
