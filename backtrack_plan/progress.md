@@ -16,8 +16,9 @@ done; Claude removes ticked items.
 - [ ] One hand-check session on the Flatpak in the VMs, once Stage 14's fixes
   are in: the wizard clicked through (S13-T1), Backtrack's entry in GNOME's
   Background Apps opening the window (S12-T4), a notification clicked and
-  the Fix page for a missing Borg read (S14-T2, S14-T5), and the S13-T3
-  matrix. Claude writes the walkthrough script first.
+  the Fix page for a missing Borg read (S14-T2, S14-T5), Install and Remove
+  in Preferences with the Nautilus and Dolphin items they bring (S14-T4), and
+  the S13-T3 matrix. Claude writes the walkthrough script first.
 
 > **Contract:** Update this file in the SAME COMMIT as the work it describes.
 > `[ ]` upcoming · `[/]` in progress · `[x]` done (acceptance criteria verified) ·
@@ -157,7 +158,7 @@ done; Claude removes ticked items.
 - [x] S14-T1 Daemon activation inside the Flatpak
 - [x] S14-T2 Window opens through the session bus (notification clicks, tray)
 - [x] S14-T3 Tray icon started by the daemon inside the sandbox
-- [ ] S14-T4 File-manager integration for Flatpak installs (per-user copies)
+- [/] S14-T4 File-manager integration for Flatpak installs (per-user copies)
 - [x] S14-T5 Read the host's os-release (Fix page, doctor)
 - [x] S14-T6 Secret Service keyring in every build
 - [x] S14-T7 Restart the daemon after a failure, as the unit does

@@ -564,13 +564,13 @@ install-nautilus-dev:
     # The shipped extension is the one installed, with two lines rewritten, so
     # what is tried here is the file that will be packaged.
     mkdir -p "${dir}"
-    sed -e "s|^APP = \".*\"$|APP = \"${app}\"|" \
+    sed -e "s|^COMMAND = (.*)$|COMMAND = (\"${app}\",)|" \
         -e "s|^DEVELOPMENT = False$|DEVELOPMENT = True|" \
         "${root}/integrations/nautilus/backtrack.py" > "${dir}/backtrack.py.tmp"
-    if ! grep -qx "APP = \"${app}\"" "${dir}/backtrack.py.tmp" \
+    if ! grep -qx "COMMAND = (\"${app}\",)" "${dir}/backtrack.py.tmp" \
         || ! grep -qx "DEVELOPMENT = True" "${dir}/backtrack.py.tmp"; then
         rm -f "${dir}/backtrack.py.tmp"
-        echo "The extension's APP or DEVELOPMENT line has changed shape; update this recipe." >&2
+        echo "The extension's COMMAND or DEVELOPMENT line has changed shape; update this recipe." >&2
         exit 1
     fi
     mv "${dir}/backtrack.py.tmp" "${dir}/backtrack.py"

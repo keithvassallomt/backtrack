@@ -559,6 +559,11 @@ impl Prefs {
     /// Dolphin. Looked for again whenever the window shows what is true now,
     /// so one installed while Preferences is open appears on returning to it.
     ///
+    /// Inside a Flatpak, Install puts the Flatpak's own copy in the user's
+    /// data folder, and Remove takes it away again (S14-T4). Nautilus without
+    /// nautilus-python on the host keeps Install…, since a copy alone would
+    /// load nothing: the distribution's package is still needed.
+    ///
     /// An action row with a switch of its own rather than a switch row: a
     /// switch row puts its switch first among the suffixes, and the badge
     /// belongs before it.
@@ -569,8 +574,15 @@ impl Prefs {
         badge.add_css_class("recommended");
         badge.set_valign(Align::Center);
         row.add_suffix(&badge);
+        let remove = Button::with_label("Remove");
+        remove.add_css_class("flat");
+        remove.set_valign(Align::Center);
+        row.add_suffix(&remove);
         let toggle = gtk4::Switch::builder().valign(Align::Center).build();
         row.add_suffix(&toggle);
+        let add = Button::with_label("Install");
+        add.set_valign(Align::Center);
+        row.add_suffix(&add);
         let install = Button::with_label("Install…");
         install.set_valign(Align::Center);
         let owner = self.window.clone();
@@ -590,22 +602,70 @@ impl Prefs {
         self.toggle(plugin.setting(), &toggle, move |config| {
             plugin.enabled(config)
         });
+        let flatpak = backtrack_core::host::in_flatpak();
         let shown = row.clone();
-        self.show(move |_| {
-            let data_dirs: Vec<PathBuf> = std::iter::once(glib::user_data_dir())
-                .chain(glib::system_data_dirs())
-                .collect();
+        let (removing, adding) = (remove.clone(), add.clone());
+        let refresh = Rc::new(move || {
+            let (data_dirs, ours, can_copy) = if flatpak {
+                let home = backtrack_core::paths::host_data_home();
+                let ours = plugin.has_flatpak_copy(&home);
+                let can_copy = plugin != model::Plugin::Nautilus
+                    || crate::model::plugins::host_has_nautilus_python();
+                (crate::model::plugins::host_data_dirs(home), ours, can_copy)
+            } else {
+                let dirs = std::iter::once(glib::user_data_dir())
+                    .chain(glib::system_data_dirs())
+                    .collect();
+                (dirs, false, false)
+            };
             let installed = plugin.installed_in(&data_dirs);
-            debug!(?plugin, installed, "looked for a file-manager integration");
+            debug!(
+                ?plugin,
+                installed, ours, "looked for a file-manager integration"
+            );
             badge.set_visible(installed);
             toggle.set_visible(installed);
-            install.set_visible(!installed);
+            removing.set_visible(installed && ours);
+            adding.set_visible(!installed && can_copy);
+            install.set_visible(!installed && !can_copy);
             shown.set_subtitle(if installed { "" } else { "Not installed" });
             if installed {
                 shown.set_activatable_widget(Some(&toggle));
+            } else if can_copy {
+                shown.set_activatable_widget(Some(&adding));
             } else {
                 shown.set_activatable_widget(Some(&install));
             }
+        });
+        {
+            let refresh = Rc::clone(&refresh);
+            self.show(move |_| refresh());
+        }
+        let this = Rc::clone(self);
+        let after = Rc::clone(&refresh);
+        add.connect_clicked(move |_| {
+            let home = backtrack_core::paths::host_data_home();
+            match plugin.install_flatpak_copy(&home, &backtrack_core::paths::roots_file()) {
+                Ok(()) => {
+                    info!(?plugin, home = %home.display(), "installed the Flatpak's copy");
+                    this.toast(plugin.installed_note());
+                }
+                Err(error) => {
+                    warn!(%error, ?plugin, "the Flatpak's copy could not be installed");
+                    this.toast("The integration could not be installed.");
+                }
+            }
+            after();
+        });
+        let this = Rc::clone(self);
+        let after = Rc::clone(&refresh);
+        remove.connect_clicked(move |_| {
+            let home = backtrack_core::paths::host_data_home();
+            if let Err(error) = plugin.remove_flatpak_copy(&home) {
+                warn!(%error, ?plugin, "the Flatpak's copy could not be removed");
+                this.toast("The integration could not be removed.");
+            }
+            after();
         });
         row
     }

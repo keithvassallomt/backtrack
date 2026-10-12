@@ -303,6 +303,15 @@ impl Plugin {
         }
     }
 
+    /// What a Flatpak install says once it has put its copy in place: when
+    /// the file manager shows the items.
+    pub fn installed_note(self) -> &'static str {
+        match self {
+            Plugin::Nautilus => "Installed. Files shows Backtrack's items once it is restarted.",
+            Plugin::Dolphin => "Installed. Backtrack's items are in Dolphin's menu now.",
+        }
+    }
+
     /// Whether it is installed in any of `data_dirs`, the directories both
     /// file managers load these from: the user's data directory, then the
     /// system's.

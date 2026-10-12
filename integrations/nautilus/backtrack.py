@@ -27,11 +27,16 @@ import os
 
 from gi.repository import Gio, GObject, Nautilus
 
-# The window to launch, and whether this copy belongs to a development
+# How to open the window, and whether this copy belongs to a development
 # checkout. `just install-nautilus-dev` rewrites these two lines in the copy
 # it installs: the debug build, and the development daemon's data.
-APP = "backtrack-gtk"
+COMMAND = ("backtrack-gtk",)
 DEVELOPMENT = False
+# Where the daemon publishes the backup roots, when that is not where
+# `roots_file` looks. The copy a Flatpak install puts in place from
+# Preferences rewrites this line and COMMAND: its daemon keeps its data under
+# ~/.var/app, and its window opens with `flatpak run`.
+ROOTS = None
 
 RESTORE = "Restore Previous Version…"
 BROWSE = "Browse Backups of This Folder…"
@@ -49,7 +54,10 @@ def roots_file():
 
     The same rule as the daemon's own data folder: `$XDG_DATA_HOME/backtrack`,
     else `~/.local/share/backtrack`, with `backtrack-dev` in development.
+    A copy that names its file in ROOTS reads that one instead.
     """
+    if ROOTS:
+        return ROOTS
     base = os.environ.get("XDG_DATA_HOME") or os.path.join(
         os.path.expanduser("~"), ".local", "share"
     )
@@ -143,7 +151,7 @@ def launch(*arguments):
     launcher = Gio.SubprocessLauncher.new(Gio.SubprocessFlags.NONE)
     if DEVELOPMENT:
         launcher.setenv("BACKTRACK_DEV", "1", True)
-    launcher.spawnv([APP, *arguments])
+    launcher.spawnv([*COMMAND, *arguments])
 
 
 def restore(path):

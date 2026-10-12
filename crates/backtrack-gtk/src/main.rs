@@ -134,7 +134,10 @@ fn main() -> glib::ExitCode {
         )
         .build();
 
-    app.connect_startup(|_| ui::install_stylesheet());
+    app.connect_startup(|_| {
+        ui::install_stylesheet();
+        refresh_flatpak_plugins();
+    });
 
     app.connect_command_line(
         |app: &adw::Application, command_line: &gio::ApplicationCommandLine| -> glib::ExitCode {
@@ -218,6 +221,23 @@ fn show(app: &adw::Application, target: Option<Target>, fix: Option<backtrack_co
             }
         }
         None => open_first_window(app, target, fix),
+    }
+}
+
+/// Inside a Flatpak, bring the file-manager integrations it installed up to
+/// this version, so an update to the Flatpak updates them too (S14-T4).
+fn refresh_flatpak_plugins() {
+    if !backtrack_core::host::in_flatpak() {
+        return;
+    }
+    let home = backtrack_core::paths::host_data_home();
+    let roots = backtrack_core::paths::roots_file();
+    for plugin in model::prefs::Plugin::ALL {
+        match plugin.refresh_flatpak_copy(&home, &roots) {
+            Ok(true) => info!(?plugin, "brought the Flatpak's integration up to date"),
+            Ok(false) => {}
+            Err(error) => warn!(%error, ?plugin, "the Flatpak's integration could not be updated"),
+        }
     }
 }
 

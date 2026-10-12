@@ -96,25 +96,51 @@ pub fn cache_dir() -> PathBuf {
 /// `$XDG_CONFIG_HOME/kservicemenurc`, else `~/.config/kservicemenurc`
 /// (Stage 12). See [`crate::servicemenu`]. KDE's file rather than Backtrack's,
 /// so `BACKTRACK_DEV` does not move it: the development menu is hidden in the
-/// same Dolphin that a packaged one is.
+/// same Dolphin that a packaged one is. The host's, inside a Flatpak.
 pub fn kservicemenurc() -> PathBuf {
     config_home_from(
-        std::env::var_os("XDG_CONFIG_HOME").as_deref(),
+        host_var("XDG_CONFIG_HOME").as_deref(),
         std::env::var_os("HOME").as_deref(),
     )
     .join("kservicemenurc")
+}
+
+/// The user's data folder on the host, where the file managers look for
+/// per-user extensions: `$XDG_DATA_HOME`, else `~/.local/share`. The host's,
+/// inside a Flatpak (S14-T4).
+pub fn host_data_home() -> PathBuf {
+    data_home_from(
+        host_var("XDG_DATA_HOME").as_deref(),
+        std::env::var_os("HOME").as_deref(),
+    )
+}
+
+/// The variable naming the host's folder of a kind. Inside a Flatpak,
+/// `XDG_CONFIG_HOME` and `XDG_DATA_HOME` are the sandbox's own, which no file
+/// manager reads; Flatpak passes the host's as `HOST_XDG_*` when the host set
+/// them, and `HOME` is the same inside and out.
+fn host_var(name: &str) -> Option<std::ffi::OsString> {
+    if crate::host::in_flatpak() {
+        std::env::var_os(format!("HOST_{name}"))
+    } else {
+        std::env::var_os(name)
+    }
 }
 
 /// Pure path resolution, split out so it can be tested without touching the
 /// process environment.
 fn data_dir_from(dev: bool, xdg_data_home: Option<&OsStr>, home: Option<&OsStr>) -> PathBuf {
     let leaf = if dev { "backtrack-dev" } else { "backtrack" };
-    let base = xdg_data_home
+    data_home_from(xdg_data_home, home).join(leaf)
+}
+
+/// `$XDG_DATA_HOME`, else `~/.local/share`.
+fn data_home_from(xdg_data_home: Option<&OsStr>, home: Option<&OsStr>) -> PathBuf {
+    xdg_data_home
         .filter(|p| !p.is_empty())
         .map(PathBuf::from)
         .or_else(|| home.map(|h| PathBuf::from(h).join(".local/share")))
-        .unwrap_or_else(|| PathBuf::from("."));
-    base.join(leaf)
+        .unwrap_or_else(|| PathBuf::from("."))
 }
 
 /// `$XDG_CONFIG_HOME`, else `~/.config`, as [`data_dir_from`] resolves the data
