@@ -165,7 +165,8 @@ under it, all at once, before any packaging file is named for the old ones.
   again puts it back.
 
 **Accept:** `just check` green; a search for `io.github.keithvassallomt`,
-`org.backtrack` and `/org/backtrack` finds only progress.md's dated notes; on
+`org.backtrack` and `/org/backtrack` finds nothing outside `docs/superpowers/`
+(Stage 2's historical working documents); on
 both VMs after a push, the window starts the daemon through the bus, the tray
 shows its state, a remembered passphrase is found, and the launcher shows
 Backtrack under the new ID.
@@ -206,8 +207,8 @@ anything disagrees with it.
    `just check` pass; CHANGELOG has a dated section for this version and an
    empty `[Unreleased]`; every credential works: `gh auth status`, `copr-cli
    whoami` (with how long the COPR token has left), the PPA signing key (a test
-   signature), `ssh aur@aur.archlinux.org` (the AUR's greeting), and
-   FriendlyHub's (S14-T9). Any failure stops the run and says what to fix.
+   signature) and `ssh aur@aur.archlinux.org` (the AUR's greeting). Any
+   failure stops the run and says what to fix.
 2. **Tag and wait.** Creates and pushes the annotated tag `vX.Y.Z`, waits for
    S13-T5's workflow, and checks the GitHub release has every artifact and
    `SHA256SUMS`.
@@ -219,29 +220,36 @@ anything disagrees with it.
 5. **AUR.** Fills in the PKGBUILD's checksums from the release tarball,
    regenerates `.SRCINFO`, builds in a clean chroot, then commits and pushes to
    the AUR's repository.
-6. **FriendlyHub.** Generates what FriendlyHub takes (S14-T9): the manifest
-   pinned to the tag's commit, `cargo-sources.json`, `python3-requirements.json`
-   and the metainfo with this release, into `dist/friendlyhub/vX.Y.Z/`, and
-   submits them however FriendlyHub's intake allows.
+6. **FriendlyHub.** Writes what FriendlyHub takes (S14-T9) into
+   `~/Downloads/backtrack-X.Y.Z-friendlyhub/`, or the directory given (`just
+   release DIR`): the manifest, pinned to the tag's commit; the AppStream
+   metainfo with this version's release entry, written from its CHANGELOG
+   section, whose entries are already user-facing sentences; and the generated
+   sources, `cargo-sources.json` and `python3-requirements.json` (no
+   `node-sources.json`: Backtrack has no JavaScript, S13-T2). Keith submits
+   them. `just friendlyhub-files [DIR]` writes the same set for a version
+   already tagged.
 7. **Summary.** Each channel, its link, and its state.
 
-- **Resumable.** Each step checks whether this version is already there (the
-  release, the COPR build, the PPA upload, the AUR's `pkgver`, FriendlyHub's
-  copy) and skips it if so. After a failure, fixing the cause and running `just
-  release` again carries on from where it stopped. Every run writes a log under
-  `dist/release/`.
+- **Resumable.** Each publishing step checks whether this version is already
+  there (the release, the COPR build, the PPA upload, the AUR's `pkgver`) and
+  skips it if so; the FriendlyHub files are simply written again. After a
+  failure, fixing the cause and running `just release` again carries on from
+  where it stopped. Every run writes a log under `dist/release/`.
 - **Pre-releases** (`X.Y.Z-rc1`) go to a testing COPR project and a testing
-  PPA, and stop short of the AUR and FriendlyHub, printing what they would have
-  pushed.
+  PPA, and stop short of the AUR, printing what they would have pushed. The
+  FriendlyHub files are written as for a release; whether a release candidate
+  goes to FriendlyHub is Keith's call when he submits.
 - **`just release-dry`** runs the preflight and every build and generation step
-  locally, and publishes nothing.
+  locally, FriendlyHub's files included, and publishes nothing.
 - Human-only, like `just bump-version` (S13-T6).
 
 **Accept:** `just release-dry` completes on Keith's machine. With the version
 bumped by Keith to `0.1.0-rc1`, `just release` publishes it to GitHub, the
-testing COPR and the testing PPA, every build succeeding; running it again
-straight after skips every step; a run with one credential removed stops at the
-preflight, having published nothing.
+testing COPR and the testing PPA, every build succeeding, and leaves the
+FriendlyHub set in `~/Downloads` (S14-T9's checks pass on it); running it again
+straight after skips every publishing step; a run with one credential removed
+stops at the preflight, having published nothing.
 
 ## Definition of Done
 All four install paths proven on fresh systems; portal matrix green; `just

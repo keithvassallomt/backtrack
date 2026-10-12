@@ -27,6 +27,9 @@ zbus = "5"
 # Just the D-Bus type system: core defines the wire payloads both the daemon
 # and its clients marshal, without depending on a D-Bus implementation.
 zvariant = "5"
+# Held at 0.39: 0.40 pulls libsqlite3-sys 0.38, whose build script used the
+# unstable `cfg_select!` and failed on Rust 1.94.1 (Fedora's, 2026-07). Lift
+# the pin once the newest libsqlite3-sys builds on CI's toolchain.
 rusqlite = { version = "0.39", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

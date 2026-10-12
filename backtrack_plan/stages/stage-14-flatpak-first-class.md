@@ -203,15 +203,24 @@ is used, as on a native install. Native: unchanged.
 
 ### S14-T9 — Publish on FriendlyHub
 Backtrack is published on FriendlyHub, not Flathub (Keith, 2026-10-12).
-`packaging/flatpak/FRIENDLYHUB.md` covers what FriendlyHub needs from the
-repository (manifest, metainfo, screenshots, release notes taken from the
-CHANGELOG), how a release reaches it, and how a user adds the remote, including
-on distributions whose own packages cannot carry Backtrack (Debian 13, RHEL 10
-and its rebuilds). `just release` (S13-T9) generates the files and submits
-them; this task settles what FriendlyHub takes and how, and the recipe follows
-it. This replaces the Flathub checklist S13-T5 used to carry.
-**Accept:** the document exists, and following it, a release candidate installs
-from FriendlyHub on a clean VM and completes the wizard → backup → restore round
+FriendlyHub takes three things for a release: the manifest (`.yml`), the
+AppStream metainfo with a user-facing release entry for the version, and every
+generated source the manifest uses (`cargo-sources.json`,
+`python3-requirements.json`; Backtrack has no JavaScript, so no
+`node-sources.json`). `just release` (S13-T9) writes them to `~/Downloads` by
+default, and Keith submits them.
+- The manifest builds from that set alone: Backtrack's own source is fetched by
+  the tag's commit, not taken from a checkout.
+- The metainfo's release entry is written from the version's CHANGELOG section.
+- `packaging/flatpak/FRIENDLYHUB.md`: what the set holds, how Keith submits it,
+  and how a user adds the FriendlyHub remote, including on distributions whose
+  own packages cannot carry Backtrack (Debian 13, RHEL 10 and its rebuilds).
+
+This replaces the Flathub checklist S13-T5 used to carry.
+**Accept:** `appstreamcli validate` passes on the generated metainfo;
+`flatpak-builder` builds from the generated set alone, with the network cut
+after download; following FRIENDLYHUB.md, a release candidate installs from
+FriendlyHub on a clean VM and completes the wizard → backup → restore round
 trip.
 
 ## Definition of Done

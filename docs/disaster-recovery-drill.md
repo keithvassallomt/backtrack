@@ -121,7 +121,8 @@ development machine (a debug build, a local repository on an SSD):
 
 The drill found one thing: *Choose Which to Keep…* waited 24 s for its
 dialog, queued behind that first backup although it never touches the
-repository. Fixed the same day; see the decision log.
+repository. Fixed the same day (8117698): restores that never open the
+repository no longer wait for it.
 
 ### Driven over D-Bus
 
