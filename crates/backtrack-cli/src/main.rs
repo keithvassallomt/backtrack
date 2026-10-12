@@ -3,7 +3,7 @@
 
 //! `backtrack` — the command-line client, and the debugging tool.
 //!
-//! Every command is a call to the daemon over `org.backtrack.Daemon1`; nothing
+//! Every command is a call to the daemon over `tools.backtrack.Backtrack.Daemon1`; nothing
 //! here touches a repository directly. That is the point: the CLI exercises the
 //! same interface the GUI uses, so anything reproducible here is reproducible
 //! there, and `backtrack doctor` describes the system the GUI is actually
@@ -410,10 +410,16 @@ mod tests {
 
     #[test]
     fn named_daemon_errors_become_advice() {
-        let text = explain("org.backtrack.Error.NotConfigured", "not configured");
+        let text = explain(
+            "tools.backtrack.Backtrack.Error.NotConfigured",
+            "not configured",
+        );
         assert!(text.contains("setup wizard"), "got: {text}");
 
-        let text = explain("org.backtrack.Error.PassphraseWrong", "wrong passphrase");
+        let text = explain(
+            "tools.backtrack.Backtrack.Error.PassphraseWrong",
+            "wrong passphrase",
+        );
         assert!(text.contains("recovery key"), "got: {text}");
     }
 
@@ -421,7 +427,7 @@ mod tests {
     fn an_unrecognised_error_is_passed_through_unembellished() {
         // Inventing advice for an error we do not understand is worse than
         // repeating what the daemon said.
-        let text = explain("org.backtrack.Error.Something", "the message");
+        let text = explain("tools.backtrack.Backtrack.Error.Something", "the message");
         assert_eq!(text, "the message");
     }
 

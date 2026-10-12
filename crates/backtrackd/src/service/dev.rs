@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // SPDX-FileCopyrightText: 2026 Keith Vassallo <keith@vassallo.cloud>
 
-//! `org.backtrack.Daemon1.Dev`: controls for development, served only under
+//! `tools.backtrack.Backtrack.Daemon1.Dev`: controls for development, served only under
 //! `BACKTRACK_DEV`.
 //!
 //! An interface of its own rather than methods on the published one, so that
@@ -27,7 +27,7 @@ impl Dev {
     }
 }
 
-#[zbus::interface(name = "org.backtrack.Daemon1.Dev")]
+#[zbus::interface(name = "tools.backtrack.Backtrack.Daemon1.Dev")]
 impl Dev {
     /// Show `state` for `reason` in place of the real health, with its banner
     /// and its notification, until called again with an empty state.

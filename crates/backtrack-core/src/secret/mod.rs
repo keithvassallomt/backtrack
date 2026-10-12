@@ -23,7 +23,7 @@ pub use keyring::KeyringSecretStore;
 pub use session::SessionSecretStore;
 
 /// Stable Secret Service attribute: the application id.
-pub const APP_ID: &str = "io.github.keithvassallomt.Backtrack";
+pub const APP_ID: &str = "tools.backtrack.Backtrack";
 
 /// Get/set/delete a repository passphrase under a stable attribute set
 /// (`app-id` + `repo-id`).

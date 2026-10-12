@@ -496,19 +496,19 @@ install-units:
     # them rather than keeping a second copy in the tree, so the thing being
     # tested here is the file that will actually be packaged.
     #
-    # Two substitutions: the binary path, and the bus name — dev mode uses
-    # org.backtrack.Daemon1.Dev so a development daemon and an installed one can
-    # never answer each other's clients.
+    # Two substitutions: the binary path, and the bus name. Dev mode uses
+    # tools.backtrack.Backtrack.Daemon1.Dev so a development daemon and an
+    # installed one can never answer each other's clients.
     sed -e "s|^ExecStart=.*|ExecStart=${binary}|" \
-        -e "s|^BusName=org.backtrack.Daemon1$|BusName=org.backtrack.Daemon1.Dev|" \
+        -e "s|^BusName=tools.backtrack.Backtrack.Daemon1$|BusName=tools.backtrack.Backtrack.Daemon1.Dev|" \
         -e "s|^\[Service\]$|[Service]\nEnvironment=BACKTRACK_DEV=1|" \
         "${root}/packaging/systemd/backtrackd.service" \
         > "${systemd_dir}/backtrackd.service"
 
     sed -e "s|^Exec=.*|Exec=${binary}|" \
-        -e "s|^Name=org.backtrack.Daemon1$|Name=org.backtrack.Daemon1.Dev|" \
-        "${root}/packaging/dbus/org.backtrack.Daemon1.service" \
-        > "${dbus_dir}/org.backtrack.Daemon1.Dev.service"
+        -e "s|^Name=tools.backtrack.Backtrack.Daemon1$|Name=tools.backtrack.Backtrack.Daemon1.Dev|" \
+        "${root}/packaging/dbus/tools.backtrack.Backtrack.Daemon1.service" \
+        > "${dbus_dir}/tools.backtrack.Backtrack.Daemon1.Dev.service"
 
     systemctl --user daemon-reload
     # Ask the bus to rescan its service directory, so activation works in this
@@ -518,11 +518,11 @@ install-units:
 
     echo "Installed:"
     echo "  ${systemd_dir}/backtrackd.service"
-    echo "  ${dbus_dir}/org.backtrack.Daemon1.Dev.service"
+    echo "  ${dbus_dir}/tools.backtrack.Backtrack.Daemon1.Dev.service"
     echo
     echo "The daemon now starts on demand. Try:"
-    echo "  busctl --user call org.backtrack.Daemon1.Dev /org/backtrack/Daemon1 \\"
-    echo "      org.backtrack.Daemon1 GetStatus"
+    echo "  busctl --user call tools.backtrack.Backtrack.Daemon1.Dev /tools/backtrack/Backtrack/Daemon1 \\"
+    echo "      tools.backtrack.Backtrack.Daemon1 GetStatus"
 
 # Remove the dev-mode user units.
 uninstall-units:
@@ -534,7 +534,7 @@ uninstall-units:
     systemctl --user stop backtrackd.service 2>/dev/null || true
     systemctl --user disable backtrackd.service 2>/dev/null || true
     rm -f "${systemd_dir}/backtrackd.service"
-    rm -f "${dbus_dir}/org.backtrack.Daemon1.Dev.service"
+    rm -f "${dbus_dir}/tools.backtrack.Backtrack.Daemon1.Dev.service"
     systemctl --user daemon-reload
     echo "Dev units removed."
 

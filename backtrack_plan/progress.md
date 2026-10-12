@@ -1,5 +1,20 @@
 # Backtrack — Progress Tracker
 
+## For Keith to do
+
+Steps only Keith can take, kept current as work turns them up. Tick each when
+done; Claude removes ticked items.
+
+- [ ] Fedora account and two COPR projects: `backtrack`, and
+  `backtrack-testing` for release candidates (S13-T4, S13-T9).
+- [ ] Launchpad account with the PPA signing key registered, and two PPAs:
+  `backtrack` and `backtrack-testing` (S13-T4, S13-T9). Launchpad may ask for
+  the Ubuntu Code of Conduct to be signed first.
+- [ ] AUR account with an SSH key (S13-T8, S13-T9).
+- [ ] Icons for `tools.backtrack.Backtrack`: a scalable one and a symbolic one
+  (S13-T1; placeholders until then).
+- [ ] FriendlyHub's remote URL, for `packaging/flatpak/FRIENDLYHUB.md` (S14-T9).
+
 > **Contract:** Update this file in the SAME COMMIT as the work it describes.
 > `[ ]` upcoming · `[/]` in progress · `[x]` done (acceptance criteria verified) ·
 > `[!]` blocked (explain under **Blocked** below).
@@ -44,7 +59,7 @@
 ## Stage 3 — Daemon, D-Bus, CLI ([stage file](stages/stage-03-daemon-dbus-cli.md))
 - [x] S03-T1 backtrackd skeleton: config load, single-instance, D-Bus name
 - [x] S03-T2 Job model (queue, IDs, cancel/pause, progress events)
-- [x] S03-T3 Full org.backtrack.Daemon1 interface + signals
+- [x] S03-T3 Full tools.backtrack.Backtrack.Daemon1 interface + signals
 - [x] S03-T4 systemd user units + D-Bus activation
 - [x] S03-T5 backtrack CLI mapping the interface (incl. status --json, doctor)
 
@@ -130,7 +145,7 @@
 - [ ] S13-T4 RPM spec + COPR (Fedora 44+); deb + PPA (Ubuntu 26.04+)
 - [ ] S13-T5 CI release artifacts on tag
 - [ ] S13-T6 Release runbook (human bumps version → just bump-version → just release)
-- [ ] S13-T7 Application ID tools.backtrack.Backtrack, daemon names under it
+- [x] S13-T7 Application ID tools.backtrack.Backtrack, daemon names under it
 - [ ] S13-T8 AUR packages (app, nautilus, dolphin)
 - [ ] S13-T9 just release: from tag to every channel in one command
 

@@ -56,8 +56,8 @@ The daemon announces a pause and a resume at once. It used to leave them to
 its once-a-minute reassessment, which the window never noticed because it
 reads the status again after its own calls.
 
-One icon per session: the tray claims `org.backtrack.Tray`
-(`org.backtrack.Tray.Dev` in development) and a second copy leaves.
+One icon per session: the tray claims `tools.backtrack.Backtrack.Tray`
+(`tools.backtrack.Backtrack.Tray.Dev` in development) and a second copy leaves.
 
 ### Known limitation: an open window is not brought forward
 
@@ -118,10 +118,10 @@ and menu read as above, and while `BROKEN` is forced the icon is the red error
 sign:
 
 ```sh
-scripts/vm run "fedora45 (KDE)" busctl --user call org.backtrack.Daemon1.Dev \
-    /org/backtrack/Daemon1 org.backtrack.Daemon1.Dev ForceHealth ss BROKEN passphrase-missing
-scripts/vm run "fedora45 (KDE)" busctl --user call org.backtrack.Daemon1.Dev \
-    /org/backtrack/Daemon1 org.backtrack.Daemon1.Dev ForceHealth ss "" ""
+scripts/vm run "fedora45 (KDE)" busctl --user call tools.backtrack.Backtrack.Daemon1.Dev \
+    /tools/backtrack/Backtrack/Daemon1 tools.backtrack.Backtrack.Daemon1.Dev ForceHealth ss BROKEN passphrase-missing
+scripts/vm run "fedora45 (KDE)" busctl --user call tools.backtrack.Backtrack.Daemon1.Dev \
+    /tools/backtrack/Backtrack/Daemon1 tools.backtrack.Backtrack.Daemon1.Dev ForceHealth ss "" ""
 ```
 
 ### Checked
@@ -159,7 +159,7 @@ For the Flatpak build:
   which a sandbox does not have (`crates/backtrackd/src/background.rs`). The
   request runs on its own, because the portal may ask on screen first.
 - **The launcher is named for the application ID**,
-  `packaging/desktop/io.github.keithvassallomt.Backtrack.desktop`: the shell
+  `packaging/desktop/tools.backtrack.Backtrack.desktop`: the shell
   looks a background app up as `<app ID>.desktop` and launches it.
 
 Outside a sandbox, nothing here changes: the systemd unit starts the daemon

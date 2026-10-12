@@ -410,21 +410,21 @@ pub const PHASE_CATALOGUING: &str = "cataloguing";
 pub const PHASE_PRUNING: &str = "pruning";
 
 /// The well-known bus name of an installed daemon.
-pub const BUS_NAME: &str = "org.backtrack.Daemon1";
+pub const BUS_NAME: &str = "tools.backtrack.Backtrack.Daemon1";
 
 /// The bus name of a development daemon (`BACKTRACK_DEV` set).
-pub const BUS_NAME_DEV: &str = "org.backtrack.Daemon1.Dev";
+pub const BUS_NAME_DEV: &str = "tools.backtrack.Backtrack.Daemon1.Dev";
 
 /// The interface every client talks. Fixed in both modes — only the bus name
 /// varies, so introspection output is identical either way.
-pub const INTERFACE: &str = "org.backtrack.Daemon1";
+pub const INTERFACE: &str = "tools.backtrack.Backtrack.Daemon1";
 
 /// The single object the daemon exports.
-pub const OBJECT_PATH: &str = "/org/backtrack/Daemon1";
+pub const OBJECT_PATH: &str = "/tools/backtrack/Backtrack/Daemon1";
 
 /// The prefix for the daemon's named D-Bus errors, which mirror the engine's
-/// error taxonomy (e.g. `org.backtrack.Error.PassphraseMissing`).
-pub const ERROR_PREFIX: &str = "org.backtrack.Error";
+/// error taxonomy (e.g. `tools.backtrack.Backtrack.Error.PassphraseMissing`).
+pub const ERROR_PREFIX: &str = "tools.backtrack.Backtrack.Error";
 
 /// The bus name to own (daemon) or call (clients), honoring `BACKTRACK_DEV`.
 pub fn bus_name() -> &'static str {
@@ -481,7 +481,7 @@ mod tests {
     fn the_published_interface_does_not_vary() {
         // Clients introspect the same interface in both modes; only the name
         // they connect through differs.
-        assert_eq!(INTERFACE, "org.backtrack.Daemon1");
-        assert_eq!(OBJECT_PATH, "/org/backtrack/Daemon1");
+        assert_eq!(INTERFACE, "tools.backtrack.Backtrack.Daemon1");
+        assert_eq!(OBJECT_PATH, "/tools/backtrack/Backtrack/Daemon1");
     }
 }

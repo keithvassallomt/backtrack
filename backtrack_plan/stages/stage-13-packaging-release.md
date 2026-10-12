@@ -160,13 +160,14 @@ under it, all at once, before any packaging file is named for the old ones.
   agreement check and the interface's introspection snapshot regenerated;
   `reference/stack.md` §2 and VERSIONING.md's location table follow.
 - Nothing has been released, so there is no migration code. Development
-  machines and the VMs lose the passphrase stored under the old `app-id`; the
-  recipes that store the demo passphrase use the new one, and running them
-  again puts it back.
+  builds keep passphrases in a file (`BACKTRACK_DEV`), not the keyring, so no
+  development setup loses one; only a release build's keyring entry carries
+  the `app-id`, and none exists yet.
 
 **Accept:** `just check` green; a search for `io.github.keithvassallomt`,
 `org.backtrack` and `/org/backtrack` finds nothing outside `docs/superpowers/`
-(Stage 2's historical working documents); on
+(Stage 2's historical working documents) and the two places that record the
+rename (this task and brief.md's App ID line); on
 both VMs after a push, the window starts the daemon through the bus, the tray
 shows its state, a remembered passphrase is found, and the launcher shows
 Backtrack under the new ID.

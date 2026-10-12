@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // SPDX-FileCopyrightText: 2026 Keith Vassallo <keith@vassallo.cloud>
 
-//! The tray's side of `org.backtrack.Daemon1`: the calls its menu makes and
+//! The tray's side of `tools.backtrack.Backtrack.Daemon1`: the calls its menu makes and
 //! the signals that say the status line is out of date.
 
 use backtrack_core::dbus::Status;
@@ -9,8 +9,8 @@ use tracing::debug;
 use zbus::proxy::{CacheProperties, MethodFlags};
 
 #[zbus::proxy(
-    interface = "org.backtrack.Daemon1",
-    default_path = "/org/backtrack/Daemon1"
+    interface = "tools.backtrack.Backtrack.Daemon1",
+    default_path = "/tools/backtrack/Backtrack/Daemon1"
 )]
 pub trait Daemon1 {
     fn backup_now(&self) -> zbus::Result<u64>;

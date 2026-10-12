@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // SPDX-FileCopyrightText: 2026 Keith Vassallo <keith@vassallo.cloud>
 
-//! The published shape of `org.backtrack.Daemon1`, pinned.
+//! The published shape of `tools.backtrack.Backtrack.Daemon1`, pinned.
 //!
 //! The interface is a contract with the GUI, the CLI, and any file-manager
 //! plugin: renaming a method or changing an argument's type breaks them at run
@@ -236,7 +236,7 @@ mod tests {
 
     #[test]
     fn the_interface_is_named_as_documented() {
-        assert_eq!(Daemon1::name(), "org.backtrack.Daemon1");
+        assert_eq!(Daemon1::name(), "tools.backtrack.Backtrack.Daemon1");
     }
 
     #[test]

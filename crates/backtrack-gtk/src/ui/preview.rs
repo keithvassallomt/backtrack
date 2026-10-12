@@ -514,7 +514,7 @@ mod tests {
     #[test]
     fn an_error_is_shown_without_its_dbus_name() {
         assert_eq!(
-            clean("org.backtrack.Error.NotFound: no such path in that archive"),
+            clean("tools.backtrack.Backtrack.Error.NotFound: no such path in that archive"),
             "no such path in that archive"
         );
         assert_eq!(clean("something went wrong"), "something went wrong");

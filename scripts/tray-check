@@ -21,9 +21,9 @@ from pathlib import Path
 
 from gi.repository import Gio, GLib
 
-APP = "io.github.keithvassallomt.Backtrack"
-DAEMON = "org.backtrack.Daemon1.Dev"
-DAEMON_PATH = "/org/backtrack/Daemon1"
+APP = "tools.backtrack.Backtrack"
+DAEMON = "tools.backtrack.Backtrack.Daemon1.Dev"
+DAEMON_PATH = "/tools/backtrack/Backtrack/Daemon1"
 SNI = "org.kde.StatusNotifierItem"
 MENU = "com.canonical.dbusmenu"
 TRAY = Path(__file__).resolve().parent.parent / "target/debug/backtrack-tray"
@@ -44,17 +44,17 @@ def prop(name, path, iface, key):
                 GLib.Variant("(ss)", (iface, key)), "(v)")[0]
 
 
-def daemon(method, signature=None, *args, iface="org.backtrack.Daemon1"):
+def daemon(method, signature=None, *args, iface="tools.backtrack.Backtrack.Daemon1"):
     return call(DAEMON, DAEMON_PATH, iface, method,
                 GLib.Variant(signature, args) if signature else None)
 
 
 def force(state, reason=""):
-    daemon("ForceHealth", "(ss)", state, reason, iface="org.backtrack.Daemon1.Dev")
+    daemon("ForceHealth", "(ss)", state, reason, iface="tools.backtrack.Backtrack.Daemon1.Dev")
 
 
 def last_backup():
-    return call(DAEMON, DAEMON_PATH, "org.backtrack.Daemon1", "GetStatus", None,
+    return call(DAEMON, DAEMON_PATH, "tools.backtrack.Backtrack.Daemon1", "GetStatus", None,
                 "(sttbtsuuttbstt)")[1]
 
 

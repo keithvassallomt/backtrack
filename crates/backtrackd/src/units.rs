@@ -16,7 +16,8 @@
 const SYSTEMD_UNIT: &str = include_str!("../../../packaging/systemd/backtrackd.service");
 
 /// The packaged D-Bus activation file.
-const DBUS_SERVICE: &str = include_str!("../../../packaging/dbus/org.backtrack.Daemon1.service");
+const DBUS_SERVICE: &str =
+    include_str!("../../../packaging/dbus/tools.backtrack.Backtrack.Daemon1.service");
 
 /// The unit's file name, which `SystemdService=` has to match.
 const SYSTEMD_UNIT_NAME: &str = "backtrackd.service";

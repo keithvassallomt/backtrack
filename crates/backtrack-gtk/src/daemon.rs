@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // SPDX-FileCopyrightText: 2026 Keith Vassallo <keith@vassallo.cloud>
 
-//! The window's side of `org.backtrack.Daemon1`.
+//! The window's side of `tools.backtrack.Backtrack.Daemon1`.
 //!
 //! Browsing does not go through here: the timeline reads the index directly,
 //! which is what makes it instant and what makes it work with the daemon
@@ -20,8 +20,8 @@ use tracing::warn;
 
 /// The daemon, as the window calls it.
 #[zbus::proxy(
-    interface = "org.backtrack.Daemon1",
-    default_path = "/org/backtrack/Daemon1"
+    interface = "tools.backtrack.Backtrack.Daemon1",
+    default_path = "/tools/backtrack/Backtrack/Daemon1"
 )]
 pub trait Daemon1 {
     fn backup_now(&self) -> zbus::Result<u64>;

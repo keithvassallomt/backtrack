@@ -12,10 +12,10 @@
 | Process model | **Daemon (`backtrackd`) + thin clients over D-Bus** |
 | Backup engine | **Borg 1.2/1.4 CLI subprocess** behind an adapter trait |
 | Index | **SQLite** (WAL), interval-encoded schema, FTS5 filename search |
-| Local API | **D-Bus** session service `org.backtrack.Daemon1` + `backtrack` CLI |
+| Local API | **D-Bus** session service `tools.backtrack.Backtrack.Daemon1` + `backtrack` CLI |
 | Network API | None in v1 |
 | Packaging | **Flatpak and distro-native (RPM/DEB) from day one** |
-| License / identity | GPL-3.0-or-later · app ID `io.github.keithvassallomt.Backtrack` (see [brief.md](brief.md)) |
+| License / identity | GPL-3.0-or-later · app ID `tools.backtrack.Backtrack` (see [brief.md](brief.md)) |
 | v1 extras | Compare view, btrfs snapshot mode, cross-snapshot search, guided disaster recovery, health model ([health.md](health.md)) |
 | Deferred to v1.x | `backtrack:/` KIO worker, compiled Dolphin FileItemAction plugin, Borg 2, cloud destinations |
 
@@ -47,7 +47,16 @@ the GTK app, and transient `borg` subprocesses owned by the daemon.
 The GUI reads the index directly (SQLite WAL permits concurrent readers) and performs
 every mutation via D-Bus. This eliminates cross-process locking entirely.
 
-## 2. D-Bus API — `org.backtrack.Daemon1` (session bus)
+## 2. D-Bus API — `tools.backtrack.Backtrack.Daemon1` (session bus)
+
+One name for the bus name and the interface, under the application ID
+`tools.backtrack.Backtrack` (S13-T7): Flatpak exports a D-Bus activation file
+only for names under the application ID. The object path is
+`/tools/backtrack/Backtrack/Daemon1`, named errors are
+`tools.backtrack.Backtrack.Error.<Variant>`, and a development daemon
+(`BACKTRACK_DEV`) claims `tools.backtrack.Backtrack.Daemon1.Dev` with the same
+interface. The `1` is the API's major version: an incompatible change ships as
+`Daemon2` beside it.
 
 **Methods**
 

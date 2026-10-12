@@ -43,8 +43,8 @@ DATA="$NEW_HOME/.local/share/backtrack-dev"
 say() { printf '\033[1m%s\033[0m\n' "$*"; }
 
 dbus_call() {
-    gdbus call --session --dest org.backtrack.Daemon1.Dev \
-        --object-path /org/backtrack/Daemon1 --method "org.backtrack.Daemon1.$1" "${@:2}"
+    gdbus call --session --dest tools.backtrack.Backtrack.Daemon1.Dev \
+        --object-path /tools/backtrack/Backtrack/Daemon1 --method "tools.backtrack.Backtrack.Daemon1.$1" "${@:2}"
 }
 
 setup() {

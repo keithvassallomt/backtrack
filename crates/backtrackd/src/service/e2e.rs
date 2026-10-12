@@ -27,8 +27,8 @@ use crate::jobs::JobRegistry;
 use crate::service::{fan_out_signals, Daemon1, Shared, StorageInfo, SEARCH_LIMIT};
 
 const PASS: &str = "e2e-passphrase";
-const PATH: &str = "/org/backtrack/Daemon1";
-const IFACE: &str = "org.backtrack.Daemon1";
+const PATH: &str = "/tools/backtrack/Backtrack/Daemon1";
+const IFACE: &str = "tools.backtrack.Backtrack.Daemon1";
 
 /// A repository with something worth backing up in it.
 struct Fixture {
@@ -293,7 +293,7 @@ async fn errors_cross_the_bus_with_their_documented_names() {
     };
     assert_eq!(
         name.as_str(),
-        "org.backtrack.Error.NotConfigured",
+        "tools.backtrack.Backtrack.Error.NotConfigured",
         "clients match on the name, so it is the contract"
     );
 }

@@ -44,7 +44,7 @@ If you read nothing else before starting: read [reference/brief.md](reference/br
 
 - **Language:** Rust (stable). Workspace layout is defined in
   [reference/stack.md](reference/stack.md) §1 and created in Stage 0.
-- **License:** GPL-3.0-or-later. App ID: `io.github.keithvassallomt.Backtrack`.
+- **License:** GPL-3.0-or-later. App ID: `tools.backtrack.Backtrack`.
 - **Initial version: 0.1.0** (set by human in Stage 0; never touched by AI after).
 - **Logging from day one:** all crates use `tracing`. No `println!`/`eprintln!` in
   committed code (CI greps for it). Details in Stage 0.

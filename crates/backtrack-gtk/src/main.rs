@@ -35,7 +35,7 @@ use libadwaita as adw;
 use tracing::{error, info, warn};
 
 /// Freedesktop application ID (see stack.md / brief.md).
-const APP_ID: &str = "io.github.keithvassallomt.Backtrack";
+const APP_ID: &str = "tools.backtrack.Backtrack";
 
 /// Where the window should open.
 #[derive(Debug, Clone, Parser)]

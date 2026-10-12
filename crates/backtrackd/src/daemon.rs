@@ -15,7 +15,7 @@
 //!    what the health model is for, and a client needs a live daemon to hear it
 //!    from.
 //! 4. **Export the service object and start the signal fan-out.**
-//! 5. **Claim the bus name.** Ownership of `org.backtrack.Daemon1` *is* the
+//! 5. **Claim the bus name.** Ownership of `tools.backtrack.Backtrack.Daemon1` *is* the
 //!    single-instance lock — no PID file, nothing stale to clean up after a
 //!    crash, and the bus arbitrates the race for us. It is also the readiness
 //!    announcement: systemd marks the unit started when the name appears, and an

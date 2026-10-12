@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // SPDX-FileCopyrightText: 2026 Keith Vassallo <keith@vassallo.cloud>
 
-//! `org.backtrack.Daemon1` — the interface every client talks to.
+//! `tools.backtrack.Backtrack.Daemon1` — the interface every client talks to.
 //!
 //! The method and signal set is normative: it comes from stack.md §2 and is
 //! pinned by an introspection snapshot test, so a rename is a deliberate act
@@ -2270,7 +2270,7 @@ impl Daemon1 {
     }
 }
 
-#[zbus::interface(name = "org.backtrack.Daemon1")]
+#[zbus::interface(name = "tools.backtrack.Backtrack.Daemon1")]
 impl Daemon1 {
     /// Start a backup now, whatever the schedule says.
     ///

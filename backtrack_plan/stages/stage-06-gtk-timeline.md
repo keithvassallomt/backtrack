@@ -109,7 +109,7 @@ The interface has no way to learn that a job ended: `StatusChanged` fires only
 when the health *state* moves, which a successful backup on an already-healthy
 machine does not do, so the window polls `GetStatus` to know when a backup it
 started has finished. Add `JobFinished(job, kind, outcome)` to
-`org.backtrack.Daemon1`, emitted from the signal fan-out on any terminal job
+`tools.backtrack.Backtrack.Daemon1`, emitted from the signal fan-out on any terminal job
 state, and use it in place of the polling. Stage 7's restores need the same
 thing.
 **Accept:** the introspection snapshot carries the new signal; the GTK app

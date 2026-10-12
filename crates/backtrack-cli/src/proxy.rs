@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // SPDX-FileCopyrightText: 2026 Keith Vassallo <keith@vassallo.cloud>
 
-//! The client side of `org.backtrack.Daemon1`.
+//! The client side of `tools.backtrack.Backtrack.Daemon1`.
 //!
 //! Generated from the same names and payload types the daemon serves, so the
 //! two cannot drift: [`backtrack_core::dbus`] holds both.
@@ -10,8 +10,8 @@ use backtrack_core::dbus::{HealthReport, SearchResult, Status};
 
 /// The daemon, as seen from a client.
 #[zbus::proxy(
-    interface = "org.backtrack.Daemon1",
-    default_path = "/org/backtrack/Daemon1"
+    interface = "tools.backtrack.Backtrack.Daemon1",
+    default_path = "/tools/backtrack/Backtrack/Daemon1"
 )]
 pub trait Daemon1 {
     fn backup_now(&self) -> zbus::Result<u64>;

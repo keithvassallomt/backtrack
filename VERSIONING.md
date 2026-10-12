@@ -28,7 +28,7 @@ must be kept in sync by `just bump-version`.
 | Location | Status | Notes |
 |---|---|---|
 | `Cargo.toml` (`[workspace.package].version`) | **active** | Source of truth; crates inherit. |
-| `packaging/*/io.github.keithvassallomt.Backtrack.metainfo.xml` | planned (Stage 13) | AppStream `<release>` version. |
+| `packaging/*/tools.backtrack.Backtrack.metainfo.xml` | planned (Stage 13) | AppStream `<release>` version. |
 | `packaging/flatpak/*.yml` manifest | planned (Stage 13) | Bundled build/tag. |
 | `packaging/rpm/backtrack.spec` | planned (Stage 13) | `Version:` field. |
 | `packaging/deb/changelog` | planned (Stage 13) | Top entry version. |

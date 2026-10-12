@@ -50,9 +50,9 @@ struct Args {}
 /// session leaves, rather than adding a second icon.
 fn bus_name() -> &'static str {
     if std::env::var_os("BACKTRACK_DEV").is_some() {
-        "org.backtrack.Tray.Dev"
+        "tools.backtrack.Backtrack.Tray.Dev"
     } else {
-        "org.backtrack.Tray"
+        "tools.backtrack.Backtrack.Tray"
     }
 }
 
