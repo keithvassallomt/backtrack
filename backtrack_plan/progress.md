@@ -134,6 +134,7 @@ done; Claude removes ticked items.
 - [x] S10-T5 Monthly borg check schedule + index integrity check
 - [x] S10-T6 backtrack doctor diagnostic bundle
 - [x] S10-T7 Local snapshot badges say whether the destination has them
+- [ ] S10-T8 An unwritable destination is not a failed sign-in
 
 ## Stage 11 — Disaster recovery ([stage file](stages/stage-11-disaster-recovery.md))
 - [x] S11-T1 RestoreEverything job: per-top-folder, resumable

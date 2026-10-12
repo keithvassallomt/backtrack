@@ -86,6 +86,25 @@ The removal date comes from the same rule the daemon removes snapshots by.
 real catalogue, including a catalogue query that stays an index lookup; the
 badges and tooltips are checked in the window.
 
+### S10-T8 — An unwritable destination is not a failed sign-in
+Found in the Flatpak hand checks (Keith, 2026-10-12): a local folder that Borg
+may not write to reads "Backtrack can't sign in to …", and its fix asks for a
+sign-in. Borg's classifier takes every "Permission denied" as a refused
+sign-in, which is right for ssh's "Permission denied (publickey)" and wrong for
+the operating system's `[Errno 13] Permission denied: '/path'`.
+- health.md's catalogue gains the row: destination not writable, `BROKEN`, its
+  own banner and notification copy, and a resolution that names the folder and
+  says how to give it back its permissions, or to choose another place.
+- The classifier tells the two apart: ssh's refusal stays `AuthFailed`; a
+  filesystem `PermissionError` on the repository is the new error.
+- The Fix page, the notification and `backtrack status` use the new row, and
+  the D-Bus reason is its own.
+
+**Accept:** unit tests classify both kinds of "Permission denied" from Borg's
+real output; with a local destination made read-only, the notification, banner
+and Fix page say it cannot be written to, and making it writable again returns
+to `HEALTHY`; an SSH server that refuses the key still reads "can't sign in".
+
 ## Definition of Done
 Kill-switch drill: with the app running, (1) delete keyring entry, (2) make
 destination unwritable, (3) fill spool quota — each produces the documented state,
