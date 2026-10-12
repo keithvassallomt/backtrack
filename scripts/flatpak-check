@@ -205,6 +205,11 @@ EOF
     ;;
 7)
     say "7. The tray icon from the Flatpak (S14-T3)"
+    # The VM's wallet has no password, which PAM cannot open at a login by
+    # hand; scripts/vm opens it only at boot (S10-T9 is what a locked one
+    # does to Backtrack).
+    ssh -o BatchMode=yes "$("$ROOT/scripts/vm" address "$(current)")" python3 - unlock \
+        < "$ROOT/scripts/vm-keyring"
     cat <<'EOF'
   a. The system tray shows Backtrack's icon (the stacked folders and the
      page). Open its menu.
