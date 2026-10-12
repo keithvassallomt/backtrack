@@ -12,8 +12,9 @@
 //! `~/.var/app`. The same rewrite as the development recipes make, so the
 //! copy is the file that ships.
 //!
-//! A copy is recognised as ours by the `flatpak run` it launches, so removing
-//! or refreshing one never touches a package's files or a development copy.
+//! A copy is recognised as ours by the line that opens the Flatpak, so
+//! removing or refreshing one never touches a package's files or a
+//! development copy.
 
 use std::io;
 use std::os::unix::fs::PermissionsExt;
@@ -42,17 +43,26 @@ pub struct CopiedFile {
 }
 
 impl Plugin {
+    /// The line a Flatpak copy opens the window with, written into every copy
+    /// and looked for to recognise one. Each integration spells the command
+    /// its own way: a Python tuple, a desktop file's `Exec`.
+    fn flatpak_line(self) -> String {
+        match self {
+            Plugin::Nautilus => format!(
+                "COMMAND = (\"flatpak\", \"run\", \"{}\")",
+                backtrack_core::dbus::APP_ID
+            ),
+            Plugin::Dolphin => format!("Exec={} ", flatpak_run()),
+        }
+    }
+
     /// The Flatpak's copy of this integration, reading the backed-up folders
     /// from `roots`.
     pub fn flatpak_copy(self, roots: &Path) -> Vec<CopiedFile> {
         match self {
             Plugin::Nautilus => {
-                let command = format!(
-                    "COMMAND = (\"flatpak\", \"run\", \"{}\")",
-                    backtrack_core::dbus::APP_ID
-                );
                 let contents = NAUTILUS
-                    .replacen("COMMAND = (\"backtrack-gtk\",)", &command, 1)
+                    .replacen("COMMAND = (\"backtrack-gtk\",)", &self.flatpak_line(), 1)
                     .replacen(
                         "ROOTS = None",
                         &format!("ROOTS = {:?}", roots.display().to_string()),
@@ -73,7 +83,7 @@ impl Plugin {
                 path,
                 contents: shipped.replace(
                     "\nExec=backtrack-gtk ",
-                    &format!("\nExec={} ", flatpak_run()),
+                    &format!("\n{}", self.flatpak_line()),
                 ),
                 executable: true,
             })
@@ -85,7 +95,7 @@ impl Plugin {
     pub fn has_flatpak_copy(self, data_home: &Path) -> bool {
         self.flatpak_copy(Path::new(""))
             .iter()
-            .any(|copy| is_ours(&data_home.join(copy.path)))
+            .any(|copy| self.is_ours(&data_home.join(copy.path)))
     }
 
     /// Install the Flatpak's copy under `data_home`, replacing an older one.
@@ -101,7 +111,7 @@ impl Plugin {
     pub fn remove_flatpak_copy(self, data_home: &Path) -> io::Result<()> {
         for copy in self.flatpak_copy(Path::new("")) {
             let path = data_home.join(copy.path);
-            if is_ours(&path) {
+            if self.is_ours(&path) {
                 std::fs::remove_file(&path)?;
             }
         }
@@ -129,12 +139,13 @@ impl Plugin {
         }
         Ok(stale)
     }
-}
 
-/// Whether the file at `path` is a Flatpak copy: it opens the window with
-/// `flatpak run`, which neither a package's file nor a development copy does.
-fn is_ours(path: &Path) -> bool {
-    std::fs::read_to_string(path).is_ok_and(|text| text.contains(&flatpak_run()))
+    /// Whether the file at `path` is a Flatpak copy: it opens the window with
+    /// `flatpak run`, which neither a package's file nor a development copy
+    /// does.
+    fn is_ours(self, path: &Path) -> bool {
+        std::fs::read_to_string(path).is_ok_and(|text| text.contains(&self.flatpak_line()))
+    }
 }
 
 /// Written beside its final name and moved into place, so a file manager
@@ -239,29 +250,37 @@ mod tests {
 
     #[test]
     fn install_refresh_and_remove_touch_only_our_copy() {
-        let dir = tempfile::tempdir().unwrap();
-        let home = dir.path();
-        let roots = Path::new(ROOTS);
-        assert!(!Plugin::Dolphin.has_flatpak_copy(home));
+        for plugin in [Plugin::Nautilus, Plugin::Dolphin] {
+            let dir = tempfile::tempdir().unwrap();
+            let home = dir.path();
+            let roots = Path::new(ROOTS);
+            assert!(!plugin.has_flatpak_copy(home), "{plugin:?}");
 
-        Plugin::Dolphin.install_flatpak_copy(home, roots).unwrap();
-        assert!(Plugin::Dolphin.has_flatpak_copy(home));
-        let menu = home.join("kio/servicemenus/backtrack.desktop");
-        let mode = std::fs::metadata(&menu).unwrap().permissions().mode();
-        assert_eq!(mode & 0o111, 0o111);
-        assert!(Plugin::Dolphin.installed_in(&[home.to_path_buf()]));
+            // What Preferences shows Remove for: the copy it just installed.
+            plugin.install_flatpak_copy(home, roots).unwrap();
+            assert!(plugin.has_flatpak_copy(home), "{plugin:?}");
+            assert!(plugin.installed_in(&[home.to_path_buf()]), "{plugin:?}");
+            let copy = &plugin.flatpak_copy(roots)[0];
+            let file = home.join(copy.path);
+            let mode = std::fs::metadata(&file).unwrap().permissions().mode();
+            assert_eq!(mode & 0o111 != 0, copy.executable, "{plugin:?}");
 
-        // Up to date: nothing to write. Stale: rewritten.
-        assert!(!Plugin::Dolphin.refresh_flatpak_copy(home, roots).unwrap());
-        std::fs::write(&menu, "old flatpak run tools.backtrack.Backtrack").unwrap();
-        assert!(Plugin::Dolphin.refresh_flatpak_copy(home, roots).unwrap());
-        assert!(std::fs::read_to_string(&menu)
-            .unwrap()
-            .contains("[Desktop Entry]"));
+            // Up to date: nothing to write. Stale: rewritten.
+            assert!(
+                !plugin.refresh_flatpak_copy(home, roots).unwrap(),
+                "{plugin:?}"
+            );
+            std::fs::write(&file, format!("{}\nan older version\n", copy.contents)).unwrap();
+            assert!(
+                plugin.refresh_flatpak_copy(home, roots).unwrap(),
+                "{plugin:?}"
+            );
+            assert_eq!(std::fs::read_to_string(&file).unwrap(), copy.contents);
 
-        Plugin::Dolphin.remove_flatpak_copy(home).unwrap();
-        assert!(!menu.exists());
-        assert!(!Plugin::Dolphin.installed_in(&[home.to_path_buf()]));
+            plugin.remove_flatpak_copy(home).unwrap();
+            assert!(!file.exists(), "{plugin:?}");
+            assert!(!plugin.installed_in(&[home.to_path_buf()]), "{plugin:?}");
+        }
     }
 
     #[test]

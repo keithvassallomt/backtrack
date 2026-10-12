@@ -50,12 +50,41 @@ flatpak override --user --reset $APP
 rm -rf ~/.var/app/$APP ~/.config/autostart/$APP.desktop ~/Smoke
 secret-tool clear app-id $APP 2>/dev/null
 flatpak permission-remove background background $APP 2>/dev/null
-grep -l "flatpak run $APP" ~/.local/share/nautilus-python/extensions/backtrack.py \
+grep -l -e "flatpak run $APP" -e "\"flatpak\", \"run\", \"$APP\"" \
+    ~/.local/share/nautilus-python/extensions/backtrack.py \
     ~/.local/share/kio/servicemenus/backtrack*.desktop 2>/dev/null | xargs -r rm -f
+# What is left is the development build's integrations: aside, so that the
+# Flatpak's Preferences find none and the menus open the Flatpak.
+mkdir -p ~/.local/share/backtrack-check-aside
+mv ~/.local/share/nautilus-python/extensions/backtrack.py \
+    ~/.local/share/kio/servicemenus/backtrack*.desktop \
+    ~/.local/share/backtrack-check-aside/ 2>/dev/null
 mkdir -p ~/Smoke/Documents/Reports ~/Smoke/Backups ~/Smoke/Restored
 echo "The quarterly report, first draft." > ~/Smoke/Documents/Reports/report.txt
 echo "Notes worth keeping." > ~/Smoke/Documents/notes.txt
 echo "installed fresh: $(flatpak info --user $APP | grep -E '^ *Commit' | awk '{print $2}' | cut -c1-12)"
+EOF
+}
+
+# Undo install_fresh on the current VM: the Flatpak's integrations out, the
+# development build's back, its daemon running.
+put_back() {
+    on 'bash -s' <<'EOF'
+set -u
+APP=tools.backtrack.Backtrack
+flatpak kill $APP 2>/dev/null
+flatpak override --user --reset $APP
+chmod -R u+w ~/Smoke 2>/dev/null
+grep -l -e "flatpak run $APP" -e "\"flatpak\", \"run\", \"$APP\"" \
+    ~/.local/share/nautilus-python/extensions/backtrack.py \
+    ~/.local/share/kio/servicemenus/backtrack*.desktop 2>/dev/null | xargs -r rm -f
+aside=~/.local/share/backtrack-check-aside
+if [ -d "$aside" ]; then
+    mv "$aside"/backtrack.py ~/.local/share/nautilus-python/extensions/ 2>/dev/null
+    mv "$aside"/*.desktop ~/.local/share/kio/servicemenus/ 2>/dev/null
+    rmdir "$aside"
+fi
+systemctl --user start backtrackd.service
 EOF
 }
 
@@ -159,6 +188,7 @@ EOF
     ;;
 kde)
     say "Moving to the Plasma VM…"
+    put_back || true
     just --justfile "$ROOT/Justfile" vm-stop "$GNOME" | tail -1
     install_fresh "$KDE"
     cat <<'EOF'
@@ -221,7 +251,7 @@ verify)
     esac
     ;;
 done)
-    on 'flatpak kill tools.backtrack.Backtrack; flatpak override --user --reset tools.backtrack.Backtrack; chmod -R u+w ~/Smoke 2>/dev/null; systemctl --user start backtrackd.service' || true
+    put_back || true
     just --justfile "$ROOT/Justfile" vm-stop "$(current)" | tail -1
     rm -f "$STATE"
     echo "Done. The Flatpak stays installed on the VMs, the development daemon is back."
