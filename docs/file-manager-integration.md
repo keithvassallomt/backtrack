@@ -8,9 +8,11 @@ with each GNOME release. See `backtrack_plan/reference/open-questions.md`, Q1.
 
 ## Installing
 
-Preferences → General lists both integrations. One that is installed shows
-*Installed* and a switch that takes its items away without uninstalling it;
-one that is not shows **Install…**, which opens this section.
+Preferences → General lists the integration of each file manager on the
+computer. One that is installed shows *Installed* and a switch that takes its
+items away without uninstalling it; one that is not shows **How to
+Install…**, which opens this section. A file manager that is not installed
+has no row, unless Backtrack's integration for it is.
 
 - **GNOME Files (Nautilus)** needs nautilus-python (`nautilus-python` on
   Fedora, `python3-nautilus` on Ubuntu, `python-nautilus` on Arch) and
@@ -34,8 +36,8 @@ copy reads the backed-up folders from the Flatpak's data folder under
 Flatpak.
 
 - **GNOME Files** still needs nautilus-python from your distribution
-  (package names above); without it, Preferences offers **Install…** and this
-  page instead. Quit Nautilus after installing: `nautilus -q`.
+  (package names above); without it, the row says *Needs nautilus-python*
+  and offers **How to Install…** and this page instead. Quit Nautilus after installing: `nautilus -q`.
 - **Dolphin** needs nothing else, and shows the items from the next
   right-click.
 

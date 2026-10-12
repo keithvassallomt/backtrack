@@ -538,6 +538,12 @@ impl Prefs {
         for plugin in model::Plugin::ALL {
             integration.add(&self.plugin_row(plugin));
         }
+        {
+            let integration = integration.clone();
+            self.show(move |_| {
+                integration.set_visible(model::Plugin::ALL.into_iter().any(plugin_shown));
+            });
+        }
         page.add(&integration);
 
         let setup = Self::group("Setup");
@@ -555,14 +561,16 @@ impl Prefs {
     }
 
     /// A file-manager integration: *Installed* and its switch, as mockup 15
-    /// draws GNOME Files, or *Not installed* and Install…, as it draws
-    /// Dolphin. Looked for again whenever the window shows what is true now,
-    /// so one installed while Preferences is open appears on returning to it.
+    /// draws GNOME Files, or *Not installed* and How to Install…, which opens
+    /// the instructions. Looked for again whenever the window shows what is
+    /// true now, so one installed while Preferences is open appears on
+    /// returning to it. A file manager that is not on the computer has no row,
+    /// unless its integration is installed and can still be removed.
     ///
     /// Inside a Flatpak, Install puts the Flatpak's own copy in the user's
     /// data folder, and Remove takes it away again (S14-T4). Nautilus without
-    /// nautilus-python on the host keeps Install…, since a copy alone would
-    /// load nothing: the distribution's package is still needed.
+    /// nautilus-python on the host keeps How to Install…, since a copy alone
+    /// would load nothing: the distribution's package is still needed.
     ///
     /// An action row with a switch of its own rather than a switch row: a
     /// switch row puts its switch first among the suffixes, and the badge
@@ -583,7 +591,7 @@ impl Prefs {
         let add = Button::with_label("Install");
         add.set_valign(Align::Center);
         row.add_suffix(&add);
-        let install = Button::with_label("Install…");
+        let install = Button::with_label("How to Install…");
         install.set_valign(Align::Center);
         let owner = self.window.clone();
         install.connect_clicked(move |_| {
@@ -606,29 +614,34 @@ impl Prefs {
         let shown = row.clone();
         let (removing, adding) = (remove.clone(), add.clone());
         let refresh = Rc::new(move || {
-            let (data_dirs, ours, can_copy) = if flatpak {
-                let home = backtrack_core::paths::host_data_home();
-                let ours = plugin.has_flatpak_copy(&home);
+            let (ours, can_copy) = if flatpak {
+                let ours = plugin.has_flatpak_copy(&backtrack_core::paths::host_data_home());
                 let can_copy = plugin != model::Plugin::Nautilus
                     || crate::model::plugins::host_has_nautilus_python();
-                (crate::model::plugins::host_data_dirs(home), ours, can_copy)
+                (ours, can_copy)
             } else {
-                let dirs = std::iter::once(glib::user_data_dir())
-                    .chain(glib::system_data_dirs())
-                    .collect();
-                (dirs, false, false)
+                (false, false)
             };
+            let (data_dirs, program_dirs) = integration_dirs();
             let installed = plugin.installed_in(&data_dirs);
+            let present = plugin.manager_in(&program_dirs);
             debug!(
                 ?plugin,
-                installed, ours, "looked for a file-manager integration"
+                installed, present, ours, "looked for a file-manager integration"
             );
+            shown.set_visible(installed || present);
             badge.set_visible(installed);
             toggle.set_visible(installed);
             removing.set_visible(installed && ours);
             adding.set_visible(!installed && can_copy);
             install.set_visible(!installed && !can_copy);
-            shown.set_subtitle(if installed { "" } else { "Not installed" });
+            shown.set_subtitle(if installed {
+                ""
+            } else if flatpak && !can_copy {
+                "Needs nautilus-python"
+            } else {
+                "Not installed"
+            });
             if installed {
                 shown.set_activatable_widget(Some(&toggle));
             } else if can_copy {
@@ -1447,6 +1460,33 @@ impl Prefs {
             crate::ui::wizard::present(&this.app, this.daemon.clone(), None, None, None);
         });
     }
+}
+
+/// Where the file managers load integrations from, and where their programs
+/// are, on the computer the window runs on: inside a Flatpak, the host's.
+fn integration_dirs() -> (Vec<PathBuf>, Vec<PathBuf>) {
+    if backtrack_core::host::in_flatpak() {
+        let home = backtrack_core::paths::host_data_home();
+        (
+            crate::model::plugins::host_data_dirs(home),
+            crate::model::plugins::host_program_dirs(),
+        )
+    } else {
+        let data = std::iter::once(glib::user_data_dir())
+            .chain(glib::system_data_dirs())
+            .collect();
+        let programs = std::env::var_os("PATH")
+            .map(|path| std::env::split_paths(&path).collect())
+            .unwrap_or_default();
+        (data, programs)
+    }
+}
+
+/// Whether General lists `plugin`: its file manager is on the computer, or
+/// its integration is installed and can be removed.
+fn plugin_shown(plugin: model::Plugin) -> bool {
+    let (data_dirs, program_dirs) = integration_dirs();
+    plugin.manager_in(&program_dirs) || plugin.installed_in(&data_dirs)
 }
 
 /// A row that opens something, with the chevron that says so.

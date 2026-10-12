@@ -190,6 +190,14 @@ pub fn host_data_dirs(data_home: PathBuf) -> Vec<PathBuf> {
     ]
 }
 
+/// Where the host's programs are, as seen from inside the Flatpak.
+pub fn host_program_dirs() -> Vec<PathBuf> {
+    vec![
+        PathBuf::from("/run/host/usr/local/bin"),
+        PathBuf::from("/run/host/usr/bin"),
+    ]
+}
+
 /// Whether the host has nautilus-python, without which Nautilus loads no
 /// Python extension at all. Its library is in a different folder on each
 /// distribution, so each of their layouts is looked in.

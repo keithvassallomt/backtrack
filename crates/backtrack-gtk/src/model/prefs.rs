@@ -318,9 +318,25 @@ impl Plugin {
     pub fn installed_in(self, data_dirs: &[PathBuf]) -> bool {
         data_dirs.iter().any(|dir| dir.join(self.file()).is_file())
     }
+
+    /// Its file manager's program.
+    fn program(self) -> &'static str {
+        match self {
+            Plugin::Nautilus => "nautilus",
+            Plugin::Dolphin => "dolphin",
+        }
+    }
+
+    /// Whether its file manager is installed: its program in one of
+    /// `program_dirs`.
+    pub fn manager_in(self, program_dirs: &[PathBuf]) -> bool {
+        program_dirs
+            .iter()
+            .any(|dir| dir.join(self.program()).is_file())
+    }
 }
 
-/// The page Install… opens: how to install either integration.
+/// The page How to Install… opens: how to install either integration.
 pub fn install_page() -> String {
     format!(
         "{}/blob/main/docs/file-manager-integration.md#installing",
@@ -517,6 +533,24 @@ mod tests {
         assert_eq!(found(), [true, true]);
         std::fs::remove_file(user.path().join(Plugin::Nautilus.file())).unwrap();
         assert_eq!(found(), [false, true]);
+    }
+
+    #[test]
+    fn each_file_manager_is_found_by_its_program() {
+        let local = tempfile::tempdir().unwrap();
+        let usr = tempfile::tempdir().unwrap();
+        let dirs = vec![local.path().to_path_buf(), usr.path().to_path_buf()];
+        let found = || Plugin::ALL.map(|plugin| plugin.manager_in(&dirs));
+
+        assert_eq!(found(), [false, false]);
+        std::fs::write(usr.path().join("dolphin"), "").unwrap();
+        assert_eq!(found(), [false, true]);
+        std::fs::write(local.path().join("nautilus"), "").unwrap();
+        assert_eq!(found(), [true, true]);
+        // A folder of the name is not the program.
+        let other = tempfile::tempdir().unwrap();
+        std::fs::create_dir(other.path().join("nautilus")).unwrap();
+        assert!(!Plugin::Nautilus.manager_in(&[other.path().to_path_buf()]));
     }
 
     #[test]

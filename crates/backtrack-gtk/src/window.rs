@@ -203,13 +203,14 @@ impl Window {
         let header = adw::HeaderBar::new();
 
         let identity = GtkBox::new(Orientation::Horizontal, 8);
-        identity.append(&gtk4::Image::from_icon_name(ui::app_icon_name(
-            &self.window,
-        )));
+        let logo = gtk4::Image::from_icon_name(ui::app_icon_name(&self.window));
+        logo.set_pixel_size(24);
+        identity.append(&logo);
         let name = Label::new(Some("Backtrack"));
         name.add_css_class("heading");
         identity.append(&name);
         header.pack_start(&identity);
+        ui::without_window_icon(&header);
 
         // The title position holds the breadcrumb while browsing and the search
         // box while searching, because both are the one thing the window is

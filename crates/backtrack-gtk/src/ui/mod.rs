@@ -170,6 +170,44 @@ pub fn app_icon_name(widget: &impl IsA<gtk4::Widget>) -> &'static str {
     }
 }
 
+/// Lay out `header`'s window buttons as the desktop does, but without the
+/// window's icon, and keep doing so if the desktop's layout changes. The
+/// header shows Backtrack's own logo beside its name, and Plasma's layout
+/// (`icon:minimize,maximize,close`) would put a second one before it.
+pub fn without_window_icon(header: &adw::HeaderBar) {
+    fn apply(header: &adw::HeaderBar, settings: &gtk4::Settings) {
+        let layout = settings
+            .gtk_decoration_layout()
+            .map(|layout| layout_without_icon(&layout));
+        header.set_decoration_layout(layout.as_deref());
+    }
+    let Some(settings) = gtk4::Settings::default() else {
+        return;
+    };
+    apply(header, &settings);
+    let header = header.downgrade();
+    settings.connect_gtk_decoration_layout_notify(move |settings| {
+        if let Some(header) = header.upgrade() {
+            apply(&header, settings);
+        }
+    });
+}
+
+/// A GTK decoration layout with every `icon` taken out, on either side of
+/// the colon.
+fn layout_without_icon(layout: &str) -> String {
+    layout
+        .split(':')
+        .map(|side| {
+            side.split(',')
+                .filter(|button| button.trim() != "icon")
+                .collect::<Vec<_>>()
+                .join(",")
+        })
+        .collect::<Vec<_>>()
+        .join(":")
+}
+
 /// Ask a dialog to lay its responses out in a row rather than a column.
 ///
 /// Stacked responses lose the left-to-right ordering that puts the safe way
@@ -211,6 +249,21 @@ mod tests {
             color_scheme_for(Some(" Dark ")),
             adw::ColorScheme::ForceDark
         );
+    }
+
+    #[test]
+    fn the_window_icon_leaves_the_layout_and_nothing_else_does() {
+        assert_eq!(
+            layout_without_icon("icon:minimize,maximize,close"),
+            ":minimize,maximize,close"
+        );
+        assert_eq!(layout_without_icon("menu,icon:close"), "menu:close");
+        assert_eq!(
+            layout_without_icon("close,minimize:icon"),
+            "close,minimize:"
+        );
+        assert_eq!(layout_without_icon("appmenu:close"), "appmenu:close");
+        assert_eq!(layout_without_icon("icon"), "");
     }
 
     #[test]
