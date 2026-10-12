@@ -825,23 +825,14 @@ async fn run_snapshot(plan: &SnapshotPlan, sink: &JobSink) -> Result<JobSummary,
         // inside its parent.
         include_dirs: true,
     };
+    // Walked as the subvolume it is a copy of, so that every file is recorded
+    // where it really lives, not where this snapshot happens to keep its copy
+    // (otherwise a file's history splits into two unrelated trees and neither
+    // tells the whole story), and so that the rules about what is never backed
+    // up apply there: matched where the snapshot is kept, inside Backtrack's
+    // own data directory, they excluded the whole snapshot.
     let items = tokio::task::spawn_blocking(move || {
-        let mut walked = backtrack_core::walk::walk(&walk_spec);
-        // Record every file where it really lives, not where this snapshot
-        // happens to keep its copy — otherwise a file's history splits into two
-        // unrelated trees and neither tells the whole story.
-        let from = backtrack_core::walk::archive_path(&snapshot_root);
-        let to = backtrack_core::walk::archive_path(&subvolume);
-        walked
-            .items
-            .retain_mut(|item| match relocate(&item.path, &from, &to) {
-                Some(path) => {
-                    item.path = path;
-                    true
-                }
-                None => false,
-            });
-        walked
+        backtrack_core::walk::walk_as(&walk_spec, &snapshot_root, &subvolume)
     })
     .await
     .map_err(joined)?;
@@ -897,16 +888,6 @@ async fn run_snapshot(plan: &SnapshotPlan, sink: &JobSink) -> Result<JobSummary,
     }
 
     Ok(JobSummary::default())
-}
-
-/// Rewrite an archive-relative path from inside a snapshot to where the file
-/// really lives. `None` when the path is not inside the snapshot at all.
-fn relocate(path: &str, from: &str, to: &str) -> Option<String> {
-    let rest = path.strip_prefix(from)?.trim_start_matches('/');
-    if to.is_empty() {
-        return Some(rest.to_string());
-    }
-    Some(format!("{to}/{rest}"))
 }
 
 /// Remove local snapshots that have outlived their retention.
@@ -1885,34 +1866,6 @@ mod tests {
 
         let _ = std::fs::remove_dir_all(&subvolume);
         let _ = std::fs::remove_dir_all(&scratch);
-    }
-
-    #[test]
-    fn a_snapshots_contents_are_recorded_where_the_files_really_live() {
-        // The catalogue has to hold `home/k/Documents/report.odt`, not the copy
-        // inside a snapshot directory. Getting this wrong splits a file's
-        // history into two unrelated trees, neither of which tells the whole
-        // story.
-        let from = "home/k/.local/share/backtrack/snapshots/bt-local-1";
-        let to = "home";
-        assert_eq!(
-            relocate(&format!("{from}/k/Documents/report.odt"), from, to).as_deref(),
-            Some("home/k/Documents/report.odt")
-        );
-        // The snapshot root itself maps to the subvolume root.
-        assert_eq!(relocate(from, from, to).as_deref(), Some("home/"));
-        // Anything outside the snapshot is not ours to relocate.
-        assert_eq!(relocate("etc/passwd", from, to), None);
-    }
-
-    #[test]
-    fn relocating_into_the_filesystem_root_does_not_invent_a_leading_slash() {
-        // A subvolume mounted at `/` has an empty archive-relative prefix, and
-        // the catalogue stores paths without a leading separator.
-        assert_eq!(
-            relocate("snapshots/one/home/k/f", "snapshots/one", "").as_deref(),
-            Some("home/k/f")
-        );
     }
 
     #[test]
