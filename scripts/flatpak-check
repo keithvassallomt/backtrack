@@ -171,8 +171,8 @@ EOF
 7)
     say "7. The tray icon from the Flatpak (S14-T3)"
     cat <<'EOF'
-  a. The system tray shows Backtrack's icon (a clock while it is a
-     placeholder). Open its menu.
+  a. The system tray shows Backtrack's icon (the stacked folders and the
+     page). Open its menu.
   b. Back Up Now.
   c. Open Backtrack from the same menu.
 EOF

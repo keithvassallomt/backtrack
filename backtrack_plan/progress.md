@@ -17,8 +17,6 @@ done; Claude removes ticked items.
 - [ ] Once the accounts above exist, a release-candidate run as RELEASING.md
   describes: `just bump-version 0.1.0-rc1`, commit, `just release` on the
   branch (S13-T5, S13-T6, S13-T9, S14-T9).
-- [ ] Icons for `tools.backtrack.Backtrack`: a scalable one and a symbolic one
-  (S13-T1; placeholders until then).
 - [ ] One hand-check session on the Flatpak in the VMs, once Stage 14's fixes
   are in: the wizard clicked through (S13-T1), Backtrack's entry in GNOME's
   Background Apps opening the window (S12-T4), a notification clicked and
