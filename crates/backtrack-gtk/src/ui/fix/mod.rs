@@ -137,25 +137,22 @@ fn alert(heading: &str, body: &str, go: &str, suggested: bool) -> adw::AlertDial
 /// Flatpak carries its own BorgBackup, so no distribution's command can help
 /// there; only reinstalling Backtrack puts it back.
 fn engine_missing(context: &Context) {
-    let how = if backtrack_core::host::in_flatpak() {
-        "Backtrack's own copy of it is missing or damaged; reinstalling Backtrack puts it back."
+    let body = if backtrack_core::host::in_flatpak() {
+        "Backtrack backs up with BorgBackup, which comes with it. That copy is missing or \
+         damaged; reinstalling Backtrack puts it back."
             .to_string()
     } else {
-        match health::install_command(&backtrack_core::host::os_release()) {
+        let how = match health::install_command(&backtrack_core::host::os_release()) {
             Some(command) => format!("Install it with:\n\n{command}"),
             None => "Install BorgBackup with your distribution's software tool.".to_string(),
-        }
-    };
-    let heading = backtrack_core::engine::HealthFailure::BorgMissing.copy("");
-    let dialog = alert(
-        &heading,
-        &format!(
+        };
+        format!(
             "Backtrack backs up with BorgBackup, which is not installed on this computer or \
              is older than version 1.2. {how}"
-        ),
-        "Check Again",
-        true,
-    );
+        )
+    };
+    let heading = backtrack_core::engine::HealthFailure::BorgMissing.copy("");
+    let dialog = alert(&heading, &body, "Check Again", true);
     let backer = context.clone();
     dialog.connect_response(Some("go"), move |_, _| backer.back_up());
     dialog.present(Some(&context.window));
