@@ -127,12 +127,15 @@
 - [ ] S13-T1 Flatpak manifest (GNOME runtime, portals, bundled borg)
 - [ ] S13-T2 cargo-sources.json generation recipe (offline flatpak build)
 - [ ] S13-T3 Portal permissions audit + test matrix
-- [ ] S13-T4 RPM spec + COPR; deb + PPA (app, nautilus, dolphin packages)
+- [ ] S13-T4 RPM spec + COPR (Fedora 44+); deb + PPA (Ubuntu 26.04+)
 - [ ] S13-T5 CI release artifacts on tag
-- [ ] S13-T6 Release runbook (human bumps version → just bump-version → tag)
+- [ ] S13-T6 Release runbook (human bumps version → just bump-version → just release)
+- [ ] S13-T7 Application ID tools.backtrack.Backtrack, daemon names under it
+- [ ] S13-T8 AUR packages (app, nautilus, dolphin)
+- [ ] S13-T9 just release: from tag to every channel in one command
 
 ## Stage 14 — Flatpak as a first-class build ([stage file](stages/stage-14-flatpak-first-class.md))
-- [ ] S14-T1 Daemon bus name under the application ID
+- [ ] S14-T1 Daemon activation inside the Flatpak
 - [ ] S14-T2 Window opens through the session bus (notification clicks, tray)
 - [ ] S14-T3 Tray icon started by the daemon inside the sandbox
 - [ ] S14-T4 File-manager integration for Flatpak installs (per-user copies)
@@ -153,6 +156,27 @@
 ## Notes / decisions made during implementation
 
 (append dated entries here; never delete)
+
+- 2026-10-12 (Stage 13 replanned: names, channels and one release command):
+  decisions, Keith's unless marked.
+  - **The domain is backtrack.tools; the application ID becomes
+    `tools.backtrack.Backtrack`** (S13-T7, done first in Stage 13). Keith
+    proposed `tools.backtrack.backtrack`; Claude suggested capitalising the
+    final element, the convention for GNOME applications (KDE's is
+    lowercase), and the plan uses that.
+    The daemon's bus name and interface become one name under the ID,
+    `tools.backtrack.Backtrack.Daemon1`, which also does the renaming half of
+    S14-T1: Flatpak exports activation files only under the application ID.
+  - **Channels:** COPR for Fedora 44 and later, the PPA for Ubuntu 26.04 and
+    later, each saying so; the AUR for Arch (S13-T8, split three ways like the
+    RPM and the deb); the Flatpak for everything else.
+  - **`just release`** (S13-T9) runs every channel from one command (Keith's
+    ask; the split below is Claude's design). CI builds the artifacts and the
+    GitHub release; the recipe, on Keith's machine,
+    does the publishing, so COPR's token, the PPA's signing key and the AUR's
+    SSH key never leave it. This replaces "human runs dput" in S13-T4 and
+    CI's COPR trigger in S13-T5. It never sets a version: the AUR's `pkgver`
+    joins `just bump-version`'s locations.
 
 - 2026-10-12 (Stage 14 planned: the Flatpak as a first-class build): an audit
   of the code against a Flatpak sandbox, before S13-T1. Decisions:

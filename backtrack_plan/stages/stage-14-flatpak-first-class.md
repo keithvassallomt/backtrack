@@ -27,6 +27,7 @@ S14-T1 also unblocks S12-T4: the daemon has to be able to start in the sandbox
 before it can ask the Background portal for anything.
 
 ## Prerequisites
+S13-T7 (the application ID and the daemon's names under backtrack.tools),
 S13-T1 (the manifest, with the permissions as corrected on 2026-10-12) and
 S13-T2. Every sandbox branch uses `ashpd::is_sandboxed()`, as
 `background::apply` already does (S12-T4).
@@ -43,36 +44,25 @@ S13-T2. Every sandbox branch uses `ashpd::is_sandboxed()`, as
 
 ## Tasks
 
-### S14-T1 — Daemon bus name under the application ID
-Flatpak exports a D-Bus activation file only when its name starts with the
-application ID, so the session bus cannot start `org.backtrack.Daemon1` for a
-Flatpak install. The window relies on activation
+### S14-T1 — Daemon activation inside the Flatpak
+The window relies on the session bus to start the daemon
 (`crates/backtrack-gtk/src/daemon.rs`), and without it reports that the service
-is not installed. Starting the daemon from the window is no substitute: every
-process in a Flatpak instance ends when the instance's main process does, so
-the daemon would stop when the window closed.
-- The well-known bus name becomes `io.github.keithvassallomt.Backtrack.Daemon1`,
-  and the development name `io.github.keithvassallomt.Backtrack.Daemon1.Dev`.
-  The interface name and object path stay `org.backtrack.Daemon1` and
-  `/org/backtrack/Daemon1`.
-- `BUS_NAME` and `BUS_NAME_DEV` in `backtrack-core::dbus` change; the native
-  activation file in `packaging/dbus/` is renamed to match, and `units.rs`'s
-  check that the claimed name, `BusName=`, `Name=` and `SystemdService=` agree
-  keeps holding.
+is not installed. Flatpak exports a D-Bus activation file only when its name
+starts with the application ID, which S13-T7 arranges by moving the daemon to
+`tools.backtrack.Backtrack.Daemon1`. Starting the daemon from the window instead
+is no substitute: every process in a Flatpak instance ends when the instance's
+main process does, so the daemon would stop when the window closed.
 - The Flatpak installs its own activation file: `Exec=` runs the daemon through
-  S14-T7's supervisor, with no `SystemdService=`. Flatpak rewrites the `Exec`
-  line to `flatpak run` when it exports the file. The manifest needs no
-  `--own-name`, since names under the application ID belong to the sandbox by
-  default.
-- `reference/stack.md` §2 records that the bus name and the interface name now
-  differ, and why.
+  S14-T7's supervisor, with no `SystemdService=`, since the sandbox has no
+  systemd. Flatpak rewrites the `Exec` line to `flatpak run` when it exports the
+  file.
+- The manifest needs no `--own-name`: names under the application ID belong to
+  the sandbox by default.
+- Native: the packaged activation file with `SystemdService=` stays as it is.
 
-Nothing has been released, so there are no installs to migrate.
 **Accept:** in the Flatpak, with no daemon running, opening the window starts
 the daemon through the bus, and with "Run in background" on the daemon keeps
-running after the window closes. Native: the same on the GNOME VM through the
-renamed activation file; workspace tests pass, including `units.rs`'s agreement
-check and the interface's introspection snapshot.
+running after the window closes. Native: unchanged on the GNOME VM.
 
 ### S14-T2 — The window opens through the session bus
 Inside the sandbox, two callers open the window in ways that do not work there.
@@ -83,7 +73,7 @@ tray starts `backtrack-gtk` as its own child
 to the tray's instance. Both ask the session bus instead, which starts the
 window in an instance of its own.
 - Every build installs an activation file for
-  `io.github.keithvassallomt.Backtrack`, which runs the window as a GApplication
+  `tools.backtrack.Backtrack`, which runs the window as a GApplication
   service (`--gapplication-service`). Flatpak exports it as it exports the
   launcher.
 - What the command line already accepts (`--fix <reason>`, `--path DIR`,
@@ -126,11 +116,11 @@ native one.
   `~/.local/share/nautilus-python/extensions/` and the Dolphin service menus
   into `~/.local/share/kio/servicemenus/`, the latter marked executable, which
   KIO requires of per-user service menus. On the way in, the copies are
-  rewritten to launch the window with `flatpak run
-  io.github.keithvassallomt.Backtrack` in place of `backtrack-gtk`, as
+  rewritten to launch the window with `flatpak run tools.backtrack.Backtrack`
+  in place of `backtrack-gtk`, as
   `just install-units` rewrites the units. Removing them is offered too.
 - The Nautilus copy reads `roots.json` where the sandboxed daemon writes it,
-  `~/.var/app/io.github.keithvassallomt.Backtrack/data/backtrack/roots.json`.
+  `~/.var/app/tools.backtrack.Backtrack/data/backtrack/roots.json`.
   Without that, the extension finds no backed-up folders and shows nothing.
 - The window rewrites the copies whenever they differ from what the running
   version would install, so an update to the Flatpak updates them.
@@ -158,7 +148,7 @@ instructions for the wrong distribution, and `backtrack doctor`
 `backtrack-core` serves both.
 **Accept:** a unit test pins the order; in the Flatpak on the GNOME VM the Fix
 page names Fedora, and `flatpak run --command=backtrack
-io.github.keithvassallomt.Backtrack doctor` reports the host's distribution.
+tools.backtrack.Backtrack doctor` reports the host's distribution.
 Native: unchanged.
 
 ### S14-T6 — One keyring path in every build
@@ -217,8 +207,9 @@ Backtrack is published on FriendlyHub, not Flathub (Keith, 2026-10-12).
 repository (manifest, metainfo, screenshots, release notes taken from the
 CHANGELOG), how a release reaches it, and how a user adds the remote, including
 on distributions whose own packages cannot carry Backtrack (Debian 13, RHEL 10
-and its rebuilds). Submission is a human step, listed in the release runbook
-(S13-T6). This replaces the Flathub checklist S13-T5 used to carry.
+and its rebuilds). `just release` (S13-T9) generates the files and submits
+them; this task settles what FriendlyHub takes and how, and the recipe follows
+it. This replaces the Flathub checklist S13-T5 used to carry.
 **Accept:** the document exists, and following it, a release candidate installs
 from FriendlyHub on a clean VM and completes the wizard → backup → restore round
 trip.

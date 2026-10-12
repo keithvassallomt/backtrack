@@ -79,7 +79,8 @@ Each `stages/stage-NN-*.md` contains: **Objective** (what exists at the end),
 | 10 | [stage-10-health.md](stages/stage-10-health.md) | Health states, notifications, resolution flows |
 | 11 | [stage-11-disaster-recovery.md](stages/stage-11-disaster-recovery.md) | "Restore Everything" guided flow |
 | 12 | [stage-12-integrations-tray.md](stages/stage-12-integrations-tray.md) | Nautilus/Dolphin menus, tray, background portal |
-| 13 | [stage-13-packaging-release.md](stages/stage-13-packaging-release.md) | Flatpak (portals, cargo-sources), RPM/DEB, release process |
+| 13 | [stage-13-packaging-release.md](stages/stage-13-packaging-release.md) | Application ID, Flatpak manifest and sources, RPM/DEB/AUR, `just release` |
+| 14 | [stage-14-flatpak-first-class.md](stages/stage-14-flatpak-first-class.md) | The Flatpak as a first-class build; FriendlyHub (runs inside Stage 13) |
 
 ## Reference documents (in `reference/`)
 

@@ -177,8 +177,9 @@ worker are v1.x.
 - **Flatpak:** app + daemon + bundled borg in one package; daemon autostart via the
   Background portal; repo/destination access via filesystem permissions. Published on
   FriendlyHub; first-class, with the same behaviour as a native install (Stage 14).
-- **Native:** Fedora COPR + Ubuntu PPA initially; packages `backtrack`
-  (app + daemon + CLI + systemd user units), `backtrack-nautilus`, `backtrack-dolphin`.
+- **Native:** Fedora COPR (Fedora 44+), Ubuntu PPA (Ubuntu 26.04+) and the AUR; packages
+  `backtrack` (app + daemon + CLI + systemd user units), `backtrack-nautilus`,
+  `backtrack-dolphin`. Published by `just release` (S13-T9).
 - CI builds all artifacts on every merge so the two packaging paths cannot drift.
 
 ## 10. Errors, logging, diagnostics
