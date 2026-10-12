@@ -29,6 +29,42 @@ use tracing::{debug, info, warn};
 
 use crate::service::Shared;
 
+/// Inside a Flatpak, start the tray icon, on desktops that have a tray.
+///
+/// Packages start `backtrack-tray` at login from `/etc/xdg/autostart`, which
+/// a Flatpak cannot export, and the Background portal gives an application one
+/// autostart entry, which is this daemon's. So the daemon starts the tray,
+/// except on GNOME, which has no tray (the rule the autostart file states with
+/// `NotShowIn=GNOME;`). A tray already running holds its bus name and a
+/// second one leaves, so a restarted daemon starting another changes nothing
+/// (S14-T3).
+pub fn start_tray() {
+    if !ashpd::is_sandboxed() || on_gnome(std::env::var("XDG_CURRENT_DESKTOP").ok().as_deref()) {
+        return;
+    }
+    let tray = std::env::current_exe()
+        .map(|daemon| daemon.with_file_name("backtrack-tray"))
+        .unwrap_or_else(|_| "backtrack-tray".into());
+    match tokio::process::Command::new(&tray).spawn() {
+        Ok(mut child) => {
+            info!(path = %tray.display(), "started the tray icon");
+            tokio::spawn(async move {
+                let _ = child.wait().await;
+            });
+        }
+        Err(error) => warn!(%error, path = %tray.display(), "the tray icon could not be started"),
+    }
+}
+
+/// Whether `XDG_CURRENT_DESKTOP` (a colon-separated list) names GNOME.
+fn on_gnome(desktop: Option<&str>) -> bool {
+    desktop.is_some_and(|desktop| {
+        desktop
+            .split(':')
+            .any(|name| name.eq_ignore_ascii_case("GNOME"))
+    })
+}
+
 /// The unit that `packaging/systemd` installs, by file name.
 const UNIT: &str = "backtrackd.service";
 
@@ -155,7 +191,7 @@ async fn ask_portal(wanted: bool) {
     let answer = ashpd::desktop::background::Background::request()
         .reason(REASON)
         .auto_start(wanted)
-        .command(["backtrackd"])
+        .command(["backtrackd", "--supervise"])
         .dbus_activatable(false)
         .send()
         .await
@@ -219,6 +255,15 @@ pub async fn watch_for_idle(shared: Arc<Shared>, connection: zbus::Connection, l
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_tray_is_left_out_on_gnome_alone() {
+        assert!(on_gnome(Some("GNOME")));
+        assert!(on_gnome(Some("ubuntu:GNOME")));
+        assert!(!on_gnome(Some("KDE")));
+        assert!(!on_gnome(Some("Hyprland")));
+        assert!(!on_gnome(None));
+    }
 
     #[test]
     fn running_in_background_never_leaves() {

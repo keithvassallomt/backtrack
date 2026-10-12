@@ -390,7 +390,7 @@ async fn listen(desktop: Arc<Desktop>) {
         // Somebody else's notification, or one of ours already replaced.
         let Some(fix) = fix else { continue };
         info!(id = args.id, fix = ?fix, "a notification was clicked");
-        launch(fix);
+        launch(&desktop.connection, fix);
     }
 }
 
@@ -398,8 +398,17 @@ async fn listen(desktop: Arc<Desktop>) {
 ///
 /// Through the command line, whether or not a window is open: GApplication
 /// hands a second launch to the instance already running, so the one path
-/// covers both.
-fn launch(fix: Option<Reason>) {
+/// covers both. Inside a Flatpak, through the session bus instead.
+fn launch(connection: &zbus::Connection, fix: Option<Reason>) {
+    if backtrack_core::host::in_flatpak() {
+        let connection = connection.clone();
+        tokio::spawn(async move {
+            if let Err(error) = activate_window(&connection, fix).await {
+                warn!(%error, "Backtrack could not be opened through the session bus");
+            }
+        });
+        return;
+    }
     let application = application();
     let (program, args) = command(&application, fix, which("systemd-run").is_some());
     let mut command = tokio::process::Command::new(&program);
@@ -412,6 +421,45 @@ fn launch(fix: Option<Reason>) {
         }
         Err(error) => warn!(%error, program = %program.display(), "Backtrack could not be opened"),
     }
+}
+
+/// Ask the session bus for the window, at the fix for `fix` if there is one.
+///
+/// Inside a Flatpak there is no systemd to give the window a scope of its
+/// own, and a window started as this daemon's child would end with this
+/// instance. The bus starts the window in an instance of its own, or hands the
+/// request to the one already open (S14-T2).
+async fn activate_window(connection: &zbus::Connection, fix: Option<Reason>) -> zbus::Result<()> {
+    use backtrack_core::dbus::{APP_ACTION_FIX, APP_ID, APP_OBJECT_PATH};
+    let platform_data: HashMap<&str, Value<'_>> = HashMap::new();
+    let interface = Some("org.freedesktop.Application");
+    match fix {
+        Some(reason) => {
+            let parameter = vec![Value::from(reason.as_str())];
+            connection
+                .call_method(
+                    Some(APP_ID),
+                    APP_OBJECT_PATH,
+                    interface,
+                    "ActivateAction",
+                    &(APP_ACTION_FIX, parameter, platform_data),
+                )
+                .await?
+        }
+        None => {
+            connection
+                .call_method(
+                    Some(APP_ID),
+                    APP_OBJECT_PATH,
+                    interface,
+                    "Activate",
+                    &(platform_data,),
+                )
+                .await?
+        }
+    };
+    info!(fix = ?fix, "asked the session bus for the window");
+    Ok(())
 }
 
 /// The command that opens the application.

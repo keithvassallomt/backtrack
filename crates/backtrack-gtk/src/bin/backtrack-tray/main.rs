@@ -107,7 +107,15 @@ async fn run() -> ExitCode {
     let tray = tray::Tray::new(daemon.clone(), Arc::clone(&refresh), Arc::clone(&quit));
     // Started at login, the tray can be ready before the panel that shows it
     // is; it waits for the panel rather than giving up.
-    let handle = match tray.assume_sni_available(true).spawn().await {
+    // Inside a Flatpak, without the per-process `org.kde.StatusNotifierItem-…`
+    // name, which the sandbox cannot own; ksni asks this of sandboxed programs,
+    // and registers the icon by its unique name instead (S14-T3).
+    let handle = match tray
+        .assume_sni_available(true)
+        .disable_dbus_name(backtrack_core::host::in_flatpak())
+        .spawn()
+        .await
+    {
         Ok(handle) => handle,
         Err(error) => {
             error!(%error, "the tray icon could not be shown");

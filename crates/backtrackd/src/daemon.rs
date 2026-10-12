@@ -266,6 +266,7 @@ pub async fn run() -> Result<Outcome, StartupError> {
     // every start as well as when the setting changes, so a unit enabled or
     // disabled by hand drifts back to what the person chose in the window.
     crate::background::apply(&connection, shared.wants_background()).await;
+    crate::background::start_tray();
     let leave = Arc::new(tokio::sync::Notify::new());
     tokio::spawn(crate::background::watch_for_idle(
         Arc::clone(&shared),

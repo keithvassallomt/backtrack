@@ -422,6 +422,19 @@ pub const INTERFACE: &str = "tools.backtrack.Backtrack.Daemon1";
 /// The single object the daemon exports.
 pub const OBJECT_PATH: &str = "/tools/backtrack/Backtrack/Daemon1";
 
+/// The window's application ID, which is also its bus name.
+pub const APP_ID: &str = crate::secret::APP_ID;
+
+/// Where GApplication exports the window's `org.freedesktop.Application`.
+pub const APP_OBJECT_PATH: &str = "/tools/backtrack/Backtrack";
+
+/// The window's application actions, which a caller with no window of its own
+/// activates over `org.freedesktop.Application` (S14-T2): `fix` takes a
+/// [`Reason`] token, `browse` a folder and a file to select, either of them
+/// empty for none.
+pub const APP_ACTION_FIX: &str = "fix";
+pub const APP_ACTION_BROWSE: &str = "browse";
+
 /// The prefix for the daemon's named D-Bus errors, which mirror the engine's
 /// error taxonomy (e.g. `tools.backtrack.Backtrack.Error.PassphraseMissing`).
 pub const ERROR_PREFIX: &str = "tools.backtrack.Backtrack.Error";
@@ -483,5 +496,7 @@ mod tests {
         // they connect through differs.
         assert_eq!(INTERFACE, "tools.backtrack.Backtrack.Daemon1");
         assert_eq!(OBJECT_PATH, "/tools/backtrack/Backtrack/Daemon1");
+        // GApplication derives its object path from the application ID.
+        assert_eq!(APP_OBJECT_PATH, format!("/{}", APP_ID.replace('.', "/")));
     }
 }

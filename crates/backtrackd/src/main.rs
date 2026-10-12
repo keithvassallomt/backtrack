@@ -20,6 +20,7 @@ mod restore;
 mod schedule;
 mod service;
 mod snapshot;
+mod supervise;
 // Exists only to assert that the packaged units and the code agree.
 #[cfg(test)]
 mod units;
@@ -29,8 +30,18 @@ use std::process::ExitCode;
 use tracing::info;
 
 fn main() -> ExitCode {
-    let _log_guard = backtrack_core::logging::init("backtrackd");
-    info!(version = backtrack_core::VERSION, "backtrackd starting");
+    // `--supervise`, inside a Flatpak only: run the daemon as a child and
+    // start it again after a failure, as the systemd unit does elsewhere.
+    let supervising = std::env::args().skip(1).any(|arg| arg == "--supervise");
+    let _log_guard = backtrack_core::logging::init(if supervising {
+        "backtrackd-supervise"
+    } else {
+        "backtrackd"
+    });
+    info!(
+        version = backtrack_core::VERSION,
+        supervising, "backtrackd starting"
+    );
 
     let runtime = match tokio::runtime::Runtime::new() {
         Ok(runtime) => runtime,
@@ -40,6 +51,9 @@ fn main() -> ExitCode {
         }
     };
 
+    if supervising {
+        return runtime.block_on(supervise::run());
+    }
     match runtime.block_on(daemon::run()) {
         Ok(outcome) => {
             info!(?outcome, "backtrackd stopped");

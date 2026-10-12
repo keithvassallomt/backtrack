@@ -69,6 +69,21 @@ modules:
   # Borg 1.4 and its Python packages, from python3-requirements.json.
   - python3-requirements.json
 
+  # The `btrfs` command alone, which the local safety net uses to take
+  # snapshots of a subvolume the user owns (S14-T8). The runtime lacks it.
+  - name: btrfs-progs
+    buildsystem: simple
+    build-commands:
+      - ./configure --prefix=/app --disable-documentation --disable-convert
+          --disable-python --disable-lzo --disable-libudev --disable-zoned
+          --disable-backtrace
+      - make -j${FLATPAK_BUILDER_N_JOBS} btrfs
+      - install -Dm755 btrfs /app/bin/btrfs
+    sources:
+      - type: archive
+        url: https://mirrors.edge.kernel.org/pub/linux/kernel/people/kdave/btrfs-progs/btrfs-progs-v7.1.tar.xz
+        sha256: d1f55cc2971398c9142eaa79d203e63d586a3b4b867f956664a1d68322cd4e34
+
   - name: backtrack
     buildsystem: simple
     build-options:
@@ -90,6 +105,10 @@ modules:
           packaging/icons/hicolor/symbolic/apps/tools.backtrack.Backtrack-symbolic.svg
       - install -Dm644 -t /app/share/dbus-1/services
           packaging/flatpak/tools.backtrack.Backtrack.Daemon1.service
+      # The window's activation file (S14-T2), with the binary where the
+      # Flatpak keeps it.
+      - sed 's|^Exec=/usr/bin/|Exec=/app/bin/|' packaging/dbus/tools.backtrack.Backtrack.service
+          > /app/share/dbus-1/services/tools.backtrack.Backtrack.service
     sources:
       - type: dir
         path: ../..

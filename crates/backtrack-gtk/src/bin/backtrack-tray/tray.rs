@@ -228,7 +228,21 @@ fn icon() -> String {
 /// development build opens the development window, else the one on `PATH`.
 /// The window is a single application, so this brings forward one that is
 /// already open.
+///
+/// Inside a Flatpak, through the session bus instead: a window started as
+/// this program's child would end with the tray's instance (S14-T2).
 fn open_window() {
+    if backtrack_core::host::in_flatpak() {
+        tokio::spawn(async {
+            match activate_window().await {
+                Ok(()) => info!("asked the session bus for the window"),
+                Err(error) => {
+                    warn!(%error, "the window could not be opened through the session bus")
+                }
+            }
+        });
+        return;
+    }
     let window = std::env::current_exe()
         .ok()
         .and_then(|exe| exe.parent().map(|dir| dir.join("backtrack-gtk")))
@@ -239,4 +253,22 @@ fn open_window() {
         Ok(_) => info!(path = %window.display(), "opening the window from the tray"),
         Err(error) => warn!(%error, path = %window.display(), "the window could not be opened"),
     }
+}
+
+/// Activate the window over `org.freedesktop.Application`, which starts it in
+/// an instance of its own when none is running.
+async fn activate_window() -> zbus::Result<()> {
+    let connection = zbus::Connection::session().await?;
+    let platform_data: std::collections::HashMap<&str, zbus::zvariant::Value<'_>> =
+        std::collections::HashMap::new();
+    connection
+        .call_method(
+            Some(backtrack_core::dbus::APP_ID),
+            backtrack_core::dbus::APP_OBJECT_PATH,
+            Some("org.freedesktop.Application"),
+            "Activate",
+            &(platform_data,),
+        )
+        .await?;
+    Ok(())
 }

@@ -133,12 +133,18 @@ fn alert(heading: &str, body: &str, go: &str, suggested: bool) -> adw::AlertDial
 }
 
 /// health.md's "Backtrack's backup engine is missing.": the install command
-/// for this distribution, and a way to look again once it is installed.
+/// for this distribution, and a way to look again once it is installed. A
+/// Flatpak carries its own BorgBackup, so no distribution's command can help
+/// there; only reinstalling Backtrack puts it back.
 fn engine_missing(context: &Context) {
-    let release = std::fs::read_to_string("/etc/os-release").unwrap_or_default();
-    let how = match health::install_command(&release) {
-        Some(command) => format!("Install it with:\n\n{command}"),
-        None => "Install BorgBackup with your distribution's software tool.".to_string(),
+    let how = if backtrack_core::host::in_flatpak() {
+        "Backtrack's own copy of it is missing or damaged; reinstalling Backtrack puts it back."
+            .to_string()
+    } else {
+        match health::install_command(&backtrack_core::host::os_release()) {
+            Some(command) => format!("Install it with:\n\n{command}"),
+            None => "Install BorgBackup with your distribution's software tool.".to_string(),
+        }
     };
     let heading = backtrack_core::engine::HealthFailure::BorgMissing.copy("");
     let dialog = alert(

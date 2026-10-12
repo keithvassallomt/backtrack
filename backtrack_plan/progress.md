@@ -15,8 +15,9 @@ done; Claude removes ticked items.
   (S13-T1; placeholders until then).
 - [ ] One hand-check session on the Flatpak in the VMs, once Stage 14's fixes
   are in: the wizard clicked through (S13-T1), Backtrack's entry in GNOME's
-  Background Apps opening the window (S12-T4), and the S13-T3 matrix. Claude
-  writes the walkthrough script first.
+  Background Apps opening the window (S12-T4), a notification clicked and
+  the Fix page for a missing Borg read (S14-T2, S14-T5), and the S13-T3
+  matrix. Claude writes the walkthrough script first.
 
 > **Contract:** Update this file in the SAME COMMIT as the work it describes.
 > `[ ]` upcoming · `[/]` in progress · `[x]` done (acceptance criteria verified) ·
@@ -154,13 +155,13 @@ done; Claude removes ticked items.
 
 ## Stage 14 — Flatpak as a first-class build ([stage file](stages/stage-14-flatpak-first-class.md))
 - [x] S14-T1 Daemon activation inside the Flatpak
-- [ ] S14-T2 Window opens through the session bus (notification clicks, tray)
-- [ ] S14-T3 Tray icon started by the daemon inside the sandbox
+- [x] S14-T2 Window opens through the session bus (notification clicks, tray)
+- [x] S14-T3 Tray icon started by the daemon inside the sandbox
 - [ ] S14-T4 File-manager integration for Flatpak installs (per-user copies)
-- [ ] S14-T5 Read the host's os-release (Fix page, doctor)
-- [ ] S14-T6 Secret Service keyring in every build
-- [ ] S14-T7 Restart the daemon after a failure, as the unit does
-- [ ] S14-T8 Btrfs snapshots inside the Flatpak (bundled btrfs-progs)
+- [x] S14-T5 Read the host's os-release (Fix page, doctor)
+- [x] S14-T6 Secret Service keyring in every build
+- [x] S14-T7 Restart the daemon after a failure, as the unit does
+- [x] S14-T8 Btrfs snapshots inside the Flatpak (bundled btrfs-progs)
 - [ ] S14-T9 Publish on FriendlyHub
 
 ## Blocked

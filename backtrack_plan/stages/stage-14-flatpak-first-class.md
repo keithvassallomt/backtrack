@@ -29,8 +29,9 @@ before it can ask the Background portal for anything.
 ## Prerequisites
 S13-T7 (the application ID and the daemon's names under backtrack.tools),
 S13-T1 (the manifest, with the permissions as corrected on 2026-10-12) and
-S13-T2. Every sandbox branch uses `ashpd::is_sandboxed()`, as
-`background::apply` already does (S12-T4).
+S13-T2. Every sandbox branch checks for one: `ashpd::is_sandboxed()` in the
+daemon's background code, as `background::apply` already did (S12-T4), and
+`backtrack_core::host::in_flatpak()` elsewhere.
 
 ## Ground rules
 - Native builds behave exactly as before unless a task says otherwise. Every
@@ -140,16 +141,22 @@ and behave as before.
 
 ### S14-T5 — The host's os-release
 Inside a Flatpak, `/etc/os-release` describes the runtime rather than the
-distribution. The Fix page (`crates/backtrack-gtk/src/ui/fix/mod.rs`) would give
-instructions for the wrong distribution, and `backtrack doctor`
-(`crates/backtrack-cli/src/doctor.rs`) would report the runtime. Both read
-`/run/host/os-release` first, which Flatpak provides, and fall back to
-`/etc/os-release`, which is all a native install has. One helper in
-`backtrack-core` serves both.
-**Accept:** a unit test pins the order; in the Flatpak on the GNOME VM the Fix
-page names Fedora, and `flatpak run --command=backtrack
-tools.backtrack.Backtrack doctor` reports the host's distribution.
-Native: unchanged.
+distribution, so `backtrack doctor` (`crates/backtrack-cli/src/doctor.rs`)
+would report the runtime. It reads `/run/host/os-release` first, which Flatpak
+provides, and falls back to `/etc/os-release`, which is all a native install
+has, through one helper in `backtrack-core` (`host`). The bundle also says
+whether it came from a Flatpak, and on which runtime; inside one it is written
+to `$XDG_RUNTIME_DIR/app/<app ID>`, which Flatpak shares with the host, since
+the sandbox's own `/tmp` goes with it.
+
+The Fix page (`crates/backtrack-gtk/src/ui/fix/mod.rs`) read the file only to
+name a distribution's command for installing Borg. Inside a Flatpak, Borg
+ships with Backtrack, so no distribution's command could help; there it says
+that reinstalling Backtrack puts Borg back, and names no command.
+**Accept:** unit tests pin the order and the runtime's name; inside the
+Flatpak on the GNOME VM, `flatpak run --command=backtrack
+tools.backtrack.Backtrack doctor` reports the host's distribution and the
+runtime, and the bundle it names is there on the host. Native: unchanged.
 
 ### S14-T6 — One keyring path in every build
 Inside a sandbox, `oo7::Keyring::new()`

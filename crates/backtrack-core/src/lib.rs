@@ -15,6 +15,7 @@ pub mod config;
 pub mod dbus;
 pub mod destination;
 pub mod engine;
+pub mod host;
 pub mod index;
 pub mod logging;
 pub mod paths;
