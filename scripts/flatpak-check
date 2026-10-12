@@ -1,0 +1,233 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-3.0-or-later
+# SPDX-FileCopyrightText: 2026 Keith Vassallo <keith@vassallo.cloud>
+#
+# The Flatpak checks that need a person at a VM's screen: S13-T1's wizard,
+# S12-T4's Background Apps entry, S14-T2's notification click, S14-T5's Fix
+# page, S14-T4's integrations, S14-T3's tray, and the S13-T3 matrix rows they
+# cover. Each step sets the VM up, says what to do there, and checks what it
+# can afterwards; nothing needs pasting.
+#
+#   scripts/flatpak-check setup     build the Flatpak, start the GNOME VM, install it fresh
+#   scripts/flatpak-check 1 … 6     a check on the GNOME VM: set it up, say what to do
+#   scripts/flatpak-check kde       move to the Plasma VM and install it there fresh
+#   scripts/flatpak-check 7 … 8     a check on the Plasma VM
+#   scripts/flatpak-check done      put the VM back as it was and shut it down
+#
+# Run from the checkout. The VMs are the development ones (docs/development-vms.md).
+
+set -euo pipefail
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+APP=tools.backtrack.Backtrack
+GNOME="fedora45 (GNOME)"
+KDE="fedora45 (KDE)"
+STATE="$ROOT/target/flatpak-check.vm"
+
+say() { printf '\n\033[1m%s\033[0m\n' "$*"; }
+current() { cat "$STATE" 2>/dev/null || echo "$GNOME"; }
+on() { ssh -o BatchMode=yes "$("$ROOT/scripts/vm" address "$(current)")" "$@"; }
+daemon() { on busctl --user call "$APP.Daemon1" /tools/backtrack/Backtrack/Daemon1 "$APP.Daemon1" "$@"; }
+want() { printf '\nWhat I want back:\n'; local i=1; for line in "$@"; do printf '  %d. %s\n' "$i" "$line"; i=$((i + 1)); done; }
+
+install_fresh() {
+    local vm="$1"
+    echo "$vm" > "$STATE"
+    just --justfile "$ROOT/Justfile" vm-start "$vm" | tail -1
+    scp -q "$ROOT/target/flatpak/backtrack.flatpak" "$("$ROOT/scripts/vm" address "$vm")":backtrack.flatpak
+    on 'bash -s' <<'EOF'
+set -u
+APP=tools.backtrack.Backtrack
+flatpak kill $APP 2>/dev/null
+# The development daemon and its tray off, so only the Flatpak's are on screen.
+systemctl --user stop backtrackd.service 2>/dev/null
+systemctl --user stop 'backtrack-tray-dev-*' 2>/dev/null
+pkill -x -f "$HOME/backtrack/target/debug/backtrack-tray" 2>/dev/null
+flatpak remote-add --user --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
+flatpak install --user -y --noninteractive --reinstall ~/backtrack.flatpak >/dev/null 2>&1
+flatpak override --user --reset $APP
+# A first start: no data, no remembered passphrase, no autostart entry, no
+# background permission, no integrations of the Flatpak's own.
+rm -rf ~/.var/app/$APP ~/.config/autostart/$APP.desktop ~/Smoke
+secret-tool clear app-id $APP 2>/dev/null
+flatpak permission-remove background background $APP 2>/dev/null
+grep -l "flatpak run $APP" ~/.local/share/nautilus-python/extensions/backtrack.py \
+    ~/.local/share/kio/servicemenus/backtrack*.desktop 2>/dev/null | xargs -r rm -f
+mkdir -p ~/Smoke/Documents/Reports ~/Smoke/Backups ~/Smoke/Restored
+echo "The quarterly report, first draft." > ~/Smoke/Documents/Reports/report.txt
+echo "Notes worth keeping." > ~/Smoke/Documents/notes.txt
+echo "installed fresh: $(flatpak info --user $APP | grep -E '^ *Commit' | awk '{print $2}' | cut -c1-12)"
+EOF
+}
+
+case "${1:-}" in
+setup)
+    say "Building the Flatpak and installing it fresh on the GNOME VM…"
+    just --justfile "$ROOT/Justfile" flatpak >/dev/null
+    just --justfile "$ROOT/Justfile" flatpak-bundle >/dev/null
+    install_fresh "$GNOME"
+    echo "Ready: run scripts/flatpak-check 1"
+    ;;
+1)
+    say "1. The wizard, from the launcher (S13-T1; the FileChooser portal rows of S13-T3)"
+    cat <<'EOF'
+On the GNOME VM's screen:
+  a. Open Activities, type Backtrack, open it. The Welcome page opens.
+  b. Get Started. On the folders page choose "Let me choose folders…", then
+     Choose Folders…, and pick Smoke → Documents.
+  c. Where backups go: Network folder, then Choose Folder…, and pick
+     Smoke → Backups.
+  d. Any passphrase that reads "strong"; leave Remember it on.
+  e. Save Recovery Key…, and save it in Smoke.
+  f. Start the first backup, and wait for its notification.
+The three choosers are GNOME's own dialogs (the portal), not Backtrack's.
+EOF
+    want "Did the wizard open from Activities, with the app's icon?" \
+         "Were the three choosers GNOME's file dialogs, and did each pick what you chose?" \
+         "Did the first backup finish, with a notification?"
+    echo "Then: scripts/flatpak-check verify 1"
+    ;;
+2)
+    say "2. Restore To… (the FileChooser portal, S13-T3)"
+    cat <<'EOF'
+In the window, open Reports, select report.txt, and use Restore To… on it.
+Choose Smoke → Restored.
+EOF
+    want "Did Restore To… open GNOME's folder dialog?" "Did it say the file was restored?"
+    echo "Then: scripts/flatpak-check verify 2"
+    ;;
+3)
+    say "3. GNOME's Background Apps (S12-T4)"
+    on 'flatpak kill tools.backtrack.Backtrack; sleep 1; busctl --user call tools.backtrack.Backtrack.Daemon1 /tools/backtrack/Backtrack/Daemon1 tools.backtrack.Backtrack.Daemon1 GetStatus >/dev/null' || true
+    cat <<'EOF'
+Backtrack's window is closed and its daemon running on its own.
+  a. Open quick settings (top right). Background Apps lists Backtrack.
+  b. Click Backtrack there.
+EOF
+    want "Was Backtrack listed under Background Apps?" "Did clicking it open Backtrack's window?"
+    echo "Then: scripts/flatpak-check verify 3"
+    ;;
+4)
+    say "4. A notification click (S14-T2)"
+    on 'chmod -R a-w ~/Smoke/Backups'
+    daemon BackupNow >/dev/null
+    cat <<'EOF'
+The backup folder is read-only now, and a backup has been started, so in a
+few seconds Backtrack says it can't write there, with a notification.
+  a. Close Backtrack's window if it is open.
+  b. Click the notification (from the message tray if it has gone).
+EOF
+    want "Did the notification say Backtrack can't sign in to (or reach) the backups?" \
+         "Did clicking it open the window at the fix for it?"
+    echo "Then: scripts/flatpak-check verify 4   (it also makes the folder writable again)"
+    ;;
+5)
+    say "5. The Fix page for a missing Borg (S14-T5)"
+    on 'flatpak kill tools.backtrack.Backtrack; flatpak override --user --env=PATH=/usr/bin:/bin tools.backtrack.Backtrack'
+    daemon GetStatus >/dev/null
+    cat <<'EOF'
+Backtrack's own Borg is hidden from it now, as if the Flatpak were damaged.
+  a. Open Backtrack. A red banner says the backup engine is missing.
+  b. Open the banner's fix.
+EOF
+    want "Did the fix say reinstalling Backtrack puts its copy of BorgBackup back?" \
+         "Did it name no dnf, apt or pacman command?"
+    echo "Then: scripts/flatpak-check verify 5   (it also puts Borg back)"
+    ;;
+6)
+    say "6. The Nautilus integration from the Flatpak (S14-T4)"
+    cat <<'EOF'
+  a. In Backtrack: menu → Preferences → General. GNOME Files reads
+     "Not installed" with an Install button. Click Install.
+  b. It reads Installed, with Remove beside its switch.
+EOF
+    read -r -p "Press Enter once it reads Installed… " _
+    on 'nautilus -q 2>/dev/null; true'
+    cat <<'EOF'
+  c. Open Files, go to Smoke → Documents → Reports, right-click report.txt:
+     Restore Previous Version… is there. Click it.
+  d. Back in Preferences, click Remove.
+EOF
+    read -r -p "Press Enter once you have clicked Remove… " _
+    on 'nautilus -q 2>/dev/null; true'
+    cat <<'EOF'
+  e. Open Files again and right-click report.txt.
+EOF
+    want "Did Install turn the row to Installed, with Remove?" \
+         "Was Restore Previous Version… in the menu, and did it open Backtrack with report.txt selected?" \
+         "After Remove, was the item gone from the menu?"
+    echo "Then: scripts/flatpak-check verify 6"
+    ;;
+kde)
+    say "Moving to the Plasma VM…"
+    just --justfile "$ROOT/Justfile" vm-stop "$GNOME" | tail -1
+    install_fresh "$KDE"
+    cat <<'EOF'
+On the Plasma VM's screen, open Backtrack from the launcher and walk the
+wizard as in step 1 (Smoke → Documents, Network folder Smoke → Backups).
+Then log out and back in, so the daemon starts from its autostart entry.
+EOF
+    echo "Then: scripts/flatpak-check 7"
+    ;;
+7)
+    say "7. The tray icon from the Flatpak (S14-T3)"
+    cat <<'EOF'
+  a. The system tray shows Backtrack's icon (a clock while it is a
+     placeholder). Open its menu.
+  b. Back Up Now.
+  c. Open Backtrack from the same menu.
+EOF
+    want "Was the icon there after logging in, without starting anything by hand?" \
+         "Did Back Up Now run a backup (the menu's first line updates)?" \
+         "Did Open Backtrack open the window?"
+    echo "Then: scripts/flatpak-check verify 7"
+    ;;
+8)
+    say "8. The Dolphin integration from the Flatpak (S14-T4)"
+    cat <<'EOF'
+  a. Preferences → General: Dolphin reads "Not installed"; click Install.
+  b. Open Dolphin, go to Smoke → Documents → Reports, right-click
+     report.txt: Backtrack ▸ Restore Previous Version…. Click it.
+  c. In Preferences, turn Dolphin's switch off, and right-click again.
+  d. Turn it back on, then click Remove, and right-click again.
+EOF
+    want "Did Restore Previous Version… open Backtrack with report.txt selected?" \
+         "With the switch off, was the Backtrack submenu gone, without restarting Dolphin?" \
+         "After Remove, was it gone too?"
+    echo "Then: scripts/flatpak-check verify 8"
+    ;;
+verify)
+    case "${2:-}" in
+    1)
+        daemon GetStatus | awk '{print "health:", $2, " last backup:", $3}'
+        on 'ls ~/Smoke/*.txt ~/Smoke/*.key 2>/dev/null | sed "s/^/recovery key: /"; secret-tool search app-id tools.backtrack.Backtrack 2>/dev/null | grep -m1 "^label" || echo "no passphrase in the keyring"'
+        ;;
+    2) on 'find ~/Smoke/Restored -type f -exec sh -c "echo restored: {}; cat {}" \;' ;;
+    # A real owner: busctl also lists the name when it is merely activatable,
+    # with no PID.
+    3) on 'busctl --user list --no-legend | awk "\$1 == \"tools.backtrack.Backtrack\" && \$2 != \"-\" {print \"window running, pid\", \$2}" | grep . || echo "no window running"' ;;
+    4)
+        daemon GetStatus | awk '{print "health:", $2}'
+        on 'chmod -R u+w ~/Smoke/Backups && echo "the backup folder is writable again"'
+        daemon BackupNow >/dev/null && echo "a backup started, to clear the state"
+        ;;
+    5)
+        on 'flatpak kill tools.backtrack.Backtrack; flatpak override --user --reset tools.backtrack.Backtrack && echo "Borg is back"'
+        daemon GetStatus | awk '{print "health:", $2}'
+        ;;
+    6) on 'ls ~/.local/share/nautilus-python/extensions/backtrack.py 2>/dev/null || echo "the Flatpak copy is removed"' ;;
+    7) on 'pgrep -x -f /app/bin/backtrack-tray >/dev/null && echo "the Flatpak tray is running"' ;;
+    8) on 'ls ~/.local/share/kio/servicemenus/backtrack*.desktop 2>/dev/null || echo "the Flatpak copies are removed"' ;;
+    *) echo "usage: scripts/flatpak-check verify 1…8" >&2; exit 2 ;;
+    esac
+    ;;
+done)
+    on 'flatpak kill tools.backtrack.Backtrack; flatpak override --user --reset tools.backtrack.Backtrack; chmod -R u+w ~/Smoke 2>/dev/null; systemctl --user start backtrackd.service' || true
+    just --justfile "$ROOT/Justfile" vm-stop "$(current)" | tail -1
+    rm -f "$STATE"
+    echo "Done. The Flatpak stays installed on the VMs, the development daemon is back."
+    ;;
+*)
+    sed -n '/^#   scripts/,/^$/s/^#   //p' "$0" >&2
+    exit 2
+    ;;
+esac
