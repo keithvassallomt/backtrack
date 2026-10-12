@@ -14,6 +14,7 @@
 //! changes (backup started/finished, job lifecycle), `debug` = per-operation
 //! detail, `trace` = per-file detail.
 
+use std::io::IsTerminal;
 use std::path::Path;
 use std::time::{Duration, SystemTime};
 
@@ -41,7 +42,10 @@ pub fn init(binary: &str) -> LogGuard {
     let file_appender = tracing_appender::rolling::daily(&dir, format!("{binary}.jsonl"));
     let (non_blocking, guard) = tracing_appender::non_blocking(file_appender);
 
+    // Colour only for a person at a terminal. Started by systemd or by D-Bus
+    // activation, stderr is the journal, which would keep the escape codes.
     let console = fmt::layer()
+        .with_ansi(std::io::stderr().is_terminal())
         .with_writer(std::io::stderr)
         .with_filter(env_filter());
     let json = fmt::layer()
