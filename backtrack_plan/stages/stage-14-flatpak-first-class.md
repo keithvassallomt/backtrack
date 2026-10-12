@@ -230,7 +230,29 @@ after download; following FRIENDLYHUB.md, a release candidate installs from
 FriendlyHub on a clean VM and completes the wizard → backup → restore round
 trip.
 
+### S14-T10 — Status line in GNOME's Background Apps
+GNOME's quick settings → Background Apps lists Backtrack while its daemon runs
+without a window (S12-T4), with nothing under its name. The Background portal's
+`SetStatus` (portal version 2) sets the line GNOME shows there, and the daemon
+keeps it current: backing up, the last backup's time, or that something needs
+attention.
+- The text is the tray menu's first line (`backtrack-tray`'s `text.rs`), shared
+  rather than written a second time, within the portal's limit of 96
+  characters. Times of day, as the tray gives them, so the line cannot go stale
+  between updates.
+- Set when the daemon's state changes, not on a timer, and only when the line
+  is different from the last one sent.
+- A portal without `SetStatus` (version 1) is not an error: the line is left
+  out, once, with a debug log.
+- Native installs: unchanged. GNOME lists only Flatpak instances under
+  Background Apps, so there is nothing to set.
+
+**Accept:** in the Flatpak on the GNOME VM, with the window closed, Background
+Apps shows the line under Backtrack: "backing up" during a backup, then the
+last backup's time, then the attention state when the destination is made
+unwritable. Native: no portal call is made.
+
 ## Definition of Done
-All nine tasks done; S13-T3's matrix green, this stage's rows included; a
+All ten tasks done; S13-T3's matrix green, this stage's rows included; a
 native install on both VMs behaves as it did before the stage; stack.md §2, §8
 and §9 describe what was built.

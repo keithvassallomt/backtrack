@@ -201,7 +201,7 @@ verify)
         daemon GetStatus | awk '{print "health:", $2, " last backup:", $3}'
         on 'ls ~/Smoke/*.txt ~/Smoke/*.key 2>/dev/null | sed "s/^/recovery key: /"; secret-tool search app-id tools.backtrack.Backtrack 2>/dev/null | grep -m1 "^label" || echo "no passphrase in the keyring"'
         ;;
-    2) on 'find ~/Smoke/Restored -type f -exec sh -c "echo restored: {}; cat {}" \;' ;;
+    2) on 'find ~/Smoke/Restored -type f -printf "restored: %p\n" -exec cat {} \;' ;;
     # A real owner: busctl also lists the name when it is merely activatable,
     # with no PID.
     3) on 'busctl --user list --no-legend | awk "\$1 == \"tools.backtrack.Backtrack\" && \$2 != \"-\" {print \"window running, pid\", \$2}" | grep . || echo "no window running"' ;;
