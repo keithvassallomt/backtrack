@@ -1,0 +1,99 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# SPDX-FileCopyrightText: 2026 Keith Vassallo <keith@vassallo.cloud>
+#
+# Backtrack as a Flatpak: the window, the daemon, the tray icon, the CLI and a
+# bundled Borg, built offline from the sources `just flatpak-sources` writes
+# beside this file. `just flatpak` builds and installs it for this user.
+
+id: tools.backtrack.Backtrack
+runtime: org.gnome.Platform
+runtime-version: '51'
+sdk: org.gnome.Sdk
+sdk-extensions:
+  - org.freedesktop.Sdk.Extension.rust-stable
+command: backtrack-gtk
+
+finish-args:
+  # A backup daemon reads everything the user chose to back up, wherever it
+  # is (home, removable drives under /run/media and /media, folders added
+  # outside home), and restores to anywhere. A portal grants one file at a
+  # time to an application that asks while someone is looking; a daemon that
+  # walks every folder each hour, unattended, cannot work that way.
+  - --filesystem=host
+  # Flatpak hides ~/.var/app behind an empty tmpfs even with host access, so
+  # without this every other Flatpak's data (mail, settings, saves) would be
+  # left out of every backup, with no warning.
+  - --filesystem=~/.var/app
+  # SSH destinations, signed in with the user's agent.
+  - --share=network
+  - --socket=ssh-auth
+  # Network shares, and the wizard's list of drives (GIO's volume monitor).
+  - --talk-name=org.gtk.vfs.*
+  - --filesystem=xdg-run/gvfs
+  - --filesystem=xdg-run/gvfsd
+  # The daemon's notifications and their click handling use this interface
+  # directly (Stage 10).
+  - --talk-name=org.freedesktop.Notifications
+  # Remembered passphrases, in the user's keyring (S14-T6).
+  - --talk-name=org.freedesktop.secrets
+  # The tray icon on desktops that have a system tray (S14-T3).
+  - --talk-name=org.kde.StatusNotifierWatcher
+  # The battery and metered-network checks before a scheduled backup. Without
+  # them both read as unknown, and backups run anyway.
+  - --system-talk-name=org.freedesktop.UPower
+  - --system-talk-name=org.freedesktop.NetworkManager
+  # The window.
+  - --socket=wayland
+  - --socket=fallback-x11
+  - --share=ipc
+  - --device=dri
+  # No --own-name: the daemon's bus name is under the application ID, which
+  # the sandbox owns by default. No --device=all and no host escapes:
+  # Backtrack never mounts a repository, so it needs no FUSE.
+
+cleanup:
+  - /include
+  - /lib/pkgconfig
+  - /share/man
+  - '*.a'
+  - '*.la'
+  # Borg's build-only helpers, and borgfs: Backtrack never mounts a repository.
+  - /bin/setuptools-scm
+  - /bin/vcs-versioning
+  - /bin/borgfs
+  - /lib/python3.*/site-packages/setuptools_scm*
+  - /lib/python3.*/site-packages/vcs_versioning*
+  - /lib/python3.*/site-packages/pkgconfig*
+
+modules:
+  # Borg 1.4 and its Python packages, from python3-requirements.json.
+  - python3-requirements.json
+
+  - name: backtrack
+    buildsystem: simple
+    build-options:
+      append-path: /usr/lib/sdk/rust-stable/bin
+      env:
+        CARGO_HOME: /run/build/backtrack/cargo
+        CARGO_NET_OFFLINE: 'true'
+    build-commands:
+      # The three packages in one build, so their shared crates are compiled
+      # with the same features (see `just install-units`).
+      - cargo build --release --locked --offline -p backtrackd -p backtrack-gtk -p backtrack-cli
+      - install -Dm755 -t /app/bin target/release/backtrackd target/release/backtrack-gtk
+          target/release/backtrack-tray target/release/backtrack
+      - install -Dm644 -t /app/share/applications packaging/desktop/tools.backtrack.Backtrack.desktop
+      - install -Dm644 -t /app/share/metainfo packaging/tools.backtrack.Backtrack.metainfo.xml
+      - install -Dm644 -t /app/share/icons/hicolor/scalable/apps
+          packaging/icons/hicolor/scalable/apps/tools.backtrack.Backtrack.svg
+      - install -Dm644 -t /app/share/icons/hicolor/symbolic/apps
+          packaging/icons/hicolor/symbolic/apps/tools.backtrack.Backtrack-symbolic.svg
+      - install -Dm644 -t /app/share/dbus-1/services
+          packaging/flatpak/tools.backtrack.Backtrack.Daemon1.service
+    sources:
+      - type: dir
+        path: ../..
+        skip:
+          - .git
+          - target
+      - cargo-sources.json

@@ -28,8 +28,8 @@ must be kept in sync by `just bump-version`.
 | Location | Status | Notes |
 |---|---|---|
 | `Cargo.toml` (`[workspace.package].version`) | **active** | Source of truth; crates inherit. |
-| `packaging/*/tools.backtrack.Backtrack.metainfo.xml` | planned (Stage 13) | AppStream `<release>` version. |
-| `packaging/flatpak/*.yml` manifest | planned (Stage 13) | Bundled build/tag. |
+| `packaging/tools.backtrack.Backtrack.metainfo.xml` | **not a location** | Carries no `<release>`: release tooling writes this version's entry from CHANGELOG.md (S13-T9). |
+| `packaging/flatpak/tools.backtrack.Backtrack.yml` | **not a location** | Builds the checkout it sits in; the copy for FriendlyHub is generated per release, pinned to the tag (S13-T9). |
 | `packaging/rpm/backtrack.spec` | planned (Stage 13) | `Version:` field. |
 | `packaging/deb/changelog` | planned (Stage 13) | Top entry version. |
 

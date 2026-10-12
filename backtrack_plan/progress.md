@@ -13,7 +13,10 @@ done; Claude removes ticked items.
 - [ ] AUR account with an SSH key (S13-T8, S13-T9).
 - [ ] Icons for `tools.backtrack.Backtrack`: a scalable one and a symbolic one
   (S13-T1; placeholders until then).
-- [ ] FriendlyHub's remote URL, for `packaging/flatpak/FRIENDLYHUB.md` (S14-T9).
+- [ ] One hand-check session on the Flatpak in the VMs, once Stage 14's fixes
+  are in: the wizard clicked through (S13-T1), Backtrack's entry in GNOME's
+  Background Apps opening the window (S12-T4), and the S13-T3 matrix. Claude
+  writes the walkthrough script first.
 
 > **Contract:** Update this file in the SAME COMMIT as the work it describes.
 > `[ ]` upcoming · `[/]` in progress · `[x]` done (acceptance criteria verified) ·
@@ -134,13 +137,13 @@ done; Claude removes ticked items.
 - [x] S12-T1 Nautilus python extension (mockup 2)
 - [x] S12-T2 Dolphin service menu (mockup 3, menu part only)
 - [x] S12-T3 StatusNotifierItem tray for non-GNOME (status, actions)
-- [!] S12-T4 Background portal presence (GNOME quick-settings launch path)
+- [/] S12-T4 Background portal presence (GNOME quick-settings launch path)
 - [x] S12-T5 App detects missing plugins → hints distro package (prefs General)
 - [x] S12-T6 Development VMs: one-command setup and push for GNOME and Plasma
 
 ## Stage 13 — Packaging & release ([stage file](stages/stage-13-packaging-release.md))
-- [ ] S13-T1 Flatpak manifest (GNOME runtime, portals, bundled borg)
-- [ ] S13-T2 cargo-sources.json generation recipe (offline flatpak build)
+- [/] S13-T1 Flatpak manifest (GNOME runtime, portals, bundled borg)
+- [/] S13-T2 cargo-sources.json generation recipe (offline flatpak build)
 - [ ] S13-T3 Portal permissions audit + test matrix
 - [ ] S13-T4 RPM spec + COPR (Fedora 44+); deb + PPA (Ubuntu 26.04+)
 - [ ] S13-T5 CI release artifacts on tag
@@ -150,7 +153,7 @@ done; Claude removes ticked items.
 - [ ] S13-T9 just release: from tag to every channel in one command
 
 ## Stage 14 — Flatpak as a first-class build ([stage file](stages/stage-14-flatpak-first-class.md))
-- [ ] S14-T1 Daemon activation inside the Flatpak
+- [x] S14-T1 Daemon activation inside the Flatpak
 - [ ] S14-T2 Window opens through the session bus (notification clicks, tray)
 - [ ] S14-T3 Tray icon started by the daemon inside the sandbox
 - [ ] S14-T4 File-manager integration for Flatpak installs (per-user copies)
@@ -162,8 +165,5 @@ done; Claude removes ticked items.
 
 ## Blocked
 
-- **S12-T4**: written, and waiting on the Flatpak (S13-T1) for its
-  acceptance. GNOME's Background Apps list holds Flatpak instances only, so
-  only the Flatpak build can appear there; the check is in S13-T3's matrix.
-  It also needs S14-T1: until the session bus can start the daemon inside the
-  sandbox, nothing asks the Background portal for anything.
+
+Nothing is blocked.

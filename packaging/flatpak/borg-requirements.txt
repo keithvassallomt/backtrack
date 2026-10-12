@@ -1,0 +1,15 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# SPDX-FileCopyrightText: 2026 Keith Vassallo <keith@vassallo.cloud>
+#
+# Borg for the Flatpak, with what the GNOME 51 runtime lacks to build and run
+# it (the runtime already has packaging and setuptools, the SDK also Cython).
+# Pinned, so `just flatpak-sources` regenerates the same python3-requirements.json.
+
+# Build only: Borg's setup reads its version and finds its C libraries with these.
+setuptools-scm==10.3.4
+vcs-versioning==2.6.0
+pkgconfig==1.6.0
+
+# Borg accepts msgpack up to 1.2.1 and no later.
+msgpack==1.2.1
+borgbackup==1.4.5

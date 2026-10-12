@@ -1,0 +1,70 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- SPDX-License-Identifier: GPL-3.0-or-later -->
+<!-- SPDX-FileCopyrightText: 2026 Keith Vassallo <keith@vassallo.cloud> -->
+<!--
+  Backtrack's AppStream listing, installed by every package. It carries no
+  <releases>: release tooling writes this version's entry from CHANGELOG.md
+  (S13-T9), so no version number is kept here by hand.
+-->
+<component type="desktop-application">
+  <id>tools.backtrack.Backtrack</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>GPL-3.0-or-later</project_license>
+
+  <name>Backtrack</name>
+  <summary>Browse your files as they were</summary>
+  <developer id="tools.backtrack">
+    <name>Keith Vassallo</name>
+  </developer>
+
+  <description>
+    <p>
+      Backtrack keeps your files backed up and lets you move back through time
+      to bring back what you lost. Pick a folder, step back to this morning or
+      last week, and restore a file without needing to know how backups work.
+    </p>
+    <ul>
+      <li>Automatic backups to a drive, a network share or a server over SSH</li>
+      <li>Changes kept safe on this computer while the backup drive is away</li>
+      <li>Search across every backup, including files deleted since</li>
+      <li>Compare a file with an earlier version before restoring it</li>
+      <li>Restore Previous Version from Nautilus and Dolphin</li>
+      <li>Restore everything onto a new computer</li>
+    </ul>
+    <p>
+      Backtrack is built on Borg Backup: backups are encrypted, deduplicated,
+      and readable with Borg itself.
+    </p>
+  </description>
+
+  <launchable type="desktop-id">tools.backtrack.Backtrack.desktop</launchable>
+  <provides>
+    <binary>backtrack</binary>
+    <dbus type="user">tools.backtrack.Backtrack.Daemon1</dbus>
+  </provides>
+
+  <url type="homepage">https://backtrack.tools</url>
+  <url type="bugtracker">https://github.com/keithvassallomt/backtrack/issues</url>
+  <url type="vcs-browser">https://github.com/keithvassallomt/backtrack</url>
+
+  <content_rating type="oars-1.1"/>
+  <supports>
+    <control>pointing</control>
+    <control>keyboard</control>
+  </supports>
+
+  <screenshots>
+    <screenshot type="default">
+      <image>https://raw.githubusercontent.com/keithvassallomt/backtrack/main/backtrack_plan/screenshots/stage-06-main-window-light.png</image>
+      <caption>A folder as it was at an earlier backup</caption>
+    </screenshot>
+    <screenshot>
+      <image>https://raw.githubusercontent.com/keithvassallomt/backtrack/main/backtrack_plan/screenshots/stage-06-main-window-dark.png</image>
+      <caption>The same window in the dark style</caption>
+    </screenshot>
+    <screenshot>
+      <image>https://raw.githubusercontent.com/keithvassallomt/backtrack/main/backtrack_plan/screenshots/stage-12-nautilus-file-menu.png</image>
+      <caption>Restore Previous Version from the file manager</caption>
+    </screenshot>
+  </screenshots>
+</component>

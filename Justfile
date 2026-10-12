@@ -668,6 +668,41 @@ uninstall-tray-dev:
     rm -f "${XDG_CONFIG_HOME:-${HOME}/.config}/autostart/backtrack-tray.desktop"
     @echo "Removed. An icon already showing stays until it is quit or the session ends."
 
+# ─── Packaging ──────────────────────────────────────────────────────────────
+
+# Regenerate the Flatpak's offline sources beside its manifest: every crate in
+# Cargo.lock, and Borg's Python packages from borg-requirements.txt. Run it
+# whenever either changes. Idempotent: with nothing changed, no diff.
+flatpak-sources:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cd "{{justfile_directory()}}/packaging/flatpak"
+    uv run --quiet tools/flatpak-cargo-generator.py ../../Cargo.lock -o cargo-sources.json
+    # Inside the SDK, so pip resolves for the runtime's Python, not this machine's.
+    uv run --quiet tools/flatpak-pip-generator.py --runtime org.gnome.Sdk//51 \
+        --requirements-file borg-requirements.txt --output python3-requirements
+    echo "Wrote packaging/flatpak/cargo-sources.json and python3-requirements.json."
+
+# Build the Flatpak from this checkout, offline from the sources above, and
+# install it for this user. Also leaves a repository in target/flatpak/repo.
+flatpak:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    root="{{justfile_directory()}}"
+    flatpak-builder --user --install --force-clean \
+        --install-deps-from=flathub \
+        --state-dir="${root}/target/flatpak/state" \
+        --repo="${root}/target/flatpak/repo" \
+        "${root}/target/flatpak/build" \
+        "${root}/packaging/flatpak/tools.backtrack.Backtrack.yml"
+
+# A single-file bundle of the last `just flatpak` build, for installing on
+# another machine (the development VMs): target/flatpak/backtrack.flatpak.
+flatpak-bundle:
+    flatpak build-bundle --runtime-repo=https://dl.flathub.org/repo/flathub.flatpakrepo \
+        "{{justfile_directory()}}/target/flatpak/repo" \
+        "{{justfile_directory()}}/target/flatpak/backtrack.flatpak" tools.backtrack.Backtrack
+
 # ─── Development VMs (see docs/development-vms.md) ───────────────────────────
 
 # Start a libvirt VM, and wait until its desktop has logged in automatically
