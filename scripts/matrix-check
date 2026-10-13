@@ -1,0 +1,381 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-3.0-or-later
+# SPDX-FileCopyrightText: 2026 Keith Vassallo <keith@vassallo.cloud>
+#
+# The rows of S13-T3's matrix that need nobody at the screen, run against the
+# Flatpak on a development VM. Each row sets up what it needs, drives the
+# Flatpak's daemon over D-Bus as the wizard does (InspectDestination,
+# SetupRepo, SetConfig, BackupNow), so the sandbox's own Borg does the work,
+# and says pass or fail with what it read. At the end, whatever happened, the
+# daemon is put back on the repository and folders it had, and what the rows
+# made is removed.
+#
+#   scripts/matrix-check VM [ROW...]   every row, or the ones named
+#
+# Rows: supervisor var-app ssh smb drive btrfs login. The Flatpak has to be
+# installed on the VM already (scripts/flatpak-check setup, or kde). The VM
+# is started if it is off, and left running. The log of a run is
+# target/matrix-check-<VM>.log.
+
+set -euo pipefail
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+CONNECT=qemu:///system
+ALL=(supervisor var-app ssh smb drive btrfs login)
+
+VM="${1:?usage: scripts/matrix-check VM [ROW...]}"
+shift
+ROWS=("$@")
+((${#ROWS[@]})) || ROWS=("${ALL[@]}")
+for row in "${ROWS[@]}"; do
+    [[ " ${ALL[*]} " == *" $row "* ]] || { echo "unknown row: $row (rows: ${ALL[*]})" >&2; exit 2; }
+done
+
+LOG="$ROOT/target/matrix-check-${VM//[^A-Za-z0-9]/-}.log"
+mkdir -p "$ROOT/target"
+: >"$LOG"
+
+# The test drive's image sits beside the VM's own disk, where its QEMU can
+# read it.
+DISK_DIR="$(dirname "$(virsh -c "$CONNECT" domblklist "$VM" | awk '$1 == "vda" {print $2}')")"
+IMAGE="$DISK_DIR/backtrack-matrix-drive.img"
+DRIVE=sdz
+LABEL=BTMATRIX
+
+addr() { "$ROOT/scripts/vm" address "$VM"; }
+on() { ssh -o BatchMode=yes -o ServerAliveInterval=30 "$(addr)" "source ~/.cache/backtrack-matrix/lib.sh; $*"; }
+attached() { virsh -c "$CONNECT" domblklist "$VM" | awk '{print $1}' | grep -qx "$DRIVE"; }
+# Plugged in as a USB stick is: removable, which attach-disk cannot say, and
+# without which GNOME does not mount it and udisks asks for a password.
+attach() {
+    virsh -c "$CONNECT" attach-device "$VM" /dev/stdin --live >/dev/null <<XML
+<disk type='file' device='disk'>
+  <driver name='qemu' type='raw'/>
+  <source file='$IMAGE'/>
+  <target dev='$DRIVE' bus='usb' removable='on'/>
+</disk>
+XML
+}
+detach() { virsh -c "$CONNECT" detach-disk "$VM" "$DRIVE" --live >/dev/null; }
+
+# What runs on the VM, sourced by every `on`.
+vm_lib() {
+    cat <<'LIB'
+APP=tools.backtrack.Backtrack
+OBJ=/tools/backtrack/Backtrack/Daemon1
+M="$HOME/.cache/backtrack-matrix"
+PASSPHRASE="backtrack matrix check"
+SMB_PASSWORD="backtrack matrix"
+SMB_DIR=/srv/backtrack-matrix
+SMB_URI=smb://localhost/backtrack-matrix
+LABEL=BTMATRIX
+
+d() { busctl --user call "$APP.Daemon1" "$OBJ" "$APP.Daemon1" "$@"; }
+# One of GetStatus's fields, by name.
+field() {
+    d GetStatus | awk -v want="$1" '{
+        n = split("state last_backup next_backup reachable spool_bytes offline_mode local_snapshots expirable active_job paused_until configured reason since recovery_job", names, " ")
+        for (i = 1; i <= n; i++) if (names[i] == want) { v = $(i + 1); gsub(/"/, "", v); print v }
+    }'
+}
+pass() { echo "PASS $ROW: $*"; }
+fail() { echo "FAIL $ROW: $*"; }
+na() { echo "N/A  $ROW: $*"; }
+# Run a command every three seconds until it succeeds or $1 seconds pass.
+within() {
+    local until=$((SECONDS + $1))
+    shift
+    until "$@"; do
+        ((SECONDS < until)) || return 1
+        sleep 3
+    done
+}
+idle() { [ "$(field active_job)" = 0 ]; }
+healthy() { [ "$(field state)" = HEALTHY ]; }
+health() { echo "$(field state) $(field reason)"; }
+# A repository of the row's own, made and adopted as the wizard makes one.
+adopt() {
+    echo "$1" >>"$M/made"
+    local answer
+    answer=$(d InspectDestination s "$1" 2>&1 | awk '{print $2}' | tr -d '"')
+    [ "$answer" = empty ] || { echo "  InspectDestination answered '$answer' for $1"; return 1; }
+    d SetupRepo ss "$1" "$PASSPHRASE" >/dev/null
+}
+include() { d SetConfig ss backup.include "[\"$1\"]" >/dev/null; }
+# A small folder to back up.
+sources() {
+    mkdir -p "$M/src"
+    echo "matrix check $(date +%s)" >"$M/src/note.txt"
+    include "$M/src"
+}
+back_up() { d BackupNow >/dev/null && sleep 2 && within 300 idle; }
+found() { d SearchFiles s "$1" | grep -q "$1"; }
+
+save() {
+    mkdir -p "$M"
+    : >"$M/made"
+    busctl --user --json=short call "$APP.Daemon1" "$OBJ" "$APP.Daemon1" GetConfig | python3 -c '
+import json, sys, tomllib
+config = tomllib.loads(json.load(sys.stdin)["data"][0])
+print(json.dumps({
+    "repository": config.get("storage", {}).get("repository"),
+    "include": config.get("backup", {}).get("include", []),
+}))' >"$M/saved.json"
+    echo "saved: $(cat "$M/saved.json")"
+}
+
+put_back() {
+    [ -f "$M/saved.json" ] || return 0
+    local repo include
+    repo=$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))["repository"] or "")' "$M/saved.json")
+    include=$(python3 -c 'import json, sys; print(json.dumps(json.load(open(sys.argv[1]))["include"]))' "$M/saved.json")
+    if [ -n "$repo" ]; then
+        if d ImportRepo ss "$repo" "$(secret-tool lookup app-id "$APP" repo-id "$repo")" >/dev/null; then
+            echo "put back on $repo"
+        else
+            echo "could not put the daemon back on $repo"
+        fi
+    fi
+    d SetConfig ss backup.include "$include" >/dev/null
+    sort -u "$M/made" | while read -r made; do
+        secret-tool clear app-id "$APP" repo-id "$made" 2>/dev/null
+    done
+    flatpak run --command=gio "$APP" mount -u "$SMB_URI" 2>/dev/null
+    if [ -f ~/.ssh/config ]; then
+        sed -i '/^# backtrack matrix-check$/,/^# end backtrack matrix-check$/d' ~/.ssh/config
+    fi
+    if [ -f ~/.ssh/backtrack_matrix.pub ]; then
+        grep -vF "$(cat ~/.ssh/backtrack_matrix.pub)" ~/.ssh/authorized_keys >~/.ssh/authorized_keys.new || true
+        mv ~/.ssh/authorized_keys.new ~/.ssh/authorized_keys
+        chmod 600 ~/.ssh/authorized_keys
+        rm -f ~/.ssh/backtrack_matrix ~/.ssh/backtrack_matrix.pub
+    fi
+    if [ -d "$HOME/matrix/btrfs-src" ]; then
+        btrfs subvolume delete "$HOME/matrix/btrfs-src" >/dev/null 2>&1
+    fi
+    rm -rf "$HOME/matrix" "$HOME/.var/app/org.example.MatrixCheck" "$M"
+    if [ -d "$SMB_DIR" ]; then
+        sudo -n rm -rf "$SMB_DIR"
+        sudo -n sed -i '/^\[backtrack-matrix\]$/,/^$/d' /etc/samba/smb.conf
+        sudo -n systemctl restart smb 2>/dev/null
+    fi
+}
+
+# S14-T7: the supervisor brings a killed daemon back, as the unit would.
+row_supervisor() {
+    local supervisor daemon
+    d GetStatus >/dev/null
+    supervisor=$(pgrep -x -f '(/app/bin/)?backtrackd --supervise')
+    daemon=$(pgrep -x -f /app/bin/backtrackd)
+    [ -n "$supervisor" ] && [ -n "$daemon" ] || { fail "no supervised daemon running"; return; }
+    local start=$SECONDS
+    kill -KILL "$daemon"
+    if within 20 sh -c "p=\$(pgrep -x -f /app/bin/backtrackd) && [ \"\$p\" != $daemon ]"; then
+        local again
+        again=$(pgrep -x -f /app/bin/backtrackd)
+        if [ "$(ps -o ppid= -p "$again" | tr -d ' ')" = "$supervisor" ] && d GetStatus >/dev/null; then
+            pass "pid $daemon killed; pid $again, started by the same supervisor, answering after $((SECONDS - start)) s"
+        else
+            fail "a new daemon (pid $again) is not the supervisor's, or does not answer"
+        fi
+    else
+        fail "nothing brought the daemon back within 20 s"
+    fi
+}
+
+# Another Flatpak's data is in the backup: ~/.var/app is hidden from a
+# sandbox unless asked for, and Backtrack asks for it.
+row_var_app() {
+    local data="$HOME/.var/app/org.example.MatrixCheck/data"
+    mkdir -p "$data"
+    echo "another Flatpak's data" >"$data/matrix-check-note.txt"
+    adopt "$M/var-app-repo" || { fail "no repository to back up to"; return; }
+    include "$HOME/.var/app/org.example.MatrixCheck"
+    back_up
+    if within 60 found matrix-check-note.txt; then
+        pass "~/.var/app/org.example.MatrixCheck/data/matrix-check-note.txt is in the backup's catalogue"
+    else
+        fail "the backup's catalogue has no matrix-check-note.txt ($(health))"
+    fi
+}
+
+# An SSH destination, through the sandbox's own ssh and this VM's sshd.
+row_ssh() {
+    local key="$HOME/.ssh/backtrack_matrix" repo="ssh://$USER@127.0.0.1$HOME/matrix/ssh-repo"
+    mkdir -p ~/.ssh "$HOME/matrix"
+    [ -f "$key" ] || ssh-keygen -q -t ed25519 -N "" -C backtrack-matrix -f "$key"
+    grep -qF "$(cat "$key.pub")" ~/.ssh/authorized_keys 2>/dev/null || cat "$key.pub" >>~/.ssh/authorized_keys
+    if ! grep -qx "# backtrack matrix-check" ~/.ssh/config 2>/dev/null; then
+        printf '%s\n' "# backtrack matrix-check" "Host 127.0.0.1" "    IdentityFile $key" \
+            "    IdentitiesOnly yes" "    StrictHostKeyChecking accept-new" \
+            "# end backtrack matrix-check" >>~/.ssh/config
+        chmod 600 ~/.ssh/config
+    fi
+    sources
+    adopt "$repo" || { fail "could not set up $repo"; return; }
+    back_up
+    if healthy; then
+        pass "backed up to $repo through the sandbox's ssh"
+    else
+        fail "after the backup to $repo: $(health)"
+    fi
+}
+
+# An SMB share, mounted through gvfs from inside the sandbox, as the wizard
+# mounts one.
+row_smb() {
+    rpm -q gvfs-smb >/dev/null 2>&1 || { na "no gvfs-smb on this desktop, so gvfs cannot mount an SMB share"; return; }
+    rpm -q samba >/dev/null 2>&1 || { fail "samba is not installed here to serve a share"; return; }
+    sudo -n mkdir -p "$SMB_DIR"
+    sudo -n chown "$USER:" "$SMB_DIR"
+    if command -v chcon >/dev/null && selinuxenabled 2>/dev/null; then
+        sudo -n chcon -t samba_share_t "$SMB_DIR"
+    fi
+    if ! grep -qx '\[backtrack-matrix\]' /etc/samba/smb.conf; then
+        printf '\n[backtrack-matrix]\n   path = %s\n   writable = yes\n   valid users = %s\n\n' "$SMB_DIR" "$USER" |
+            sudo -n tee -a /etc/samba/smb.conf >/dev/null
+    fi
+    printf '%s\n%s\n' "$SMB_PASSWORD" "$SMB_PASSWORD" | sudo -n smbpasswd -s -a "$USER" >/dev/null
+    sudo -n systemctl restart smb
+    printf '%s\n%s\n%s\n' "$USER" WORKGROUP "$SMB_PASSWORD" |
+        flatpak run --command=gio "$APP" mount "$SMB_URI" >/dev/null 2>&1
+    local share
+    share="/run/user/$(id -u)/gvfs/smb-share:server=localhost,share=backtrack-matrix"
+    [ -d "$share" ] || { fail "gio mount inside the sandbox did not mount $SMB_URI"; return; }
+    sources
+    adopt "$share/repo" || { fail "could not set up a repository on the share"; return; }
+    back_up
+    if healthy; then
+        pass "backed up to $SMB_URI, mounted through gvfs from the sandbox"
+    else
+        fail "after the backup to the share: $(health)"
+    fi
+}
+
+# The drive's half of the row, between the host's plugging and unplugging.
+mounted() { [ -d "/run/media/$USER/$LABEL" ]; }
+# Mounted as the desktop mounts one, through gvfs, which runs in the logged-in
+# session: GNOME does not mount a drive by itself while the screen is locked,
+# and udisks refuses a mount asked for over SSH, which is in no seat's session.
+mount_drive() {
+    within 30 test -e "/dev/disk/by-label/$LABEL" || return 1
+    within 10 mounted || gio mount -d "$(readlink -f "/dev/disk/by-label/$LABEL")" >/dev/null 2>&1
+    within 15 mounted
+}
+drive_first() {
+    mount_drive || { fail "the drive did not mount"; return 1; }
+    sources
+    adopt "/run/media/$USER/$LABEL/backtrack" || { fail "no repository on the drive"; return 1; }
+    back_up
+    healthy || { fail "the first backup to the drive: $(health)"; return 1; }
+    field last_backup >"$M/drive-last"
+    gio mount -u "/run/media/$USER/$LABEL" >/dev/null 2>&1
+}
+away() { [ "$(field reachable)" = false ]; }
+back() { [ "$(field reachable)" = true ]; }
+caught_up() { idle && [ "$(field last_backup)" -gt "$(cat "$M/drive-last")" ]; }
+drive_away() {
+    within 90 away || { fail "the daemon never saw the drive go ($(health))"; return 1; }
+    echo "  the daemon saw the drive go: $(health)"
+    echo "changed while the drive was away" >>"$M/src/note.txt"
+}
+drive_back() {
+    mount_drive || { fail "the drive did not mount the second time"; return 1; }
+    within 90 back || { fail "the daemon never saw the drive come back"; return 1; }
+    if within 120 caught_up && healthy; then
+        pass "the drive, plugged in again after the daemon started, was seen and backed up to"
+    else
+        fail "the drive came back and was not backed up to ($(health))"
+    fi
+}
+
+# S14-T8: with the destination away, a btrfs snapshot of a subvolume the user
+# owns protects the changes. A backup is made due by moving the daemon's
+# last attempt back two hours while it is stopped.
+row_btrfs() {
+    [ "$(stat -f -c %T "$HOME")" = btrfs ] || { na "home is not on btrfs"; return; }
+    local sub="$HOME/matrix/btrfs-src" state="$HOME/.var/app/$APP/data/backtrack/state.toml"
+    mkdir -p "$HOME/matrix"
+    [ -d "$sub" ] || btrfs subvolume create "$sub" >/dev/null
+    echo "snapshot me" >"$sub/matrix-check-snapshot.txt"
+    adopt "$M/btrfs-repo" || { fail "no repository to back up to"; return; }
+    include "$sub"
+    back_up
+    healthy || { fail "the first backup: $(health)"; return; }
+    flatpak kill "$APP"
+    sleep 1
+    mv "$M/btrfs-repo" "$M/btrfs-repo.away"
+    sed -i "s/^last_attempt = .*/last_attempt = $(($(date +%s) - 7200))/" "$state"
+    echo "changed while away" >>"$sub/matrix-check-snapshot.txt"
+    d GetStatus >/dev/null
+    if within 120 sh -c "[ \"\$(busctl --user call $APP.Daemon1 $OBJ $APP.Daemon1 GetStatus | awk '{print \$8}')\" -ge 1 ]"; then
+        pass "local protection took $(field local_snapshots) snapshot(s), mode $(field offline_mode), state $(field state)"
+    else
+        fail "no snapshot within 2 minutes: mode $(field offline_mode), $(health)"
+    fi
+    mv "$M/btrfs-repo.away" "$M/btrfs-repo"
+}
+
+# The daemon starts at login, from the portal's autostart entry.
+row_login() {
+    if pgrep -x -f /app/bin/backtrackd >/dev/null; then
+        pass "the Flatpak's daemon was running after logging in, pid $(pgrep -x -f /app/bin/backtrackd)"
+    else
+        fail "no Flatpak daemon after logging in"
+    fi
+}
+LIB
+}
+
+# One step of the drive's row, logged; false when it failed.
+step() {
+    local out
+    out=$(on "ROW=drive; $1" 2>&1) || true
+    printf '%s\n' "$out" | tee -a "$LOG"
+    ! grep -q '^FAIL' <<<"$out"
+}
+
+finish() {
+    set +e
+    echo
+    echo "Putting $VM back as it was…"
+    on put_back 2>&1 | tee -a "$LOG"
+    if attached; then detach; fi
+    rm -f "$IMAGE"
+    echo
+    echo "Results for $VM ($(date +%F)):"
+    grep -E '^(PASS|FAIL|N/A)' "$LOG"
+}
+
+just --justfile "$ROOT/Justfile" vm-start "$VM" | tail -1
+ssh -o BatchMode=yes "$(addr)" 'mkdir -p ~/.cache/backtrack-matrix && cat > ~/.cache/backtrack-matrix/lib.sh' < <(vm_lib)
+on 'flatpak info --user $APP >/dev/null' || { echo "The Flatpak is not installed on $VM." >&2; exit 1; }
+on save | tee -a "$LOG"
+trap finish EXIT
+
+for row in "${ROWS[@]}"; do
+    echo
+    echo "== $row" | tee -a "$LOG"
+    case "$row" in
+    drive)
+        rm -f "$IMAGE"
+        truncate -s 1G "$IMAGE"
+        mkfs.ext4 -q -F -L "$LABEL" -E root_owner="$(on 'echo "$(id -u):$(id -g)"')" "$IMAGE"
+        attach
+        step 'drive_first' || continue
+        detach
+        step 'drive_away' || continue
+        attach
+        step 'drive_back' || true
+        ;;
+    login)
+        just --justfile "$ROOT/Justfile" vm-stop "$VM" | tail -1
+        just --justfile "$ROOT/Justfile" vm-start "$VM" | tail -1
+        # Time for the session's autostart entries to have run.
+        sleep 20
+        on 'ROW=login; row_login' | tee -a "$LOG" || true
+        ;;
+    *)
+        on "ROW=$row; row_${row//-/_}" | tee -a "$LOG" || true
+        ;;
+    esac
+done
