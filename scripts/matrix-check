@@ -19,7 +19,6 @@
 
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-CONNECT=qemu:///system
 ALL=(supervisor var-app ssh smb drive btrfs login)
 
 VM="${1:?usage: scripts/matrix-check VM [ROW...]}"
@@ -34,28 +33,10 @@ LOG="$ROOT/target/matrix-check-${VM//[^A-Za-z0-9]/-}.log"
 mkdir -p "$ROOT/target"
 : >"$LOG"
 
-# The test drive's image sits beside the VM's own disk, where its QEMU can
-# read it.
-DISK_DIR="$(dirname "$(virsh -c "$CONNECT" domblklist "$VM" | awk '$1 == "vda" {print $2}')")"
-IMAGE="$DISK_DIR/backtrack-matrix-drive.img"
-DRIVE=sdz
-LABEL=BTMATRIX
-
 addr() { "$ROOT/scripts/vm" address "$VM"; }
 on() { ssh -o BatchMode=yes -o ServerAliveInterval=30 "$(addr)" "source ~/.cache/backtrack-matrix/lib.sh; $*"; }
-attached() { virsh -c "$CONNECT" domblklist "$VM" | awk '{print $1}' | grep -qx "$DRIVE"; }
-# Plugged in as a USB stick is: removable, which attach-disk cannot say, and
-# without which GNOME does not mount it and udisks asks for a password.
-attach() {
-    virsh -c "$CONNECT" attach-device "$VM" /dev/stdin --live >/dev/null <<XML
-<disk type='file' device='disk'>
-  <driver name='qemu' type='raw'/>
-  <source file='$IMAGE'/>
-  <target dev='$DRIVE' bus='usb' removable='on'/>
-</disk>
-XML
-}
-detach() { virsh -c "$CONNECT" detach-disk "$VM" "$DRIVE" --live >/dev/null; }
+attach() { "$ROOT/scripts/vm" drive-in "$VM" >/dev/null; }
+detach() { "$ROOT/scripts/vm" drive-out "$VM" >/dev/null; }
 
 # What runs on the VM, sourced by every `on`.
 vm_lib() {
@@ -355,8 +336,7 @@ finish() {
     echo
     echo "Putting $VM back as it was…"
     on put_back 2>&1 | tee -a "$LOG"
-    if attached; then detach; fi
-    rm -f "$IMAGE"
+    "$ROOT/scripts/vm" drive-out "$VM" --discard >/dev/null
     echo
     echo "Results for $VM ($(date +%F)):"
     grep -E '^(PASS|FAIL|N/A)' "$LOG"
@@ -373,9 +353,7 @@ for row in "${ROWS[@]}"; do
     echo "== $row" | tee -a "$LOG"
     case "$row" in
     drive)
-        rm -f "$IMAGE"
-        truncate -s 1G "$IMAGE"
-        mkfs.ext4 -q -F -L "$LABEL" -E root_owner="$(on 'echo "$(id -u):$(id -g)"')" "$IMAGE"
+        "$ROOT/scripts/vm" drive-out "$VM" --discard >/dev/null
         attach
         step 'drive_first' || continue
         detach

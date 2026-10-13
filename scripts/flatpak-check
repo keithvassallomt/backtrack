@@ -18,8 +18,9 @@
 #
 #   scripts/flatpak-check resume gnome   start the GNOME VM, ready for 9 and 10
 #   scripts/flatpak-check 9 … 10         the folder actions, and SMB through the wizard
-#   scripts/flatpak-check resume kde     move to the Plasma VM, ready for 11 to 14
-#   scripts/flatpak-check 11 … 14        folder actions, Restore To…, a notification, the Fix page
+#   scripts/flatpak-check resume kde     move to the Plasma VM, ready for 11 to 15
+#   scripts/flatpak-check 11 … 15        folder actions, Restore To…, a notification, the
+#                                        Fix page, a drive in the wizard
 #   scripts/flatpak-check done
 #
 # scripts/matrix-check runs the matrix rows that need nobody at the screen.
@@ -370,6 +371,19 @@ EOF
          "Did it name no dnf, apt or pacman command?"
     echo "Then: scripts/flatpak-check verify 5   (it also puts Borg back)"
     ;;
+15)
+    say "15. A USB drive in the wizard's list, on Plasma (S13-T3)"
+    "$ROOT/scripts/vm" drive-in "$(current)"
+    cat <<'EOF'
+A USB drive labelled BTMATRIX has just been plugged in.
+  a. If Plasma offers to mount it, let it.
+  b. In Backtrack: menu → Preferences → General → Run Welcome Wizard Again…,
+     Get Started, and go on to "Where should backups go?".
+  c. Close the wizard there, without choosing anything.
+EOF
+    want "Was BTMATRIX listed as an External drive, marked Detected?"
+    echo "Then: scripts/flatpak-check verify 15   (it unplugs the drive)"
+    ;;
 verify)
     case "${2:-}" in
     1)
@@ -412,7 +426,11 @@ sudo -n sed -i '/^\[backtrack-check\]$/,/^$/d' /etc/samba/smb.conf
 sudo -n systemctl restart smb
 EOF
         ;;
-    *) echo "usage: scripts/flatpak-check verify 1…11" >&2; exit 2 ;;
+    15)
+        on 'findmnt -rn -o TARGET LABEL=BTMATRIX | sed "s/^/mounted at /" || echo "not mounted"'
+        "$ROOT/scripts/vm" drive-out "$(current)" --discard
+        ;;
+    *) echo "usage: scripts/flatpak-check verify 1…11 or 15" >&2; exit 2 ;;
     esac
     ;;
 done)
