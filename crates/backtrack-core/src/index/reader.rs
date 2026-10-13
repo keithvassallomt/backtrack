@@ -637,13 +637,17 @@ impl IndexReader {
                     (SELECT kind FROM versions WHERE path_id = p.id ORDER BY last_seq DESC LIMIT 1),
                     (SELECT size FROM versions WHERE path_id = p.id ORDER BY last_seq DESC LIMIT 1)
              FROM paths p JOIN versions v ON v.path_id = p.id
-             WHERE p.id = ?1",
+             WHERE p.id = ?1
+             GROUP BY p.id",
         )?;
 
         let mut hits = Vec::with_capacity(matches.len());
         for (path_id, bm25) in matches {
-            // A matched name might have no versions only if the index is
-            // inconsistent; skip defensively.
+            // A matched name has no versions once every archive that held it
+            // has been removed (a prune, an expired local snapshot, a change
+            // of destination), which leaves the path and its name behind. The
+            // GROUP BY is what makes that no row rather than a row of NULLs:
+            // an aggregate without one always answers.
             let row = agg
                 .query_row(params![path_id], |r| {
                     Ok((
@@ -1273,6 +1277,35 @@ mod tests {
         assert_eq!(hits.len(), 1);
         assert!(hits[0].exists_today);
         assert_eq!((hits[0].first_seq, hits[0].last_seq), (1, 50));
+    }
+
+    #[test]
+    fn search_skips_a_name_whose_every_version_was_removed() {
+        // Removing archives (a prune, an expired local snapshot, a change of
+        // destination) leaves the path and its name behind with no versions.
+        // The search has to pass over it, not fail for every name it matches.
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("index.db");
+        {
+            let mut w = IndexWriter::open(&path).unwrap();
+            w.ingest_archive(
+                &meta("a1", 1_000),
+                Repo::Primary,
+                vec![dir("home"), file("home/note.txt", 1)].into_iter(),
+            )
+            .unwrap();
+            w.ingest_archive(
+                &meta("a2", 2_000),
+                Repo::Primary,
+                vec![dir("home"), file("home/notes.txt", 1)].into_iter(),
+            )
+            .unwrap();
+            w.remove_archives(&[1]).unwrap();
+        }
+        let r = IndexReader::open(&path).unwrap();
+        let hits = r.search("note*").unwrap();
+        let paths: Vec<&str> = hits.iter().map(|h| h.path.as_str()).collect();
+        assert_eq!(paths, vec!["home/notes.txt"]);
     }
 
     #[test]
