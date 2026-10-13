@@ -61,6 +61,10 @@ pub enum EngineError {
     /// Something given as a recovery key that is not one.
     #[error("that file is not a Backtrack recovery key")]
     NotARecoveryKey,
+    /// The keyring stayed locked when a passphrase was to be saved in it: its
+    /// unlock prompt was dismissed, or refused.
+    #[error("the keyring stayed locked, so the passphrase was not saved")]
+    KeyringLocked,
     /// A failure on this machine rather than at the repository — a restore that
     /// could not read its staging directory, say.
     ///
@@ -166,7 +170,9 @@ impl EngineError {
             EngineError::Cancelled => None,
             // A mistake in what the person offered, answered in the dialog
             // they offered it from.
-            EngineError::KeyForAnotherRepository | EngineError::NotARecoveryKey => None,
+            EngineError::KeyForAnotherRepository
+            | EngineError::NotARecoveryKey
+            | EngineError::KeyringLocked => None,
             // A restore that could not write to the user's disk is a failed
             // restore, not an unhealthy backup: the banner is about whether
             // the machine is being protected, and it still is.
@@ -203,6 +209,7 @@ mod tests {
             EngineError::Cancelled,
             EngineError::KeyForAnotherRepository,
             EngineError::NotARecoveryKey,
+            EngineError::KeyringLocked,
         ]
     }
 

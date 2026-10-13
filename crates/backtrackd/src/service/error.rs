@@ -57,6 +57,8 @@ pub enum DaemonError {
     KeyForAnotherRepository(String),
     /// Something offered as a recovery key that is not one.
     NotARecoveryKey(String),
+    /// The keyring stayed locked when a passphrase was to be saved.
+    KeyringLocked(String),
 
     /// No job with that id.
     NoSuchJob(String),
@@ -114,6 +116,7 @@ impl From<EngineError> for DaemonError {
             EngineError::Cancelled => DaemonError::Cancelled(message),
             EngineError::KeyForAnotherRepository => DaemonError::KeyForAnotherRepository(message),
             EngineError::NotARecoveryKey => DaemonError::NotARecoveryKey(message),
+            EngineError::KeyringLocked => DaemonError::KeyringLocked(message),
             EngineError::Local(_) => DaemonError::RestoreFailed(message),
         }
     }
@@ -172,6 +175,7 @@ mod tests {
             EngineError::Cancelled,
             EngineError::KeyForAnotherRepository,
             EngineError::NotARecoveryKey,
+            EngineError::KeyringLocked,
         ]
     }
 

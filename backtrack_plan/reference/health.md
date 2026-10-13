@@ -37,7 +37,7 @@ resolution action. (Typed errors in core → D-Bus error names → this table.)
 
 | Failure | Detection | State | User-facing copy (banner) | Resolution flow |
 |---|---|---|---|---|
-| Passphrase missing (keyring reset/locked) | Secret Service lookup fails | `BROKEN` | "Backtrack needs your backup passphrase again." | Dialog: enter passphrase → re-store in keyring; link to recovery-key help |
+| Passphrase missing (keyring reset/locked) | Secret Service lookup fails, or finds the item locked (never asked for its secret then: KWallet answers that with an empty one) | `BROKEN` | "Backtrack needs your backup passphrase again." | Dialog: enter passphrase → re-store in keyring; link to recovery-key help |
 | Wrong passphrase (repo key changed) | borg exit code / error msg | `BROKEN` | "The saved passphrase no longer matches the backup." | Same dialog + "restore from recovery key" path |
 | Destination credentials expired (SMB/SSH auth) | mount/ssh failure distinct from unreachable | `BROKEN` | "Backtrack can't sign in to nas.local." | Re-auth dialog for that destination |
 | Destination not writable | Borg's permission or read-only error on the repository (`[Errno 13]`, `[Errno 30]`), distinct from ssh's refusal | `BROKEN` | "Backtrack can't write to WD Passport." | Says why for the kind of place (permissions changed or mounted read-only; for a network share, sign in again), then tries again |

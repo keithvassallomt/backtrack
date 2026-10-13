@@ -278,6 +278,10 @@ fn refusal(name: &str) -> Option<&'static str> {
         "PassphraseWrong" => "That passphrase does not open your backups.",
         "KeyForAnotherRepository" => "That recovery key belongs to a different backup.",
         "NotARecoveryKey" => "That file is not a Backtrack recovery key.",
+        "KeyringLocked" => {
+            "The keyring stayed locked, so the passphrase could not be remembered. Try \
+             again, and unlock the keyring when it asks."
+        }
         "RepoUnreachable" => {
             "Backtrack could not reach your backups to check the passphrase. Try again once \
              they are reachable."

@@ -386,6 +386,9 @@ pub fn explain(error: &zbus::Error) -> String {
         }
         "DestinationFull" => "There is not enough space at that location.".to_string(),
         "DestinationUnwritable" => "Backtrack is not allowed to write there.".to_string(),
+        "KeyringLocked" => "The keyring stayed locked, so the passphrase could not be \
+                            remembered. Try again, and unlock the keyring when it asks."
+            .to_string(),
         _ if !message.is_empty() => capitalise(&message),
         _ => "Something went wrong. The logs say what.".to_string(),
     }

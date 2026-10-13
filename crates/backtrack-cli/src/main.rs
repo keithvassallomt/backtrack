@@ -76,6 +76,7 @@ fn explain(name: &str, message: &str) -> String {
         ),
         "DestinationFull" => Some("Free space on the destination, or run `backtrack compact`."),
         "LockedByOther" => Some("Another Borg process holds the repository. Try again shortly."),
+        "KeyringLocked" => Some("Unlock the keyring, then try again."),
         "RepoCorrupt" => Some("Run `backtrack verify` to see the extent of the damage."),
         "NotPausable" => Some("Only a full restore can be paused. Cancel it instead."),
         _ => None,

@@ -116,9 +116,9 @@ keyring is "Backtrack needs your backup passphrase again.".
 - The keyring store checks the item's `Locked` property before reading it,
   and treats a locked item, and an empty secret from any service, as no
   passphrase (`PassphraseMissing`). A Backtrack passphrase is never empty.
-- While the passphrase is missing, scheduled work does not keep asking the
-  keyring; it asks again when the person acts on the banner, or after the
-  next login.
+- Scheduled work keeps looking, through the item's `Locked` property alone,
+  so backups carry on by themselves once the keyring is unlocked, and a
+  locked item is never asked for its secret.
 - The Fix flow's re-store works on a locked keyring: the Secret Service's own
   unlock prompt appears, and the passphrase is saved once it is unlocked.
 
