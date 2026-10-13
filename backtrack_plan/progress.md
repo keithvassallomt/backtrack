@@ -172,7 +172,7 @@ done; Claude removes ticked items.
 - [x] S14-T7 Restart the daemon after a failure, as the unit does
 - [x] S14-T8 Btrfs snapshots inside the Flatpak (bundled btrfs-progs)
 - [/] S14-T9 Publish on FriendlyHub
-- [ ] S14-T10 Status line in GNOME's Background Apps
+- [/] S14-T10 Status line in GNOME's Background Apps
 
 ## Blocked
 

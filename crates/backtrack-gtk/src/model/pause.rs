@@ -21,10 +21,7 @@ pub const OPTIONS: [(&str, &str); 3] = [
     ("indefinite", "Until I resume"),
 ];
 
-/// A pause this far ahead is not a date anybody wants read back to them — it
-/// is what "until I resume" has to be expressed as, because the interface
-/// deliberately has no way to say "off forever".
-pub const INDEFINITE_PAUSE_THRESHOLD: u64 = 365 * 86_400;
+pub use backtrack_core::status_line::INDEFINITE_PAUSE_THRESHOLD;
 
 /// How long "For 1 hour" actually lasts.
 ///

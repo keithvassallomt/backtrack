@@ -56,6 +56,52 @@ pub fn start_tray() {
     }
 }
 
+/// Inside a Flatpak, keep the line GNOME's Background Apps shows under
+/// Backtrack in step with what the daemon is doing (S14-T10): the tray's
+/// first line, sent through the Background portal's `SetStatus` whenever it
+/// changes. Outside one there is nothing to send it to, since GNOME lists
+/// only Flatpak instances there.
+pub fn publish_status_line(shared: &Arc<Shared>) {
+    if !ashpd::is_sandboxed() {
+        return;
+    }
+    let mut line = shared.status_line();
+    tokio::spawn(async move {
+        let portal = match ashpd::desktop::background::BackgroundProxy::new().await {
+            Ok(portal) => portal,
+            Err(error) => {
+                warn!(%error, "the Background portal is not there to show a status line");
+                return;
+            }
+        };
+        // Version 2 added SetStatus. An older portal shows no line, which is
+        // all there is to it.
+        if portal.version() < 2 {
+            debug!(
+                version = portal.version(),
+                "the Background portal cannot show a status line"
+            );
+            return;
+        }
+        loop {
+            let message = line.borrow_and_update().clone();
+            if !message.is_empty() {
+                let options =
+                    ashpd::desktop::background::SetStatusOptions::default().set_message(&message);
+                match portal.set_status(options).await {
+                    Ok(()) => debug!(message, "status line sent to the Background portal"),
+                    Err(error) => {
+                        warn!(%error, "the Background portal did not take the status line")
+                    }
+                }
+            }
+            if line.changed().await.is_err() {
+                return;
+            }
+        }
+    });
+}
+
 /// Whether `XDG_CURRENT_DESKTOP` (a colon-separated list) names GNOME.
 fn on_gnome(desktop: Option<&str>) -> bool {
     desktop.is_some_and(|desktop| {

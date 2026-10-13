@@ -13,6 +13,9 @@ workspace = true
 [features]
 # Enables tests that shell out to a real `borg` (run via `just test-integration`).
 integration = []
+# The status line (`status_line`), whose dates go through GLib: the tray and
+# the daemon turn it on, the command line does not.
+glib = ["dep:glib"]
 
 [dependencies]
 tracing.workspace = true
@@ -31,6 +34,7 @@ async-trait.workspace = true
 futures.workspace = true
 tokio-util.workspace = true
 oo7.workspace = true
+glib = { version = "0.22", optional = true }
 
 [dev-dependencies]
 tempfile = "3"

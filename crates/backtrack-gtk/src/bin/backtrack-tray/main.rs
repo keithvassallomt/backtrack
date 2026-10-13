@@ -13,13 +13,10 @@
 //! A program of its own rather than a mode of the window, because it runs for
 //! the whole session: started, this release build peaks at 9 MB, and the
 //! window's, which links GTK, at 60 to 95 MB before it opens anything
-//! (measured on Arch, 2026-10-06). It shares two GLib modules with the
-//! window, included by path, and links GLib and no GTK.
+//! (measured on Arch, 2026-10-06). It shares the window's pause module,
+//! included by path, and its status line with the daemon through
+//! `backtrack_core::status_line`; it links GLib and no GTK.
 
-#[path = "../../model/format.rs"]
-// The window uses more of it than the tray does.
-#[allow(dead_code)]
-mod format;
 #[path = "../../model/pause.rs"]
 mod pause;
 

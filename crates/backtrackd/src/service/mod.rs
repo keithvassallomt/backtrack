@@ -119,6 +119,11 @@ pub struct Shared {
     /// fixed. See [`update_health`] for why only that clears it.
     latched: Mutex<Option<HealthFailure>>,
     destination_reachable: Mutex<bool>,
+    /// What Backtrack is doing, in one line, as last worked out: the tray's
+    /// first line, which the Flatpak's daemon also shows in GNOME's
+    /// Background Apps (S14-T10). A watch, so whoever shows it hears only of
+    /// a line that differs from the last one.
+    status_line: tokio::sync::watch::Sender<String>,
     /// Bookkeeping that has to survive a restart: the pause, the attempt clock,
     /// the compaction clock. See [`backtrack_core::state`].
     persisted: Mutex<RuntimeState>,
@@ -328,6 +333,7 @@ impl Shared {
             last_backup: Mutex::new(None),
             latched: Mutex::new(None),
             destination_reachable: Mutex::new(true),
+            status_line: tokio::sync::watch::channel(String::new()).0,
             persisted: Mutex::new(RuntimeState::default()),
             state_path,
             waker: Mutex::new(None),
@@ -776,6 +782,57 @@ impl Shared {
     }
 
     /// A handle that makes the signal fan-out re-evaluate health.
+    /// `GetStatus` at `now`, without what local protection holds, which
+    /// takes the catalogue to count: everything else is a field read.
+    fn status_at(&self, now: SystemTime) -> Status {
+        let paused_until = self.pause.lock().unwrap().until(now);
+        // Reported from the same facts the scheduler decides on — a next-backup
+        // time the schedule would not honour is worse than none at all.
+        let schedule = self.schedule_input();
+        let next = if paused_until.is_some() || !schedule.configured {
+            None
+        } else {
+            next_due(schedule.interval, schedule.last_attempt, now)
+        };
+        let health = self.health();
+        Status {
+            state: health.state.as_str().to_string(),
+            last_backup: to_epoch(*self.last_backup.lock().unwrap()),
+            next_backup: to_epoch(next),
+            destination_reachable: self.destination_reachable(),
+            spool_bytes: 0,
+            offline_mode: String::new(),
+            local_snapshots: 0,
+            expirable_snapshots: 0,
+            active_job: self.active_job(),
+            paused_until: to_epoch(paused_until),
+            configured: self.config().is_configured(),
+            reason: health.reason_str().to_string(),
+            since: self.state_since(health, now),
+            recovery_job: self.recovery_job().unwrap_or(0),
+        }
+    }
+
+    /// Work the status line out again, and tell whoever shows it if it now
+    /// says something else.
+    pub fn update_status_line(&self) {
+        let now = SystemTime::now();
+        let epoch = to_epoch(Some(now)) as i64;
+        let line = backtrack_core::status_line::local_line(&self.status_at(now), epoch);
+        self.status_line.send_if_modified(|shown| {
+            if *shown == line {
+                return false;
+            }
+            *shown = line;
+            true
+        });
+    }
+
+    /// The status line as it changes, starting with what it says now.
+    pub fn status_line(&self) -> tokio::sync::watch::Receiver<String> {
+        self.status_line.subscribe()
+    }
+
     pub fn health_waker(&self) -> Arc<Notify> {
         Arc::clone(&self.health_changed)
     }
@@ -2343,35 +2400,13 @@ impl Daemon1 {
 
     /// The overall state, and the handful of facts the UI shows beside it.
     async fn get_status(&self) -> Result<Status> {
-        let now = SystemTime::now();
-        let config = self.shared.config();
-        let last_backup = *self.shared.last_backup.lock().unwrap();
-        let paused_until = self.shared.pause.lock().unwrap().until(now);
-        // Reported from the same facts the scheduler decides on — a next-backup
-        // time the schedule would not honour is worse than none at all.
-        let schedule = self.shared.schedule_input();
-        let next = if paused_until.is_some() || !schedule.configured {
-            None
-        } else {
-            next_due(schedule.interval, schedule.last_attempt, now)
-        };
         let local = self.shared.local_protection().await;
-        let health = self.shared.health();
         Ok(Status {
-            state: health.state.as_str().to_string(),
-            last_backup: to_epoch(last_backup),
-            next_backup: to_epoch(next),
-            destination_reachable: self.shared.destination_reachable(),
             spool_bytes: local.bytes,
             offline_mode: local.mode,
             local_snapshots: local.snapshots,
             expirable_snapshots: local.expirable,
-            active_job: self.shared.active_job(),
-            paused_until: to_epoch(paused_until),
-            configured: config.is_configured(),
-            reason: health.reason_str().to_string(),
-            since: self.shared.state_since(health, now),
-            recovery_job: self.shared.recovery_job().unwrap_or(0),
+            ..self.shared.status_at(SystemTime::now())
         })
     }
 
@@ -3500,6 +3535,7 @@ pub async fn fan_out_signals(shared: Arc<Shared>, emitter: SignalEmitter<'static
         .reassess(SystemTime::now())
         .unwrap_or_else(|| shared.health());
     announce(&emitter, first).await;
+    shared.update_status_line();
 
     loop {
         // Three sources, one destination. Jobs are the usual reason health
@@ -3521,10 +3557,13 @@ pub async fn fan_out_signals(shared: Arc<Shared>, emitter: SignalEmitter<'static
             _ = tick.tick() => None,
         };
 
+        // The minute's tick is also what moves "today" to "yesterday" in the
+        // status line at midnight.
         let Some(update) = update else {
             if let Some(changed) = shared.reassess(SystemTime::now()) {
                 announce(&emitter, changed).await;
             }
+            shared.update_status_line();
             continue;
         };
 
@@ -3596,6 +3635,7 @@ pub async fn fan_out_signals(shared: Arc<Shared>, emitter: SignalEmitter<'static
                 if let Some(changed) = shared.reassess(SystemTime::now()) {
                     announce(&emitter, changed).await;
                 }
+                shared.update_status_line();
             }
         }
     }
@@ -3888,6 +3928,33 @@ mod tests {
             IndexWriter::open(&dir.join("index.db")).unwrap(),
         )));
         shared
+    }
+
+    #[test]
+    fn the_status_line_is_announced_only_when_it_says_something_else() {
+        // S14-T10: the portal hears of a line once, not on every reassessment.
+        let dir = tempfile::tempdir().unwrap();
+        let shared = configured(dir.path());
+        let mut line = shared.status_line();
+
+        shared.update_status_line();
+        assert!(line.has_changed().unwrap());
+        assert_eq!(*line.borrow_and_update(), "No backups yet");
+
+        shared.update_status_line();
+        assert!(
+            !line.has_changed().unwrap(),
+            "nothing changed, so nothing is sent"
+        );
+
+        shared.record_backup_success(JobKind::Backup);
+        shared.update_status_line();
+        assert!(line.has_changed().unwrap());
+        assert!(
+            line.borrow_and_update().starts_with("Last backup: today "),
+            "{}",
+            *line.borrow()
+        );
     }
 
     /// A recovery with folders left, as the record on disk says it.

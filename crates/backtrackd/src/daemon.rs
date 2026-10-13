@@ -267,6 +267,7 @@ pub async fn run() -> Result<Outcome, StartupError> {
     // disabled by hand drifts back to what the person chose in the window.
     crate::background::apply(&connection, shared.wants_background()).await;
     crate::background::start_tray();
+    crate::background::publish_status_line(&shared);
     let leave = Arc::new(tokio::sync::Notify::new());
     tokio::spawn(crate::background::watch_for_idle(
         Arc::clone(&shared),

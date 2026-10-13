@@ -11,7 +11,7 @@ repository.workspace = true
 workspace = true
 
 [dependencies]
-backtrack-core.workspace = true
+backtrack-core = { workspace = true, features = ["glib"] }
 gtk4.workspace = true
 libadwaita.workspace = true
 # The same GLib `gtk4` re-exports, named directly by the modules the tray
