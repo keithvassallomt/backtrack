@@ -52,12 +52,7 @@ checked again on the same VM before the run went on.
   installed, and its instructions button looked like Install; on Plasma the
   header showed the logo twice (15edada).
 
-### Found and open
-
-- S14-T10 (#104): a status line under Backtrack in Background Apps, a
-  suggestion from the run.
-
-### Found, and fixed since (2026-10-13)
+### Found, and done since (2026-10-13)
 
 Checked again in the Flatpak: S10-T8 on Plasma, S10-T9 on both VMs.
 
@@ -69,3 +64,6 @@ Checked again in the Flatpak: S10-T8 on Plasma, S10-T9 on both VMs.
   matches the backup."; it now reads "Backtrack needs your backup
   passphrase again.", recovers by itself once the keyring is open, and the
   fix unlocks the keyring to save the passphrase (633f3fe).
+- S14-T10 (#104), a suggestion from the run: Background Apps shows a line
+  under Backtrack, the tray's first line, kept current by the daemon
+  (d87c1ba). Checked on GNOME through a backup and a failure.
