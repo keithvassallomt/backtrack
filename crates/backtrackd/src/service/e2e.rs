@@ -1866,9 +1866,10 @@ fn walk(root: &std::path::Path) -> Vec<std::path::PathBuf> {
     found
 }
 
-/// S10-T4, the sign-in row, and the DoD's "make destination unwritable": a
-/// destination that is there and refuses to be written to stops backups with
-/// the banner that says so, and trying again once it accepts them clears it.
+/// The DoD's "make destination unwritable", and S10-T8: a destination that is
+/// there and refuses to be written to stops backups with the banner that says
+/// so, which is not the sign-in one, and trying again once it accepts them
+/// clears it.
 #[tokio::test]
 async fn a_destination_that_refuses_writes_is_broken_until_it_takes_them_again() {
     if rustix::process::geteuid().is_root() {
@@ -1891,9 +1892,9 @@ async fn a_destination_that_refuses_writes_is_broken_until_it_takes_them_again()
     writable(&repo, true);
     assert_eq!(
         failed_with(&ended),
-        Some(backtrack_core::engine::EngineError::AuthFailed)
+        Some(backtrack_core::engine::EngineError::DestinationUnwritable)
     );
-    assert_eq!(health(&shared), ("BROKEN", "auth-failed"));
+    assert_eq!(health(&shared), ("BROKEN", "destination-unwritable"));
 
     // "Try Again", once whoever changed it has changed it back.
     let job = daemon.backup_now().await.unwrap();

@@ -34,6 +34,10 @@ pub enum EngineError {
     PassphraseWrong,
     #[error("authentication to the destination failed")]
     AuthFailed,
+    /// The destination is there, and the operating system will not let Borg
+    /// write to it: its permissions changed, or it is mounted read-only.
+    #[error("the backup destination cannot be written to")]
+    DestinationUnwritable,
     #[error("the backup destination is full")]
     DestinationFull,
     #[error("not enough space on this computer")]
@@ -79,6 +83,8 @@ pub enum HealthFailure {
     PassphraseWrong,
     /// "Destination credentials expired (SMB/SSH auth)"
     AuthExpired,
+    /// "Destination not writable"
+    DestinationUnwritable,
     /// "Destination full"
     DestinationFull,
     /// "Local disk full (spool/staging)"
@@ -91,8 +97,8 @@ pub enum HealthFailure {
 
 impl HealthFailure {
     /// The catalogue's banner copy for this row, word for word from
-    /// health.md, with `destination` naming the place for the one row that
-    /// names one.
+    /// health.md, with `destination` naming the place for the rows that name
+    /// one.
     ///
     /// Here rather than in a client so that the notification and the banner
     /// say the same words: they are two views of one row, and a person who
@@ -106,6 +112,9 @@ impl HealthFailure {
                 "The saved passphrase no longer matches the backup.".to_string()
             }
             HealthFailure::AuthExpired => format!("Backtrack can't sign in to {destination}."),
+            HealthFailure::DestinationUnwritable => {
+                format!("Backtrack can't write to {destination}.")
+            }
             HealthFailure::DestinationFull => "The backup drive is full.".to_string(),
             HealthFailure::LocalDiskFull => {
                 "Not enough space on this computer to keep protecting changes.".to_string()
@@ -115,11 +124,21 @@ impl HealthFailure {
         }
     }
 
+    /// Whether [`HealthFailure::copy`] names the destination, so that a client
+    /// knows to find out what it is called.
+    pub fn names_destination(self) -> bool {
+        matches!(
+            self,
+            HealthFailure::AuthExpired | HealthFailure::DestinationUnwritable
+        )
+    }
+
     /// Every engine-relevant catalogue row, for the coverage test.
     pub const ALL: &'static [HealthFailure] = &[
         HealthFailure::PassphraseMissing,
         HealthFailure::PassphraseWrong,
         HealthFailure::AuthExpired,
+        HealthFailure::DestinationUnwritable,
         HealthFailure::DestinationFull,
         HealthFailure::LocalDiskFull,
         HealthFailure::RepoCorrupt,
@@ -136,6 +155,7 @@ impl EngineError {
             EngineError::PassphraseMissing => Some(HealthFailure::PassphraseMissing),
             EngineError::PassphraseWrong => Some(HealthFailure::PassphraseWrong),
             EngineError::AuthFailed => Some(HealthFailure::AuthExpired),
+            EngineError::DestinationUnwritable => Some(HealthFailure::DestinationUnwritable),
             EngineError::DestinationFull => Some(HealthFailure::DestinationFull),
             EngineError::LocalDiskFull => Some(HealthFailure::LocalDiskFull),
             EngineError::RepoCorrupt => Some(HealthFailure::RepoCorrupt),
@@ -167,6 +187,7 @@ mod tests {
             EngineError::PassphraseMissing,
             EngineError::PassphraseWrong,
             EngineError::AuthFailed,
+            EngineError::DestinationUnwritable,
             EngineError::DestinationFull,
             EngineError::LocalDiskFull,
             EngineError::RepoCorrupt,

@@ -140,9 +140,11 @@ pub enum Reason {
     PassphraseMissing,
     /// Catalogue: "Wrong passphrase (repo key changed)".
     PassphraseWrong,
-    /// Catalogue: "Destination credentials expired (SMB/SSH auth)", which
-    /// also covers a destination that is there and refuses to be written to.
+    /// Catalogue: "Destination credentials expired (SMB/SSH auth)".
     AuthFailed,
+    /// Catalogue: "Destination not writable": the destination is there, and
+    /// its permissions or a read-only mount refuse the write.
+    DestinationUnwritable,
     /// Catalogue: "Destination full".
     DestinationFull,
     /// Catalogue: "Local disk full (spool/staging)", DEGRADED while backups
@@ -167,10 +169,11 @@ pub enum Reason {
 
 impl Reason {
     /// Every reason, for exhaustiveness tests on both sides of the bus.
-    pub const ALL: [Reason; 12] = [
+    pub const ALL: [Reason; 13] = [
         Reason::PassphraseMissing,
         Reason::PassphraseWrong,
         Reason::AuthFailed,
+        Reason::DestinationUnwritable,
         Reason::DestinationFull,
         Reason::LocalDiskFull,
         Reason::RepoCorrupt,
@@ -188,6 +191,7 @@ impl Reason {
             Reason::PassphraseMissing => "passphrase-missing",
             Reason::PassphraseWrong => "passphrase-wrong",
             Reason::AuthFailed => "auth-failed",
+            Reason::DestinationUnwritable => "destination-unwritable",
             Reason::DestinationFull => "destination-full",
             Reason::LocalDiskFull => "local-disk-full",
             Reason::RepoCorrupt => "repo-corrupt",
@@ -224,6 +228,7 @@ impl From<crate::engine::HealthFailure> for Reason {
             HealthFailure::PassphraseMissing => Reason::PassphraseMissing,
             HealthFailure::PassphraseWrong => Reason::PassphraseWrong,
             HealthFailure::AuthExpired => Reason::AuthFailed,
+            HealthFailure::DestinationUnwritable => Reason::DestinationUnwritable,
             HealthFailure::DestinationFull => Reason::DestinationFull,
             HealthFailure::LocalDiskFull => Reason::LocalDiskFull,
             HealthFailure::RepoCorrupt => Reason::RepoCorrupt,

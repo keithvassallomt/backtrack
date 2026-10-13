@@ -13,6 +13,7 @@ mod passphrase;
 mod repair;
 mod signin;
 mod space;
+mod unwritable;
 
 use backtrack_core::config::Config;
 use backtrack_core::dbus::Reason;
@@ -77,6 +78,7 @@ pub fn open(context: &Context, reason: Reason) {
         Reason::PassphraseMissing => passphrase::present(context, passphrase::Why::Missing),
         Reason::PassphraseWrong => passphrase::present(context, passphrase::Why::Wrong),
         Reason::AuthFailed => signin::present(context),
+        Reason::DestinationUnwritable => unwritable::present(context),
         Reason::DestinationFull => space::destination(context),
         Reason::LocalDiskFull => space::local(context),
         Reason::RepoCorrupt => repair::present(context),

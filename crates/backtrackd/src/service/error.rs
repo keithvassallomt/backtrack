@@ -35,6 +35,8 @@ pub enum DaemonError {
     PassphraseWrong(String),
     /// The destination refused our credentials (distinct from unreachable).
     AuthFailed(String),
+    /// The destination is there and refuses to be written to.
+    DestinationUnwritable(String),
     /// The destination cannot be reached right now.
     RepoUnreachable(String),
     /// The destination is out of space.
@@ -101,6 +103,7 @@ impl From<EngineError> for DaemonError {
             EngineError::PassphraseMissing => DaemonError::PassphraseMissing(message),
             EngineError::PassphraseWrong => DaemonError::PassphraseWrong(message),
             EngineError::AuthFailed => DaemonError::AuthFailed(message),
+            EngineError::DestinationUnwritable => DaemonError::DestinationUnwritable(message),
             EngineError::RepoUnreachable => DaemonError::RepoUnreachable(message),
             EngineError::DestinationFull => DaemonError::DestinationFull(message),
             EngineError::LocalDiskFull => DaemonError::LocalDiskFull(message),
@@ -153,6 +156,7 @@ mod tests {
             EngineError::PassphraseMissing,
             EngineError::PassphraseWrong,
             EngineError::AuthFailed,
+            EngineError::DestinationUnwritable,
             EngineError::DestinationFull,
             EngineError::LocalDiskFull,
             EngineError::RepoCorrupt,

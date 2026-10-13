@@ -71,6 +71,9 @@ fn explain(name: &str, message: &str) -> String {
             Some("The stored passphrase no longer opens this repository. Re-enter it, or use your recovery key.")
         }
         "RepoUnreachable" => Some("The destination is not reachable right now."),
+        "DestinationUnwritable" => Some(
+            "The destination's permissions, or a read-only mount, refuse the write. Make it writable again, or choose another destination.",
+        ),
         "DestinationFull" => Some("Free space on the destination, or run `backtrack compact`."),
         "LockedByOther" => Some("Another Borg process holds the repository. Try again shortly."),
         "RepoCorrupt" => Some("Run `backtrack verify` to see the extent of the damage."),

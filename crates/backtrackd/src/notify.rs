@@ -124,6 +124,9 @@ pub fn alert(alert: Alert, destination: &str) -> Note {
                 HealthFailure::AuthExpired => {
                     "Backups are paused until Backtrack can sign in again."
                 }
+                HealthFailure::DestinationUnwritable => {
+                    "Backups are paused until Backtrack is allowed to write there again."
+                }
                 HealthFailure::DestinationFull => {
                     "Free up space on it, keep fewer old backups, or choose somewhere else."
                 }

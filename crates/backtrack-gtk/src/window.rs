@@ -735,9 +735,12 @@ impl Window {
         ui::spawn(async move {
             match proxy.get_status().await {
                 Ok(status) => {
-                    // Only the sign-in banner names the destination, so only
-                    // then is it worth asking for.
-                    if status.reason == Reason::AuthFailed.as_str() {
+                    // Only some banners name the destination, so only then is
+                    // it worth asking for.
+                    if Reason::parse(&status.reason)
+                        .and_then(Reason::failure)
+                        .is_some_and(|failure| failure.names_destination())
+                    {
                         if let Ok(text) = proxy.get_config().await {
                             if let Ok((config, _)) = backtrack_core::config::Config::parse(&text) {
                                 *this.destination.borrow_mut() = backtrack_core::destination::name(

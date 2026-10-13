@@ -167,6 +167,7 @@ fn catalogue_row(reason: Reason) -> Option<&'static str> {
         Reason::PassphraseMissing => "Passphrase missing (keyring reset/locked)",
         Reason::PassphraseWrong => "Wrong passphrase (repo key changed)",
         Reason::AuthFailed => "Destination credentials expired (SMB/SSH auth)",
+        Reason::DestinationUnwritable => "Destination not writable",
         Reason::DestinationFull => "Destination full",
         Reason::LocalDiskFull => "Local disk full (spool/staging)",
         Reason::RepoCorrupt => "Repo corruption",

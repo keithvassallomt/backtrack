@@ -385,6 +385,7 @@ pub fn explain(error: &zbus::Error) -> String {
             "Borg, the backup engine Backtrack uses, is not installed on this computer.".to_string()
         }
         "DestinationFull" => "There is not enough space at that location.".to_string(),
+        "DestinationUnwritable" => "Backtrack is not allowed to write there.".to_string(),
         _ if !message.is_empty() => capitalise(&message),
         _ => "Something went wrong. The logs say what.".to_string(),
     }
