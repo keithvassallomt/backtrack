@@ -262,6 +262,28 @@ FriendlyHub set in `~/Downloads` (S14-T9's checks pass on it); running it again
 straight after skips every publishing step; a run with one credential removed
 stops at the preflight, having published nothing.
 
+### S13-T10 — Desktops without gvfs: drives and SMB shares in the wizard
+Found in the Flatpak hand checks on Plasma (2026-10-13), which has no gvfs.
+The wizard's drive list comes from GIO's volume monitor, which knows a mount
+is a removable drive only through the host's gvfs-udisks2: a USB drive
+Plasma had mounted under `/run/media` was shown as "External drive — Plug in
+a drive to use it", greyed out. An `smb://` address cannot be mounted at all
+without gvfs-smb. The native packages behave the same on such a desktop.
+- The drive list also takes the mounts under `/run/media/<user>/` and
+  `/media/<user>/`, where udisks mounts removable media, when GIO has no
+  drive for them. GIO still reports mounts coming and going without gvfs.
+- A network address on a desktop without the gvfs backend for it says so in
+  the wizard, with what to install, and that a share mounted another way can
+  be chosen as a folder, rather than GIO's own error.
+- The native packages recommend gvfs-smb (a weak dependency), and
+  `packaging/flatpak/FRIENDLYHUB.md` says what the Flatpak needs from a
+  desktop without gvfs.
+
+**Accept:** on the Plasma VM without gvfs, from the Flatpak, a USB drive
+Plasma mounted is listed as an External drive, can be chosen, and is backed
+up to; an `smb://` address explains what is missing, and mounts once
+gvfs-smb is installed. On GNOME, unchanged.
+
 ## Definition of Done
 All four install paths proven on fresh systems; portal matrix green; `just
 release` has taken a release candidate to every channel that takes

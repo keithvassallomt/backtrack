@@ -161,6 +161,7 @@ done; Claude removes ticked items.
 - [x] S13-T7 Application ID tools.backtrack.Backtrack, daemon names under it
 - [/] S13-T8 AUR packages (app, nautilus, dolphin)
 - [/] S13-T9 just release: from tag to every channel in one command
+- [ ] S13-T10 Desktops without gvfs: drives and SMB shares in the wizard
 
 ## Stage 14 — Flatpak as a first-class build ([stage file](stages/stage-14-flatpak-first-class.md))
 - [x] S14-T1 Daemon activation inside the Flatpak

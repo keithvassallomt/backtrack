@@ -82,11 +82,11 @@ adopt() {
     d SetupRepo ss "$1" "$PASSPHRASE" >/dev/null
 }
 include() { d SetConfig ss backup.include "[\"$1\"]" >/dev/null; }
-# A small folder to back up.
+# A small folder to back up, outside ~/.cache, which Backtrack leaves out.
 sources() {
-    mkdir -p "$M/src"
-    echo "matrix check $(date +%s)" >"$M/src/note.txt"
-    include "$M/src"
+    mkdir -p "$HOME/matrix/src"
+    echo "matrix check $(date +%s)" >"$HOME/matrix/src/note.txt"
+    include "$HOME/matrix/src"
 }
 back_up() { d BackupNow >/dev/null && sleep 2 && within 300 idle; }
 found() { d SearchFiles s "$1" | grep -q "$1"; }
@@ -121,6 +121,9 @@ put_back() {
         secret-tool clear app-id "$APP" repo-id "$made" 2>/dev/null
     done
     flatpak run --command=gio "$APP" mount -u "$SMB_URI" 2>/dev/null
+    # Before the host unplugs the drive: a filesystem unplugged while mounted
+    # shuts down, and its mount stays behind, in the way of the next one.
+    if mounted; then unmount_drive; fi
     if [ -f ~/.ssh/config ]; then
         sed -i '/^# backtrack matrix-check$/,/^# end backtrack matrix-check$/d' ~/.ssh/config
     fi
@@ -194,7 +197,7 @@ row_ssh() {
     sources
     adopt "$repo" || { fail "could not set up $repo"; return; }
     back_up
-    if healthy; then
+    if healthy && within 60 found note.txt; then
         pass "backed up to $repo through the sandbox's ssh"
     else
         fail "after the backup to $repo: $(health)"
@@ -225,7 +228,7 @@ row_smb() {
     sources
     adopt "$share/repo" || { fail "could not set up a repository on the share"; return; }
     back_up
-    if healthy; then
+    if healthy && within 60 found note.txt; then
         pass "backed up to $SMB_URI, mounted through gvfs from the sandbox"
     else
         fail "after the backup to the share: $(health)"
@@ -256,6 +259,7 @@ unmount_drive() {
         gio mount -u "/run/media/$USER/$LABEL" >/dev/null 2>&1
     else
         sudo -n umount "/run/media/$USER/$LABEL"
+        sudo -n rmdir "/run/media/$USER/$LABEL"
     fi
 }
 drive_first() {
@@ -273,13 +277,17 @@ caught_up() { idle && [ "$(field last_backup)" -gt "$(cat "$M/drive-last")" ]; }
 drive_away() {
     within 90 away || { fail "the daemon never saw the drive go ($(health))"; return 1; }
     echo "  the daemon saw the drive go: $(health)"
-    echo "changed while the drive was away" >>"$M/src/note.txt"
+    echo "changed while the drive was away" >>"$HOME/matrix/src/note.txt"
 }
 drive_back() {
     mount_drive || { fail "the drive did not mount the second time"; return 1; }
     within 90 back || { fail "the daemon never saw the drive come back"; return 1; }
     if within 120 caught_up && healthy; then
-        pass "the drive, plugged in again after the daemon started, was seen and backed up to"
+        if found note.txt; then
+            pass "the drive, plugged in again after the daemon started, was seen and backed up to"
+        else
+            fail "the catch-up backup to the drive holds no note.txt"
+        fi
     else
         fail "the drive came back and was not backed up to ($(health))"
     fi
@@ -296,6 +304,8 @@ row_btrfs() {
     echo "snapshot me" >"$sub/matrix-check-snapshot.txt"
     adopt "$M/btrfs-repo" || { fail "no repository to back up to"; return; }
     include "$sub"
+    local started
+    started=$(date +%s)
     back_up
     healthy || { fail "the first backup: $(health)"; return; }
     flatpak kill "$APP"
@@ -309,7 +319,27 @@ row_btrfs() {
     else
         fail "no snapshot within 2 minutes: mode $(field offline_mode), $(health)"
     fi
+    # The snapshot is the daemon's to remove, with its catalogue row: dated as
+    # expired while the daemon is stopped, it goes after the next backup that
+    # reaches the destination, as an expired one always does.
+    within 60 idle
+    flatpak kill "$APP"
+    sleep 1
     mv "$M/btrfs-repo.away" "$M/btrfs-repo"
+    python3 - "$HOME/.var/app/$APP/data/backtrack/index.db" "$started" <<'PY'
+import sqlite3, sys
+db = sqlite3.connect(sys.argv[1])
+db.execute("update archives set expirable_at = 1 where repo = 'fs-snapshot' and ts >= ?", (int(sys.argv[2]),))
+db.commit()
+PY
+    d GetStatus >/dev/null
+    sleep 5
+    back_up
+    if [ -z "$(ls -A "$HOME/.var/app/$APP/data/backtrack/snapshots" 2>/dev/null)" ]; then
+        echo "  the snapshot was removed by the daemon, with its catalogue row"
+    else
+        fail "the row's snapshot is still in the daemon's snapshots folder"
+    fi
 }
 
 # The daemon starts at login, from the portal's autostart entry.
