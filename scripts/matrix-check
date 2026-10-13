@@ -223,7 +223,7 @@ row_ssh() {
 # An SMB share, mounted through gvfs from inside the sandbox, as the wizard
 # mounts one.
 row_smb() {
-    rpm -q gvfs-smb >/dev/null 2>&1 || { na "no gvfs-smb on this desktop, so gvfs cannot mount an SMB share"; return; }
+    rpm -q gvfs-smb >/dev/null 2>&1 || { na "no gvfs-smb on this desktop, so the Flatpak cannot mount an SMB share through it"; return; }
     rpm -q samba >/dev/null 2>&1 || { fail "samba is not installed here to serve a share"; return; }
     sudo -n mkdir -p "$SMB_DIR"
     sudo -n chown "$USER:" "$SMB_DIR"
@@ -252,14 +252,30 @@ row_smb() {
 }
 
 # The drive's half of the row, between the host's plugging and unplugging.
-mounted() { [ -d "/run/media/$USER/$LABEL" ]; }
+mounted() { findmnt -rn "/run/media/$USER/$LABEL" >/dev/null; }
 # Mounted as the desktop mounts one, through gvfs, which runs in the logged-in
 # session: GNOME does not mount a drive by itself while the screen is locked,
 # and udisks refuses a mount asked for over SSH, which is in no seat's session.
+# A desktop without gvfs (Plasma's KIO) gets a plain mount at the same place.
 mount_drive() {
     within 30 test -e "/dev/disk/by-label/$LABEL" || return 1
-    within 10 mounted || gio mount -d "$(readlink -f "/dev/disk/by-label/$LABEL")" >/dev/null 2>&1
+    local device
+    device=$(readlink -f "/dev/disk/by-label/$LABEL")
+    within 10 mounted && return 0
+    if rpm -q gvfs >/dev/null 2>&1; then
+        gio mount -d "$device" >/dev/null 2>&1
+    else
+        sudo -n mkdir -p "/run/media/$USER/$LABEL"
+        sudo -n mount "$device" "/run/media/$USER/$LABEL"
+    fi
     within 15 mounted
+}
+unmount_drive() {
+    if rpm -q gvfs >/dev/null 2>&1; then
+        gio mount -u "/run/media/$USER/$LABEL" >/dev/null 2>&1
+    else
+        sudo -n umount "/run/media/$USER/$LABEL"
+    fi
 }
 drive_first() {
     mount_drive || { fail "the drive did not mount"; return 1; }
@@ -268,7 +284,7 @@ drive_first() {
     back_up
     healthy || { fail "the first backup to the drive: $(health)"; return 1; }
     field last_backup >"$M/drive-last"
-    gio mount -u "/run/media/$USER/$LABEL" >/dev/null 2>&1
+    unmount_drive
 }
 away() { [ "$(field reachable)" = false ]; }
 back() { [ "$(field reachable)" = true ]; }

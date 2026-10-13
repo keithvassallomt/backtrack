@@ -8,6 +8,27 @@ desktops pass it.
 The VMs are Fedora 45: GNOME 51 and Plasma 6.7, both on Wayland. The Flatpak
 is built from the checkout with `just flatpak-bundle`.
 
+## Run 2: 2026-10-13, unattended
+
+`scripts/matrix-check`, on the same VMs with the Flatpak from commit d87c1ba,
+for the rows that need nobody at the screen. It drives the Flatpak's daemon
+over D-Bus as the wizard does, so the sandbox's own Borg does each backup.
+
+| Check | GNOME | Plasma |
+|---|---|---|
+| SMB destination through gvfs: a share mounted from inside the sandbox, and backed up to | pass | n/a: this Plasma has no gvfs, which the Flatpak mounts shares through |
+| SSH destination, through the sandbox's ssh | pass | pass |
+| Xorg session | n/a: none installed | n/a: none installed |
+| A drive unplugged, seen to go, plugged in again, seen, and backed up to at once | pass | pass |
+| Another Flatpak's data under `~/.var/app` is in the backup | pass | pass |
+| S14-T7: a killed daemon brought back by the same supervisor | pass (6 s) | pass (6 s) |
+| S14-T8: with the destination away, a btrfs snapshot of a subvolume the user owns | pass | pass |
+| Background portal: the daemon starts at login | pass | pass |
+
+On GNOME the drive was mounted through gvfs, as the desktop mounts one
+(GNOME mounts nothing by itself while the screen is locked); on Plasma,
+which has no gvfs, with a plain mount at the same place.
+
 ## Run 1: 2026-10-12
 
 Last build tested: commit 15edada. Fixes made during the run were rebuilt and
