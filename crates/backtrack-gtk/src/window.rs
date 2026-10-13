@@ -735,25 +735,35 @@ impl Window {
         ui::spawn(async move {
             match proxy.get_status().await {
                 Ok(status) => {
-                    // Only some banners name the destination, so only then is
-                    // it worth asking for.
-                    if Reason::parse(&status.reason)
-                        .and_then(Reason::failure)
-                        .is_some_and(|failure| failure.names_destination())
-                    {
-                        if let Ok(text) = proxy.get_config().await {
-                            if let Ok((config, _)) = backtrack_core::config::Config::parse(&text) {
-                                *this.destination.borrow_mut() = backtrack_core::destination::name(
-                                    &config.storage.repository.unwrap_or_default(),
-                                );
-                            }
-                        }
-                    }
+                    this.learn_destination(&proxy, &status).await;
                     this.render_status(&status);
                 }
                 Err(error) => warn!(%error, "the status could not be read"),
             }
         });
+    }
+
+    /// Find out what the destination is called, when `status`'s banner names
+    /// it. Only some do, so only then is it worth asking for; every path that
+    /// draws a status comes through here first, or the banner says "… to .".
+    async fn learn_destination(
+        &self,
+        proxy: &Daemon1Proxy<'static>,
+        status: &backtrack_core::dbus::Status,
+    ) {
+        let names_it = Reason::parse(&status.reason)
+            .and_then(Reason::failure)
+            .is_some_and(|failure| failure.names_destination());
+        if !names_it {
+            return;
+        }
+        if let Ok(text) = proxy.get_config().await {
+            if let Ok((config, _)) = backtrack_core::config::Config::parse(&text) {
+                *self.destination.borrow_mut() = backtrack_core::destination::name(
+                    &config.storage.repository.unwrap_or_default(),
+                );
+            }
+        }
     }
 
     fn render_status(&self, status: &backtrack_core::dbus::Status) {
@@ -1088,6 +1098,7 @@ impl Window {
             match proxy.get_status().await {
                 Ok(status) => {
                     info!(state = status.state, "connected to the Backtrack service");
+                    let proxy_for_name = proxy.clone();
                     *this.daemon.borrow_mut() = Some(proxy);
                     // The window is usable before the service answers, so a
                     // file may already be selected with its preview parked on
@@ -1109,6 +1120,7 @@ impl Window {
                     ui::menu::set_enabled(&this.window, "backup-now", true);
                     ui::menu::set_enabled(&this.window, "pause", true);
                     ui::menu::set_enabled(&this.window, "preferences", true);
+                    this.learn_destination(&proxy_for_name, &status).await;
                     this.render_status(&status);
                     let pending = this.pending_fix.borrow_mut().take();
                     if let Some(reason) = pending {
