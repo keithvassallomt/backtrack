@@ -17,14 +17,9 @@ done; Claude removes ticked items.
 - [ ] Once the accounts above exist, a release-candidate run as RELEASING.md
   describes: `just bump-version 0.1.0-rc1`, commit, `just release` on the
   branch (S13-T5, S13-T6, S13-T9, S14-T9).
-- [ ] A second hand-check session, for what the first (2026-10-12,
-  `packaging/flatpak/TEST-MATRIX.md`) left: the folder actions of the
-  Nautilus and Dolphin integrations from the Flatpak (S14-T4), the native
-  packages' smoke test (`packaging/SMOKE-TEST.md`: the RPM in the Fedora VM,
-  the AUR package on Keith's machine; S13-T4, S13-T8, and S14-T4's native
-  half), and the matrix rows not yet run (S13-T3). Claude extends
-  `scripts/flatpak-check` for them first, and automates the rows that need
-  no one at the screen.
+- [ ] The native packages' smoke test (`packaging/SMOKE-TEST.md`): the RPM
+  in the Fedora VM and the AUR package on Keith's machine (S13-T4, S13-T8,
+  and S14-T4's native half).
 
 > **Contract:** Update this file in the SAME COMMIT as the work it describes.
 > `[ ]` upcoming · `[/]` in progress · `[x]` done (acceptance criteria verified) ·

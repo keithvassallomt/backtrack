@@ -8,6 +8,26 @@ desktops pass it.
 The VMs are Fedora 45: GNOME 51 and Plasma 6.7, both on Wayland. The Flatpak
 is built from the checkout with `just flatpak-bundle`.
 
+## Run 3: 2026-10-13, by hand
+
+The second session of `scripts/flatpak-check` (steps 9 to 15), for the rows
+the first left, on the Flatpak from commit d87c1ba. "Run 1" marks a row that
+run already covered.
+
+| Check | GNOME | Plasma |
+|---|---|---|
+| FileChooser portal: the wizard's destination folder button | pass | run 1 |
+| FileChooser portal: Restore To… | run 1 | pass |
+| Notification portal: a health notification, and clicking it opens the fix (S14-T2) | run 1 | pass |
+| S14-T4: the folder actions (Nautilus: on a folder and in a folder's empty space; Dolphin: Backtrack ▸ on a folder) | pass | pass |
+| S14-T5: the Fix page for a missing Borg names no distribution command | run 1 | pass |
+| SMB through the wizard: its sign-in, then a backup to the share | pass | n/a: no gvfs (S13-T10, #107) |
+| A USB drive in the wizard's list | not run | fail: listed greyed out, as nothing is plugged in, without gvfs (S13-T10, #107) |
+
+The notification on Plasma came only once the daemon's record of having
+notified about the same problem that morning was cleared: a BROKEN state
+notifies once a day, as health.md says.
+
 ## Run 2: 2026-10-13, unattended
 
 `scripts/matrix-check`, on the same VMs with the Flatpak from commit d87c1ba,
@@ -28,6 +48,13 @@ over D-Bus as the wizard does, so the sandbox's own Borg does each backup.
 On GNOME the drive was mounted through gvfs, as the desktop mounts one
 (GNOME mounts nothing by itself while the screen is locked); on Plasma,
 which has no gvfs, with a plain mount at the same place.
+
+The rows first backed up a folder under `~/.cache`, which Backtrack leaves
+out, so their backups held nothing. Run again with a folder outside it, and
+the file looked for in the catalogue, the SSH, SMB and drive rows found the
+catalogue's search failing for every name once a file's every version had
+been removed, which was fixed (2901b7b); with that build, every row in the
+table passes again.
 
 ## Run 1: 2026-10-12
 
