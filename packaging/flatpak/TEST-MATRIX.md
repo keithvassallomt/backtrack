@@ -54,9 +54,18 @@ checked again on the same VM before the run went on.
 
 ### Found and open
 
-- S10-T8 (#105): a local destination Borg may not write to reads "Backtrack
-  can't sign in to …".
-- S10-T9 (#106): a locked keyring reads "The saved passphrase no longer
-  matches the backup.".
 - S14-T10 (#104): a status line under Backtrack in Background Apps, a
   suggestion from the run.
+
+### Found, and fixed since (2026-10-13)
+
+Checked again in the Flatpak: S10-T8 on Plasma, S10-T9 on both VMs.
+
+- S10-T8 (#105): a local destination Borg may not write to read "Backtrack
+  can't sign in to …"; it now reads "Backtrack can't write to …", with its
+  own fix (1a12cdb). The banner drew the name as "." until the next refresh
+  (0bc3c4b).
+- S10-T9 (#106): a locked keyring read "The saved passphrase no longer
+  matches the backup."; it now reads "Backtrack needs your backup
+  passphrase again.", recovers by itself once the keyring is open, and the
+  fix unlocks the keyring to save the passphrase (633f3fe).
