@@ -7,10 +7,7 @@ done; Claude removes ticked items.
 
 - [ ] A release-candidate run as RELEASING.md describes:
   `just bump-version 0.1.0-rc1`, commit, `just release` on the branch
-  (S13-T5, S13-T6, S13-T9, S14-T9).
-- [ ] The AUR package's smoke test on Keith's machine, with
-  `scripts/smoke-check aur` (`packaging/SMOKE-TEST.md`; S13-T8, and S14-T4's
-  native half).
+  (S13-T4, S13-T5, S13-T6, S13-T9, S14-T9).
 
 > **Contract:** Update this file in the SAME COMMIT as the work it describes.
 > `[ ]` upcoming · `[/]` in progress · `[x]` done (acceptance criteria verified) ·
@@ -145,7 +142,7 @@ done; Claude removes ticked items.
 - [/] S13-T5 CI release artifacts on tag
 - [/] S13-T6 Release runbook (human bumps version → just bump-version → just release)
 - [x] S13-T7 Application ID tools.backtrack.Backtrack, daemon names under it
-- [/] S13-T8 AUR packages (app, nautilus, dolphin)
+- [x] S13-T8 AUR packages (app, nautilus, dolphin)
 - [/] S13-T9 just release: from tag to every channel in one command
 - [x] S13-T10 Desktops without gvfs: drives and SMB shares in the wizard
 
@@ -153,7 +150,7 @@ done; Claude removes ticked items.
 - [x] S14-T1 Daemon activation inside the Flatpak
 - [x] S14-T2 Window opens through the session bus (notification clicks, tray)
 - [x] S14-T3 Tray icon started by the daemon inside the sandbox
-- [/] S14-T4 File-manager integration for Flatpak installs (per-user copies)
+- [x] S14-T4 File-manager integration for Flatpak installs (per-user copies)
 - [x] S14-T5 Read the host's os-release (Fix page, doctor)
 - [x] S14-T6 Secret Service keyring in every build
 - [x] S14-T7 Restart the daemon after a failure, as the unit does
