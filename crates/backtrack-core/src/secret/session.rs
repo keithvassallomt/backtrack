@@ -107,6 +107,10 @@ impl SecretStore for SessionSecretStore {
         self.held.lock().unwrap().remove(repo_id);
         self.forget_persistent(repo_id).await
     }
+
+    async fn ready(&self) -> bool {
+        self.persistent.ready().await
+    }
 }
 
 #[cfg(test)]

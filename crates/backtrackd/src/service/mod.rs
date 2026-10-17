@@ -2214,6 +2214,64 @@ impl Shared {
         }
     }
 
+    /// Wait, up to `grace`, for the passphrase store to be readable, before
+    /// the first work that needs the passphrase.
+    ///
+    /// At login a packaged daemon is started with the user's systemd, a moment
+    /// before the session has unlocked the keyring. A passphrase read in that
+    /// moment reads as missing, and would put "Backtrack needs your backup
+    /// passphrase again." on screen for a keyring that opens a second later.
+    /// A keyring that stays locked longer is left to [`Self::recheck_passphrase`].
+    pub async fn await_keyring(&self, grace: Duration) {
+        if self.config().storage.repository.is_none() {
+            return;
+        }
+        let started = tokio::time::Instant::now();
+        loop {
+            // One look, bounded: the Secret Service is often still being
+            // started at login, and its activation can take its time.
+            let ready = tokio::time::timeout(Duration::from_secs(5), self.secrets.ready())
+                .await
+                .unwrap_or(false);
+            let waited = started.elapsed();
+            if ready {
+                if waited >= Duration::from_secs(1) {
+                    info!(waited_ms = waited.as_millis() as u64, "the keyring opened");
+                }
+                return;
+            }
+            if waited >= grace {
+                warn!(
+                    waited_secs = waited.as_secs(),
+                    "the keyring is still locked; carrying on without waiting longer"
+                );
+                return;
+            }
+            tokio::time::sleep(KEYRING_LOOK_EVERY).await;
+        }
+    }
+
+    /// Clear a missing passphrase that turns out to be readable after all:
+    /// one that was a keyring still locked, opened since.
+    ///
+    /// Otherwise only a successful backup clears it, and the banner and the
+    /// stopped state would wait for the next scheduled one, up to an hour,
+    /// with the passphrase there all along. Reading asks the keyring nothing
+    /// while it is locked (S10-T9), so looking each minute costs nothing.
+    pub async fn recheck_passphrase(&self) {
+        if *self.latched.lock().unwrap() != Some(HealthFailure::PassphraseMissing) {
+            return;
+        }
+        let Some(repository) = self.config().storage.repository else {
+            return;
+        };
+        if self.secrets.get(&repository).await.is_ok() {
+            info!("the passphrase can be read again; backups carry on");
+            self.resolved(&[HealthFailure::PassphraseMissing]);
+            self.wake_scheduler();
+        }
+    }
+
     /// Record how a job failed, as the last word from its part of the daemon.
     fn record_error(&self, kind: JobKind, error: &backtrack_core::engine::EngineError) {
         let subsystem = subsystem(kind);
@@ -3520,6 +3578,13 @@ async fn cache_extraction(
 /// and a day passing without a backup.
 const REASSESS_EVERY: Duration = Duration::from_secs(60);
 
+/// How long a daemon started at login waits for the keyring to open before it
+/// reads the passphrase anyway; see [`Shared::await_keyring`].
+pub const KEYRING_GRACE: Duration = Duration::from_secs(30);
+
+/// How often the keyring is looked at while waiting for it.
+const KEYRING_LOOK_EVERY: Duration = Duration::from_secs(1);
+
 /// Turn the job registry's updates into D-Bus signals.
 ///
 /// Runs for the daemon's lifetime. `StatusChanged` is emitted only when the
@@ -3554,7 +3619,10 @@ pub async fn fan_out_signals(shared: Arc<Shared>, emitter: SignalEmitter<'static
                 Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
             },
             _ = health_changed.notified() => None,
-            _ = tick.tick() => None,
+            _ = tick.tick() => {
+                shared.recheck_passphrase().await;
+                None
+            }
         };
 
         // The minute's tick is also what moves "today" to "yesterday" in the
@@ -4829,6 +4897,107 @@ mod tests {
             restarted.state_since(broken, now + Duration::from_secs(600)),
             since,
             "the state began before the restart, not at it"
+        );
+    }
+
+    /// A keyring that opens on the `opens_at`th look, holding `passphrase`.
+    struct Opening {
+        looks: std::sync::atomic::AtomicUsize,
+        opens_at: usize,
+    }
+
+    impl Opening {
+        fn new(opens_at: usize) -> Arc<Opening> {
+            Arc::new(Opening {
+                looks: std::sync::atomic::AtomicUsize::new(0),
+                opens_at,
+            })
+        }
+
+        fn looks(&self) -> usize {
+            self.looks.load(std::sync::atomic::Ordering::SeqCst)
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl SecretStore for Opening {
+        async fn get(&self, _: &str) -> backtrack_core::engine::Result<String> {
+            Err(backtrack_core::engine::EngineError::PassphraseMissing)
+        }
+        async fn set(&self, _: &str, _: &str) -> backtrack_core::engine::Result<()> {
+            Ok(())
+        }
+        async fn delete(&self, _: &str) -> backtrack_core::engine::Result<()> {
+            Ok(())
+        }
+        async fn ready(&self) -> bool {
+            self.looks.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1 >= self.opens_at
+        }
+    }
+
+    fn configured_with(dir: &std::path::Path, secrets: Arc<dyn SecretStore>) -> Arc<Shared> {
+        let mut config = Config::default();
+        config.storage.repository = Some(dir.join("repo").display().to_string());
+        Shared::in_dir(config, JobRegistry::new(), secrets, dir)
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_daemon_started_at_login_waits_for_the_keyring_to_open() {
+        let dir = tempfile::tempdir().unwrap();
+        let keyring = Opening::new(3);
+        let shared = configured_with(dir.path(), keyring.clone());
+        let started = tokio::time::Instant::now();
+        shared.await_keyring(KEYRING_GRACE).await;
+        assert_eq!(
+            keyring.looks(),
+            3,
+            "it looked until the keyring opened, and no more"
+        );
+        assert!(started.elapsed() < KEYRING_GRACE);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_keyring_that_stays_locked_is_not_waited_for_forever() {
+        let dir = tempfile::tempdir().unwrap();
+        let shared = configured_with(dir.path(), Opening::new(usize::MAX));
+        let started = tokio::time::Instant::now();
+        shared.await_keyring(KEYRING_GRACE).await;
+        let waited = started.elapsed();
+        assert!(waited >= KEYRING_GRACE, "gave up after {waited:?}");
+        assert!(
+            waited < KEYRING_GRACE + Duration::from_secs(2),
+            "waited {waited:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_passphrase_that_reads_again_is_no_longer_missing() {
+        let dir = tempfile::tempdir().unwrap();
+        let shared = configured(dir.path());
+        shared.record_blocking_failure(HealthFailure::PassphraseMissing);
+        shared.recheck_passphrase().await;
+        assert_eq!(
+            *shared.latched.lock().unwrap(),
+            Some(HealthFailure::PassphraseMissing),
+            "still nothing to read"
+        );
+
+        let repository = shared.config().storage.repository.unwrap();
+        shared
+            .secrets
+            .set(&repository, "correct horse")
+            .await
+            .unwrap();
+        shared.recheck_passphrase().await;
+        assert_eq!(*shared.latched.lock().unwrap(), None);
+
+        // A passphrase that reads but is wrong is a different failure, and
+        // reading it proves nothing about that one.
+        shared.record_blocking_failure(HealthFailure::PassphraseWrong);
+        shared.recheck_passphrase().await;
+        assert_eq!(
+            *shared.latched.lock().unwrap(),
+            Some(HealthFailure::PassphraseWrong)
         );
     }
 

@@ -35,6 +35,12 @@ pub trait SecretStore: Send + Sync {
     async fn get(&self, repo_id: &str) -> Result<String>;
     async fn set(&self, repo_id: &str, passphrase: &str) -> Result<()>;
     async fn delete(&self, repo_id: &str) -> Result<()>;
+    /// Whether what is saved here can be read now without asking anybody:
+    /// `false` while the store is locked, as a keyring is for a moment at
+    /// login. Never prompts. A store that does not lock is always ready.
+    async fn ready(&self) -> bool {
+        true
+    }
 }
 
 /// The store the daemon uses by default: file-backed under `BACKTRACK_DEV=1`,

@@ -244,6 +244,9 @@ pub async fn run() -> Result<Outcome, StartupError> {
     // rewriting the catalogue in the meantime. Borg's own locking would prevent
     // corruption, but the user would see spurious failures from a daemon that
     // was never meant to be running.
+    // At login, the keyring this daemon reads the passphrase from opens a
+    // moment after the daemon starts.
+    shared.await_keyring(service::KEYRING_GRACE).await;
     let scheduler = Scheduler::new(Arc::clone(&shared));
     let waker = scheduler.waker();
     shared.set_waker(Arc::clone(&waker));

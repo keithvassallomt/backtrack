@@ -112,6 +112,16 @@ impl SecretStore for KeyringSecretStore {
         keyring.delete(&attributes).await.map_err(svc_err)?;
         Ok(())
     }
+
+    /// The default collection's Locked property, which asks the keyring for
+    /// nothing it would count as an attempt. No Secret Service, or none ready
+    /// to answer yet, is not ready either.
+    async fn ready(&self) -> bool {
+        match keyring().await {
+            Ok(keyring) => keyring.is_locked().await.is_ok_and(|locked| !locked),
+            Err(_) => false,
+        }
+    }
 }
 
 #[cfg(test)]
