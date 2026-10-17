@@ -9,7 +9,7 @@ installs inside containers are machine-checked (`just rpm`, `just deb`,
 
 | Channel | Install | Nautilus and Dolphin |
 |---|---|---|
-| Fedora 44+ (COPR) | `sudo dnf copr enable keithvassallomt/backtrack` then `sudo dnf install backtrack` | `backtrack-nautilus`, `backtrack-dolphin` |
+| Fedora 44+ (COPR) | `sudo dnf copr enable keithvassallo/backtrack` then `sudo dnf install backtrack` | `backtrack-nautilus`, `backtrack-dolphin` |
 | Ubuntu 26.04+ (PPA) | `sudo add-apt-repository ppa:keithvassallomt/backtrack` then `sudo apt install backtrack` | `backtrack-nautilus`, `backtrack-dolphin` |
 | Arch (AUR) | `yay -S backtrack`, or `sudo pacman -U` on the packages `just aur-build` leaves in `target/aur` | `backtrack-nautilus`, `backtrack-dolphin` |
 | Anything (Flatpak) | as [flatpak/FRIENDLYHUB.md](flatpak/FRIENDLYHUB.md) says | Preferences → General → Install |

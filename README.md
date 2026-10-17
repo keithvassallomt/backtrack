@@ -12,7 +12,7 @@ From the first release:
 | Where | How |
 |---|---|
 | Any distribution | The Flatpak, from FriendlyHub: [packaging/flatpak/FRIENDLYHUB.md](packaging/flatpak/FRIENDLYHUB.md) |
-| Fedora 44 and later | COPR: `sudo dnf copr enable keithvassallomt/backtrack`, then `sudo dnf install backtrack` |
+| Fedora 44 and later | COPR: `sudo dnf copr enable keithvassallo/backtrack`, then `sudo dnf install backtrack` |
 | Ubuntu 26.04 and later | PPA: `sudo add-apt-repository ppa:keithvassallomt/backtrack`, then `sudo apt install backtrack` |
 | Arch | AUR: `backtrack` |
 

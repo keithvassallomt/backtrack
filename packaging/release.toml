@@ -8,8 +8,8 @@
 
 [copr]
 # owner/project, as copr-cli names them.
-project = "keithvassallomt/backtrack"
-testing = "keithvassallomt/backtrack-testing"
+project = "keithvassallo/backtrack"
+testing = "keithvassallo/backtrack-testing"
 
 [ppa]
 release = "ppa:keithvassallomt/backtrack"
