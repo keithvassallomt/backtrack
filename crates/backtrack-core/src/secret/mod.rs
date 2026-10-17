@@ -27,6 +27,8 @@ pub const APP_ID: &str = "tools.backtrack.Backtrack";
 
 /// Get/set/delete a repository passphrase under a stable attribute set
 /// (`app-id` + `repo-id`).
+// See `engine::BackupEngine`: async-trait's `#[must_use]`, and clippy 1.99.
+#[allow(clippy::double_must_use)]
 #[async_trait]
 pub trait SecretStore: Send + Sync {
     /// Returns the stored passphrase, or [`EngineError::PassphraseMissing`].

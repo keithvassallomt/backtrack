@@ -172,6 +172,8 @@ pub fn local_disk_full(facts: &Facts) -> bool {
 /// A trait because the answers come from two system services that are absent in
 /// a CI container and awkward to arrange on a desktop: the tests supply the
 /// world instead of arranging it.
+// See backtrack-core's `BackupEngine`: async-trait's `#[must_use]`, and clippy 1.99.
+#[allow(clippy::double_must_use)]
 #[async_trait]
 pub trait SystemProbe: Send + Sync {
     /// Whether the machine is on battery; `None` when nothing can say.
