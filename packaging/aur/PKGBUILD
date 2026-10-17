@@ -54,8 +54,12 @@ build() {
 # and why it stands: "unused shared library ld-linux", because Rust links the
 # dynamic loader by name; borg "may not be needed", because the daemon runs it
 # as a program, which namcap cannot see, and likewise the integrations'
-# dependencies, which their file managers load; and the -debug package's
-# symlinks into usr/bin, which point into backtrack, checked on its own.
+# dependencies, which their file managers load; the Nautilus extension's
+# gi.repository modules, which GObject introspection loads from typelibs
+# that namcap cannot trace to a package; the -debug package's
+# symlinks into usr/bin, which point into backtrack, checked on its own; and
+# its empty usr/src/debug/backtrack, since makepkg copies no Rust sources
+# there.
 package_backtrack() {
   depends=(borg cairo glib2 glibc gtk4 hicolor-icon-theme libadwaita libgcc pango)
   optdepends=('backtrack-nautilus: Restore Previous Version in GNOME Files'
@@ -84,7 +88,7 @@ package_backtrack() {
 package_backtrack-nautilus() {
   pkgdesc='Restore Previous Version in GNOME Files, for Backtrack'
   arch=(any)
-  depends=(backtrack glib2 python python-nautilus)
+  depends=(backtrack glib2 python python-gobject python-nautilus)
 
   cd "$pkgbase-$_version"
   install -Dm644 -t "$pkgdir/usr/share/nautilus-python/extensions" integrations/nautilus/backtrack.py

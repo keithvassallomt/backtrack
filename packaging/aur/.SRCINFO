@@ -33,6 +33,7 @@ pkgname = backtrack-nautilus
 	depends = backtrack
 	depends = glib2
 	depends = python
+	depends = python-gobject
 	depends = python-nautilus
 
 pkgname = backtrack-dolphin
