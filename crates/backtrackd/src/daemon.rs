@@ -28,7 +28,9 @@
 //!    single writer. An instance that is about to lose the race must not have
 //!    begun a backup in the meantime.
 //!
-//! Shutdown is driven by SIGTERM (systemd) or SIGINT (a developer's Ctrl-C).
+//! Shutdown is driven by SIGTERM (systemd) or SIGINT (a developer's Ctrl-C),
+//! or by the session bus going away, which exits with [`BUS_LOST`] so that
+//! whatever started the daemon starts it again on the bus that replaces it.
 
 use std::path::PathBuf;
 
@@ -48,22 +50,37 @@ use zbus::fdo::RequestNameFlags;
 use zbus::fdo::RequestNameReply;
 use zbus::object_server::SignalEmitter;
 
-/// Why the daemon stopped. Both variants are a successful exit: losing the
-/// single-instance race is a normal outcome, not a failure, which is what makes
-/// D-Bus activation safe to trigger from several clients at once.
+/// The exit status of a daemon whose session bus went away (`EX_TEMPFAIL`).
+///
+/// GNOME restarts the session's D-Bus broker when a session ends, and a login
+/// straight after keeps the same systemd user manager, whose
+/// `default.target` is reached already and starts nothing again. Left alone,
+/// the daemon would run on with nobody able to reach it until systemd noticed
+/// its name was gone and stopped it for good. A failed exit is what the unit's
+/// `Restart=on-failure` starts again, on the new bus. The Flatpak's supervisor
+/// stops on it instead: a sandbox's bus is a proxy that does not come back,
+/// and the next login's autostart starts a daemon in a new one.
+pub const BUS_LOST: u8 = 75;
+
+/// Why the daemon stopped. Losing the single-instance race is a successful
+/// exit, a normal outcome rather than a failure, which is what makes D-Bus
+/// activation safe to trigger from several clients at once.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Outcome {
     /// Ran and shut down cleanly on a signal.
     ShutDown,
     /// Another instance already owned the bus name.
     AlreadyRunning,
+    /// The session bus went away, or took the name with it.
+    BusLost,
 }
 
 impl Outcome {
-    /// The process exit code for this outcome. Both are zero — see [`Outcome`].
+    /// The process exit code for this outcome: zero, except [`BUS_LOST`].
     pub fn exit_code(self) -> u8 {
         match self {
             Outcome::ShutDown | Outcome::AlreadyRunning => 0,
+            Outcome::BusLost => BUS_LOST,
         }
     }
 }
@@ -217,6 +234,9 @@ pub async fn run() -> Result<Outcome, StartupError> {
         return Ok(Outcome::AlreadyRunning);
     }
     info!(name, "claimed the bus name");
+    let bus_lost = off_the_bus(&connection, name)
+        .await
+        .map_err(StartupError::Bus)?;
 
     // Only now does anything start *touching* the repository. Winning the name
     // is what makes this daemon the single writer, and an instance that is about
@@ -275,9 +295,47 @@ pub async fn run() -> Result<Outcome, StartupError> {
         Arc::clone(&leave),
     ));
 
-    let reason = wait_for_shutdown(&leave).await?;
-    info!(reason, "shutting down");
-    Ok(Outcome::ShutDown)
+    match wait_for_shutdown(&leave, bus_lost).await? {
+        Some(reason) => {
+            info!(reason, "shutting down");
+            Ok(Outcome::ShutDown)
+        }
+        None => {
+            warn!(
+                "the session bus went away; exiting so the daemon is started again on the new one"
+            );
+            Ok(Outcome::BusLost)
+        }
+    }
+}
+
+/// A future that finishes once nobody can reach the daemon under `name` any
+/// more: when the connection to the bus closes, or the bus says the name is
+/// lost.
+///
+/// zbus ends every stream on a connection when its socket closes, after
+/// handing each one the error, so a stream for the bus's `NameLost` about this
+/// name ends in exactly the two cases that matter.
+async fn off_the_bus(
+    connection: &zbus::Connection,
+    name: &'static str,
+) -> zbus::Result<impl std::future::Future<Output = ()>> {
+    let rule = zbus::MatchRule::builder()
+        .msg_type(zbus::message::Type::Signal)
+        .sender("org.freedesktop.DBus")?
+        .interface("org.freedesktop.DBus")?
+        .member("NameLost")?
+        .add_arg(name)?
+        .build();
+    let mut stream = zbus::MessageStream::for_match_rule(rule, connection, Some(1)).await?;
+    Ok(async move {
+        use futures::StreamExt;
+        while let Some(message) = stream.next().await {
+            if message.is_ok() {
+                return;
+            }
+        }
+    })
 }
 
 /// Request `name` with `DoNotQueue`, returning whether we became its owner.
@@ -385,12 +443,15 @@ pub(crate) fn open_index_at(
 }
 
 /// Block until SIGTERM or SIGINT, or until the daemon is no longer needed,
-/// returning which.
+/// returning which; or until `bus_lost` finishes, returning `None`.
 ///
 /// Once the job model lands (S03-T2) this is where a running job is given its
 /// chance to checkpoint; while the daemon is idle it returns immediately, which
 /// is what keeps the stop well inside systemd's patience.
-async fn wait_for_shutdown(leave: &tokio::sync::Notify) -> Result<&'static str, StartupError> {
+async fn wait_for_shutdown(
+    leave: &tokio::sync::Notify,
+    bus_lost: impl std::future::Future<Output = ()>,
+) -> Result<Option<&'static str>, StartupError> {
     let mut sigterm = signal(SignalKind::terminate()).map_err(|source| StartupError::Signals {
         signal: "SIGTERM",
         source,
@@ -400,9 +461,10 @@ async fn wait_for_shutdown(leave: &tokio::sync::Notify) -> Result<&'static str, 
         source,
     })?;
     tokio::select! {
-        _ = sigterm.recv() => Ok("SIGTERM"),
-        _ = sigint.recv() => Ok("SIGINT"),
-        _ = leave.notified() => Ok("not needed in the background"),
+        _ = sigterm.recv() => Ok(Some("SIGTERM")),
+        _ = sigint.recv() => Ok(Some("SIGINT")),
+        _ = leave.notified() => Ok(Some("not needed in the background")),
+        () = bus_lost => Ok(None),
     }
 }
 
@@ -431,6 +493,45 @@ mod tests {
         // D-Bus activation both treat a non-zero exit as a failed unit.
         assert_eq!(Outcome::AlreadyRunning.exit_code(), 0);
         assert_eq!(Outcome::ShutDown.exit_code(), 0);
+    }
+
+    #[test]
+    fn losing_the_bus_is_a_failure_so_systemd_starts_it_again() {
+        assert_ne!(Outcome::BusLost.exit_code(), 0);
+        assert_eq!(Outcome::BusLost.exit_code(), BUS_LOST);
+    }
+
+    /// A connected pair, peer to peer: no bus daemon is needed for a stream to
+    /// end when its socket closes.
+    async fn pair() -> (zbus::Connection, zbus::Connection) {
+        let (server_side, client_side) = tokio::net::UnixStream::pair().unwrap();
+        let server = zbus::connection::Builder::unix_stream(server_side)
+            .server(zbus::Guid::generate())
+            .unwrap()
+            .p2p()
+            .build();
+        let client = zbus::connection::Builder::unix_stream(client_side)
+            .p2p()
+            .build();
+        let (server, client) = futures::join!(server, client);
+        (server.unwrap(), client.unwrap())
+    }
+
+    #[tokio::test]
+    async fn the_daemon_hears_its_connection_close() {
+        let (daemon, other_end) = pair().await;
+        let gone = off_the_bus(&daemon, "tools.backtrack.Backtrack.Daemon1")
+            .await
+            .expect("watching the connection");
+        tokio::pin!(gone);
+        let early = tokio::time::timeout(std::time::Duration::from_millis(200), &mut gone).await;
+        assert!(early.is_err(), "nothing has gone yet");
+
+        // What a broker restart looks like from this side: the socket closes.
+        other_end.graceful_shutdown().await;
+        tokio::time::timeout(std::time::Duration::from_secs(5), gone)
+            .await
+            .expect("the closed connection was noticed");
     }
 
     #[test]

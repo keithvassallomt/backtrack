@@ -39,7 +39,11 @@ pub enum Next {
 /// `Restart=on-failure`: start it again after a non-zero exit or death by a
 /// signal, unless that signal is one systemd counts as a clean stop.
 pub fn after(status: ExitStatus) -> Next {
-    if status.success() {
+    // The one place this differs from the unit: a daemon that lost its bus
+    // ran on a sandbox's proxy to it, which does not come back. Started again,
+    // it could only fail to connect every five seconds; the next login's
+    // autostart starts one in a new sandbox instead.
+    if status.success() || status.code() == Some(i32::from(crate::daemon::BUS_LOST)) {
         return Next::Stop;
     }
     match status.signal() {
@@ -137,6 +141,14 @@ mod tests {
         assert_eq!(after(killed(9)), Next::Restart);
         assert_eq!(after(killed(11)), Next::Restart);
         assert_eq!(after(killed(6)), Next::Restart);
+    }
+
+    #[test]
+    fn a_daemon_that_lost_its_bus_is_left_to_the_next_login() {
+        assert_eq!(
+            after(exited(i32::from(crate::daemon::BUS_LOST))),
+            Next::Stop
+        );
     }
 
     #[test]
