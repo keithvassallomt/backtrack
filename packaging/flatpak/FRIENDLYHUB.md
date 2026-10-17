@@ -58,3 +58,26 @@ flatpak install --user friendlyhub tools.backtrack.Backtrack
 Flatpak itself is in every distribution's archive. On Debian 13 it is
 `sudo apt install flatpak`; Fedora, RHEL 10 and its rebuilds (Alma, Rocky)
 Workstation installs have it already.
+
+## On a desktop without GVfs
+
+The Flatpak mounts network shares through the host's GVfs, which GNOME always
+has and Plasma and other desktops often leave out. Without it:
+
+- **Removable drives still work.** The wizard lists a drive the desktop has
+  mounted under `/run/media/<user>/` or `/media/<user>/` by where it is
+  mounted, since without GVfs nothing else says it is a drive.
+- **`smb://` and `nfs://` addresses need GVfs** on the host, with its backend
+  for them and its FUSE helper, which gives a mounted share the folder Borg
+  writes to: `gvfs-smb gvfs-fuse` or `gvfs-nfs gvfs-fuse` on Fedora,
+  `gvfs-backends gvfs-fuse` on Debian and Ubuntu, `gvfs-smb` or `gvfs-nfs` on
+  Arch, whose `gvfs` has the helper in it. The wizard says which, with the
+  command, when one is missing. Backtrack has to be opened again after
+  installing them, because a program finds GVfs when it starts; the FUSE
+  helper added to a GVfs already running takes effect at the next login.
+- **A share mounted another way**, such as through `/etc/fstab`, can be chosen
+  as a folder instead, with the wizard's Choose Folder button.
+
+The RPM recommends `gvfs-smb` and `gvfs-fuse`, and the deb `gvfs-backends` and
+`gvfs-fuse`, so a default install of either brings them in; the AUR package
+lists `gvfs-smb` as optional.

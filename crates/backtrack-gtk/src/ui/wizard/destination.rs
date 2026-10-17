@@ -227,16 +227,28 @@ pub fn display(repository: &str) -> String {
     repository.to_string()
 }
 
+/// What to say when this computer cannot open `address` at all, for want of
+/// gvfs or its backend for that kind of address.
+pub fn unsupported_address(address: &str) -> Option<String> {
+    let schemes = gio::Vfs::default().supported_uri_schemes();
+    let schemes: Vec<&str> = schemes.iter().map(|scheme| scheme.as_str()).collect();
+    model::unsupported_address(address, &schemes, &backtrack_core::host::os_release())
+}
+
 /// The removable drives mounted right now, with the room each one has.
 fn removable_drives(monitor: &gio::VolumeMonitor) -> Vec<Drive> {
+    let user = glib::user_name();
     monitor
         .mounts()
         .into_iter()
         .filter(|mount| !mount.is_shadowed())
-        .filter(|mount| {
-            mount
-                .drive()
-                .is_some_and(|drive| drive.is_removable() || drive.is_media_removable())
+        .filter(|mount| match mount.drive() {
+            Some(drive) => drive.is_removable() || drive.is_media_removable(),
+            // No gvfs, so GIO knows mounts but no drives.
+            None => mount
+                .root()
+                .path()
+                .is_some_and(|path| model::removable_media_mount(&path, &user)),
         })
         .filter_map(|mount| {
             let root = mount.root();
@@ -569,6 +581,13 @@ async fn mount(window: &adw::ApplicationWindow, address: &str) -> Result<PathBuf
     if address.is_empty() {
         return Err("Type the folder's address first.".to_string());
     }
+    if let Some(message) = unsupported_address(address) {
+        info!(
+            address,
+            "this computer has nothing that can open that address"
+        );
+        return Err(message);
+    }
     let file = if address.starts_with('/') {
         gio::File::for_path(address)
     } else {
@@ -591,6 +610,15 @@ async fn mount(window: &adw::ApplicationWindow, address: &str) -> Result<PathBuf
     }
     match file.path() {
         Some(path) if path.is_dir() => Ok(path),
+        None if file.uri_scheme().is_some_and(|scheme| scheme != "file") => {
+            info!(
+                address,
+                "the share mounted with no folder: no gvfs FUSE helper"
+            );
+            Err(model::share_without_folder(
+                &backtrack_core::host::os_release(),
+            ))
+        }
         _ => Err("That location cannot be used as a folder on this computer.".to_string()),
     }
 }

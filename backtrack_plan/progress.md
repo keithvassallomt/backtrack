@@ -24,8 +24,8 @@ done; Claude removes ticked items.
 > tasks: add them here + to the stage file, then `just provision-board-apply`.
 > See [../CLAUDE.md](../CLAUDE.md) for the full workflow.
 
-**Current stage:** 12 (in progress)
-**Last updated:** 2026-10-12
+**Current stage:** 13 (in progress)
+**Last updated:** 2026-10-17
 
 ## Stage 0 — Bootstrap ([stage file](stages/stage-00-bootstrap.md))
 - [x] S00-T1 Git repo, license, .gitignore, README skeleton
@@ -140,14 +140,14 @@ done; Claude removes ticked items.
 ## Stage 13 — Packaging & release ([stage file](stages/stage-13-packaging-release.md))
 - [x] S13-T1 Flatpak manifest (GNOME runtime, portals, bundled borg)
 - [x] S13-T2 cargo-sources.json generation recipe (offline flatpak build)
-- [/] S13-T3 Portal permissions audit + test matrix
+- [x] S13-T3 Portal permissions audit + test matrix
 - [/] S13-T4 RPM spec + COPR (Fedora 44+); deb + PPA (Ubuntu 26.04+)
 - [/] S13-T5 CI release artifacts on tag
 - [/] S13-T6 Release runbook (human bumps version → just bump-version → just release)
 - [x] S13-T7 Application ID tools.backtrack.Backtrack, daemon names under it
 - [/] S13-T8 AUR packages (app, nautilus, dolphin)
 - [/] S13-T9 just release: from tag to every channel in one command
-- [ ] S13-T10 Desktops without gvfs: drives and SMB shares in the wizard
+- [x] S13-T10 Desktops without gvfs: drives and SMB shares in the wizard
 
 ## Stage 14 — Flatpak as a first-class build ([stage file](stages/stage-14-flatpak-first-class.md))
 - [x] S14-T1 Daemon activation inside the Flatpak

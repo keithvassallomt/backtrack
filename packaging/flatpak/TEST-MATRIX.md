@@ -8,6 +8,36 @@ desktops pass it.
 The VMs are Fedora 45: GNOME 51 and Plasma 6.7, both on Wayland. The Flatpak
 is built from the checkout with `just flatpak-bundle`.
 
+With run 4 the matrix is green: every row passes on both desktops, or does
+not apply to one of them. What does not apply: GNOME's Background Apps on
+Plasma, which has none; the tray on GNOME, which has no system tray; and an
+Xorg session on either, since neither VM has one installed.
+
+## Run 4: 2026-10-17, by hand and unattended
+
+The third session of `scripts/flatpak-check` (steps 16 to 18), for S13-T10,
+on the Flatpak built with its change, installed over the earlier setup. The
+Plasma VM has no gvfs, as Plasma desktops often do not.
+
+| Check | GNOME | Plasma |
+|---|---|---|
+| A USB drive in the wizard's list | pass | pass: mounted by Plasma, chosen, and backed up to |
+| SMB through the wizard | pass: sign-in, the share's row selected | pass: without gvfs it names what to install; with gvfs-smb and gvfs-fuse installed and Backtrack opened again, sign-in and the share's row selected |
+| SMB destination through gvfs, unattended (`scripts/matrix-check`) | run 2 | pass, with gvfs-smb and gvfs-fuse installed for the row |
+
+The drive on GNOME was listed once it was mounted: GNOME did not mount it by
+itself when it was plugged in just after login, and the wizard lists mounted
+drives only, as it always has. Step 18 now mounts it through gvfs when GNOME
+has not.
+
+### Found and fixed during the run
+
+- gvfs-smb alone does not make a share usable: Fedora's mounts it with no
+  folder, which Borg needs, unless gvfs-fuse is installed too, and gvfs-fuse
+  added to a gvfs already running takes effect only at the next login. The
+  wizard's advice names both packages, a share that mounts with no folder
+  says so, and the RPM and the deb recommend gvfs-fuse as well.
+
 ## Run 3: 2026-10-13, by hand
 
 The second session of `scripts/flatpak-check` (steps 9 to 15), for the rows

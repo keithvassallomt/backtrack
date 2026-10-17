@@ -234,6 +234,10 @@ All notable changes to Backtrack are documented here. This project adheres to
   others; not GNOME). It says when the last backup was, asks for attention
   only when backups are at risk or stopped, and offers Back Up Now, Pause
   Backups, Resume Backups and Open Backtrack. It starts at login.
+- On a desktop without GVfs, which many Plasma installs leave out, the wizard
+  still finds a drive the desktop has mounted. A network address it cannot
+  open says what to install for it, and that a share mounted another way can
+  be chosen as a folder instead.
 - A folder with nothing to show now says why: it is not one of the folders
   Backtrack backs up (with a button to add it), it will be in the next
   backup, or it was not in the latest one and may be excluded or on another

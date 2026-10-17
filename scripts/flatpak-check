@@ -4,8 +4,8 @@
 #
 # The Flatpak checks that need a person at a VM's screen: S13-T1's wizard,
 # S12-T4's Background Apps entry, S14-T2's notification click, S14-T5's Fix
-# page, S14-T4's integrations, S14-T3's tray, and the S13-T3 matrix rows they
-# cover. Each step sets the VM up, says what to do there, and checks what it
+# page, S14-T4's integrations, S14-T3's tray, S13-T10's drives and shares on a
+# desktop without gvfs, and the S13-T3 matrix rows they cover. Each step sets the VM up, says what to do there, and checks what it
 # can afterwards; nothing needs pasting.
 #
 #   scripts/flatpak-check setup     build the Flatpak, start the GNOME VM, install it fresh
@@ -21,6 +21,18 @@
 #   scripts/flatpak-check resume kde     move to the Plasma VM, ready for 11 to 15
 #   scripts/flatpak-check 11 … 15        folder actions, Restore To…, a notification, the
 #                                        Fix page, a drive in the wizard
+#   scripts/flatpak-check done
+#
+# A third session, S13-T10's, on a build made since (just flatpak, then
+# just flatpak-bundle), installed over the first session's setup:
+#
+#   scripts/flatpak-check resume kde     start the Plasma VM, which has no gvfs
+#   scripts/flatpak-check update         install the last build, keeping its setup
+#   scripts/flatpak-check 16 … 17        a drive Plasma mounted, backed up to; an smb://
+#                                        address without gvfs, then with it
+#   scripts/flatpak-check resume gnome
+#   scripts/flatpak-check update
+#   scripts/flatpak-check 18             the drive and the share on GNOME, unchanged
 #   scripts/flatpak-check done
 #
 # scripts/matrix-check runs the matrix rows that need nobody at the screen.
@@ -113,6 +125,57 @@ systemctl --user start backtrackd.service
 EOF
 }
 
+# A Samba share for the wizard to connect to: smb://localhost/backtrack-check,
+# user keith, password "backtrack check".
+share_up() {
+    on 'bash -s' <<'EOF'
+set -eu
+dir=/srv/backtrack-check
+sudo -n mkdir -p $dir
+sudo -n chown "$USER:" $dir
+if selinuxenabled 2>/dev/null; then sudo -n chcon -t samba_share_t $dir; fi
+grep -qx '\[backtrack-check\]' /etc/samba/smb.conf ||
+    printf '\n[backtrack-check]\n   path = %s\n   writable = yes\n   valid users = %s\n\n' $dir "$USER" |
+    sudo -n tee -a /etc/samba/smb.conf >/dev/null
+printf 'backtrack check\nbacktrack check\n' | sudo -n smbpasswd -s -a "$USER" >/dev/null
+sudo -n systemctl restart smb
+EOF
+}
+
+share_down() {
+    on 'bash -s' <<'EOF'
+set -u
+flatpak run --command=gio tools.backtrack.Backtrack mount -u smb://localhost/backtrack-check 2>/dev/null
+sudo -n rm -rf /srv/backtrack-check
+sudo -n sed -i '/^\[backtrack-check\]$/,/^$/d' /etc/samba/smb.conf
+sudo -n systemctl restart smb
+EOF
+}
+
+# The Flatpak back on the Smoke backups the first session made, and the
+# passphrase of the repository it was moved to forgotten.
+back_on_smoke() {
+    on 'bash -s' <<'EOF'
+set -u
+APP=tools.backtrack.Backtrack
+OBJ=/tools/backtrack/Backtrack/Daemon1
+smoke=$(ls -d ~/Smoke/Backups/Backtrack/* | head -1)
+moved=$(busctl --user call $APP.Daemon1 $OBJ $APP.Daemon1 GetConfigKey s storage.repository | sed 's/^s "//; s/"$//')
+busctl --user call $APP.Daemon1 $OBJ $APP.Daemon1 ImportRepo ss "$smoke" "$(secret-tool lookup app-id $APP repo-id "$smoke")" >/dev/null &&
+    echo "back on $smoke"
+[ "$moved" != "$smoke" ] && secret-tool clear app-id $APP repo-id "$moved" 2>/dev/null
+true
+EOF
+}
+
+# S13-T10 is about a desktop without gvfs; the Plasma VM is one.
+no_gvfs() {
+    if on 'rpm -q gvfs >/dev/null 2>&1'; then
+        echo "$(current) has gvfs installed, and this check needs it without." >&2
+        exit 1
+    fi
+}
+
 # Pick up a VM whose Flatpak a first session set up.
 resume() {
     local vm="$1"
@@ -130,10 +193,18 @@ resume() {
 case "${1:-}" in
 resume)
     case "${2:-}" in
-    gnome) resume "$GNOME"; echo "Then: scripts/flatpak-check 9" ;;
-    kde) resume "$KDE"; echo "Then: scripts/flatpak-check 11" ;;
+    gnome) resume "$GNOME"; echo "Then: scripts/flatpak-check 9, or for S13-T10 update, then 18" ;;
+    kde) resume "$KDE"; echo "Then: scripts/flatpak-check 11, or for S13-T10 update, then 16" ;;
     *) echo "usage: scripts/flatpak-check resume gnome|kde" >&2; exit 2 ;;
     esac
+    ;;
+update)
+    say "Installing the last build on $(current), keeping its setup…"
+    scp -q "$ROOT/target/flatpak/backtrack.flatpak" "$("$ROOT/scripts/vm" address "$(current)")":backtrack.flatpak
+    on 'flatpak kill tools.backtrack.Backtrack 2>/dev/null
+        flatpak install --user -y --noninteractive --reinstall ~/backtrack.flatpak >/dev/null 2>&1 &&
+        echo "installed: $(flatpak info --user tools.backtrack.Backtrack | grep -E "^ *Commit" | awk "{print \$2}" | cut -c1-12)"'
+    daemon GetStatus | awk '{print "ready; the Flatpak reports", $2}'
     ;;
 setup)
     say "Building the Flatpak and installing it fresh on the GNOME VM…"
@@ -296,18 +367,7 @@ EOF
     ;;
 10)
     say "10. An SMB share through the wizard (S13-T3), and its folder button"
-    on 'bash -s' <<'EOF'
-set -eu
-dir=/srv/backtrack-check
-sudo -n mkdir -p $dir
-sudo -n chown "$USER:" $dir
-if selinuxenabled 2>/dev/null; then sudo -n chcon -t samba_share_t $dir; fi
-grep -qx '\[backtrack-check\]' /etc/samba/smb.conf ||
-    printf '\n[backtrack-check]\n   path = %s\n   writable = yes\n   valid users = %s\n\n' $dir "$USER" |
-    sudo -n tee -a /etc/samba/smb.conf >/dev/null
-printf 'backtrack check\nbacktrack check\n' | sudo -n smbpasswd -s -a "$USER" >/dev/null
-sudo -n systemctl restart smb
-EOF
+    share_up
     cat <<'EOF'
 A share is ready at smb://localhost/backtrack-check: user keith, password
 "backtrack check".
@@ -384,6 +444,71 @@ EOF
     want "Was BTMATRIX listed as an External drive, marked Detected?"
     echo "Then: scripts/flatpak-check verify 15   (it unplugs the drive)"
     ;;
+16)
+    say "16. A drive Plasma mounted, without gvfs: chosen and backed up to (S13-T10)"
+    no_gvfs
+    "$ROOT/scripts/vm" drive-in "$(current)"
+    cat <<'EOF'
+A USB drive labelled BTMATRIX has just been plugged in. This VM has no gvfs.
+  a. Open Disks & Devices in the system tray and mount BTMATRIX.
+  b. In Backtrack: menu → Preferences → General → Run Welcome Wizard Again….
+     Keep the folders as they are.
+  c. Where backups go: choose the External drive BTMATRIX, Continue, Use New
+     Location, any strong passphrase, save the recovery key in Smoke, and
+     start the first backup.
+EOF
+    want "Was BTMATRIX listed as an External drive, marked Detected, with its free space?" \
+         "Did the first backup to it finish?"
+    echo "Then: scripts/flatpak-check verify 16   (it puts the Smoke backups back and unplugs the drive)"
+    ;;
+17)
+    say "17. An smb:// address without gvfs, then with it (S13-T10)"
+    no_gvfs
+    share_up
+    on 'rpm -qa | sort > ~/.cache/flatpak-check-rpms'
+    cat <<'EOF'
+A share is ready at smb://localhost/backtrack-check (user keith, password
+"backtrack check"). This VM has no gvfs.
+  a. In Backtrack: menu → Preferences → General → Run Welcome Wizard Again….
+  b. Where backups go: Network/local folder. Type
+     smb://localhost/backtrack-check and Connect.
+EOF
+    read -r -p "Press Enter once you have read what it says… " _
+    say "Installing gvfs-smb and gvfs-fuse on the VM, as it advised…"
+    on 'sudo -n dnf install -y -q gvfs-smb gvfs-fuse >/dev/null 2>&1 && echo "installed: $(rpm -q gvfs-smb gvfs-fuse | tr "\n" " ")"'
+    cat <<'EOF'
+  c. Close the wizard and Backtrack's window, then open Backtrack again from
+     the launcher.
+  d. Run Welcome Wizard Again…, Network/local folder, the same address, and
+     Connect. Sign in as above when it asks.
+  e. Close the wizard there, without going on.
+EOF
+    want "Before the install, did it say this computer can't open smb:// addresses, name GVfs's SMB support and the command sudo dnf install gvfs-smb gvfs-fuse, and say a share mounted another way can be chosen as a folder?" \
+         "After opening Backtrack again, did Connect ask you to sign in, and then select the share's row?"
+    echo "Then: scripts/flatpak-check verify 17   (it takes gvfs off the VM again)"
+    ;;
+18)
+    say "18. The drive and the share on GNOME, unchanged (S13-T10)"
+    share_up
+    "$ROOT/scripts/vm" drive-in "$(current)"
+    # GNOME does not always mount a drive plugged in just after login; gvfs
+    # mounts it from the session the same way, as udisks does for the shell.
+    on 'for _ in 1 2 3 4 5 6 7 8 9 10; do findmnt -rn LABEL=BTMATRIX >/dev/null && exit 0; sleep 1; done
+        gio mount -d "$(readlink -f /dev/disk/by-label/BTMATRIX)" >/dev/null'
+    cat <<'EOF'
+A USB drive labelled BTMATRIX has just been plugged in, and a share is ready
+at smb://localhost/backtrack-check (user keith, password "backtrack check").
+  a. If GNOME opens the drive in Files, close that.
+  b. In Backtrack: menu → Preferences → General → Run Welcome Wizard Again….
+     Get Started, and go on to "Where should backups go?".
+  c. Network/local folder: type smb://localhost/backtrack-check and Connect,
+     signing in when asked.
+  d. Close the wizard there, without going on.
+EOF
+    want "Was BTMATRIX listed as an External drive, marked Detected?" \
+         "Did Connect ask you to sign in, and then select the share's row?"
+    echo "Then: scripts/flatpak-check verify 18   (it unplugs the drive and takes the share down)"
+    ;;
 verify)
     case "${2:-}" in
     1)
@@ -410,27 +535,41 @@ verify)
     10)
         daemon GetStatus | awk '{print "health:", $2, " last backup:", $3}'
         daemon GetConfigKey s storage.repository | sed 's/^s /repository: /'
-        # Back on the Smoke backups, the share's own passphrase forgotten.
-        on 'bash -s' <<'EOF'
-set -u
-APP=tools.backtrack.Backtrack
-OBJ=/tools/backtrack/Backtrack/Daemon1
-smoke=$(ls -d ~/Smoke/Backups/Backtrack/* | head -1)
-share=$(busctl --user call $APP.Daemon1 $OBJ $APP.Daemon1 GetConfigKey s storage.repository | sed 's/^s "//; s/"$//')
-busctl --user call $APP.Daemon1 $OBJ $APP.Daemon1 ImportRepo ss "$smoke" "$(secret-tool lookup app-id $APP repo-id "$smoke")" >/dev/null &&
-    echo "back on $smoke"
-secret-tool clear app-id $APP repo-id "$share" 2>/dev/null
-flatpak run --command=gio $APP mount -u smb://localhost/backtrack-check 2>/dev/null
-sudo -n rm -rf /srv/backtrack-check
-sudo -n sed -i '/^\[backtrack-check\]$/,/^$/d' /etc/samba/smb.conf
-sudo -n systemctl restart smb
-EOF
+        back_on_smoke
+        share_down
         ;;
     15)
         on 'findmnt -rn -o TARGET LABEL=BTMATRIX | sed "s/^/mounted at /" || echo "not mounted"'
         "$ROOT/scripts/vm" drive-out "$(current)" --discard
         ;;
-    *) echo "usage: scripts/flatpak-check verify 1…11 or 15" >&2; exit 2 ;;
+    16)
+        daemon GetStatus | awk '{print "health:", $2, " last backup:", $3}'
+        daemon GetConfigKey s storage.repository | sed 's/^s /repository: /'
+        on 'find /run/media/$USER/BTMATRIX/Backtrack -maxdepth 2 -name config -printf "a repository on the drive: %h\n" 2>/dev/null'
+        back_on_smoke
+        on 'sudo -n umount /run/media/$USER/BTMATRIX 2>/dev/null; sudo -n rmdir /run/media/$USER/BTMATRIX 2>/dev/null; true'
+        "$ROOT/scripts/vm" drive-out "$(current)" --discard
+        ;;
+    17)
+        on 'flatpak run --command=gio tools.backtrack.Backtrack mount -l 2>/dev/null | grep -i "backtrack-check" | sed "s/^ */mounted: /" || echo "the share is not mounted"'
+        on 'ls -d /run/user/$(id -u)/gvfs/smb-share:*share=backtrack-check 2>/dev/null | sed "s/^/its folder: /" || echo "the share has no folder"'
+        share_down
+        on 'bash -s' <<'EOF'
+set -u
+added=$(comm -13 ~/.cache/flatpak-check-rpms <(rpm -qa | sort))
+[ -n "$added" ] && sudo -n dnf remove -y -q $added >/dev/null 2>&1
+pkill -u "$USER" -f /usr/libexec/gvfs
+rm -f ~/.cache/flatpak-check-rpms
+rpm -q gvfs >/dev/null 2>&1 && echo "gvfs is still installed" || echo "gvfs is off the VM again"
+EOF
+        ;;
+    18)
+        on 'flatpak run --command=gio tools.backtrack.Backtrack mount -l 2>/dev/null | grep -i "backtrack-check" | sed "s/^ */mounted: /" || echo "the share is not mounted"'
+        share_down
+        on 'gio mount -u /run/media/$USER/BTMATRIX 2>/dev/null; true'
+        "$ROOT/scripts/vm" drive-out "$(current)" --discard
+        ;;
+    *) echo "usage: scripts/flatpak-check verify 1…11 or 15…18" >&2; exit 2 ;;
     esac
     ;;
 done)

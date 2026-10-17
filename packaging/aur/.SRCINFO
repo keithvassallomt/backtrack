@@ -25,6 +25,7 @@ pkgname = backtrack
 	depends = pango
 	optdepends = backtrack-nautilus: Restore Previous Version in GNOME Files
 	optdepends = backtrack-dolphin: Restore Previous Version in Dolphin
+	optdepends = gvfs-smb: SMB shares as backup destinations
 
 pkgname = backtrack-nautilus
 	pkgdesc = Restore Previous Version in GNOME Files, for Backtrack

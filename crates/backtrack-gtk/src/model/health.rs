@@ -12,6 +12,7 @@
 use backtrack_core::dbus::{Reason, Status};
 use gtk4::glib;
 
+use super::distro::{self, Family};
 use super::format;
 
 /// How long `DEGRADED` is left to Preferences before the window mentions it.
@@ -212,30 +213,12 @@ pub fn share_uri(repository: &str) -> Option<String> {
 
 /// How to install Borg on this distribution, from `/etc/os-release`. `None`
 /// when it is one this does not know, which is said in general terms instead.
-pub fn install_command(os_release: &str) -> Option<&'static str> {
-    let field = |key: &str| {
-        os_release.lines().find_map(|line| {
-            let value = line.strip_prefix(key)?.strip_prefix('=')?;
-            Some(value.trim_matches('"').to_string())
-        })
-    };
-    let ids = format!(
-        "{} {}",
-        field("ID").unwrap_or_default(),
-        field("ID_LIKE").unwrap_or_default()
-    );
-    let family = |name: &str| ids.split_whitespace().any(|id| id == name);
-    if family("fedora") || family("rhel") {
-        Some("sudo dnf install borgbackup")
-    } else if family("debian") || family("ubuntu") {
-        Some("sudo apt install borgbackup")
-    } else if family("arch") {
-        Some("sudo pacman -S borg")
-    } else if family("suse") || family("opensuse") {
-        Some("sudo zypper install borgbackup")
-    } else {
-        None
-    }
+pub fn install_command(os_release: &str) -> Option<String> {
+    let family = distro::family(os_release)?;
+    Some(family.install(match family {
+        Family::Arch => "borg",
+        Family::Fedora | Family::Debian | Family::Suse => "borgbackup",
+    }))
 }
 
 /// What the at-risk fix says about why nothing has been backed up.
@@ -483,7 +466,7 @@ mod tests {
             ("ID=gentoo\n", None),
             ("", None),
         ] {
-            assert_eq!(install_command(release), command, "{release:?}");
+            assert_eq!(install_command(release).as_deref(), command, "{release:?}");
         }
     }
 

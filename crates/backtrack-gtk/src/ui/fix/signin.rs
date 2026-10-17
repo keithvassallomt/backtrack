@@ -98,6 +98,10 @@ pub(super) async fn sign_in(
                 .to_string(),
         );
     };
+    if let Some(message) = crate::ui::wizard::unsupported_address(&address) {
+        info!(address, "this computer has nothing that can open the share");
+        return Err(message);
+    }
     match gio::File::for_uri(&address)
         .mount_enclosing_volume_future(gio::MountMountFlags::NONE, Some(&operation))
         .await

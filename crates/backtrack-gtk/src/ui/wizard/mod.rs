@@ -19,7 +19,7 @@ mod destination;
 mod everything;
 mod first_backup;
 
-pub use destination::display;
+pub use destination::{display, unsupported_address};
 mod import;
 mod protect;
 mod welcome;

@@ -59,7 +59,8 @@ build() {
 package_backtrack() {
   depends=(borg cairo glib2 glibc gtk4 hicolor-icon-theme libadwaita libgcc pango)
   optdepends=('backtrack-nautilus: Restore Previous Version in GNOME Files'
-              'backtrack-dolphin: Restore Previous Version in Dolphin')
+              'backtrack-dolphin: Restore Previous Version in Dolphin'
+              'gvfs-smb: SMB shares as backup destinations')
 
   cd "$pkgbase-$_version"
   install -Dm755 -t "$pkgdir/usr/bin" \

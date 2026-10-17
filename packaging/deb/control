@@ -19,6 +19,7 @@ Rules-Requires-Root: no
 Package: backtrack
 Architecture: any
 Depends: ${shlibs:Depends}, ${misc:Depends}, borgbackup (>= 1.2)
+Recommends: gvfs-backends, gvfs-fuse
 Suggests: backtrack-nautilus, backtrack-dolphin
 Description: browse your files as they were
  Backtrack keeps your files backed up and lets you move back through time to

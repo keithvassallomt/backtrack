@@ -34,6 +34,10 @@ Requires:       borgbackup >= 1.2
 Requires:       hicolor-icon-theme
 Recommends:     (%{name}-nautilus if nautilus)
 Recommends:     (%{name}-dolphin if dolphin)
+# SMB shares as destinations: the wizard mounts them through GVfs, which a
+# Plasma desktop often lacks, and Borg reaches them through GVfs's FUSE folder.
+Recommends:     gvfs-smb
+Recommends:     gvfs-fuse
 
 %description
 Backtrack keeps your files backed up and lets you move back through time to
