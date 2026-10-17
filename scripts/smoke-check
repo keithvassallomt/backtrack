@@ -1,0 +1,373 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-3.0-or-later
+# SPDX-FileCopyrightText: 2026 Keith Vassallo <keith@vassallo.cloud>
+#
+# packaging/SMOKE-TEST.md's seven checks of a native package, by hand, one
+# step at a time: each step sets things up, says what to do at the screen, and
+# afterwards checks what it can. The RPM is tried on a development VM as a new
+# user, `smoke`, whose home has none of the development build's units and
+# none of the Flatpak; the AUR package on this computer, in Keith's own
+# account, which has no Backtrack of any kind in it to begin with.
+#
+#   scripts/smoke-check rpm gnome|kde   build the RPMs, start the VM, add the user
+#                                       smoke and install the packages for it
+#   scripts/smoke-check reinstall       after a fix: rebuild the RPMs and install them
+#                                       over the ones on the VM
+#   scripts/smoke-check aur             build the AUR packages here and say how to
+#                                       install them
+#   scripts/smoke-check 1 … 7           a check: set it up, say what to do
+#   scripts/smoke-check verify 1 … 7    check what can be checked from outside
+#   scripts/smoke-check done            take it all away again
+#
+# Run from the checkout. The VMs are the development ones (docs/development-vms.md).
+
+set -euo pipefail
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+STATE="$ROOT/target/smoke-check.target"
+GNOME="fedora45 (GNOME)"
+KDE="fedora45 (KDE)"
+USER_NAME=smoke
+PASSWORD="smoke check"
+BUS=tools.backtrack.Backtrack.Daemon1
+OBJ=/tools/backtrack/Backtrack/Daemon1
+
+say() { printf '\n\033[1m%s\033[0m\n' "$*"; }
+want() { printf '\nWhat I want back:\n'; local i=1; for line in "$@"; do printf '  %d. %s\n' "$i" "$line"; i=$((i + 1)); done; }
+target() { cat "$STATE" 2>/dev/null || { echo "Run scripts/smoke-check rpm gnome|kde, or aur, first." >&2; exit 2; }; }
+here() { [ "$(target)" = here ]; }
+desktop() {
+    case "$(target)" in
+    here) echo here ;;
+    "$GNOME") echo gnome ;;
+    "$KDE") echo kde ;;
+    esac
+}
+
+# A shell command on the computer under test, as the person who administers it.
+on() {
+    if here; then
+        bash -c "$1"
+    else
+        ssh -o BatchMode=yes "$("$ROOT/scripts/vm" address "$(target)")" "$1"
+    fi
+}
+
+# A shell command as the person the packages are tried as, inside their
+# session: their own user units and session bus.
+as_user() {
+    if here; then
+        bash -c "$1"
+    else
+        on "uid=\$(id -u $USER_NAME); sudo -n -u $USER_NAME env XDG_RUNTIME_DIR=/run/user/\$uid \
+DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/\$uid/bus bash -c $(printf '%q' "$1")"
+    fi
+}
+daemon() { as_user "busctl --user call $BUS $OBJ $BUS $*"; }
+home() { if here; then echo "$HOME"; else echo "/home/$USER_NAME"; fi; }
+# The home folder's Smoke files, made by the person they belong to.
+smoke_files() {
+    as_user 'mkdir -p ~/Smoke/Documents/Reports ~/Smoke/Backups ~/Smoke/Restored
+echo "The quarterly report, first draft." > ~/Smoke/Documents/Reports/report.txt
+echo "Notes worth keeping." > ~/Smoke/Documents/notes.txt
+touch -d "2026-01-15 09:30" ~/Smoke/Documents/Reports/report.txt'
+}
+# The RPMs, built unless the ones in target/rpm were built from exactly the
+# files HEAD has: a build starts from nothing and takes minutes.
+build_rpms() {
+    local tree
+    tree="$(git -C "$ROOT" rev-parse 'HEAD^{tree}')"
+    if [ "$(cat "$ROOT/target/rpm/.smoke-tree" 2>/dev/null)" = "$tree" ] &&
+        ls "$ROOT"/target/rpm/RPMS/x86_64/backtrack-[0-9]*.x86_64.rpm >/dev/null 2>&1; then
+        echo "The RPMs in target/rpm are already built from HEAD's files."
+        return
+    fi
+    say "Building the RPMs…"
+    just --justfile "$ROOT/Justfile" rpm >/dev/null
+    echo "$tree" > "$ROOT/target/rpm/.smoke-tree"
+}
+
+file_manager() {
+    case "$(desktop)" in
+    gnome) echo nautilus ;;
+    kde) echo dolphin ;;
+    here) if command -v nautilus >/dev/null; then echo nautilus; elif command -v dolphin >/dev/null; then echo dolphin; else echo none; fi ;;
+    esac
+}
+
+case "${1:-}" in [1-7] | verify | done) target >/dev/null ;; esac
+
+case "${1:-}" in
+rpm)
+    case "${2:-}" in
+    gnome) vm="$GNOME"; integration=nautilus ;;
+    kde) vm="$KDE"; integration=dolphin ;;
+    *) echo "usage: scripts/smoke-check rpm gnome|kde" >&2; exit 2 ;;
+    esac
+    build_rpms
+    echo "$vm" > "$STATE"
+    just --justfile "$ROOT/Justfile" vm-start "$vm" | tail -1
+    address="$("$ROOT/scripts/vm" address "$vm")"
+    ssh -o BatchMode=yes "$address" 'rm -rf ~/smoke-rpms && mkdir ~/smoke-rpms'
+    scp -q "$ROOT"/target/rpm/RPMS/x86_64/backtrack-[0-9]*.x86_64.rpm \
+        "$ROOT"/target/rpm/RPMS/noarch/backtrack-"$integration"-*.noarch.rpm "$address":smoke-rpms/
+    on 'bash -s' <<EOF
+set -eu
+# What the install adds, weak dependencies included, so done takes exactly
+# that away again.
+[ -f ~/.cache/smoke-check-rpms ] || rpm -qa | sort > ~/.cache/smoke-check-rpms
+sudo -n dnf install -y -q ~/smoke-rpms/*.rpm >/dev/null
+rpm -q backtrack backtrack-$integration
+id $USER_NAME >/dev/null 2>&1 || sudo -n useradd -m -c "Smoke Test" $USER_NAME
+echo "$USER_NAME:$PASSWORD" | sudo -n chpasswd
+# GNOME's first-login questions are not what is being tried.
+sudo -n -u $USER_NAME mkdir -p /home/$USER_NAME/.config
+echo yes | sudo -n -u $USER_NAME tee /home/$USER_NAME/.config/gnome-initial-setup-done >/dev/null
+echo "added for the install: \$(comm -13 ~/.cache/smoke-check-rpms <(rpm -qa | sort) | grep -cv '^backtrack')" \
+    "packages besides Backtrack's"
+EOF
+    cat <<EOF
+
+On the VM's screen, log out, and at the login screen sign in as "Smoke Test"
+(user $USER_NAME, password "$PASSWORD"). Let the desktop finish its first
+start: close any welcome window, and accept anything it asks about a keyring
+or wallet.
+EOF
+    echo "Then: scripts/smoke-check 1"
+    ;;
+reinstall)
+    # After a fix found mid-run: the same checks go on with the new build.
+    here && { echo "Here, rebuild with scripts/smoke-check aur and install with pacman -U again." >&2; exit 2; }
+    case "$(desktop)" in gnome) integration=nautilus ;; *) integration=dolphin ;; esac
+    build_rpms
+    say "Installing them over the ones on $(target)…"
+    address="$("$ROOT/scripts/vm" address "$(target)")"
+    ssh -o BatchMode=yes "$address" 'rm -rf ~/smoke-rpms && mkdir ~/smoke-rpms'
+    scp -q "$ROOT"/target/rpm/RPMS/x86_64/backtrack-[0-9]*.x86_64.rpm \
+        "$ROOT"/target/rpm/RPMS/noarch/backtrack-"$integration"-*.noarch.rpm "$address":smoke-rpms/
+    on 'sudo -n dnf reinstall -y -q ~/smoke-rpms/*.rpm >/dev/null && echo "reinstalled: $(rpm -q backtrack)"'
+    as_user 'systemctl --user restart backtrackd.service && echo "the daemon is running the new build"'
+    echo "Close Backtrack's window if it is open; the next one opens on the new build."
+    ;;
+aur)
+    say "Building the AUR packages…"
+    just --justfile "$ROOT/Justfile" aur-build >/dev/null
+    echo here > "$STATE"
+    fm="$(file_manager)"
+    packages="$(ls "$ROOT"/target/aur/backtrack-[0-9]*.pkg.tar.zst)"
+    [ "$fm" != none ] && packages="$packages $(ls "$ROOT"/target/aur/backtrack-"$fm"-[0-9]*.pkg.tar.zst)"
+    cat <<EOF
+
+Install them yourself; pacman needs sudo:
+
+  sudo pacman -U $packages
+
+EOF
+    [ "$fm" = none ] && echo "Neither Nautilus nor Dolphin is installed here, so check 5 does not apply."
+    echo "Then: scripts/smoke-check 1"
+    ;;
+1)
+    say "1. The launcher"
+    cat <<'EOF'
+Open the desktop's application list (Activities on GNOME, the launcher on
+Plasma, your launcher here), find Backtrack, and open it.
+EOF
+    want "Was Backtrack there, with its icon?" "Did it open the Welcome wizard?"
+    echo "Then: scripts/smoke-check verify 1"
+    ;;
+2)
+    say "2. The wizard to a first backup"
+    smoke_files
+    if here; then
+        cat <<'EOF'
+Your home now has a Smoke folder with a little in it.
+  a. In the wizard: Get Started, "Let me choose folders…", Choose Folders…,
+     and pick Smoke → Documents.
+  b. Where backups go: Network/local folder, the folder button at the end of
+     the Address row, and pick Smoke → Backups.
+EOF
+    else
+        "$ROOT/scripts/vm" drive-in "$(target)"
+        # The test drive is made for the VM's own user, and an ext4 drive's
+        # folders belong to whoever made them: without this, smoke may not
+        # write to it, as the wizard rightly says.
+        on 'bash -s' <<EOF
+for _ in \$(seq 30); do [ -e /dev/disk/by-label/BTMATRIX ] && break; sleep 1; done
+dev=\$(readlink -f /dev/disk/by-label/BTMATRIX)
+where=\$(findmnt -rn -o TARGET "\$dev" | head -1)
+if [ -n "\$where" ]; then
+    sudo -n chown $USER_NAME: "\$where"
+else
+    sudo -n mount "\$dev" /mnt && sudo -n chown $USER_NAME: /mnt && sudo -n umount /mnt
+fi
+EOF
+        [ "$(desktop)" = gnome ] && as_user 'for _ in 1 2 3 4 5 6 7 8 9 10; do findmnt -rn LABEL=BTMATRIX >/dev/null && exit 0; sleep 1; done
+gio mount -d "$(readlink -f /dev/disk/by-label/BTMATRIX)" >/dev/null 2>&1; true'
+        cat <<'EOF'
+The home folder now has a Smoke folder with a little in it, and a USB drive
+labelled BTMATRIX is plugged in.
+EOF
+        [ "$(desktop)" = kde ] && echo "  First, open Disks & Devices in the system tray and mount BTMATRIX."
+        cat <<'EOF'
+  a. In the wizard: Get Started, "Let me choose folders…", Choose Folders…,
+     and pick Smoke → Documents.
+  b. Where backups go: the External drive BTMATRIX.
+EOF
+    fi
+    cat <<'EOF'
+  c. Any passphrase that reads "strong"; leave Remember it on.
+  d. Save Recovery Key…, and save it in Smoke.
+  e. Start the first backup, and wait for its notification.
+EOF
+    want "Did the first backup finish, with a notification?"
+    echo "Then: scripts/smoke-check verify 2"
+    ;;
+3)
+    say "3. Browse and restore"
+    as_user 'rm -f ~/Smoke/Documents/Reports/report.txt'
+    cat <<'EOF'
+Smoke → Documents → Reports → report.txt has just been deleted.
+In Backtrack's window, go to Reports, find report.txt at the last backup, and
+restore it (Restore, not Restore To…).
+EOF
+    want "Did it say the file was restored?"
+    echo "Then: scripts/smoke-check verify 3"
+    ;;
+4)
+    say "4. At login"
+    if here; then
+        echo "Log out of your session and back in."
+    else
+        echo "Log out of Smoke Test and back in as Smoke Test."
+    fi
+    echo "Run in background is on by default; leave it as it is."
+    want "Did the desktop come back without anything from Backtrack asking for attention?"
+    echo "Then: scripts/smoke-check verify 4"
+    ;;
+5)
+    say "5. The file manager"
+    case "$(file_manager)" in
+    nautilus)
+        as_user 'nautilus -q >/dev/null 2>&1; true'
+        cat <<'EOF'
+Open Files, go to Smoke → Documents → Reports, right-click report.txt, and
+click Restore Previous Version….
+EOF
+        ;;
+    dolphin)
+        cat <<'EOF'
+Open Dolphin, go to Smoke → Documents → Reports, right-click report.txt, and
+click Backtrack ▸ Restore Previous Version….
+EOF
+        ;;
+    none) echo "Neither Nautilus nor Dolphin is installed here: check 5 does not apply."; exit 0 ;;
+    esac
+    echo "Then, in Backtrack: menu → Preferences → General."
+    want "Was the item in the menu?" "Did it open Backtrack's window with report.txt selected?" \
+         "Did Preferences → General say the file manager's integration is installed (from the package, with no Install button)?"
+    echo "Then: scripts/smoke-check 6"
+    ;;
+6)
+    say "6. The tray"
+    if [ "$(desktop)" = gnome ]; then
+        echo "GNOME has no system tray, so check 6 does not apply here."
+        echo "Then: scripts/smoke-check 7"
+        exit 0
+    fi
+    daemon GetStatus | awk '{print $3}' > "$ROOT/target/smoke-check.last"
+    cat <<'EOF'
+  a. The system tray shows Backtrack's icon. Open its menu.
+  b. Back Up Now, and wait for the menu's first line to change.
+EOF
+    want "Was the icon there after the login in check 4?" "Did Back Up Now run a backup?"
+    echo "Then: scripts/smoke-check verify 6"
+    ;;
+7)
+    say "7. Removing it"
+    if here; then
+        cat <<EOF
+Remove the packages yourself:
+
+  sudo pacman -R $(pacman -Qq | grep -x -e backtrack -e backtrack-nautilus -e backtrack-dolphin | tr '\n' ' ')
+
+then log out and back in.
+EOF
+    else
+        on 'sudo -n dnf remove -y -q backtrack backtrack-nautilus backtrack-dolphin >/dev/null 2>&1; rpm -q backtrack >/dev/null 2>&1 && echo "backtrack is still installed" || echo "the packages are removed"'
+        echo "Log out of Smoke Test and back in as Smoke Test."
+    fi
+    want "Did the desktop come back with nothing of Backtrack's on screen (no tray icon, no notification)?"
+    echo "Then: scripts/smoke-check verify 7"
+    ;;
+verify)
+    case "${2:-}" in
+    1) as_user "busctl --user list --no-legend | awk '\$1 == \"tools.backtrack.Backtrack\" && \$2 != \"-\" {print \"the window is running, pid\", \$2}' | grep . || echo 'no window running'" ;;
+    2)
+        daemon GetStatus | awk '{print "health:", $2, " last backup:", $3}'
+        daemon GetConfigKey s storage.repository | sed 's/^s /repository: /'
+        as_user 'ls ~/Smoke/*.txt ~/Smoke/*.key 2>/dev/null | sed "s/^/recovery key: /"; secret-tool search app-id tools.backtrack.Backtrack 2>/dev/null | grep -m1 "^label" || echo "no passphrase in the keyring"'
+        ;;
+    3) as_user 'f=~/Smoke/Documents/Reports/report.txt; [ -f "$f" ] && echo "restored: $(cat "$f")" && echo "modified: $(date -r "$f" "+%Y-%m-%d %H:%M") (the original was 2026-01-15 09:30)" || echo "report.txt is not back"' ;;
+    4)
+        as_user 'echo "backtrackd is $(systemctl --user is-active backtrackd.service) and $(systemctl --user is-enabled backtrackd.service)"'
+        daemon GetStatus | awk '{print "health:", $2}'
+        ;;
+    6)
+        daemon GetStatus | awk -v before="$(cat "$ROOT/target/smoke-check.last" 2>/dev/null)" \
+            '{print ($3 > before ? "a new backup ran: " : "no new backup: ") $3 " (before: " before ")"}'
+        ;;
+    7)
+        as_user 'pgrep -a -u "$(id -u)" -x -f "/usr/bin/backtrack(d|-tray|-gtk).*" && echo "Backtrack is still running" || echo "nothing of Backtrack is running"
+echo "left in the home folder:"; ls -d ~/.local/share/backtrack ~/.config/autostart/*backtrack* ~/.config/systemd/user/*/backtrackd.service 2>/dev/null | sed "s/^/  /" || true'
+        # The repository's own config file is what makes it one. On a VM it is
+        # in smoke's mount, which only smoke and root can read.
+        if here; then
+            found=$(ls -d ~/Smoke/Backups/Backtrack/*/config 2>/dev/null || true)
+        else
+            found=$(on "sudo -n sh -c 'ls -d /run/media/$USER_NAME/BTMATRIX/Backtrack/*/config' 2>/dev/null" || true)
+        fi
+        if [ -n "$found" ]; then
+            echo "$found" | sed 's|/config$||; s/^/the backups are still there: /'
+        else
+            echo "no backups found where they were (or the drive is not mounted)"
+        fi
+        ;;
+    *) echo "usage: scripts/smoke-check verify 1…4, 6 or 7" >&2; exit 2 ;;
+    esac
+    ;;
+done)
+    if here; then
+        cat <<'EOF'
+Take the rest away yourself, if anything of Backtrack's is still installed:
+
+  sudo pacman -R backtrack backtrack-nautilus backtrack-dolphin
+
+EOF
+        rm -rf ~/Smoke ~/.local/share/backtrack
+        rm -f ~/.config/autostart/backtrack*.desktop ~/.config/systemd/user/*/backtrackd.service
+        secret-tool clear app-id tools.backtrack.Backtrack 2>/dev/null || true
+        echo "Removed ~/Smoke, Backtrack's data and settings, and its keyring entry."
+    else
+        on 'bash -s' <<EOF
+set -u
+sudo -n loginctl terminate-user $USER_NAME 2>/dev/null; sleep 2
+sudo -n umount /run/media/$USER_NAME/BTMATRIX 2>/dev/null
+# The session takes a moment to wind down after it is ended.
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+    sudo -n userdel -r $USER_NAME 2>/dev/null && { echo "the user $USER_NAME is removed"; break; }
+    sleep 1
+done
+added=\$(comm -13 ~/.cache/smoke-check-rpms <(rpm -qa | sort))
+[ -n "\$added" ] && sudo -n dnf remove -y -q \$added >/dev/null 2>&1
+rm -rf ~/smoke-rpms ~/.cache/smoke-check-rpms
+rpm -q backtrack >/dev/null 2>&1 && echo "backtrack is still installed" || echo "the packages and what they brought in are removed"
+EOF
+        "$ROOT/scripts/vm" drive-out "$(target)" --discard 2>/dev/null || true
+        just --justfile "$ROOT/Justfile" vm-stop "$(target)" | tail -1
+    fi
+    rm -f "$STATE" "$ROOT/target/smoke-check.last"
+    ;;
+*)
+    sed -n '/^#   scripts/,/^$/s/^#   //p' "$0" >&2
+    exit 2
+    ;;
+esac

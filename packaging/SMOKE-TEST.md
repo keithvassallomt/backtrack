@@ -4,6 +4,8 @@ A fresh install, checked by hand on a clean machine or a new user account:
 the same few steps whichever way Backtrack was installed. The builds and their
 installs inside containers are machine-checked (`just rpm`, `just deb`,
 `just aur-build`, `just flatpak`); this is the part a person looks at.
+`scripts/smoke-check` walks through it one check at a time: the RPM on a
+development VM as a new user, the AUR package on the computer it is run on.
 
 ## Installing
 
