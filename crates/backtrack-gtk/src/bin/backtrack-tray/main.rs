@@ -27,6 +27,7 @@ mod tray;
 use std::process::ExitCode;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::time::Duration;
 
 use clap::Parser;
 use futures::stream::{self, StreamExt};
@@ -127,6 +128,13 @@ async fn run() -> ExitCode {
         Arc::clone(&refresh),
         Arc::clone(&busy),
     ));
+    if let Ok(program) = std::env::current_exe() {
+        tokio::spawn(leave_when_gone(
+            program,
+            LOOK_FOR_PROGRAM_EVERY,
+            Arc::clone(&quit),
+        ));
+    }
     refresh.notify_one();
     loop {
         tokio::select! {
@@ -146,6 +154,38 @@ async fn run() -> ExitCode {
     handle.shutdown().await;
     info!("tray icon closed");
     ExitCode::SUCCESS
+}
+
+/// How often the tray looks for its own program; see [`leave_when_gone`].
+const LOOK_FOR_PROGRAM_EVERY: Duration = Duration::from_secs(60);
+
+/// Leave once `program`, this tray's own, is gone from where it was started:
+/// Backtrack has been uninstalled under it.
+///
+/// Nothing else ends a tray left running by an uninstall. Its autostart file
+/// goes with the package, and with it the unit that would have stopped the
+/// tray with the session, so after logging out and straight back in the tray
+/// ran on with no icon and no program behind it until the user's systemd
+/// stopped. An upgrade puts the new program where the old one was, so the
+/// path never stops existing; a miss is looked at again a few seconds later,
+/// so a package manager mid-write is not taken for a removal.
+async fn leave_when_gone(program: std::path::PathBuf, every: Duration, quit: Arc<Notify>) {
+    let mut looks = tokio::time::interval(every);
+    loop {
+        looks.tick().await;
+        if program.exists() {
+            continue;
+        }
+        tokio::time::sleep(Duration::from_secs(5)).await;
+        if !program.exists() {
+            info!(
+                program = %program.display(),
+                "Backtrack has been uninstalled; the tray icon leaves with it"
+            );
+            quit.notify_one();
+            return;
+        }
+    }
 }
 
 /// Wake the tray whenever what it says may have changed: the health state,
@@ -184,5 +224,65 @@ async fn follow(
     ]);
     while events.next().await.is_some() {
         refresh.notify_one();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const EVERY: Duration = Duration::from_secs(60);
+
+    #[tokio::test(start_paused = true)]
+    async fn the_tray_leaves_once_its_program_is_uninstalled() {
+        let dir = tempfile::tempdir().unwrap();
+        let program = dir.path().join("backtrack-tray");
+        std::fs::write(&program, b"old").unwrap();
+        let quit = Arc::new(Notify::new());
+        let watcher = tokio::spawn(leave_when_gone(program.clone(), EVERY, Arc::clone(&quit)));
+
+        tokio::time::sleep(Duration::from_secs(600)).await;
+        assert!(
+            !watcher.is_finished(),
+            "ten minutes installed, and still there"
+        );
+
+        std::fs::remove_file(&program).unwrap();
+        tokio::time::timeout(2 * EVERY, quit.notified())
+            .await
+            .expect("left within a couple of looks");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn an_upgrade_is_not_an_uninstall() {
+        // A package manager writes the new program beside the old one and
+        // renames it over, so the path is there before, during and after.
+        let dir = tempfile::tempdir().unwrap();
+        let program = dir.path().join("backtrack-tray");
+        std::fs::write(&program, b"old").unwrap();
+        let quit = Arc::new(Notify::new());
+        let watcher = tokio::spawn(leave_when_gone(program.clone(), EVERY, Arc::clone(&quit)));
+
+        let new = dir.path().join(".backtrack-tray.new");
+        std::fs::write(&new, b"new").unwrap();
+        std::fs::rename(&new, &program).unwrap();
+        tokio::time::sleep(10 * EVERY).await;
+        assert!(!watcher.is_finished(), "an upgraded tray stays");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_program_missing_for_a_moment_is_not_an_uninstall() {
+        let dir = tempfile::tempdir().unwrap();
+        let program = dir.path().join("backtrack-tray");
+        let quit = Arc::new(Notify::new());
+        // Missing at the first look, back before the second.
+        let watcher = tokio::spawn(leave_when_gone(program.clone(), EVERY, Arc::clone(&quit)));
+        tokio::time::sleep(Duration::from_secs(2)).await;
+        std::fs::write(&program, b"new").unwrap();
+        tokio::time::sleep(10 * EVERY).await;
+        assert!(
+            !watcher.is_finished(),
+            "a program back within seconds stays"
+        );
     }
 }
