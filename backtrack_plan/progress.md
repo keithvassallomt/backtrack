@@ -5,13 +5,7 @@
 Steps only Keith can take, kept current as work turns them up. Tick each when
 done; Claude removes ticked items.
 
-- [ ] Launchpad account with the PPA signing key registered, and two PPAs:
-  `backtrack` and `backtrack-testing` (S13-T4, S13-T9). Launchpad may ask for
-  the Ubuntu Code of Conduct to be signed first. The key's fingerprint goes in
-  `packaging/release.toml`.
 - [ ] AUR account with an SSH key (S13-T8, S13-T9).
-- [ ] Check the Launchpad user in `packaging/release.toml`: it is guessed as
-  `keithvassallomt` (S13-T9).
 - [ ] Once the accounts above exist, a release-candidate run as RELEASING.md
   describes: `just bump-version 0.1.0-rc1`, commit, `just release` on the
   branch (S13-T5, S13-T6, S13-T9, S14-T9).

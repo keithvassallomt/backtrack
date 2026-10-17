@@ -15,7 +15,7 @@ testing = "keithvassallo/backtrack-testing"
 release = "ppa:keithvassallomt/backtrack"
 testing = "ppa:keithvassallomt/backtrack-testing"
 # The fingerprint of the key Launchpad knows, which signs every upload.
-key = ""
+key = "961340807274BA22512C249818AEC627FE9C29BC"
 # One upload per Ubuntu series, oldest first: 26.04 LTS is the first that meets
 # Backtrack's GNOME 50 floor. Add each later release as it comes.
 series = [
