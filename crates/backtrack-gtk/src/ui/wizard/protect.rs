@@ -230,14 +230,23 @@ impl Page {
         }
         let strength = model::strength(&self.passphrase.text(), &[&self.wizard.host]);
         self.meter.set_value(f64::from(strength.level));
-        self.meter_label.set_label(strength.label);
-        for label in ["weak", "fair", "good", "strong"] {
+        for label in ["weak", "fair", "good", "strong", "error"] {
             self.meter.remove_css_class(label);
             self.meter_label.remove_css_class(label);
         }
-        if !strength.label.is_empty() {
-            self.meter.add_css_class(strength.label);
-            self.meter_label.add_css_class(strength.label);
+        // Until the two agree, that is the thing to say, in place of how
+        // strong the first one is.
+        let differ = model::passphrases_differ(&self.passphrase.text(), &self.confirm.text());
+        self.meter.set_visible(!differ);
+        if differ {
+            self.meter_label.set_label(model::PASSPHRASES_DIFFER);
+            self.meter_label.add_css_class("error");
+        } else {
+            self.meter_label.set_label(strength.label);
+            if !strength.label.is_empty() {
+                self.meter.add_css_class(strength.label);
+                self.meter_label.add_css_class(strength.label);
+            }
         }
         self.refresh();
     }

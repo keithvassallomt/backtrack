@@ -1220,12 +1220,17 @@ impl Prefs {
             entry.connect_changed(move |_| {
                 let text = new.text();
                 let rating = crate::model::wizard::strength(&text, &[&host]);
-                strength.set_label(rating.label);
-                for label in ["weak", "fair", "good", "strong"] {
+                for label in ["weak", "fair", "good", "strong", "error"] {
                     strength.remove_css_class(label);
                 }
-                if !rating.label.is_empty() {
-                    strength.add_css_class(rating.label);
+                if crate::model::wizard::passphrases_differ(&text, &confirm.text()) {
+                    strength.set_label(crate::model::wizard::PASSPHRASES_DIFFER);
+                    strength.add_css_class("error");
+                } else {
+                    strength.set_label(rating.label);
+                    if !rating.label.is_empty() {
+                        strength.add_css_class(rating.label);
+                    }
                 }
                 dialog.set_response_enabled("change", !text.is_empty() && text == confirm.text());
             });

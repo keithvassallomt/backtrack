@@ -420,6 +420,16 @@ impl Strength {
     pub const SEGMENTS: u32 = 4;
 }
 
+/// What the strength line says instead, while the confirmation differs.
+pub const PASSPHRASES_DIFFER: &str = "The passphrases don't match";
+
+/// Whether to say [`PASSPHRASES_DIFFER`]: something is in the confirmation,
+/// and it is not the passphrase. Otherwise the button stays off with nothing
+/// to say why.
+pub fn passphrases_differ(passphrase: &str, confirm: &str) -> bool {
+    !confirm.is_empty() && confirm != passphrase
+}
+
 /// Rate a passphrase with zxcvbn.
 ///
 /// "Strong" is zxcvbn's top score: more than 10^10 guesses to find, which is
@@ -882,6 +892,21 @@ mod tests {
         let afp = unsupported_address("afp://old/volume", &NO_GVFS, "ID=fedora\n").expect("afp");
         assert!(afp.contains("smb:// or nfs://"), "{afp}");
         assert!(!afp.contains("sudo"), "{afp}");
+    }
+
+    #[test]
+    fn a_confirmation_that_differs_is_said_to() {
+        assert!(
+            !passphrases_differ("correct horse", ""),
+            "nothing typed yet"
+        );
+        assert!(!passphrases_differ("correct horse", "correct horse"));
+        assert!(passphrases_differ("correct horse", "correct hrose"));
+        assert!(
+            passphrases_differ("correct horse", "correct"),
+            "not finished is not the same"
+        );
+        assert!(passphrases_differ("", "correct horse"));
     }
 
     #[test]
