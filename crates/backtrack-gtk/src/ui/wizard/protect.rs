@@ -59,6 +59,7 @@ pub fn build(wizard: &Rc<Wizard>) -> adw::NavigationPage {
     let confirm = adw::PasswordEntryRow::builder().title("Confirm").build();
     fields.add(&passphrase);
     fields.add(&confirm);
+    crate::ui::tab_to_confirm(&passphrase, &confirm);
     secrets.append(&fields);
 
     let strength = GtkBox::new(Orientation::Horizontal, 12);

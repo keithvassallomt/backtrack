@@ -1185,6 +1185,7 @@ impl Prefs {
         let confirm = adw::PasswordEntryRow::builder().title("Confirm").build();
         fields.add(&new);
         fields.add(&confirm);
+        crate::ui::tab_to_confirm(&new, &confirm);
         let strength = Label::new(None);
         strength.set_xalign(0.0);
         strength.set_margin_top(6);

@@ -217,6 +217,34 @@ pub fn prefer_wide_responses(dialog: &adw::AlertDialog) {
     dialog.set_prefer_wide_layout(true);
 }
 
+/// Tab from a passphrase field goes to the field that confirms it.
+///
+/// A `PasswordEntryRow` has its show-text toggle in the focus chain, so plain
+/// Tab would stop on it between the two fields, where nobody typing a
+/// passphrase twice wants to be. Shift+Tab is left alone, which keeps the
+/// toggle a keypress away from the confirming field.
+pub fn tab_to_confirm(passphrase: &adw::PasswordEntryRow, confirm: &adw::PasswordEntryRow) {
+    let keys = gtk4::EventControllerKey::new();
+    // Before the row's text field sees the key.
+    keys.set_propagation_phase(gtk4::PropagationPhase::Capture);
+    let confirm = confirm.downgrade();
+    keys.connect_key_pressed(move |_, key, _, modifiers| {
+        let plain = !modifiers.intersects(
+            gdk::ModifierType::SHIFT_MASK
+                | gdk::ModifierType::CONTROL_MASK
+                | gdk::ModifierType::ALT_MASK,
+        );
+        match confirm.upgrade() {
+            Some(confirm) if plain && matches!(key, gdk::Key::Tab | gdk::Key::KP_Tab) => {
+                confirm.grab_focus();
+                glib::Propagation::Stop
+            }
+            _ => glib::Propagation::Proceed,
+        }
+    });
+    passphrase.add_controller(keys);
+}
+
 /// A toast that shows `text` as it is written.
 ///
 /// Toasts read their title as markup unless told otherwise, and the text of a
