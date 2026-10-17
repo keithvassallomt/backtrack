@@ -31,6 +31,9 @@ pub enum Change {
     Folder,
     /// A different entry within the folder is selected.
     Selection,
+    /// What is on this computer changed under the folder being viewed (a
+    /// restore, or its undo), so what the pane says about the disk is stale.
+    Disk,
 }
 
 /// The entry the file pane has selected, if any.
@@ -213,6 +216,13 @@ impl AppState {
         self.announce(Change::Selection);
     }
 
+    /// Say that what is on this computer changed under the folder being
+    /// viewed. Nothing in the state itself changes, which is why this is not
+    /// `set_folder` again: setting what is already set announces nothing.
+    pub fn disk_changed(&self) {
+        self.announce(Change::Disk);
+    }
+
     /// Tell every subscriber. The list is copied first so that a subscriber
     /// which changes the state in response — the sidebar selecting a row, say —
     /// cannot re-enter a borrow that is still held.
@@ -362,6 +372,34 @@ mod tests {
         assert_eq!(seen.get(), 0, "already viewing 2");
         state.set_seq(1);
         assert_eq!(seen.get(), 1);
+    }
+
+    #[test]
+    fn a_change_on_the_disk_is_announced_and_keeps_the_view() {
+        // A restore leaves the folder and the selection as they were; only
+        // what the disk holds is different, and the pane must be told.
+        let state = AppState::new("home".to_string());
+        state.set_archives(archives(&[2, 1]));
+        state.set_selected(Some(Selected {
+            path: "home/report.txt".to_string(),
+            name: "report.txt".to_string(),
+            is_dir: false,
+            size: 10,
+            mtime: 0,
+            on_disk: 0,
+        }));
+        let seen = Rc::new(RefCell::new(Vec::new()));
+        let changes = Rc::clone(&seen);
+        state.subscribe(move |_, change| changes.borrow_mut().push(change));
+        state.set_folder("home");
+        assert!(
+            seen.borrow().is_empty(),
+            "the same folder again says nothing"
+        );
+        state.disk_changed();
+        assert_eq!(*seen.borrow(), [Change::Disk]);
+        assert_eq!(state.view().folder, "home");
+        assert!(state.view().selected.is_some(), "the selection is kept");
     }
 
     #[test]

@@ -139,7 +139,10 @@ pub fn build(
 
     let watcher = Rc::clone(&files);
     state.subscribe(move |_, change| {
-        if matches!(change, Change::Folder | Change::Seq | Change::Archives) {
+        if matches!(
+            change,
+            Change::Folder | Change::Seq | Change::Archives | Change::Disk
+        ) {
             watcher.reload();
         }
     });
