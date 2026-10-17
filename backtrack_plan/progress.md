@@ -5,10 +5,9 @@
 Steps only Keith can take, kept current as work turns them up. Tick each when
 done; Claude removes ticked items.
 
-- [ ] AUR account with an SSH key (S13-T8, S13-T9).
-- [ ] Once the accounts above exist, a release-candidate run as RELEASING.md
-  describes: `just bump-version 0.1.0-rc1`, commit, `just release` on the
-  branch (S13-T5, S13-T6, S13-T9, S14-T9).
+- [ ] A release-candidate run as RELEASING.md describes:
+  `just bump-version 0.1.0-rc1`, commit, `just release` on the branch
+  (S13-T5, S13-T6, S13-T9, S14-T9).
 - [ ] The native packages' smoke test (`packaging/SMOKE-TEST.md`): the RPM
   in the Fedora VM and the AUR package on Keith's machine (S13-T4, S13-T8,
   and S14-T4's native half).
