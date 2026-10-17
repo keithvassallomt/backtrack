@@ -298,18 +298,45 @@ pub async fn run() -> Result<Outcome, StartupError> {
         Arc::clone(&leave),
     ));
 
-    match wait_for_shutdown(&leave, bus_lost).await? {
-        Some(reason) => {
+    let uninstalled = async {
+        match std::env::current_exe() {
+            Ok(program) => {
+                backtrack_core::host::wait_until_gone(
+                    program,
+                    backtrack_core::host::LOOK_FOR_PROGRAM_EVERY,
+                )
+                .await
+            }
+            Err(_) => std::future::pending().await,
+        }
+    };
+    match wait_for_shutdown(&leave, bus_lost, uninstalled).await? {
+        Stop::Asked(reason) => {
             info!(reason, "shutting down");
             Ok(Outcome::ShutDown)
         }
-        None => {
+        Stop::Uninstalled => {
+            info!("Backtrack has been uninstalled; the daemon stops with it");
+            crate::background::forget_login_link();
+            Ok(Outcome::ShutDown)
+        }
+        Stop::BusLost => {
             warn!(
                 "the session bus went away; exiting so the daemon is started again on the new one"
             );
             Ok(Outcome::BusLost)
         }
     }
+}
+
+/// Why [`wait_for_shutdown`] returned.
+enum Stop {
+    /// A signal, or nothing left to do in the background.
+    Asked(&'static str),
+    /// The daemon's own program is gone: the package has been removed.
+    Uninstalled,
+    /// The session bus went away.
+    BusLost,
 }
 
 /// A future that finishes once nobody can reach the daemon under `name` any
@@ -445,8 +472,9 @@ pub(crate) fn open_index_at(
     }
 }
 
-/// Block until SIGTERM or SIGINT, or until the daemon is no longer needed,
-/// returning which; or until `bus_lost` finishes, returning `None`.
+/// Block until SIGTERM or SIGINT, until the daemon is no longer needed, until
+/// its program is uninstalled (`uninstalled` finishes) or until its bus goes
+/// (`bus_lost` finishes), returning which.
 ///
 /// Once the job model lands (S03-T2) this is where a running job is given its
 /// chance to checkpoint; while the daemon is idle it returns immediately, which
@@ -454,7 +482,8 @@ pub(crate) fn open_index_at(
 async fn wait_for_shutdown(
     leave: &tokio::sync::Notify,
     bus_lost: impl std::future::Future<Output = ()>,
-) -> Result<Option<&'static str>, StartupError> {
+    uninstalled: impl std::future::Future<Output = ()>,
+) -> Result<Stop, StartupError> {
     let mut sigterm = signal(SignalKind::terminate()).map_err(|source| StartupError::Signals {
         signal: "SIGTERM",
         source,
@@ -464,10 +493,11 @@ async fn wait_for_shutdown(
         source,
     })?;
     tokio::select! {
-        _ = sigterm.recv() => Ok(Some("SIGTERM")),
-        _ = sigint.recv() => Ok(Some("SIGINT")),
-        _ = leave.notified() => Ok(Some("not needed in the background")),
-        () = bus_lost => Ok(None),
+        _ = sigterm.recv() => Ok(Stop::Asked("SIGTERM")),
+        _ = sigint.recv() => Ok(Stop::Asked("SIGINT")),
+        _ = leave.notified() => Ok(Stop::Asked("not needed in the background")),
+        () = uninstalled => Ok(Stop::Uninstalled),
+        () = bus_lost => Ok(Stop::BusLost),
     }
 }
 

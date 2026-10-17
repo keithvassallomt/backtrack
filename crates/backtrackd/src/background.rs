@@ -229,6 +229,32 @@ async fn reconcile(connection: &zbus::Connection, wanted: bool) {
     }
 }
 
+/// Take away the link that starts the daemon at login, once the unit it
+/// points at has gone with the package.
+///
+/// The daemon made the link (`EnableUnitFiles`, when "Run in background" is
+/// on), and an uninstall leaves it behind in the home folder, pointing at
+/// nothing. Only a link that points at nothing is removed: one that still
+/// works belongs to an install that is still there.
+pub fn forget_login_link() {
+    forget_login_link_in(&backtrack_core::paths::systemd_user_dir());
+}
+
+fn forget_login_link_in(systemd_user: &std::path::Path) {
+    let link = systemd_user.join("default.target.wants").join(UNIT);
+    let dangling = link
+        .symlink_metadata()
+        .is_ok_and(|meta| meta.file_type().is_symlink())
+        && !link.exists();
+    if !dangling {
+        return;
+    }
+    match std::fs::remove_file(&link) {
+        Ok(()) => info!(link = %link.display(), "removed the link that started backups at login"),
+        Err(error) => warn!(%error, link = %link.display(), "the login link could not be removed"),
+    }
+}
+
 /// Ask the Background portal to let the daemon run in the background, and to
 /// start it at login if `wanted`. Asked every time, rather than compared
 /// first as the unit is: the portal says what it granted, and asking again is
@@ -301,6 +327,34 @@ pub async fn watch_for_idle(shared: Arc<Shared>, connection: zbus::Connection, l
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_a_login_link_that_points_at_nothing_is_taken_away() {
+        let dir = tempfile::tempdir().unwrap();
+        let wants = dir.path().join("default.target.wants");
+        std::fs::create_dir_all(&wants).unwrap();
+        let link = wants.join(UNIT);
+
+        // The package's unit is still there: the link is an install's.
+        let unit = dir.path().join("unit");
+        std::fs::write(&unit, "[Unit]\n").unwrap();
+        std::os::unix::fs::symlink(&unit, &link).unwrap();
+        forget_login_link_in(dir.path());
+        assert!(link.symlink_metadata().is_ok(), "a working link is kept");
+
+        // The package removed: the link points at nothing.
+        std::fs::remove_file(&unit).unwrap();
+        forget_login_link_in(dir.path());
+        assert!(
+            link.symlink_metadata().is_err(),
+            "a dangling link is removed"
+        );
+
+        // Not a link at all: somebody's own file, left alone.
+        std::fs::write(&link, "mine").unwrap();
+        forget_login_link_in(dir.path());
+        assert!(link.exists(), "a plain file is not ours to remove");
+    }
 
     #[test]
     fn the_tray_is_left_out_on_gnome_alone() {

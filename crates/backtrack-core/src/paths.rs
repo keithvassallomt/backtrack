@@ -105,6 +105,17 @@ pub fn kservicemenurc() -> PathBuf {
     .join("kservicemenurc")
 }
 
+/// The user's own systemd units and their links, where enabling the daemon
+/// at login writes: `$XDG_CONFIG_HOME/systemd/user`, else
+/// `~/.config/systemd/user`. A packaged install's only; a Flatpak has no unit.
+pub fn systemd_user_dir() -> PathBuf {
+    config_home_from(
+        std::env::var_os("XDG_CONFIG_HOME").as_deref(),
+        std::env::var_os("HOME").as_deref(),
+    )
+    .join("systemd/user")
+}
+
 /// The user's data folder on the host, where the file managers look for
 /// per-user extensions: `$XDG_DATA_HOME`, else `~/.local/share`. The host's,
 /// inside a Flatpak (S14-T4).
