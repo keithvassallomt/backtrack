@@ -5,9 +5,6 @@
 Steps only Keith can take, kept current as work turns them up. Tick each when
 done; Claude removes ticked items.
 
-- [ ] A third release candidate, as RELEASING.md describes:
-  `just bump-version 0.1.0-rc3`, commit, push, `just release`, then
-  `just release` again straight after, which should publish nothing (S13-T9).
 - [ ] Submit the third candidate's FriendlyHub files, in
   `~/Downloads/backtrack-0.1.0-rc3-friendlyhub/`, as
   `packaging/flatpak/FRIENDLYHUB.md` describes (S14-T9).
@@ -24,7 +21,7 @@ done; Claude removes ticked items.
 > tasks: add them here + to the stage file, then `just provision-board-apply`.
 > See [../CLAUDE.md](../CLAUDE.md) for the full workflow.
 
-**Current stage:** 13 (in progress)
+**Current stage:** 14 (in progress)
 **Last updated:** 2026-10-18
 
 ## Stage 0 — Bootstrap ([stage file](stages/stage-00-bootstrap.md))
@@ -146,7 +143,7 @@ done; Claude removes ticked items.
 - [x] S13-T6 Release runbook (human bumps version → just bump-version → just release)
 - [x] S13-T7 Application ID tools.backtrack.Backtrack, daemon names under it
 - [x] S13-T8 AUR packages (app, nautilus, dolphin)
-- [/] S13-T9 just release: from tag to every channel in one command
+- [x] S13-T9 just release: from tag to every channel in one command
 - [x] S13-T10 Desktops without gvfs: drives and SMB shares in the wizard
 
 ## Stage 14 — Flatpak as a first-class build ([stage file](stages/stage-14-flatpak-first-class.md))
