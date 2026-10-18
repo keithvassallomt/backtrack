@@ -339,8 +339,16 @@ def workspace_version():
         return tomllib.load(manifest)["workspace"]["package"]["version"]
 
 
+# Every request asks for the current answer. Launchpad's API answers
+# anonymous requests through caches, one per front end, that can hold a
+# listing from before an upload: the second run of the second candidate read
+# such a listing and uploaded again.
+FRESH = {"Cache-Control": "no-cache", "Pragma": "no-cache"}
+
+
 def fetch(url):
-    with urllib.request.urlopen(url, timeout=60) as response:
+    request = urllib.request.Request(url, headers=FRESH)
+    with urllib.request.urlopen(request, timeout=60) as response:
         return response.read()
 
 

@@ -11,6 +11,7 @@ import unittest
 import xml.etree.ElementTree as ElementTree
 from datetime import UTC, datetime
 from pathlib import Path
+from unittest import mock
 
 import release
 
@@ -203,6 +204,14 @@ class Tags(unittest.TestCase):
 
 
 class Rerun(unittest.TestCase):
+    def test_what_a_rerun_reads_is_never_a_cached_answer(self):
+        with mock.patch("urllib.request.urlopen") as urlopen:
+            urlopen.return_value.__enter__.return_value.read.return_value = b"{}"
+            release.fetch("https://api.launchpad.net/1.0/~o/+archive/ubuntu/p")
+        (request,), _ = urlopen.call_args
+        self.assertEqual(request.get_header("Cache-control"), "no-cache")
+        self.assertEqual(request.get_header("Pragma"), "no-cache")
+
     def test_a_version_built_on_copr_is_not_built_again(self):
         # As COPR's API lists them: the second of these was a rerun's.
         builds = [
