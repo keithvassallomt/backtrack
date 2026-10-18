@@ -17,6 +17,13 @@
     <name>Keith Vassallo</name>
   </developer>
 
+  <!-- The banner behind the icon in software centres: a lavender from the
+       icon's own palette, and a deep shade of its violet. -->
+  <branding>
+    <color type="primary" scheme_preference="light">#dcc6ff</color>
+    <color type="primary" scheme_preference="dark">#4b2f7f</color>
+  </branding>
+
   <description>
     <p>
       Backtrack keeps your files backed up and lets you move back through time
