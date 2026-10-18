@@ -212,6 +212,20 @@ class Rerun(unittest.TestCase):
         self.assertEqual(request.get_header("Cache-control"), "no-cache")
         self.assertEqual(request.get_header("Pragma"), "no-cache")
 
+    def test_a_candidates_aur_build_is_not_made_twice_from_the_same_files(self):
+        with tempfile.TemporaryDirectory() as directory:
+            aur = Path(directory)
+            self.assertFalse(release.aur_built_from(aur, "tree-a"))
+            (aur / "backtrack-0.2.0rc1-1-x86_64.pkg.tar.zst").touch()
+            self.assertFalse(release.aur_built_from(aur, "tree-a"))
+            (aur / release.BUILT_FROM).write_text("tree-a")
+            self.assertTrue(release.aur_built_from(aur, "tree-a"))
+            # A change to any file, the version among them, is another tree.
+            self.assertFalse(release.aur_built_from(aur, "tree-b"))
+            (aur / "backtrack-0.2.0rc1-1-x86_64.pkg.tar.zst").unlink()
+            (aur / "backtrack-nautilus-0.2.0rc1-1-any.pkg.tar.zst").touch()
+            self.assertFalse(release.aur_built_from(aur, "tree-a"))
+
     def test_a_version_built_on_copr_is_not_built_again(self):
         # As COPR's API lists them: the second of these was a rerun's.
         builds = [

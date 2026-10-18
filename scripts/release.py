@@ -686,12 +686,36 @@ def ppa_published(owner, name):
 # ─── 5. AUR ────────────────────────────────────────────────────────────────
 
 
+# In target/aur, beside the packages `just aur-build` made: the tree of the
+# files they were built from. `just aur-build` empties the folder first.
+BUILT_FROM = ".release-tree"
+
+
+def aur_built_from(directory, tree):
+    """Whether `directory` has AUR packages built from the files `tree` names."""
+    marker = directory / BUILT_FROM
+    return (
+        marker.is_file()
+        and marker.read_text().strip() == tree
+        and any(directory.glob("backtrack-[0-9]*.pkg.tar.zst"))
+    )
+
+
 def aur(r):
     r.say("== AUR")
     if r.prerelease:
         r.say("a pre-release stops short of the AUR")
     if r.dry or r.prerelease:
+        # A build that is pushed nowhere leaves nothing on the AUR to skip
+        # on, so a second run would build it again: the packages say which
+        # files they were built from instead.
+        aur = ROOT / "target/aur"
+        tree = r.run("git", "rev-parse", "HEAD^{tree}", capture=True).strip()
+        if aur_built_from(aur, tree):
+            r.outcome("AUR", "already built from this checkout; nothing pushed")
+            return
         r.run("just", "aur-build")
+        (aur / BUILT_FROM).write_text(tree)
         r.outcome("AUR", "built from this checkout; nothing pushed")
         return
     work = ROOT / "target/release/aur"
