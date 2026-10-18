@@ -13,7 +13,7 @@
 # documentation in the two integrations, which hold one file each.
 
 Name:           backtrack
-Version:        0.1.0~rc3
+Version:        0.1.0~rc4
 Release:        1%{?dist}
 Summary:        Browse your files as they were: backups you can step back through
 License:        GPL-3.0-or-later
@@ -140,6 +140,9 @@ appstreamcli validate --no-net %{buildroot}%{_metainfodir}/tools.backtrack.Backt
 %{_datadir}/kio/servicemenus/backtrack-folder.desktop
 
 %changelog
+* Sun Oct 18 2026 Keith Vassallo <keith@vassallo.cloud> - 0.1.0~rc4-1
+- New upstream release.
+
 * Sun Oct 18 2026 Keith Vassallo <keith@vassallo.cloud> - 0.1.0~rc3-1
 - New upstream release.
 
