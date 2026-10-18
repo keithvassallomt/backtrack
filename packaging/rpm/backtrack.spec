@@ -18,8 +18,10 @@ Release:        1%{?dist}
 Summary:        Browse your files as they were: backups you can step back through
 License:        GPL-3.0-or-later
 URL:            https://backtrack.tools
-Source0:        https://github.com/keithvassallomt/backtrack/archive/v%{version}/backtrack-%{version}.tar.gz
-Source1:        https://github.com/keithvassallomt/backtrack/releases/download/v%{version}/backtrack-%{version}-vendor.tar.xz
+# A pre-release's Version spells rc with a tilde (0.1.0~rc1), so that it sorts
+# before the release; its tag, tarballs and their directory keep the hyphen.
+Source0:        https://github.com/keithvassallomt/backtrack/archive/v%{version_no_tilde}/backtrack-%{version_no_tilde}.tar.gz
+Source1:        https://github.com/keithvassallomt/backtrack/releases/download/v%{version_no_tilde}/backtrack-%{version_no_tilde}-vendor.tar.xz
 
 BuildRequires:  cargo
 BuildRequires:  rust
@@ -66,7 +68,7 @@ Adds Restore Previous Version and Browse Backups of This Folder to Dolphin,
 opening Backtrack at the file or folder.
 
 %prep
-%autosetup -n backtrack-%{version} -a 1
+%autosetup -n backtrack-%{version_no_tilde} -a 1
 mkdir -p .cargo
 cat > .cargo/config.toml <<'TOML'
 [source.crates-io]
