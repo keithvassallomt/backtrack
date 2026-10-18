@@ -202,6 +202,21 @@ class Tags(unittest.TestCase):
             self.assertEqual(log.read_text().splitlines(), lines)
 
 
+class Rerun(unittest.TestCase):
+    def test_a_version_built_on_copr_is_not_built_again(self):
+        # As COPR's API lists them: the second of these was a rerun's.
+        builds = [
+            {"id": 2, "state": "running", "source_package": {"version": "0.1.0~rc1-1"}},
+            {"id": 1, "state": "succeeded", "source_package": {"version": "0.1.0~rc1-1"}},
+        ]
+        self.assertTrue(release.copr_built(builds, "0.1.0~rc1"))
+        self.assertFalse(release.copr_built(builds[:1], "0.1.0~rc1"))
+        self.assertFalse(release.copr_built(builds, "0.1.0~rc2"))
+        # copr-cli's own list has no version, which is how the first
+        # candidate's second run came to build it again.
+        self.assertFalse(release.copr_built([{"id": 1, "state": "succeeded"}], "0.1.0~rc1"))
+
+
 def agent_options(default_ttl="", max_ttl="", ignore=""):
     """`gpgconf --list-options gpg-agent`'s lines for the cache, as set."""
     return (

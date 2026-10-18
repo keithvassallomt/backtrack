@@ -515,7 +515,9 @@ def tag_and_wait(r):
     absent = [e for e in EXPECTED if not any(a.endswith(e.format(n=name)) for a in assets)]
     if absent or "SHA256SUMS" not in assets:
         raise Failed(f"the release lacks {absent or ['SHA256SUMS']}")
-    r.outcome("GitHub release", "published", f"https://github.com/{GITHUB}/releases/tag/{r.tag}")
+    # A tag already on origin was pushed, and its release made, by an earlier run.
+    state = "already published" if remote else "published"
+    r.outcome("GitHub release", state, f"https://github.com/{GITHUB}/releases/tag/{r.tag}")
 
 
 # How often the release run is looked at; how long a stretch with no news
@@ -564,27 +566,9 @@ def copr(r):
     project = r.config["copr"]["testing" if r.prerelease else "project"]
     r.say(f"== COPR: {project}")
     rpm_version = r.version.replace("-", "~")
-    if not r.dry:
-        builds = json.loads(
-            r.run(
-                "uvx",
-                "--quiet",
-                "copr-cli",
-                "list-builds",
-                project,
-                "--output-format",
-                "json",
-                capture=True,
-            )
-            or "[]"
-        )
-        if any(
-            b.get("state") == "succeeded"
-            and (b.get("source_package") or {}).get("version", "").startswith(rpm_version + "-")
-            for b in builds
-        ):
-            r.outcome("COPR", "already built", project)
-            return
+    if not r.dry and copr_built(copr_builds(project), rpm_version):
+        r.outcome("COPR", "already built", project)
+        return
     work = ROOT / "target/release/copr"
     shutil.rmtree(work, ignore_errors=True)
     work.mkdir(parents=True)
@@ -600,6 +584,23 @@ def copr(r):
         "COPR",
         "would build" if r.dry else "built",
         f"https://copr.fedorainfracloud.org/coprs/{project}",
+    )
+
+
+def copr_builds(project):
+    """The project's builds, from COPR's API: `copr-cli list-builds` leaves
+    out the version each built."""
+    owner, name = project.split("/")
+    url = f"https://copr.fedorainfracloud.org/api_3/build/list?ownername={owner}&projectname={name}"
+    return json.loads(fetch(url)).get("items", [])
+
+
+def copr_built(builds, rpm_version):
+    """Whether one of `builds` built `rpm_version` (any release of it)."""
+    return any(
+        b.get("state") == "succeeded"
+        and (b.get("source_package") or {}).get("version", "").startswith(rpm_version + "-")
+        for b in builds
     )
 
 
