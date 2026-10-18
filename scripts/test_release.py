@@ -202,5 +202,35 @@ class Tags(unittest.TestCase):
             self.assertEqual(log.read_text().splitlines(), lines)
 
 
+def agent_options(default_ttl="", max_ttl="", ignore=""):
+    """`gpgconf --list-options gpg-agent`'s lines for the cache, as set."""
+    return (
+        f"default-cache-ttl:24:0:expire cached PINs after N seconds:3:3:N:600::{default_ttl}\n"
+        f"max-cache-ttl:24:2:set maximum PIN cache lifetime to N seconds:3:3:N:7200::{max_ttl}\n"
+        f"ignore-cache-for-signing:8:0:do not use the PIN cache when signing:0:0::::{ignore}\n"
+    )
+
+
+class Passphrase(unittest.TestCase):
+    def test_four_hours_holds_it_to_the_ppa_step(self):
+        self.assertIsNone(release.passphrase_held(agent_options("14400", "14400")))
+
+    def test_the_agents_own_defaults_forget_it_sooner(self):
+        # Ten minutes since last used, and two hours in all.
+        problem = release.passphrase_held(agent_options())
+        self.assertIn("default-cache-ttl 14400 and max-cache-ttl 14400", problem)
+        problem = release.passphrase_held(agent_options("14400"))
+        self.assertIn("set max-cache-ttl 14400 in", problem)
+
+    def test_an_option_left_unset_is_read_as_its_default(self):
+        # A gpg-agent whose own defaults were long enough would need no setting.
+        options = agent_options().replace(":600::", ":14400::").replace(":7200::", ":14400::")
+        self.assertIsNone(release.passphrase_held(options))
+
+    def test_a_cache_ignored_for_signing_is_no_cache(self):
+        problem = release.passphrase_held(agent_options("14400", "14400", ignore="1"))
+        self.assertIn("ignore-cache-for-signing", problem)
+
+
 if __name__ == "__main__":
     unittest.main()

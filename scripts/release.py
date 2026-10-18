@@ -363,12 +363,15 @@ def preflight(r):
         release_notes.notes(CHANGELOG.read_text(), r.version)
     except release_notes.NotReleased as error:
         raise Failed(str(error)) from None
-    r.run("just", "check")
+    # The credentials before `just check`: the signing key's check may open a
+    # passphrase dialog, which should come while whoever started the run is
+    # still watching.
     missing = [problem for problem in credentials(r) if problem]
     for problem in missing:
         r.say(f"credential: {problem}")
     if missing and not r.dry:
         raise Failed("a credential is missing or does not work; nothing has been published")
+    r.run("just", "check")
 
 
 def credentials(r):
@@ -385,6 +388,8 @@ def credentials(r):
             if left < 0:
                 yield "the COPR token has expired"
     key = r.config["ppa"]["key"]
+    if key:
+        r.say(f"credential: signing with {key}; if gpg asks for its passphrase, answer it now")
     if not key:
         yield "no PPA signing key in packaging/release.toml"
     elif not r.ok(
@@ -399,6 +404,8 @@ def credentials(r):
         "/dev/null",
     ):
         yield f"gpg cannot sign with {key}"
+    else:
+        yield passphrase_held(r.read("gpgconf", "--list-options", "gpg-agent") or "")
     greeting = subprocess.run(
         ["ssh", "-o", "BatchMode=yes", "aur@aur.archlinux.org", "help"],
         capture_output=True,
@@ -406,6 +413,43 @@ def credentials(r):
     )
     if "Commands" not in greeting.stdout + greeting.stderr:
         yield "ssh is not let in to aur@aur.archlinux.org (an AUR account with this key)"
+
+
+# The PPA's source packages are signed after the release workflow and COPR's
+# builds, an hour or more after the preflight's signature asks for the key's
+# passphrase, and gpg-agent must still hold it then. Four hours leaves room
+# for a slow COPR queue.
+PASSPHRASE_HELD_FOR = 4 * 3600
+
+
+def passphrase_held(options):
+    """What, in `gpgconf --list-options gpg-agent`, keeps the agent from
+    holding the signing key's passphrase for PASSPHRASE_HELD_FOR; None if
+    nothing does."""
+
+    def value(name):
+        """An option's value, or else its default."""
+        # Each line: name:flags:level:description:type:alt-type:argname:default:argdef:value
+        for line in options.splitlines():
+            fields = line.split(":")
+            if fields[0] == name and len(fields) > 9:
+                return fields[9] or fields[7]
+        return ""
+
+    if value("ignore-cache-for-signing"):
+        return "gpg-agent has ignore-cache-for-signing, so it asks for the passphrase every time"
+    short = [
+        name
+        for name in ("default-cache-ttl", "max-cache-ttl")
+        if int(value(name) or 0) < PASSPHRASE_HELD_FOR
+    ]
+    if short:
+        settings = " and ".join(f"{name} {PASSPHRASE_HELD_FOR}" for name in short)
+        return (
+            "gpg-agent would forget the signing key's passphrase before the PPA step "
+            f"signs; set {settings} in ~/.gnupg/gpg-agent.conf (RELEASING.md)"
+        )
+    return None
 
 
 def copr_config():

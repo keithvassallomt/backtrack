@@ -25,6 +25,17 @@ credential beyond its GitHub token; `just release` does the publishing.
   <https://copr.fedorainfracloud.org/api/>, saved as `~/.config/copr`.
 - A Launchpad account with the signing key registered, and two PPAs, release
   and testing. Put the key's fingerprint in `packaging/release.toml`.
+- gpg-agent set to hold the signing key's passphrase for four hours. The PPA
+  is signed an hour or more into the run, after the release workflow and
+  COPR's builds, and the agent's defaults forget a passphrase after ten
+  minutes unused. In `~/.gnupg/gpg-agent.conf`:
+
+  ```
+  default-cache-ttl 14400
+  max-cache-ttl 14400
+  ```
+
+  then `gpgconf --reload gpg-agent`. The preflight checks it.
 - An AUR account with this machine's SSH key.
 - Check the account and project names in `packaging/release.toml`.
 
@@ -39,7 +50,10 @@ credential beyond its GitHub token; `just release` does the publishing.
 4. Commit, and merge to `main`.
 5. Optionally, `just release-dry`: the preflight, every build and the
    FriendlyHub files, with nothing published.
-6. Run `just release`. It checks everything before publishing anything, tags
+6. Run `just release`. Its first checks sign a test message with the PPA
+   key, so if the agent does not hold the key's passphrase, a dialog asks for
+   it within seconds of starting: answer it, and the agent holds it for the
+   rest of the run. It checks everything before publishing anything, tags
    `vX.Y.Z`, waits for the release workflow, then publishes to COPR, the PPA
    and the AUR, and writes the FriendlyHub files to
    `~/Downloads/backtrack-X.Y.Z-friendlyhub/` (`just release DIR` writes them
