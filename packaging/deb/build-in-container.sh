@@ -23,7 +23,7 @@ dpkg-buildpackage -us -uc
 echo "== lintian"
 lintian --no-tag-display-limit ../*.changes || true
 echo "== installed"
-apt-get install -y -qq ../backtrack_*_amd64.deb >/dev/null
+apt-get install -y -qq ../backtrack_*_"$(dpkg --print-architecture)".deb >/dev/null
 backtrack --version
 backtrack-gtk --version
 dpkg -L backtrack | grep -vE '/$|/\.$'

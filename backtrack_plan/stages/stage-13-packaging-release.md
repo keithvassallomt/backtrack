@@ -284,6 +284,25 @@ Plasma mounted is listed as an External drive, can be chosen, and is backed
 up to; an `smb://` address explains what is missing, and mounts once
 gvfs-smb is installed. On GNOME, unchanged.
 
+### S13-T11 — aarch64 builds on every channel
+Found after the third release candidate (2026-10-18): every channel built for
+x86_64 alone, by default rather than by decision. The AUR's PKGBUILD already
+names aarch64, and FriendlyHub builds the Flatpak for both.
+- Both COPR projects build for the aarch64 chroots of Fedora 44 and 45 as
+  well as the x86_64 ones, and both PPAs for arm64 as well as amd64.
+- The release workflow builds the Flatpak bundle, the RPMs and the debs on
+  GitHub's ARM64 runners as well, and the GitHub release carries them beside
+  the x86_64 ones. The noarch and "all" packages and the source RPM come from
+  the x86_64 jobs alone.
+- The preflight stops a run whose COPR project or PPA does not build for
+  both architectures.
+
+**Accept:** the next release candidate builds on COPR for fedora-44-aarch64
+and fedora-45-aarch64 and on the PPA for arm64, every build succeeding, and
+its GitHub release carries the aarch64 Flatpak bundle, RPM and deb beside
+the x86_64 ones; the preflight names a channel that does not build for both,
+as it did for the two PPAs before arm64 was enabled on them.
+
 ## Definition of Done
 All four install paths proven on fresh systems; portal matrix green; `just
 release` has taken a release candidate to every channel that takes

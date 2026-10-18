@@ -13,7 +13,7 @@ rpmbuild --define "_topdir /root/rpmbuild" -ba /root/rpmbuild/SPECS/backtrack.sp
 echo "== rpmlint"
 rpmlint /root/rpmbuild/SPECS/backtrack.spec /root/rpmbuild/RPMS/*/*.rpm /root/rpmbuild/SRPMS/*.rpm || true
 echo "== installed"
-dnf install -y -q /root/rpmbuild/RPMS/x86_64/backtrack-[0-9]*.rpm >/dev/null
+dnf install -y -q /root/rpmbuild/RPMS/"$(uname -m)"/backtrack-[0-9]*.rpm >/dev/null
 backtrack --version
 backtrack-gtk --version
 rpm -ql backtrack

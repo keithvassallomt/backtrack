@@ -21,10 +21,14 @@ credential beyond its GitHub token; `just release` does the publishing.
 
 - `gh auth login`, signed in as an account that can push tags to the repository.
 - A Fedora account, and two COPR projects: the release one and a testing one
-  for release candidates. An API token from
+  for release candidates, each with the x86_64 and aarch64 chroots of every
+  Fedora release it serves. An API token from
   <https://copr.fedorainfracloud.org/api/>, saved as `~/.config/copr`.
 - A Launchpad account with the signing key registered, and two PPAs, release
-  and testing. Put the key's fingerprint in `packaging/release.toml`.
+  and testing, each set to build for amd64 and arm64 (the PPA's page,
+  "Change details", Processors). Put the key's fingerprint in
+  `packaging/release.toml`. The preflight checks that COPR and the PPA build
+  for both architectures.
 - gpg-agent set to hold the signing key's passphrase for four hours. The PPA
   is signed an hour or more into the run, after the release workflow and
   COPR's builds, and the agent's defaults forget a passphrase after ten

@@ -65,10 +65,20 @@ jobs:
           name: dist
           path: target/dist/*
 
+  # The packages are built for x86_64 and aarch64, each on a runner of its
+  # own architecture (GitHub's ARM64 runners are free for public
+  # repositories), so nothing is emulated.
   flatpak:
-    name: Flatpak bundle
+    name: Flatpak bundle (${{ matrix.arch }})
     needs: version
-    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - arch: x86_64
+            runner: ubuntu-latest
+          - arch: aarch64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
     container:
       image: ghcr.io/flathub-infra/flatpak-github-actions:gnome-51
       options: --privileged
@@ -78,17 +88,30 @@ jobs:
       - uses: flatpak/flatpak-github-actions/flatpak-builder@aa777012a985fe1b1fd3e66ea2173609cf0c9a70
         with:
           manifest-path: packaging/flatpak/tools.backtrack.Backtrack.yml
-          bundle: backtrack-${{ needs.version.outputs.version }}.flatpak
+          bundle: backtrack-${{ needs.version.outputs.version }}-${{ matrix.arch }}.flatpak
+          arch: ${{ matrix.arch }}
           upload-artifact: false
       - uses: actions/upload-artifact@v7
         with:
-          name: flatpak
-          path: backtrack-${{ needs.version.outputs.version }}.flatpak
+          name: flatpak-${{ matrix.arch }}
+          path: backtrack-${{ needs.version.outputs.version }}-${{ matrix.arch }}.flatpak
 
   rpm:
-    name: RPMs (Fedora 44)
+    name: RPMs (Fedora 44, ${{ matrix.arch }})
     needs: dist
-    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          # The noarch packages and the source RPM come from this one only.
+          - arch: x86_64
+            runner: ubuntu-latest
+            files: |
+              /root/rpmbuild/RPMS/*/*.rpm
+              /root/rpmbuild/SRPMS/*.rpm
+          - arch: aarch64
+            runner: ubuntu-24.04-arm
+            files: /root/rpmbuild/RPMS/aarch64/*.rpm
+    runs-on: ${{ matrix.runner }}
     container: fedora:44
     steps:
       - uses: actions/checkout@v7
@@ -102,15 +125,23 @@ jobs:
           packaging/rpm/build-in-container.sh
       - uses: actions/upload-artifact@v7
         with:
-          name: rpm
-          path: |
-            /root/rpmbuild/RPMS/*/*.rpm
-            /root/rpmbuild/SRPMS/*.rpm
+          name: rpm-${{ matrix.arch }}
+          path: ${{ matrix.files }}
 
   deb:
-    name: Debs (Ubuntu 26.04)
+    name: Debs (Ubuntu 26.04, ${{ matrix.arch }})
     needs: [version, dist]
-    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          # The "all" packages come from this one only.
+          - arch: amd64
+            runner: ubuntu-latest
+            files: /build/*.deb
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+            files: /build/*_arm64.deb
+    runs-on: ${{ matrix.runner }}
     container: ubuntu:26.04
     steps:
       - uses: actions/checkout@v7
@@ -130,8 +161,8 @@ jobs:
       - run: packaging/deb/build-in-container.sh
       - uses: actions/upload-artifact@v7
         with:
-          name: deb
-          path: /build/*.deb
+          name: deb-${{ matrix.arch }}
+          path: ${{ matrix.files }}
 
   release:
     name: GitHub release

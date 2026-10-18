@@ -379,7 +379,52 @@ def preflight(r):
         r.say(f"credential: {problem}")
     if missing and not r.dry:
         raise Failed("a credential is missing or does not work; nothing has been published")
+    unbuilt = channel_architectures(r)
+    for problem in unbuilt:
+        r.say(f"channel: {problem}")
+    if unbuilt and not r.dry:
+        raise Failed("a channel does not build for every architecture; nothing has been published")
     r.run("just", "check")
+
+
+# The architectures every channel builds for, as COPR's chroots end and as
+# Launchpad names its processors. A COPR project's chroots and a PPA's
+# processors are settings on the project, which a project made again would
+# lose; the preflight looks.
+ARCHITECTURES = (("x86_64", "amd64"), ("aarch64", "arm64"))
+
+
+def unbuilt_architectures(project, chroots, ppa, processors):
+    """What the COPR project's `chroots` and the PPA's `processors` leave
+    unbuilt, one line for each."""
+    problems = []
+    for rpm_arch, deb_arch in ARCHITECTURES:
+        if not any(chroot.endswith(f"-{rpm_arch}") for chroot in chroots):
+            problems.append(f"{project} has no {rpm_arch} chroot")
+        if deb_arch not in processors:
+            problems.append(f"{ppa} does not build for {deb_arch}")
+    return problems
+
+
+def channel_architectures(r):
+    """unbuilt_architectures for the COPR project and the PPA this run
+    publishes to, read from COPR's and Launchpad's APIs."""
+    project = r.config["copr"]["testing" if r.prerelease else "project"]
+    ppa = r.config["ppa"]["testing" if r.prerelease else "release"]
+    owner, name = project.split("/")
+    chroots = json.loads(
+        fetch(
+            f"https://copr.fedorainfracloud.org/api_3/project?ownername={owner}&projectname={name}"
+        )
+    ).get("chroot_repos", {})
+    owner, name = ppa_parts(ppa)
+    # Only Launchpad's devel API gives a PPA's processors.
+    archive = json.loads(fetch(f"https://api.launchpad.net/devel/~{owner}/+archive/ubuntu/{name}"))
+    processors = [
+        entry["name"]
+        for entry in json.loads(fetch(archive["processors_collection_link"])).get("entries", [])
+    ]
+    return unbuilt_architectures(project, chroots, ppa, processors)
 
 
 def credentials(r):
@@ -467,7 +512,24 @@ def copr_config():
 
 # ─── 2. Tag, and the release workflow ──────────────────────────────────────
 
-EXPECTED = ("{n}.tar.gz", "{n}-vendor.tar.xz", "{n}.flatpak", ".src.rpm", ".x86_64.rpm", ".deb")
+EXPECTED = (
+    "{n}.tar.gz",
+    "{n}-vendor.tar.xz",
+    "{n}-x86_64.flatpak",
+    "{n}-aarch64.flatpak",
+    ".src.rpm",
+    ".x86_64.rpm",
+    ".aarch64.rpm",
+    "_amd64.deb",
+    "_arm64.deb",
+)
+
+
+def absent_assets(assets, version):
+    """What a release of `version` should carry and `assets` lacks."""
+    name = f"backtrack-{version}"
+    absent = [e for e in EXPECTED if not any(a.endswith(e.format(n=name)) for a in assets)]
+    return absent + ([] if "SHA256SUMS" in assets else ["SHA256SUMS"])
 
 
 def tag_and_wait(r):
@@ -519,10 +581,9 @@ def tag_and_wait(r):
         ".assets[].name",
         capture=True,
     ).split()
-    name = f"backtrack-{r.version}"
-    absent = [e for e in EXPECTED if not any(a.endswith(e.format(n=name)) for a in assets)]
-    if absent or "SHA256SUMS" not in assets:
-        raise Failed(f"the release lacks {absent or ['SHA256SUMS']}")
+    absent = absent_assets(assets, r.version)
+    if absent:
+        raise Failed(f"the release lacks {absent}")
     # A tag already on origin was pushed, and its release made, by an earlier run.
     state = "already published" if remote else "published"
     r.outcome("GitHub release", state, f"https://github.com/{GITHUB}/releases/tag/{r.tag}")

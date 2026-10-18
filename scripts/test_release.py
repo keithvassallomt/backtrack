@@ -226,6 +226,41 @@ class Rerun(unittest.TestCase):
             (aur / "backtrack-nautilus-0.2.0rc1-1-any.pkg.tar.zst").touch()
             self.assertFalse(release.aur_built_from(aur, "tree-a"))
 
+    def test_a_release_carries_every_package_for_both_architectures(self):
+        # rc3's assets, as GitHub named them (a tilde becomes a dot), with
+        # the arm64 builds beside them.
+        assets = [
+            "backtrack-0.2.0-rc1.tar.gz",
+            "backtrack-0.2.0-rc1-vendor.tar.xz",
+            "backtrack-0.2.0-rc1-x86_64.flatpak",
+            "backtrack-0.2.0-rc1-aarch64.flatpak",
+            "backtrack-0.2.0.rc1-1.fc44.src.rpm",
+            "backtrack-0.2.0.rc1-1.fc44.x86_64.rpm",
+            "backtrack-0.2.0.rc1-1.fc44.aarch64.rpm",
+            "backtrack-nautilus-0.2.0.rc1-1.fc44.noarch.rpm",
+            "backtrack_0.2.0.rc1-1_amd64.deb",
+            "backtrack_0.2.0.rc1-1_arm64.deb",
+            "backtrack-nautilus_0.2.0.rc1-1_all.deb",
+            "SHA256SUMS",
+        ]
+        self.assertEqual(release.absent_assets(assets, "0.2.0-rc1"), [])
+        x86_only = [a for a in assets if "aarch64" not in a and "arm64" not in a]
+        self.assertEqual(
+            release.absent_assets(x86_only, "0.2.0-rc1"),
+            ["{n}-aarch64.flatpak", ".aarch64.rpm", "_arm64.deb"],
+        )
+        self.assertEqual(release.absent_assets(assets[:-1], "0.2.0-rc1"), ["SHA256SUMS"])
+
+    def test_a_channel_missing_an_architecture_is_named(self):
+        chroots = ["fedora-44-x86_64", "fedora-45-x86_64", "fedora-44-aarch64"]
+        self.assertEqual(
+            release.unbuilt_architectures("o/c", chroots, "ppa:o/p", ["amd64", "arm64"]), []
+        )
+        self.assertEqual(
+            release.unbuilt_architectures("o/c", chroots[:2], "ppa:o/p", ["amd64"]),
+            ["o/c has no aarch64 chroot", "ppa:o/p does not build for arm64"],
+        )
+
     def test_a_version_built_on_copr_is_not_built_again(self):
         # As COPR's API lists them: the second of these was a rerun's.
         builds = [
