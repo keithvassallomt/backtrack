@@ -55,12 +55,28 @@ class Rewrites(unittest.TestCase):
 
     def test_the_tags_release_run_is_found_beside_its_ci_run(self):
         runs = [
-            {"databaseId": 3, "headBranch": "v0.2.0-rc1", "workflowName": "CI"},
-            {"databaseId": 2, "headBranch": "v0.2.0-rc1", "workflowName": "Release"},
-            {"databaseId": 1, "headBranch": "v0.1.0", "workflowName": "Release"},
+            {"databaseId": 3, "headBranch": "v0.2.0-rc1", "headSha": "b", "workflowName": "CI"},
+            {
+                "databaseId": 2,
+                "headBranch": "v0.2.0-rc1",
+                "headSha": "b",
+                "workflowName": "Release",
+            },
+            {"databaseId": 1, "headBranch": "v0.1.0", "headSha": "a", "workflowName": "Release"},
         ]
-        self.assertEqual(release.release_run(runs, "v0.2.0-rc1"), 2)
-        self.assertIsNone(release.release_run(runs[:1], "v0.2.0-rc1"))
+        self.assertEqual(release.release_run(runs, "v0.2.0-rc1", "b"), 2)
+        self.assertIsNone(release.release_run(runs[:1], "v0.2.0-rc1", "b"))
+
+    def test_a_retagged_release_waits_for_its_own_run(self):
+        # The tag deleted and pushed again at a fix: the earlier, failed run is
+        # still listed under the same tag until the new one appears.
+        earlier = {
+            "databaseId": 1,
+            "headBranch": "v0.2.0-rc1",
+            "headSha": "a",
+            "workflowName": "Release",
+        }
+        self.assertIsNone(release.release_run([earlier], "v0.2.0-rc1", "b"))
 
 
 if __name__ == "__main__":
