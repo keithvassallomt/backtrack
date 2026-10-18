@@ -21,7 +21,14 @@ writes them again for a version already tagged:
   Borg's Python packages, which `just flatpak-sources` generates. There is no
   `node-sources.json`: Backtrack has no JavaScript.
 
-Keith submits the folder's files to FriendlyHub.
+Keith submits the folder's files to FriendlyHub: the manifest and the
+metainfo in their own fields, and every file the manifest includes, for
+which the form asks by name: **both** `cargo-sources.json` (a source of the
+`backtrack` module) and `python3-requirements.json` (a module of its own,
+Borg's). A build whose checkout lacks one fails at once, before any
+download ("Failed to load included manifest"). Until FriendlyHub's form
+looks for included modules as well as included sources, it asks only for
+`cargo-sources.json`.
 
 ## Checking a set before submitting it
 
