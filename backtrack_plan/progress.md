@@ -5,12 +5,12 @@
 Steps only Keith can take, kept current as work turns them up. Tick each when
 done; Claude removes ticked items.
 
-- [ ] Submit the FriendlyHub files in
-  `~/Downloads/backtrack-0.1.0-rc1-friendlyhub/` as
+- [ ] A third release candidate, as RELEASING.md describes:
+  `just bump-version 0.1.0-rc3`, commit, push, `just release`, then
+  `just release` again straight after, which should publish nothing (S13-T9).
+- [ ] Submit the third candidate's FriendlyHub files, in
+  `~/Downloads/backtrack-0.1.0-rc3-friendlyhub/`, as
   `packaging/flatpak/FRIENDLYHUB.md` describes (S14-T9).
-- [ ] A second release candidate, following RELEASING.md word for word:
-  `just bump-version 0.1.0-rc2`, commit, push, `just release`, then
-  `just release` again straight after (S13-T6, S13-T9).
 
 > **Contract:** Update this file in the SAME COMMIT as the work it describes.
 > `[ ]` upcoming · `[/]` in progress · `[x]` done (acceptance criteria verified) ·
@@ -143,7 +143,7 @@ done; Claude removes ticked items.
 - [x] S13-T3 Portal permissions audit + test matrix
 - [x] S13-T4 RPM spec + COPR (Fedora 44+); deb + PPA (Ubuntu 26.04+)
 - [x] S13-T5 CI release artifacts on tag
-- [/] S13-T6 Release runbook (human bumps version → just bump-version → just release)
+- [x] S13-T6 Release runbook (human bumps version → just bump-version → just release)
 - [x] S13-T7 Application ID tools.backtrack.Backtrack, daemon names under it
 - [x] S13-T8 AUR packages (app, nautilus, dolphin)
 - [/] S13-T9 just release: from tag to every channel in one command
