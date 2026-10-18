@@ -1,3 +1,9 @@
+backtrack (0.1.0~rc2-1) resolute; urgency=medium
+
+  * New upstream release.
+
+ -- Keith Vassallo <keith@vassallo.cloud>  Sun, 18 Oct 2026 14:01:11 +0100
+
 backtrack (0.1.0~rc1-1) resolute; urgency=medium
 
   * New upstream release.

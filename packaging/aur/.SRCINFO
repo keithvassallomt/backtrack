@@ -1,6 +1,6 @@
 pkgbase = backtrack
 	pkgdesc = Browse your files as they were: backups you can step back through, built on Borg
-	pkgver = 0.1.0rc1
+	pkgver = 0.1.0rc2
 	pkgrel = 1
 	url = https://backtrack.tools
 	arch = x86_64
@@ -10,7 +10,7 @@ pkgbase = backtrack
 	makedepends = gtk4
 	makedepends = libadwaita
 	options = !lto
-	source = backtrack-0.1.0-rc1.tar.gz::https://github.com/keithvassallomt/backtrack/archive/refs/tags/v0.1.0-rc1.tar.gz
+	source = backtrack-0.1.0-rc2.tar.gz::https://github.com/keithvassallomt/backtrack/archive/refs/tags/v0.1.0-rc2.tar.gz
 	sha256sums = SKIP
 
 pkgname = backtrack
