@@ -5,14 +5,9 @@
 Steps only Keith can take, kept current as work turns them up. Tick each when
 done; Claude removes ticked items.
 
-- [ ] On Launchpad, set both PPAs (backtrack and backtrack-testing) to build
-  for arm64 as well as amd64: the PPA's page, "Change details", Processors
-  (S13-T11).
-- [ ] A fourth release candidate once that is done, as RELEASING.md
-  describes: `just bump-version 0.1.0-rc4`, commit, push, `just release`
-  (S13-T11).
-- [ ] Submit the third candidate's FriendlyHub files, in
-  `~/Downloads/backtrack-0.1.0-rc3-friendlyhub/`, as
+- [ ] Once FriendlyHub's form asks for included modules, submit the fourth
+  candidate's FriendlyHub files, in
+  `~/Downloads/backtrack-0.1.0-rc4-friendlyhub/`, as
   `packaging/flatpak/FRIENDLYHUB.md` describes (S14-T9).
 
 > **Contract:** Update this file in the SAME COMMIT as the work it describes.
@@ -27,7 +22,7 @@ done; Claude removes ticked items.
 > tasks: add them here + to the stage file, then `just provision-board-apply`.
 > See [../CLAUDE.md](../CLAUDE.md) for the full workflow.
 
-**Current stage:** 13 (in progress)
+**Current stage:** 14 (in progress)
 **Last updated:** 2026-10-18
 
 ## Stage 0 — Bootstrap ([stage file](stages/stage-00-bootstrap.md))
@@ -151,7 +146,7 @@ done; Claude removes ticked items.
 - [x] S13-T8 AUR packages (app, nautilus, dolphin)
 - [x] S13-T9 just release: from tag to every channel in one command
 - [x] S13-T10 Desktops without gvfs: drives and SMB shares in the wizard
-- [/] S13-T11 aarch64 builds on every channel
+- [x] S13-T11 aarch64 builds on every channel
 
 ## Stage 14 — Flatpak as a first-class build ([stage file](stages/stage-14-flatpak-first-class.md))
 - [x] S14-T1 Daemon activation inside the Flatpak
