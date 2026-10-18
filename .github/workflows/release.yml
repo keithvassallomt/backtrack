@@ -54,8 +54,10 @@ jobs:
     runs-on: ubuntu-latest
     container: fedora:latest
     steps:
-      - uses: actions/checkout@v7
+      # git before the checkout: without it, actions/checkout downloads the
+      # tree with no .git, and `just dist` makes the tarball with git archive.
       - run: dnf install -y -q just cargo git tar xz
+      - uses: actions/checkout@v7
       - run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
       - run: just dist
       - uses: actions/upload-artifact@v7
