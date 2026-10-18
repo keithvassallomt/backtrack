@@ -1,0 +1,117 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-3.0-or-later
+# SPDX-FileCopyrightText: 2026 Keith Vassallo <keith@vassallo.cloud>
+#
+# The Ubuntu development VM, made with no one at its screen: Ubuntu 26.04's
+# cloud image, with GNOME added by cloud-init on its first boot
+# (ubuntu-desktop-minimal, the set the installer's minimal install has), and
+# set up as docs/development-vms.md asks of a VM that `just vm-start` drives:
+# SSH with your key, sudo without a password, automatic login, and a login
+# keyring with an empty password, which gnome-keyring opens without asking.
+# It ends shut down, with a snapshot named "fresh" taken before any Backtrack
+# is on it, for checks that begin on a clean machine (S13-T4's deb).
+#
+#   scripts/ubuntu-vm create   make it; about fifteen minutes, mostly GNOME
+#                              downloading
+#   scripts/ubuntu-vm fresh    put it back as it was made
+#
+# The disk goes in BACKTRACK_VM_DIR (default /var/lib/libvirt/images), which
+# must be writable by you. Your password in the VM is the development one,
+# "backtrack dev", for its screen; SSH takes only your key.
+set -euo pipefail
+
+name="ubuntu2604 (GNOME)"
+dir="${BACKTRACK_VM_DIR:-/var/lib/libvirt/images}"
+image="https://cloud-images.ubuntu.com/resolute/current/resolute-server-cloudimg-amd64.img"
+base="${dir}/ubuntu2604-base.img"
+disk="${dir}/ubuntu2604.qcow2"
+virsh=(virsh --connect qemu:///system)
+
+create() {
+    if "${virsh[@]}" dominfo "$name" >/dev/null 2>&1; then
+        echo "$name exists already; 'scripts/ubuntu-vm fresh' puts it back as it was made." >&2
+        exit 1
+    fi
+    key="$(cat ~/.ssh/id_ed25519.pub 2>/dev/null || cat ~/.ssh/id_*.pub | head -n 1)"
+    if [[ ! -f "$base" ]]; then
+        echo "== Downloading Ubuntu 26.04's cloud image"
+        curl -fL -o "${base}.part" "$image"
+        want="$(curl -fsS "${image%/*}/SHA256SUMS" | awk '/server-cloudimg-amd64.img$/ {print $1}')"
+        echo "${want}  ${base}.part" | sha256sum --check --quiet
+        mv "${base}.part" "$base"
+    fi
+    qemu-img convert -O qcow2 "$base" "$disk"
+    qemu-img resize -q "$disk" 60G
+
+    seed="$(mktemp -d)"
+    trap 'rm -rf "$seed"' EXIT
+    cat > "${seed}/user-data" <<EOF
+#cloud-config
+hostname: ubuntu2604
+users:
+  - name: ${USER}
+    shell: /bin/bash
+    groups: [sudo, adm]
+    sudo: ALL=(ALL) NOPASSWD:ALL
+    lock_passwd: false
+    ssh_authorized_keys:
+      - ${key}
+chpasswd:
+  expire: false
+  users:
+    - {name: ${USER}, password: "backtrack dev", type: text}
+ssh_pwauth: false
+package_update: true
+packages: [ubuntu-desktop-minimal, qemu-guest-agent, spice-vdagent]
+runcmd:
+  - systemctl set-default graphical.target
+  - printf '[daemon]\nAutomaticLoginEnable=True\nAutomaticLogin=${USER}\n' > /etc/gdm3/custom.conf
+  # The login keyring, empty and with no password: gnome-keyring keeps such a
+  # keyring as plain text and opens it without asking. The first-login
+  # welcome would otherwise cover the screen.
+  - >-
+    su - ${USER} -c 'mkdir -p -m 700 ~/.local/share/keyrings ~/.config
+    && printf "[keyring]\ndisplay-name=Login\nctime=0\nmtime=0\nlock-on-idle=false\nlock-after=false\n" > ~/.local/share/keyrings/login.keyring
+    && chmod 600 ~/.local/share/keyrings/login.keyring
+    && printf login > ~/.local/share/keyrings/default
+    && echo yes > ~/.config/gnome-initial-setup-done'
+power_state:
+  mode: poweroff
+  message: Ubuntu development VM ready
+EOF
+    # The first boot asks for its address by MAC, as GNOME's NetworkManager
+    # does after it: by its default DUID, it would lease a second address,
+    # which libvirt lists first until it expires, an hour on.
+    cat > "${seed}/network-config" <<EOF
+version: 2
+ethernets:
+  nic:
+    match: {name: "en*"}
+    dhcp4: true
+    dhcp-identifier: mac
+EOF
+    echo "== Creating $name; cloud-init installs GNOME and powers it off when done"
+    virt-install --connect qemu:///system --name "$name" --osinfo ubuntu26.04 \
+        --memory 8192 --vcpus 6 \
+        --disk "path=${disk},format=qcow2,bus=virtio" --import \
+        --cloud-init "user-data=${seed}/user-data,network-config=${seed}/network-config" \
+        --network network=default,model=virtio --graphics spice --video virtio \
+        --noautoconsole --wait -1 --noreboot
+    "${virsh[@]}" snapshot-create-as "$name" fresh "Ubuntu 26.04 with GNOME, before any Backtrack"
+    echo "Made $name, shut down, with its 'fresh' snapshot. Start it with: just vm-start \"$name\""
+}
+
+fresh() {
+    "${virsh[@]}" destroy "$name" >/dev/null 2>&1 || true
+    "${virsh[@]}" snapshot-revert "$name" fresh
+    echo "$name is back as it was made, and shut down."
+}
+
+case "${1:-}" in
+create) create ;;
+fresh) fresh ;;
+*)
+    sed -n '/^# The Ubuntu/,/^set -euo/p' "$0" | sed '$d; s/^# \{0,1\}//'
+    exit 2
+    ;;
+esac
