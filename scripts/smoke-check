@@ -6,11 +6,13 @@
 # step at a time: each step sets things up, says what to do at the screen, and
 # afterwards checks what it can. The RPM is tried on a development VM as a new
 # user, `smoke`, whose home has none of the development build's units and
-# none of the Flatpak; the AUR package on this computer, in Keith's own
-# account, which has no Backtrack of any kind in it to begin with.
+# none of the Flatpak; the deb the same way, from the testing PPA, on the
+# Ubuntu VM put back as it was made; the AUR package on this computer, in
+# Keith's own account, which has no Backtrack of any kind in it to begin with.
 #
 #   scripts/smoke-check rpm gnome|kde   build the RPMs, start the VM, add the user
 #                                       smoke and install the packages for it
+#   scripts/smoke-check deb             the same on the Ubuntu VM, from the testing PPA
 #   scripts/smoke-check reinstall       after a fix: rebuild the RPMs and install them
 #                                       over the ones on the VM
 #   scripts/smoke-check aur             build the AUR packages here and say how to
@@ -26,6 +28,7 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 STATE="$ROOT/target/smoke-check.target"
 GNOME="fedora45 (GNOME)"
 KDE="fedora45 (KDE)"
+UBUNTU="ubuntu2604 (GNOME)"
 USER_NAME=smoke
 PASSWORD="smoke check"
 BUS=tools.backtrack.Backtrack.Daemon1
@@ -33,12 +36,13 @@ OBJ=/tools/backtrack/Backtrack/Daemon1
 
 say() { printf '\n\033[1m%s\033[0m\n' "$*"; }
 want() { printf '\nWhat I want back:\n'; local i=1; for line in "$@"; do printf '  %d. %s\n' "$i" "$line"; i=$((i + 1)); done; }
-target() { cat "$STATE" 2>/dev/null || { echo "Run scripts/smoke-check rpm gnome|kde, or aur, first." >&2; exit 2; }; }
+target() { cat "$STATE" 2>/dev/null || { echo "Run scripts/smoke-check rpm gnome|kde, deb, or aur, first." >&2; exit 2; }; }
 here() { [ "$(target)" = here ]; }
+ubuntu() { [ "$(target)" = "$UBUNTU" ]; }
 desktop() {
     case "$(target)" in
     here) echo here ;;
-    "$GNOME") echo gnome ;;
+    "$GNOME" | "$UBUNTU") echo gnome ;;
     "$KDE") echo kde ;;
     esac
 }
@@ -134,9 +138,37 @@ or wallet.
 EOF
     echo "Then: scripts/smoke-check 1"
     ;;
+deb)
+    # The PPA's own packages, on a machine that has had nothing of Backtrack's.
+    ppa="$(sed -n 's/^testing = "\(ppa:[^"]*\)"/\1/p' "$ROOT/packaging/release.toml")"
+    echo "$UBUNTU" > "$STATE"
+    "$ROOT/scripts/ubuntu-vm" fresh | tail -1
+    just --justfile "$ROOT/Justfile" vm-start "$UBUNTU" | tail -1
+    on 'bash -s' <<EOF
+set -eu
+sudo -n add-apt-repository -y $ppa >/dev/null 2>&1
+# needrestart's report after an install says nothing about Backtrack.
+sudo -n DEBIAN_FRONTEND=noninteractive NEEDRESTART_SUSPEND=1 apt-get install -y -q backtrack backtrack-nautilus >/dev/null
+dpkg-query -W backtrack backtrack-nautilus
+id $USER_NAME >/dev/null 2>&1 || sudo -n useradd -m -s /bin/bash -c "Smoke Test" $USER_NAME
+# Ubuntu's password check warns that the password has the user's name in it,
+# and, for root, sets it anyway.
+echo "$USER_NAME:$PASSWORD" | sudo -n chpasswd 2>&1 | grep -v '^BAD PASSWORD' >&2 || true
+sudo -n -u $USER_NAME mkdir -p /home/$USER_NAME/.config
+echo yes | sudo -n -u $USER_NAME tee /home/$USER_NAME/.config/gnome-initial-setup-done >/dev/null
+EOF
+    cat <<EOF
+
+On the VM's screen, log out, and at the login screen sign in as "Smoke Test"
+(user $USER_NAME, password "$PASSWORD"). Let the desktop finish its first
+start: close any welcome window.
+EOF
+    echo "Then: scripts/smoke-check 1"
+    ;;
 reinstall)
     # After a fix found mid-run: the same checks go on with the new build.
     here && { echo "Here, rebuild with scripts/smoke-check aur and install with pacman -U again." >&2; exit 2; }
+    ubuntu && { echo "The deb comes from the PPA: a fix goes out as the next release candidate." >&2; exit 2; }
     case "$(desktop)" in gnome) integration=nautilus ;; *) integration=dolphin ;; esac
     build_rpms
     say "Installing them over the ones on $(target)…"
@@ -291,6 +323,9 @@ Remove the packages yourself:
 
 then log out and back in.
 EOF
+    elif ubuntu; then
+        on 'sudo -n DEBIAN_FRONTEND=noninteractive apt-get remove -y -q backtrack backtrack-nautilus >/dev/null 2>&1; dpkg-query -W -f '"'"'${db:Status-Status}'"'"' backtrack 2>/dev/null | grep -qx installed && echo "backtrack is still installed" || echo "the packages are removed"'
+        echo "Log out of Smoke Test and back in as Smoke Test."
     else
         on 'sudo -n dnf remove -y -q backtrack backtrack-nautilus backtrack-dolphin >/dev/null 2>&1; rpm -q backtrack >/dev/null 2>&1 && echo "backtrack is still installed" || echo "the packages are removed"'
         echo "Log out of Smoke Test and back in as Smoke Test."
@@ -346,6 +381,9 @@ EOF
         rm -f ~/.config/autostart/backtrack*.desktop ~/.config/systemd/user/*/backtrackd.service
         secret-tool clear app-id tools.backtrack.Backtrack 2>/dev/null || true
         echo "Removed ~/Smoke, Backtrack's data and settings, and its keyring entry."
+    elif ubuntu; then
+        "$ROOT/scripts/vm" drive-out "$(target)" --discard 2>/dev/null || true
+        "$ROOT/scripts/ubuntu-vm" fresh
     else
         on 'bash -s' <<EOF
 set -u
