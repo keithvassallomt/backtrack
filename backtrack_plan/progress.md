@@ -5,9 +5,15 @@
 Steps only Keith can take, kept current as work turns them up. Tick each when
 done; Claude removes ticked items.
 
-- [ ] A release-candidate run as RELEASING.md describes:
-  `just bump-version 0.1.0-rc1`, commit, `just release` on the branch
-  (S13-T4, S13-T5, S13-T6, S13-T9, S14-T9).
+- [ ] The deb's smoke checks at the Ubuntu VM's screen, with Claude: the VM
+  is set up (`scripts/smoke-check deb`); log in as Smoke Test, then
+  `scripts/smoke-check 1` … `7` (S13-T4).
+- [ ] Submit the FriendlyHub files in
+  `~/Downloads/backtrack-0.1.0-rc1-friendlyhub/` as
+  `packaging/flatpak/FRIENDLYHUB.md` describes (S14-T9).
+- [ ] A second release candidate, following RELEASING.md word for word:
+  `just bump-version 0.1.0-rc2`, commit, push, `just release`, then
+  `just release` again straight after (S13-T6, S13-T9).
 
 > **Contract:** Update this file in the SAME COMMIT as the work it describes.
 > `[ ]` upcoming · `[/]` in progress · `[x]` done (acceptance criteria verified) ·
@@ -22,7 +28,7 @@ done; Claude removes ticked items.
 > See [../CLAUDE.md](../CLAUDE.md) for the full workflow.
 
 **Current stage:** 13 (in progress)
-**Last updated:** 2026-10-17
+**Last updated:** 2026-10-18
 
 ## Stage 0 — Bootstrap ([stage file](stages/stage-00-bootstrap.md))
 - [x] S00-T1 Git repo, license, .gitignore, README skeleton
@@ -139,7 +145,7 @@ done; Claude removes ticked items.
 - [x] S13-T2 cargo-sources.json generation recipe (offline flatpak build)
 - [x] S13-T3 Portal permissions audit + test matrix
 - [/] S13-T4 RPM spec + COPR (Fedora 44+); deb + PPA (Ubuntu 26.04+)
-- [/] S13-T5 CI release artifacts on tag
+- [x] S13-T5 CI release artifacts on tag
 - [/] S13-T6 Release runbook (human bumps version → just bump-version → just release)
 - [x] S13-T7 Application ID tools.backtrack.Backtrack, daemon names under it
 - [x] S13-T8 AUR packages (app, nautilus, dolphin)
