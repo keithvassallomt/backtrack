@@ -53,6 +53,15 @@ class Rewrites(unittest.TestCase):
         parts = release.ppa_parts("ppa:keith/backtrack-testing")
         self.assertEqual(parts, ("keith", "backtrack-testing"))
 
+    def test_the_tags_release_run_is_found_beside_its_ci_run(self):
+        runs = [
+            {"databaseId": 3, "headBranch": "v0.2.0-rc1", "workflowName": "CI"},
+            {"databaseId": 2, "headBranch": "v0.2.0-rc1", "workflowName": "Release"},
+            {"databaseId": 1, "headBranch": "v0.1.0", "workflowName": "Release"},
+        ]
+        self.assertEqual(release.release_run(runs, "v0.2.0-rc1"), 2)
+        self.assertIsNone(release.release_run(runs[:1], "v0.2.0-rc1"))
+
 
 if __name__ == "__main__":
     unittest.main()

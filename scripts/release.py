@@ -123,6 +123,22 @@ def ppa_parts(ppa):
     return owner, name
 
 
+def release_run(runs, tag):
+    """The id of the release workflow's run for `tag` among `gh run list`'s
+    runs, or None. Runs are matched by workflow name, not looked up by file:
+    GitHub finds a workflow by file only once it is on the default branch,
+    and a release candidate's tag is on its release branch. CI runs on the
+    tag's push too, so the name tells the two apart."""
+    return next(
+        (
+            x["databaseId"]
+            for x in runs
+            if x["headBranch"] == tag and x["workflowName"] == "Release"
+        ),
+        None,
+    )
+
+
 # ─── Running things ────────────────────────────────────────────────────────
 
 
@@ -298,16 +314,16 @@ def tag_and_wait(r):
                 "gh",
                 "run",
                 "list",
-                "--workflow",
-                "release.yml",
+                "--event",
+                "push",
                 "--json",
-                "databaseId,headBranch",
+                "databaseId,headBranch,workflowName",
                 "--limit",
                 "20",
                 capture=True,
             )
         )
-        run_id = next((x["databaseId"] for x in runs if x["headBranch"] == r.tag), None)
+        run_id = release_run(runs, r.tag)
         if run_id:
             break
         time.sleep(10)
