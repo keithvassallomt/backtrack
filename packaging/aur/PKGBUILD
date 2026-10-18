@@ -16,7 +16,7 @@
 
 pkgbase=backtrack
 pkgname=(backtrack backtrack-nautilus backtrack-dolphin)
-_version=0.1.0
+_version=0.1.0-rc1
 pkgver=${_version//-/}
 pkgrel=1
 pkgdesc='Browse your files as they were: backups you can step back through, built on Borg'

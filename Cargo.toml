@@ -13,7 +13,7 @@ members = [
 # `just bump-version` (see VERSIONING.md). Crates inherit it with
 # `version.workspace = true`.
 [workspace.package]
-version = "0.1.0"
+version = "0.1.0-rc1"
 edition = "2021"
 license = "GPL-3.0-or-later"
 authors = ["Keith Vassallo <keith@vassallo.cloud>"]
