@@ -43,7 +43,7 @@ import time
 import tomllib
 import urllib.request
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -141,7 +141,112 @@ def release_run(runs, tag, commit):
     )
 
 
+def job_news(jobs, said, tz=None):
+    """What has happened to the release run's jobs since `said`, a job's
+    name to the last state said of it, which this updates: (job name, line)
+    for a job that has started, passed, been skipped or failed (with the
+    step it failed at, and its link). Times are local, or in `tz`."""
+    lines = []
+    for job in jobs:
+        name = job["name"]
+        if job["status"] == "completed":
+            state = job["conclusion"]
+        elif job["status"] == "in_progress":
+            state = "started"
+        else:
+            continue
+        if said.get(name) == state:
+            continue
+        said[name] = state
+        if state == "started":
+            lines.append((name, f"{clock(job['startedAt'], tz)}  {name}: started"))
+        elif state == "skipped":
+            lines.append((name, f"{clock(job['completedAt'], tz)}  {name}: skipped"))
+        elif state == "success":
+            took = duration(job["startedAt"], job["completedAt"])
+            lines.append((name, f"{clock(job['completedAt'], tz)}  {name}: passed in {took}"))
+        else:
+            took = duration(job["startedAt"], job["completedAt"])
+            step = next((x["name"] for x in job["steps"] if x["conclusion"] == "failure"), "")
+            at = f" at “{step}”" if step else ""
+            lines.append(
+                (name, f"{clock(job['completedAt'], tz)}  {name}: {state}{at} after {took}")
+            )
+            lines.append((name, f"    {job['url']}"))
+    return lines
+
+
+def still_running(jobs, now):
+    """The line naming the jobs still running at `now`, and for how long, or
+    None when none is."""
+    running = [
+        f"{job['name']} ({duration(job['startedAt'], now)})"
+        for job in jobs
+        if job["status"] == "in_progress"
+    ]
+    return f"still running: {', '.join(running)}" if running else None
+
+
+def clock(stamp, tz=None):
+    """HH:MM:SS of one of GitHub's UTC timestamps, in local time or `tz`."""
+    return datetime.fromisoformat(stamp).astimezone(tz).strftime("%H:%M:%S")
+
+
+def duration(start, end):
+    """How long from `start` to `end` (GitHub timestamps or datetimes), as
+    "26s" or "11m 29s"."""
+    start, end = (datetime.fromisoformat(t) if isinstance(t, str) else t for t in (start, end))
+    minutes, seconds = divmod(max(0, round((end - start).total_seconds())), 60)
+    return f"{minutes}m {seconds:02d}s" if minutes else f"{seconds}s"
+
+
 # ─── Running things ────────────────────────────────────────────────────────
+
+# Every line the run prints carries the tag of the step it belongs to, in
+# that step's colour on a terminal (ANSI SGR codes). The release workflow's
+# jobs run side by side, so each has its own tag, in the colour of the
+# channel it builds for: Ubuntu's orange, Fedora's cyan, Arch's blue, and
+# magenta for the Flatpak.
+COLOURS = {
+    "Preflight": "90",
+    "GitHub": "97",
+    "COPR": "36",
+    "PPA": "38;5;208",
+    "AUR": "38;5;33",
+    "FriendlyHub": "35",
+    "CI rpm": "36",
+    "CI deb": "38;5;208",
+    "CI flatpak": "35",
+    "CI tarballs": "97",
+    "CI": "97",
+}
+TAG_WIDTH = max(len(tag) for tag in COLOURS) + 2
+JOB_TAGS = (
+    ("RPMs", "CI rpm"),
+    ("Debs", "CI deb"),
+    ("Flatpak", "CI flatpak"),
+    ("Source tarballs", "CI tarballs"),
+)
+
+
+def job_tag(name):
+    """The tag for a release workflow job's lines, by the start of its name."""
+    return next((tag for start, tag in JOB_TAGS if name.startswith(start)), "CI")
+
+
+def tagged(message, tag, colour):
+    """`message` under `[tag]`, padded so that messages line up; the tag in
+    its colour when `colour`."""
+    if not tag:
+        return message
+    label = f"[{tag}]".ljust(TAG_WIDTH)
+    if colour and tag in COLOURS:
+        label = f"\033[1;{COLOURS[tag]}m{label}\033[0m"
+    return f"{label} {message}"
+
+
+def on_a_terminal():
+    return sys.stdout.isatty() and "NO_COLOR" not in os.environ
 
 
 @dataclass
@@ -152,6 +257,8 @@ class Run:
     config: dict
     log: Path
     outcomes: list = field(default_factory=list)
+    step: str = ""
+    colour: bool = field(default_factory=on_a_terminal)
 
     @property
     def tag(self):
@@ -161,27 +268,44 @@ class Run:
     def prerelease(self):
         return "-" in self.version
 
-    def say(self, message):
-        print(message, flush=True)
+    def say(self, message, tag=None):
+        """Print `message` and log it, under `tag`, or the current step's."""
+        tag = self.step if tag is None else tag
+        print(tagged(message, tag, self.colour), flush=True)
         with self.log.open("a") as log:
-            log.write(message + "\n")
+            log.write(tagged(message, tag, False) + "\n")
 
     def run(self, *command, cwd=ROOT, capture=False, check=True, env=None):
-        """Run `command`, logged; its output is returned when `capture`."""
+        """Run `command`, logged; its output is returned when `capture`, and
+        otherwise said line by line, under the step's tag."""
         self.say("$ " + " ".join(str(part) for part in command))
-        result = subprocess.run(
-            [str(part) for part in command],
-            cwd=cwd,
-            text=True,
-            capture_output=capture,
-            env={**os.environ, **(env or {})},
-        )
+        args = dict(cwd=cwd, text=True, errors="replace", env={**os.environ, **(env or {})})
         if capture:
+            result = subprocess.run([str(part) for part in command], capture_output=True, **args)
             with self.log.open("a") as log:
                 log.write(result.stdout + result.stderr)
-        if check and result.returncode != 0:
-            raise Failed(f"{command[0]} failed (exit {result.returncode})")
-        return result.stdout if capture else result.returncode
+            returncode = result.returncode
+        else:
+            with subprocess.Popen(
+                [str(part) for part in command],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                **args,
+            ) as process:
+                for line in process.stdout:
+                    self.say(line.rstrip("\n"))
+            returncode = process.returncode
+        if check and returncode != 0:
+            raise Failed(f"{command[0]} failed (exit {returncode})")
+        return result.stdout if capture else returncode
+
+    def read(self, *command):
+        """`command`'s output, or None if it fails; neither goes to the log.
+        For polling, which would otherwise fill it."""
+        result = subprocess.run(
+            [str(part) for part in command], cwd=ROOT, text=True, capture_output=True
+        )
+        return result.stdout if result.returncode == 0 else None
 
     def ok(self, *command):
         """Whether `command` succeeds; its output goes to the log only."""
@@ -331,7 +455,7 @@ def tag_and_wait(r):
         time.sleep(10)
     if not run_id:
         raise Failed(f"the release workflow did not start for {r.tag}")
-    r.run("gh", "run", "watch", str(run_id), "--exit-status")
+    follow(r, run_id)
     assets = r.run(
         "gh",
         "release",
@@ -348,6 +472,45 @@ def tag_and_wait(r):
     if absent or "SHA256SUMS" not in assets:
         raise Failed(f"the release lacks {absent or ['SHA256SUMS']}")
     r.outcome("GitHub release", "published", f"https://github.com/{GITHUB}/releases/tag/{r.tag}")
+
+
+# How often the release run is looked at; how long a stretch with no news
+# lasts before the jobs still running are named; and how many looks in a
+# row may fail (GitHub unreachable) before the wait gives up.
+LOOK_EVERY = 20
+QUIET_FOR = 300
+LOOKS_MAY_FAIL = 15
+
+
+def follow(r, run_id):
+    """Wait for the release run, saying each job's start and end as they
+    come and, through a quiet stretch, which jobs are still running."""
+    r.say(f"Following the release run: https://github.com/{GITHUB}/actions/runs/{run_id}")
+    said, quiet, failed_looks = {}, 0, 0
+    while True:
+        out = r.read("gh", "run", "view", str(run_id), "--json", "status,conclusion,jobs")
+        if out is None:
+            failed_looks += 1
+            if failed_looks == LOOKS_MAY_FAIL:
+                raise Failed(f"GitHub did not answer for {LOOKS_MAY_FAIL * LOOK_EVERY}s")
+            time.sleep(LOOK_EVERY)
+            continue
+        failed_looks = 0
+        view = json.loads(out)
+        news = job_news(view["jobs"], said)
+        for name, line in news:
+            r.say(line, tag=job_tag(name))
+        if view["status"] == "completed":
+            break
+        quiet = 0 if news else quiet + LOOK_EVERY
+        if quiet >= QUIET_FOR:
+            line = still_running(view["jobs"], datetime.now(UTC))
+            if line:
+                r.say(line)
+            quiet = 0
+        time.sleep(LOOK_EVERY)
+    if view["conclusion"] != "success":
+        raise Failed(f"the release workflow ended in {view['conclusion']}")
 
 
 # ─── 3. COPR ───────────────────────────────────────────────────────────────
@@ -578,19 +741,25 @@ def main(argv):
     r = Run(version=version, dry=dry, friendlyhub=directory, config=config, log=log)
     r.say(f"\n# {datetime.now():%Y-%m-%d %H:%M} release of {version}{' (dry run)' if dry else ''}")
     try:
-        if only_friendlyhub:
-            friendlyhub(r)
-        else:
-            preflight(r)
-            tag_and_wait(r)
-            copr(r)
-            ppa(r)
-            aur(r)
-            friendlyhub(r)
+        steps = [("FriendlyHub", friendlyhub)]
+        if not only_friendlyhub:
+            steps = [
+                ("Preflight", preflight),
+                ("GitHub", tag_and_wait),
+                ("COPR", copr),
+                ("PPA", ppa),
+                ("AUR", aur),
+                *steps,
+            ]
+        for tag, step in steps:
+            r.step = tag
+            step(r)
     except Failed as error:
+        r.step = ""
         r.say(f"\nStopped: {error}")
         r.say(f"Fix the cause and run it again; finished steps are skipped. Log: {log}")
         return 1
+    r.step = ""
     r.say("\n== Summary")
     for channel, state, where in r.outcomes:
         r.say(f"  {channel:<20} {state:<28} {where}")

@@ -3,8 +3,14 @@
 """Tests for release.py's rewrites, against the real packaging files:
 python3 -m unittest discover -s scripts."""
 
+import contextlib
+import io
+import sys
+import tempfile
 import unittest
 import xml.etree.ElementTree as ElementTree
+from datetime import UTC, datetime
+from pathlib import Path
 
 import release
 
@@ -77,6 +83,123 @@ class Rewrites(unittest.TestCase):
             "workflowName": "Release",
         }
         self.assertIsNone(release.release_run([earlier], "v0.2.0-rc1", "b"))
+
+
+def job(name, status, conclusion="", started="2026-10-18T09:12:41Z", completed="", steps=()):
+    """A job as `gh run view --json jobs` gives it."""
+    return {
+        "name": name,
+        "status": status,
+        "conclusion": conclusion,
+        "startedAt": started,
+        "completedAt": completed or "0001-01-01T00:00:00Z",
+        "url": "https://github.com/o/r/actions/runs/1/job/2",
+        "steps": list(steps),
+    }
+
+
+class Progress(unittest.TestCase):
+    def test_each_job_is_said_as_it_starts_and_as_it_ends(self):
+        said = {}
+        first = [job("Source tarballs", "in_progress"), job("RPMs (Fedora 44)", "queued")]
+        news = release.job_news(first, said, UTC)
+        self.assertEqual(news, [("Source tarballs", "09:12:41  Source tarballs: started")])
+        self.assertEqual(release.job_news(first, said, UTC), [])
+        second = [
+            job("Source tarballs", "completed", "success", completed="2026-10-18T09:24:10Z"),
+            job("RPMs (Fedora 44)", "in_progress", started="2026-10-18T09:24:12Z"),
+        ]
+        news = release.job_news(second, said, UTC)
+        self.assertEqual(
+            news,
+            [
+                ("Source tarballs", "09:24:10  Source tarballs: passed in 11m 29s"),
+                ("RPMs (Fedora 44)", "09:24:12  RPMs (Fedora 44): started"),
+            ],
+        )
+
+    def test_a_failed_job_names_the_step_and_links_the_log(self):
+        failed = job(
+            "RPMs (Fedora 44)",
+            "completed",
+            "failure",
+            completed="2026-10-18T09:13:37Z",
+            steps=[
+                {"name": "Run actions/checkout@v7", "conclusion": "success"},
+                {"name": "Run just dist", "conclusion": "failure"},
+            ],
+        )
+        news = release.job_news([failed], {}, UTC)
+        self.assertEqual(
+            news,
+            [
+                (
+                    "RPMs (Fedora 44)",
+                    "09:13:37  RPMs (Fedora 44): failure at “Run just dist” after 56s",
+                ),
+                ("RPMs (Fedora 44)", "    https://github.com/o/r/actions/runs/1/job/2"),
+            ],
+        )
+
+    def test_a_skipped_job_has_no_duration(self):
+        # GitHub stamps a skipped job as finished a second before it started.
+        skipped = job(
+            "GitHub release",
+            "completed",
+            "skipped",
+            started="2026-10-18T08:35:50Z",
+            completed="2026-10-18T08:35:49Z",
+        )
+        news = release.job_news([skipped], {}, UTC)
+        self.assertEqual(news, [("GitHub release", "08:35:49  GitHub release: skipped")])
+
+    def test_a_quiet_stretch_names_the_jobs_still_running(self):
+        jobs = [
+            job("Flatpak bundle", "in_progress"),
+            job("Source tarballs", "completed", "success", completed="2026-10-18T09:13:37Z"),
+        ]
+        now = datetime(2026, 10, 18, 9, 30, 0, tzinfo=UTC)
+        line = release.still_running(jobs, now)
+        self.assertEqual(line, "still running: Flatpak bundle (17m 19s)")
+        self.assertIsNone(release.still_running(jobs[1:], now))
+
+
+class Tags(unittest.TestCase):
+    def test_each_job_shares_its_channels_colour(self):
+        tags = [release.job_tag(n) for n in ("RPMs (Fedora 44)", "Debs (Ubuntu 26.04)")]
+        self.assertEqual(tags, ["CI rpm", "CI deb"])
+        self.assertEqual(release.COLOURS["CI rpm"], release.COLOURS["COPR"])
+        self.assertEqual(release.COLOURS["CI deb"], release.COLOURS["PPA"])
+        self.assertEqual(release.COLOURS["CI flatpak"], release.COLOURS["FriendlyHub"])
+        self.assertEqual(release.job_tag("A job added later"), "CI")
+
+    def test_a_line_is_coloured_on_a_terminal_and_plain_in_the_log(self):
+        with tempfile.TemporaryDirectory() as directory:
+            log = Path(directory) / "release.log"
+            r = release.Run("0.2.0", False, Path(directory), {}, log, step="PPA", colour=True)
+            shown = io.StringIO()
+            with contextlib.redirect_stdout(shown):
+                r.say("uploaded")
+            # Every message starts in the same column, whichever its tag.
+            label = "[PPA]".ljust(len("[FriendlyHub]"))
+            self.assertEqual(shown.getvalue(), f"\033[1;38;5;208m{label}\033[0m uploaded\n")
+            self.assertEqual(log.read_text(), f"{label} uploaded\n")
+
+    def test_a_commands_output_is_said_under_the_steps_tag(self):
+        with tempfile.TemporaryDirectory() as directory:
+            log = Path(directory) / "release.log"
+            r = release.Run("0.2.0", False, Path(directory), {}, log, step="COPR", colour=False)
+            label = "[COPR]".ljust(len("[FriendlyHub]"))
+            shown = io.StringIO()
+            with contextlib.redirect_stdout(shown):
+                r.run(
+                    sys.executable, "-c", "print('Build 1: running'); print('Build 1: succeeded')"
+                )
+            lines = shown.getvalue().splitlines()
+            self.assertEqual(
+                lines[1:], [f"{label} Build 1: running", f"{label} Build 1: succeeded"]
+            )
+            self.assertEqual(log.read_text().splitlines(), lines)
 
 
 if __name__ == "__main__":
