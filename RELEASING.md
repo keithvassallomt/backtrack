@@ -49,7 +49,9 @@ credential beyond its GitHub token; `just release` does the publishing.
    `## [X.Y.Z] - YYYY-MM-DD`, and leave `[Unreleased]` empty.
 4. Commit, and merge to `main`.
 5. Optionally, `just release-dry`: the preflight, every build and the
-   FriendlyHub files, with nothing published.
+   FriendlyHub files, with nothing published. Its Flatpak build installs
+   the Flatpak for you; `flatpak uninstall --user tools.backtrack.Backtrack`
+   removes it.
 6. Run `just release`. Its first checks sign a test message with the PPA
    key, so if the agent does not hold the key's passphrase, a dialog asks for
    it within seconds of starting: answer it, and the agent holds it for the
@@ -69,12 +71,20 @@ The log of every run is in `target/release/X.Y.Z.log`.
 
 ## Release candidates
 
-Bump to a pre-release version (`just bump-version 0.2.0-rc1`) and run
-`just release` from the release branch, which need not be `main`. CI makes a
-GitHub pre-release; the testing COPR and the testing PPA get the build; the
-AUR is left alone, and the run prints what it would have pushed there. The
-FriendlyHub files are written as for a release, and whether a candidate goes
-to FriendlyHub is a choice made when submitting them.
+A candidate goes to the testing channels from the release branch, which need
+not be `main`:
+
+1. Run `just bump-version X.Y.Z-rcN` (`0.2.0-rc1`, then `0.2.0-rc2`). Leave
+   `CHANGELOG.md` as it is: a candidate's notes are the `[Unreleased]`
+   entries, dated the day it is made.
+2. Commit, and push the release branch.
+3. Optionally, `just release-dry`, as step 5 above.
+4. Run `just release`, and read its summary, as steps 6 and 7 above.
+5. If the candidate is to go to FriendlyHub, submit its files, as step 8.
+
+CI makes a GitHub pre-release; the testing COPR and the testing PPA get the
+build; the AUR is left alone, and the run prints what it would have pushed
+there. The FriendlyHub files are written as for a release.
 
 The packages spell a pre-release with a tilde (`0.2.0~rc1`), and the AUR
 without the hyphen (`0.2.0rc1`), so that each sorts before the release.
