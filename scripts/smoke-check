@@ -339,7 +339,16 @@ verify)
     2)
         daemon GetStatus | awk '{print "health:", $2, " last backup:", $3}'
         daemon GetConfigKey s storage.repository | sed 's/^s /repository: /'
-        as_user 'ls ~/Smoke/*.txt ~/Smoke/*.key 2>/dev/null | sed "s/^/recovery key: /"; secret-tool search app-id tools.backtrack.Backtrack 2>/dev/null | grep -m1 "^label" || echo "no passphrase in the keyring"'
+        # The keyring is asked over D-Bus, as Backtrack asks it: Ubuntu has no
+        # secret-tool unless libsecret-tools is installed.
+        as_user 'ls ~/Smoke/*.txt ~/Smoke/*.key 2>/dev/null | sed "s/^/recovery key: /"
+item=$(busctl --user call org.freedesktop.secrets /org/freedesktop/secrets org.freedesktop.Secret.Service \
+    SearchItems "a{ss}" 1 app-id tools.backtrack.Backtrack 2>/dev/null | grep -o "\"/[^\"]*\"" | tr -d "\"" | head -n 1)
+if [ -n "$item" ]; then
+    busctl --user get-property org.freedesktop.secrets "$item" org.freedesktop.Secret.Item Label | sed "s/^s /passphrase in the keyring: /"
+else
+    echo "no passphrase in the keyring"
+fi'
         ;;
     3) as_user 'f=~/Smoke/Documents/Reports/report.txt; [ -f "$f" ] && echo "restored: $(cat "$f")" && echo "modified: $(date -r "$f" "+%Y-%m-%d %H:%M") (the original was 2026-01-15 09:30)" || echo "report.txt is not back"' ;;
     4)
