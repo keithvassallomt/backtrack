@@ -295,10 +295,10 @@ fn open_first_window(
                 info!("a restore of this computer is under way; reopening it");
                 ui::everything::present(&app, daemon);
             }
-            _ => {
+            (daemon, _) => {
                 let target = match target {
                     Some(target) => target,
-                    None => window::backed_up_target().await,
+                    None => window::backed_up_target(daemon.as_ref()).await,
                 };
                 let window = window::Window::build(&app, &target);
                 window.present();

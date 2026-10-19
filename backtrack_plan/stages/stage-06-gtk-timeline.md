@@ -125,14 +125,15 @@ the breadcrumb leads only up, so the backed-up folder below could not be
 reached from there. A window opened afterwards starts at the backed-up
 folders' parent, as `backed_up_target` intends.
 - A folder outside the backups that holds backed-up folders lists the
-  folders that lead down to them, and says that it is not backed up itself.
+  folders that lead down to them, each marked "Some items backed up", above
+  a line saying "Some items in Home are backed up." with Add to Backups….
 - The window that ran the wizard moves to the backed-up folders once the
   first backup is catalogued, where a window opened then would start.
 
 **Accept:** with only `~/Smoke/Documents` backed up, the home folder lists
-Smoke, which leads to Documents, and says the home folder itself is not
-backed up; the window the wizard ran in shows the backed-up folders once the
-first backup is catalogued, without being closed.
+Smoke, which leads to Documents, and says only some of it is backed up; the
+window the wizard opens shows the backed-up folders once the first backup is
+catalogued, without being closed.
 
 ## Definition of Done
 The Alice story runs end to end on demo-repo (browse → step back → deleted folder

@@ -1252,10 +1252,14 @@ impl Window {
 /// Where a window opens when it is not told: over the top of the newest
 /// backup. For backups of the usual folders that is the home folder; for one
 /// folder chosen deep in the tree it is that folder's parent; for somebody's
-/// imported backups it may be anywhere at all. With nothing catalogued yet it
-/// is the home folder.
-pub async fn backed_up_target() -> Target {
-    let found = gio::spawn_blocking(|| {
+/// imported backups it may be anywhere at all.
+///
+/// With nothing catalogued yet, as when the wizard has just started the first
+/// backup, it is over the folders the settings back up, which is where that
+/// backup will be once it is catalogued; and with no daemon to ask, the home
+/// folder.
+pub async fn backed_up_target(daemon: Option<&Daemon1Proxy<'static>>) -> Target {
+    let catalogued = gio::spawn_blocking(|| {
         let reader =
             backtrack_core::index::IndexReader::open(&backtrack_core::paths::index_db()).ok()?;
         let seq = reader.latest_catalogued_seq().ok()??;
@@ -1265,10 +1269,28 @@ pub async fn backed_up_target() -> Target {
     .await
     .ok()
     .flatten();
+    let found = match (catalogued, daemon) {
+        (Some(folder), _) => Some(folder),
+        (None, Some(daemon)) => chosen_parent(daemon).await,
+        (None, None) => None,
+    };
     Target {
         folder: found.unwrap_or_else(|| crate::path::to_archive(&glib::home_dir())),
         select: None,
     }
+}
+
+/// The folder holding every folder the settings back up, or `None` if the
+/// settings cannot be read.
+async fn chosen_parent(daemon: &Daemon1Proxy<'static>) -> Option<String> {
+    let text = daemon.get_config().await.ok()?;
+    let (config, _) = backtrack_core::config::Config::parse(&text).ok()?;
+    let roots: Vec<String> = backtrack_core::roots::Roots::of(&config)
+        .roots
+        .iter()
+        .map(|root| crate::path::to_archive(root))
+        .collect();
+    crate::path::common_parent(&roots)
 }
 
 /// Point every open window at `target` and re-read what it shows, as after

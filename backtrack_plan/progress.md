@@ -82,7 +82,7 @@ done; Claude removes ticked items.
 - [x] S06-T8 Primary menu (mockup 14) with working Back Up Now / Pause
 - [x] S06-T9 Demo fixture dated relative to now (so the sidebar's bands appear)
 - [x] S06-T10 JobFinished signal, replacing the GUI's completion polling
-- [ ] S06-T11 No dead end above the backed-up folders
+- [/] S06-T11 No dead end above the backed-up folders
 
 ## Stage 7 — Restore engine ([stage file](stages/stage-07-restore-engine.md))
 - [x] S07-T1 Staging→compare→rename pipeline in core

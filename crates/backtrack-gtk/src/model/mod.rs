@@ -15,6 +15,7 @@
 //! which makes "what does the sidebar look like on a Tuesday in June" a
 //! question a test can ask.
 
+pub mod above;
 pub mod calendar;
 pub mod compare;
 pub mod density;

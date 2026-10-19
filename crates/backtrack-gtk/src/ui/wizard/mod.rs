@@ -351,7 +351,9 @@ impl Wizard {
     /// Leave the wizard for the timeline, opened where the backups can be
     /// seen.
     async fn open_timeline(self: &Rc<Self>) {
-        let target = crate::window::backed_up_target().await;
+        // The first backup has only just started, and nothing is catalogued:
+        // the target is over the folders just chosen.
+        let target = crate::window::backed_up_target(Some(&self.daemon)).await;
         if !crate::window::refresh_all(&target) {
             crate::window::Window::build(&self.app, &target).present();
         }
