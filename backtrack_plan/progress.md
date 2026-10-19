@@ -18,7 +18,7 @@ Nothing right now.
 > tasks: add them here + to the stage file, then `just provision-board-apply`.
 > See [../CLAUDE.md](../CLAUDE.md) for the full workflow.
 
-**Current stage:** 12 (S12-T8)
+**Current stage:** 14 (complete)
 **Last updated:** 2026-10-19
 
 ## Stage 0 — Bootstrap ([stage file](stages/stage-00-bootstrap.md))
@@ -133,7 +133,7 @@ Nothing right now.
 - [x] S12-T5 App detects missing plugins → hints distro package (prefs General)
 - [x] S12-T6 Development VMs: one-command setup and push for GNOME and Plasma
 - [x] S12-T7 The tray starts with Backtrack, not only at login
-- [/] S12-T8 The tray sends its icon as pixels
+- [x] S12-T8 The tray sends its icon as pixels
 
 ## Stage 13 — Packaging & release ([stage file](stages/stage-13-packaging-release.md))
 - [x] S13-T1 Flatpak manifest (GNOME runtime, portals, bundled borg)
