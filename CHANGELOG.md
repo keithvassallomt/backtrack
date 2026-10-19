@@ -48,6 +48,10 @@ All notable changes to Backtrack are documented here. This project adheres to
   until tomorrow, or until you resume — along with keyboard shortcuts, help
   and about. There is no way to switch backups off from here, deliberately.
   A line along the bottom of the window says how backups are doing.
+- While a backup is running, Backtrack says how far it has got: a banner
+  across the window, the tray icon's tooltip and menu, and `backtrack status`
+  all show how much has been backed up of about how much, then what is left
+  to do once the files have been read.
 - Backtrack keeps protecting your files when the backup destination isn't
   reachable. Away from your backup drive, on a train, or off the network, the
   files you change are kept safely on this computer instead, hourly, and appear
@@ -233,7 +237,10 @@ All notable changes to Backtrack are documented here. This project adheres to
 - A tray icon on desktops that have a system tray (Plasma, Xfce, Cinnamon and
   others; not GNOME). It says when the last backup was, asks for attention
   only when backups are at risk or stopped, and offers Back Up Now, Pause
-  Backups, Resume Backups and Open Backtrack. It starts at login.
+  Backups, Resume Backups and Open Backtrack. It starts at login, and as soon
+  as Backtrack itself does, so a newly installed Backtrack has its icon
+  without logging out. On Plasma it is drawn in the panel's own style and
+  colour, like the icons beside it.
 - On a desktop without GVfs, which many Plasma installs leave out, the wizard
   still finds a drive the desktop has mounted. A network address it cannot
   open says what to install for it, and that a share mounted another way can
@@ -242,6 +249,12 @@ All notable changes to Backtrack are documented here. This project adheres to
   Backtrack backs up (with a button to add it), it will be in the next
   backup, or it was not in the latest one and may be excluded or on another
   disk.
+- A folder that holds backed-up folders without being backed up itself, such
+  as your Home folder when you back up Documents and Pictures, is no longer
+  a dead end. It is marked "Some items backed up" and lists the way down to
+  what is, with a note saying so and Add to Backups… for the rest.
+- Packages for Fedora (COPR), Ubuntu (PPA) and Arch (AUR), and a Flatpak on
+  FriendlyHub, each for both x86_64 and 64-bit ARM (aarch64) computers.
 - Project bootstrap: Cargo workspace (core library plus daemon, GTK app, and CLI
   binaries), structured logging with JSONL rotation, developer task runner,
   versioning policy, and continuous integration.
