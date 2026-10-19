@@ -21,6 +21,7 @@
 mod pause;
 
 mod daemon;
+mod icon;
 mod text;
 mod tray;
 

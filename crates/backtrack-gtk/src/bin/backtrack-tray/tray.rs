@@ -29,7 +29,8 @@ pub struct Tray {
     quit: Arc<Notify>,
     /// The status as last read; `None` while the daemon is not running.
     status: Option<Status>,
-    icon: String,
+    /// The icon, as pixels at every size (see `crate::icon`).
+    pixmaps: Vec<ksni::Icon>,
 }
 
 impl Tray {
@@ -39,7 +40,7 @@ impl Tray {
             refresh,
             quit,
             status: None,
-            icon: icon(),
+            pixmaps: crate::icon::pixmaps(),
         }
     }
 
@@ -104,8 +105,11 @@ impl ksni::Tray for Tray {
         }
     }
 
-    fn icon_name(&self) -> String {
-        self.icon.clone()
+    /// The icon as pixels, and no icon name: a panel shows pixels as they
+    /// are, where a name has to be found in its icon theme, and a panel that
+    /// read its theme before Backtrack was installed may never find it.
+    fn icon_pixmap(&self) -> Vec<ksni::Icon> {
+        self.pixmaps.clone()
     }
 
     /// What a panel shows instead of the icon while it needs attention.
@@ -202,25 +206,6 @@ impl ksni::Tray for Tray {
             }
             .into(),
         ]
-    }
-}
-
-/// The app's icon where a package has installed it, and a stock one where it
-/// has not, as for a development build: a panel draws an icon name it cannot
-/// find as a broken image.
-fn icon() -> String {
-    let app = backtrack_core::secret::APP_ID;
-    let installed = std::iter::once(glib::user_data_dir())
-        .chain(glib::system_data_dirs())
-        .any(|dir| {
-            dir.join("icons/hicolor/scalable/apps")
-                .join(format!("{app}.svg"))
-                .is_file()
-        });
-    if installed {
-        app.to_string()
-    } else {
-        "document-open-recent".to_string()
     }
 }
 

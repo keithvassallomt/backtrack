@@ -84,6 +84,36 @@ copying a key: the first `just vm-push` (from a terminal, for sudo) leaves
 push after a source change rebuilds with no prompt; `just vm-app` opens the
 window on the VM's screen.
 
+### S12-T7 — The tray starts with Backtrack, not only at login
+Found installing the AUR package on Hyprland (2026-10-19): packages start the
+tray from `/etc/xdg/autostart`, which runs at login, so after installing,
+the icon did not appear until the next login, though Backtrack was open and
+backing up.
+- The daemon starts the tray when it starts, on a desktop other than GNOME
+  where a tray is listening and the icon is not already up: through the
+  unit systemd makes of the autostart file, so the icon runs in a unit of
+  its own; reloading the user manager once if that unit is not there yet;
+  and starting the icon directly only if systemd will not.
+
+**Accept:** on a desktop with a tray, with the icon not running, starting the
+daemon (as opening Backtrack does) brings the icon up within seconds, in its
+autostart unit, with no login; a second start leaves one icon; on GNOME, and
+in a session with no tray, nothing is started.
+
+### S12-T8 — The tray sends its icon as pixels
+Found the same day: the icon was blank in Caelestia's bar. The tray sent
+only the name `tools.backtrack.Backtrack`, which a panel looks up in its
+icon theme, and Quickshell keeps the lookups it made before Backtrack was
+installed for as long as it runs. Every other item in that tray hands over
+its icon itself, as pixels or a file's path.
+- The tray carries the application icon as pixels at 16 to 128 pixels
+  (`just tray-icons` renders them from the application icon), built into the
+  program, and sends no icon name.
+
+**Accept:** in a panel started before Backtrack was installed, the icon shows
+without restarting the panel; `IconPixmap` holds the seven sizes and
+`IconName` is empty; the icon still shows on Plasma.
+
 ## Definition of Done
 Demo videos/screenshots for GNOME (menu + background presence) and KDE (menu +
 tray) attached to the PR; the outside-roots friendly state implemented; CI green

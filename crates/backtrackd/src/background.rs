@@ -29,19 +29,100 @@ use tracing::{debug, info, warn};
 
 use crate::service::Shared;
 
-/// Inside a Flatpak, start the tray icon, on desktops that have a tray.
+/// Start the tray icon, on desktops that have a tray, if it is not up.
 ///
-/// Packages start `backtrack-tray` at login from `/etc/xdg/autostart`, which
-/// a Flatpak cannot export, and the Background portal gives an application one
-/// autostart entry, which is this daemon's. So the daemon starts the tray,
-/// except on GNOME, which has no tray (the rule the autostart file states with
+/// Packages start `backtrack-tray` at login from `/etc/xdg/autostart`. A
+/// daemon starting in the middle of a session, as it does the first time
+/// Backtrack is opened after being installed, starts the icon too, so that
+/// nobody has to log out and in again to see it (S12-T7). It asks systemd to
+/// start the unit it makes of that autostart file, which keeps the icon in a
+/// unit of its own rather than in the daemon's, where it would stop with a
+/// daemon that leaves when idle. Only where a tray is listening, so not in a
+/// session without a panel, and not where the icon is up already.
+///
+/// A Flatpak cannot export an autostart file, and the Background portal gives
+/// an application one autostart entry, which is this daemon's. So there the
+/// daemon starts the tray at every start, panel or not (S14-T3).
+///
+/// Never on GNOME, which has no tray (the rule the autostart file states with
 /// `NotShowIn=GNOME;`). A tray already running holds its bus name and a
-/// second one leaves, so a restarted daemon starting another changes nothing
-/// (S14-T3).
-pub fn start_tray() {
-    if !ashpd::is_sandboxed() || on_gnome(std::env::var("XDG_CURRENT_DESKTOP").ok().as_deref()) {
+/// second one leaves, so starting another changes nothing.
+pub async fn start_tray(connection: &zbus::Connection) {
+    if on_gnome(std::env::var("XDG_CURRENT_DESKTOP").ok().as_deref()) {
         return;
     }
+    if ashpd::is_sandboxed() {
+        spawn_tray();
+        return;
+    }
+    let Ok(dbus) = zbus::fdo::DBusProxy::new(connection).await else {
+        return;
+    };
+    let owned = |name: &'static str| {
+        let dbus = dbus.clone();
+        async move {
+            match zbus::names::BusName::try_from(name) {
+                Ok(name) => dbus.name_has_owner(name).await.unwrap_or(false),
+                Err(_) => false,
+            }
+        }
+    };
+    if !owned(TRAY_HOST).await {
+        debug!("no tray is listening in this session; the icon starts with the next login");
+        return;
+    }
+    if owned(tray_bus_name()).await {
+        return;
+    }
+    match tokio::time::timeout(PATIENCE, start_tray_unit(connection)).await {
+        Ok(Ok(())) => info!(unit = TRAY_UNIT, "started the tray icon"),
+        Ok(Err(error)) => {
+            debug!(%error, unit = TRAY_UNIT, "the tray icon's unit could not be started; starting the icon itself");
+            spawn_tray();
+        }
+        Err(_) => {
+            debug!(
+                unit = TRAY_UNIT,
+                "systemd did not answer; starting the tray icon itself"
+            );
+            spawn_tray();
+        }
+    }
+}
+
+/// The unit `systemd-xdg-autostart-generator` makes of the tray's autostart
+/// file: `/etc/xdg/autostart/backtrack-tray.desktop` from a package, or the
+/// development copy `just install-tray-dev` writes to `~/.config/autostart`,
+/// which has the same name.
+const TRAY_UNIT: &str = "app-backtrack\\x2dtray@autostart.service";
+
+/// The panel's side of the tray protocol: present in a session with a tray.
+const TRAY_HOST: &str = "org.kde.StatusNotifierWatcher";
+
+/// The name a running tray icon holds (see `backtrack-tray`'s `bus_name`).
+fn tray_bus_name() -> &'static str {
+    if std::env::var_os("BACKTRACK_DEV").is_some() {
+        "tools.backtrack.Backtrack.Tray.Dev"
+    } else {
+        "tools.backtrack.Backtrack.Tray"
+    }
+}
+
+/// Ask systemd to start [`TRAY_UNIT`]. A unit made from an autostart file
+/// exists once the user manager has run its generators since the file was
+/// installed, which a package cannot make it do; if the unit is not there
+/// yet, the manager reloads and is asked again.
+async fn start_tray_unit(connection: &zbus::Connection) -> zbus::Result<()> {
+    let manager = ManagerProxy::new(connection).await?;
+    if manager.start_unit(TRAY_UNIT, "replace").await.is_ok() {
+        return Ok(());
+    }
+    manager.reload().await?;
+    manager.start_unit(TRAY_UNIT, "replace").await.map(|_| ())
+}
+
+/// Start `backtrack-tray`, the one beside this daemon, as a child process.
+fn spawn_tray() {
     let tray = std::env::current_exe()
         .map(|daemon| daemon.with_file_name("backtrack-tray"))
         .unwrap_or_else(|_| "backtrack-tray".into());
@@ -143,6 +224,7 @@ trait Manager {
     ) -> zbus::Result<(bool, UnitChanges)>;
     fn disable_unit_files(&self, files: &[&str], runtime: bool) -> zbus::Result<UnitChanges>;
     fn reload(&self) -> zbus::Result<()>;
+    fn start_unit(&self, name: &str, mode: &str) -> zbus::Result<zbus::zvariant::OwnedObjectPath>;
 }
 
 /// How long systemd gets to answer. It answers in milliseconds when it is

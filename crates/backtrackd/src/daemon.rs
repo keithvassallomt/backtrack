@@ -289,7 +289,11 @@ pub async fn run() -> Result<Outcome, StartupError> {
     // every start as well as when the setting changes, so a unit enabled or
     // disabled by hand drifts back to what the person chose in the window.
     crate::background::apply(&connection, shared.wants_background()).await;
-    crate::background::start_tray();
+    // Not awaited: the icon is not something the daemon's start waits for.
+    tokio::spawn({
+        let connection = connection.clone();
+        async move { crate::background::start_tray(&connection).await }
+    });
     crate::background::publish_status_line(&shared);
     let leave = Arc::new(tokio::sync::Notify::new());
     tokio::spawn(crate::background::watch_for_idle(

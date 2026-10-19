@@ -690,6 +690,24 @@ uninstall-dolphin-dev:
     done
     echo "Removed."
 
+# Render the tray icon's pixmaps from the application icon, at the sizes
+# panels ask for. The tray sends them as pixels rather than an icon name, so
+# that a panel shows the icon without finding it in an icon theme (S12-T8).
+# Run after the application icon changes, and commit what it writes.
+[doc("Render the tray icon's pixmaps from the application icon.")]
+tray-icons:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    root="{{justfile_directory()}}"
+    svg="${root}/packaging/icons/hicolor/scalable/apps/tools.backtrack.Backtrack.svg"
+    out="${root}/crates/backtrack-gtk/src/bin/backtrack-tray/icons"
+    mkdir -p "${out}"
+    for size in 16 22 24 32 48 64 128; do
+        rsvg-convert --width "${size}" --height "${size}" --keep-aspect-ratio \
+            "${svg}" --output "${out}/${size}.png"
+    done
+    ls -l "${out}"
+
 # Start the tray icon at login, for this checkout: the debug build, against
 # the development daemon. Idempotent.
 [doc("Start the tray icon at login (debug build, dev daemon).")]

@@ -2,11 +2,9 @@
 
 ## For Keith to do
 
-Steps only Keith can take, kept current as work turns them up. Tick each when
-done; Claude removes ticked items.
+Nothing right now.
 
-- [ ] Resubmit `~/Downloads/backtrack-0.1.0-rc4-friendlyhub/` to FriendlyHub:
-  the set now carries the metainfo's branding.
+## Notes
 
 > **Contract:** Update this file in the SAME COMMIT as the work it describes.
 > `[ ]` upcoming · `[/]` in progress · `[x]` done (acceptance criteria verified) ·
@@ -20,7 +18,7 @@ done; Claude removes ticked items.
 > tasks: add them here + to the stage file, then `just provision-board-apply`.
 > See [../CLAUDE.md](../CLAUDE.md) for the full workflow.
 
-**Current stage:** 14 (complete)
+**Current stage:** 12 (S12-T7, S12-T8)
 **Last updated:** 2026-10-19
 
 ## Stage 0 — Bootstrap ([stage file](stages/stage-00-bootstrap.md))
@@ -133,6 +131,8 @@ done; Claude removes ticked items.
 - [x] S12-T4 Background portal presence (GNOME quick-settings launch path)
 - [x] S12-T5 App detects missing plugins → hints distro package (prefs General)
 - [x] S12-T6 Development VMs: one-command setup and push for GNOME and Plasma
+- [/] S12-T7 The tray starts with Backtrack, not only at login
+- [/] S12-T8 The tray sends its icon as pixels
 
 ## Stage 13 — Packaging & release ([stage file](stages/stage-13-packaging-release.md))
 - [x] S13-T1 Flatpak manifest (GNOME runtime, portals, bundled borg)
