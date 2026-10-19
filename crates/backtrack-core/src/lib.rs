@@ -20,6 +20,7 @@ pub mod index;
 pub mod logging;
 pub mod paths;
 pub mod pattern;
+pub mod progress;
 pub mod recovery;
 pub mod restore;
 pub mod roots;

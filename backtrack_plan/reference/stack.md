@@ -65,6 +65,7 @@ interface. The `1` is the API's major version: an incompatible change ships as
 | `BackupNow()` | Manual backup trigger |
 | `Pause(until: timestamp)` / `Resume()` | Self-expiring pause (menu options map here) |
 | `GetStatus()` | State, last/next backup, destination reachability, spool usage |
+| `GetBackupProgress() → (job, phase, current, total)` | The backup under way, as its last `BackupProgress` said; job 0 when none (S06-T12) |
 | `RestoreFiles(archive, paths[], dest, policy) → job` | policy = ask / keep-both / replace / skip-identical |
 | `PreviewFile(archive, path) → fd` | Extracted content over a pipe fd; daemon caches by chunk hash |
 | `CompareFile(archive, path) → job` | Produces a diff artifact for the compare view |

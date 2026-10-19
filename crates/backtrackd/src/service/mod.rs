@@ -124,6 +124,11 @@ pub struct Shared {
     /// Background Apps (S14-T10). A watch, so whoever shows it hears only of
     /// a line that differs from the last one.
     status_line: tokio::sync::watch::Sender<String>,
+    /// The backup under way and how far it has got, as its last
+    /// `BackupProgress` said: job, phase, bytes read, estimated total (0 for
+    /// none). For somebody who starts watching part way through, a window
+    /// opened or `backtrack status` asked (S06-T12); `None` between backups.
+    backup_progress: Mutex<Option<(u64, String, u64, u64)>>,
     /// Bookkeeping that has to survive a restart: the pause, the attempt clock,
     /// the compaction clock. See [`backtrack_core::state`].
     persisted: Mutex<RuntimeState>,
@@ -334,6 +339,7 @@ impl Shared {
             latched: Mutex::new(None),
             destination_reachable: Mutex::new(true),
             status_line: tokio::sync::watch::channel(String::new()).0,
+            backup_progress: Mutex::new(None),
             persisted: Mutex::new(RuntimeState::default()),
             state_path,
             waker: Mutex::new(None),
@@ -2297,6 +2303,25 @@ impl Shared {
     fn job_ended(&self, id: u64, kind: JobKind, state: &JobState) {
         update_health(self, kind, state);
         self.announce_backup(id, kind, state);
+        let mut progress = self.backup_progress.lock().unwrap();
+        if progress.as_ref().is_some_and(|(job, ..)| *job == id) {
+            *progress = None;
+        }
+    }
+
+    /// Remember how far backup `job` has got, for [`Self::backup_progress`].
+    fn note_backup_progress(&self, job: u64, phase: &str, current: u64, total: u64) {
+        *self.backup_progress.lock().unwrap() = Some((job, phase.to_string(), current, total));
+    }
+
+    /// The backup under way and how far it has got, or job 0 with nothing
+    /// under way: what the last `BackupProgress` said.
+    pub fn backup_progress(&self) -> (u64, String, u64, u64) {
+        self.backup_progress
+            .lock()
+            .unwrap()
+            .clone()
+            .unwrap_or((0, String::new(), 0, 0))
     }
 
     /// Say how a backup went, to somebody who wants to know.
@@ -2454,6 +2479,14 @@ impl Daemon1 {
         self.shared.health_changed.notify_one();
         info!("backups resumed");
         Ok(())
+    }
+
+    /// The backup under way and how far it has got, as its last
+    /// `BackupProgress` said: job, phase, bytes read, estimated total (0 for
+    /// none yet). Job 0 when no backup is under way. For a window opened, or
+    /// `backtrack status` asked, part way through one (S06-T12).
+    async fn get_backup_progress(&self) -> (u64, String, u64, u64) {
+        self.shared.backup_progress()
     }
 
     /// The overall state, and the handful of facts the UI shows beside it.
@@ -3648,6 +3681,7 @@ pub async fn fan_out_signals(shared: Arc<Shared>, emitter: SignalEmitter<'static
                     // Local protection is a backup as far as anyone watching is
                     // concerned, and reports itself as one.
                     JobKind::Backup | JobKind::Offline => {
+                        shared.note_backup_progress(id, &phase, current, total);
                         Daemon1::backup_progress(&emitter, id, &phase, current, total).await
                     }
                     JobKind::Restore | JobKind::RestoreEverything => {

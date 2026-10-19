@@ -18,6 +18,9 @@ pub trait Daemon1 {
     fn pause(&self, until: u64) -> zbus::Result<()>;
     fn resume(&self) -> zbus::Result<()>;
     fn get_status(&self) -> zbus::Result<Status>;
+    /// The backup under way and how far it has got: job (0 for none), phase,
+    /// bytes read, estimated total (0 for none yet).
+    fn get_backup_progress(&self) -> zbus::Result<(u64, String, u64, u64)>;
     fn get_health(&self) -> zbus::Result<HealthReport>;
     fn restore_files(
         &self,

@@ -18,7 +18,7 @@ Nothing right now.
 > tasks: add them here + to the stage file, then `just provision-board-apply`.
 > See [../CLAUDE.md](../CLAUDE.md) for the full workflow.
 
-**Current stage:** 12 (S12-T7, S12-T8)
+**Current stage:** 6 and 12 (S06-T12, S12-T7, S12-T8)
 **Last updated:** 2026-10-19
 
 ## Stage 0 — Bootstrap ([stage file](stages/stage-00-bootstrap.md))
@@ -81,6 +81,7 @@ Nothing right now.
 - [x] S06-T9 Demo fixture dated relative to now (so the sidebar's bands appear)
 - [x] S06-T10 JobFinished signal, replacing the GUI's completion polling
 - [x] S06-T11 No dead end above the backed-up folders
+- [/] S06-T12 A backup under way says how far it has got
 
 ## Stage 7 — Restore engine ([stage file](stages/stage-07-restore-engine.md))
 - [x] S07-T1 Staging→compare→rename pipeline in core

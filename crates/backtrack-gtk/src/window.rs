@@ -52,6 +52,9 @@ pub struct Window {
     banner: adw::Banner,
     /// What the banner's button does at the moment.
     banner_action: Cell<Option<crate::model::health::Action>>,
+    /// The line under that one while a backup runs, saying how far it has
+    /// got (S06-T12).
+    progress: adw::Banner,
     /// What the person calls the place backups go, for the one banner that
     /// names it. Read when that banner is showing.
     destination: RefCell<String>,
@@ -136,6 +139,7 @@ impl Window {
             status,
             banner: adw::Banner::new(""),
             banner_action: Cell::new(None),
+            progress: adw::Banner::new(""),
             destination: RefCell::new(String::new()),
             pending_fix: RefCell::new(None),
             older,
@@ -192,6 +196,7 @@ impl Window {
                 None => {}
             });
         layout.add_top_bar(&self.banner);
+        layout.add_top_bar(&self.progress);
         layout.set_content(Some(&self.body()));
         layout.add_bottom_bar(&self.actions());
 
@@ -884,6 +889,61 @@ impl Window {
         }
     }
 
+    /// Say how far a backup under way has got, in a banner under the header
+    /// bar, for as long as it runs (S06-T12): asked once, for a backup
+    /// already under way when the window opened, then followed as it goes.
+    async fn follow_progress(self: &Rc<Self>, proxy: crate::daemon::Daemon1Proxy<'static>) {
+        use futures::StreamExt;
+        enum Heard {
+            Progress(String),
+            Ended,
+        }
+        // Subscribed before asking, so nothing said in between is missed.
+        let (progress, finished) = (
+            proxy.receive_backup_progress().await,
+            proxy.receive_job_finished().await,
+        );
+        if let Ok((job, phase, current, total)) = proxy.get_backup_progress().await {
+            self.render_progress(
+                (job != 0).then(|| backtrack_core::progress::line(&phase, current, total)),
+            );
+        }
+        let (Ok(progress), Ok(finished)) = (progress, finished) else {
+            warn!("a backup's progress will not be shown");
+            return;
+        };
+        let progress = progress.filter_map(|signal| async move {
+            let args = signal.args().ok()?;
+            Some(Heard::Progress(backtrack_core::progress::line(
+                args.phase,
+                args.current,
+                args.total,
+            )))
+        });
+        let finished = finished.filter_map(|signal| async move {
+            let args = signal.args().ok()?;
+            matches!(args.kind, "backup" | "offline").then_some(Heard::Ended)
+        });
+        let mut heard = std::pin::pin!(futures::stream::select(progress, finished));
+        while let Some(heard) = StreamExt::next(&mut heard).await {
+            self.render_progress(match heard {
+                Heard::Progress(line) => Some(line),
+                Heard::Ended => None,
+            });
+        }
+    }
+
+    /// Show `line` in the progress banner, or, with `None`, put it away.
+    fn render_progress(&self, line: Option<String>) {
+        match line {
+            Some(line) => {
+                self.progress.set_title(&line);
+                self.progress.set_revealed(true);
+            }
+            None => self.progress.set_revealed(false),
+        }
+    }
+
     /// Re-read the list of backups whenever it may have grown.
     ///
     /// A backup that finishes adds one; a catalogue job makes pending ones
@@ -1134,6 +1194,9 @@ impl Window {
                         ui::spawn(
                             async move { cataloguing.follow_catalogue(catalogue_proxy).await },
                         );
+                        let progressing = Rc::clone(&following);
+                        let progress_proxy = proxy.clone();
+                        ui::spawn(async move { progressing.follow_progress(progress_proxy).await });
                         ui::spawn(async move { following.follow_status(proxy).await });
                     }
                     let ticking = Rc::clone(&this);

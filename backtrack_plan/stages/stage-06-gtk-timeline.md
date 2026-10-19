@@ -135,6 +135,28 @@ Smoke, which leads to Documents, and says only some of it is backed up; the
 window the wizard opens shows the backed-up folders once the first backup is
 catalogued, without being closed.
 
+### S06-T12 — A backup under way says how far it has got
+Found watching the first backup on the release machine (2026-10-19): the
+status line and the tray said "Backing up now…", `backtrack status` said
+"Running job 2" though `backup-now` promises it shows progress, and only the
+wizard's first-backup page had a bar. The daemon was already sending
+`BackupProgress` four times a second, with no total: Borg gives none.
+- The daemon measures a backup's sources beside the archiving, under the same
+  exclusions, and progress carries that total once it is known.
+- `GetBackupProgress` answers with the backup under way and its last
+  progress, for a window, tray or command that starts watching part way.
+- One line, `backtrack_core::progress`, in the wizard's words: "Backing up…
+  31.5 GB of about 53.1 GB (59%)", or "… so far" before there is a total,
+  never 100% until the backup ends. It shows in a banner under the header
+  bar while a backup runs, in the tray's tooltip and menu, and in `backtrack
+  status` (and its JSON, as `progress`).
+
+**Accept:** during a backup, a window opened part way shows the banner with
+an amount read and, once measured, the total and percentage, and puts it
+away when the backup ends; the tray says the same; `backtrack status` says
+the same beside the job, and its JSON carries `progress`, null between
+backups.
+
 ## Definition of Done
 The Alice story runs end to end on demo-repo (browse → step back → deleted folder
 reappears → preview) in both themes with keyboard only; screenshots of light+dark

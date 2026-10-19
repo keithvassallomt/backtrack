@@ -199,15 +199,21 @@ async fn run(command: Command) -> Result<String, CliError> {
     let now = SystemTime::now();
     match command {
         Command::Status(args) => {
-            let status = proxy::connect().await?.get_status().await?;
+            let daemon = proxy::connect().await?;
+            let status = daemon.get_status().await?;
+            let progress = backup_progress(&daemon, &status).await;
             Ok(if args.json {
                 format!(
                     "{}\n",
-                    serde_json::to_string_pretty(&render::status_json(&status, now))
-                        .expect("status serialises")
+                    serde_json::to_string_pretty(&render::status_json(
+                        &status,
+                        progress.as_ref(),
+                        now
+                    ))
+                    .expect("status serialises")
                 )
             } else {
-                render::status_human(&status, now)
+                render::status_human(&status, progress.as_ref(), now)
             })
         }
 
@@ -306,8 +312,13 @@ async fn run(command: Command) -> Result<String, CliError> {
                 Ok(daemon) => {
                     let status = match daemon.get_status().await {
                         Ok(status) => {
-                            serde_json::to_string_pretty(&render::status_json(&status, now))
-                                .unwrap_or_default()
+                            let progress = backup_progress(&daemon, &status).await;
+                            serde_json::to_string_pretty(&render::status_json(
+                                &status,
+                                progress.as_ref(),
+                                now,
+                            ))
+                            .unwrap_or_default()
                         }
                         Err(e) => format!("{{\"error\": \"{e}\"}}"),
                     };
@@ -365,6 +376,22 @@ fn bad_duration(text: &str) -> CliError {
     CliError::Usage(format!(
         "{text:?} is not a duration. Use a number and a unit, like 30m, 2h, or 1d."
     ))
+}
+
+/// How far the backup under way has got, asked only while a job runs. A
+/// daemon from before S06-T12 has no such call, and that says nothing.
+async fn backup_progress(
+    daemon: &proxy::Daemon1Proxy<'_>,
+    status: &backtrack_core::dbus::Status,
+) -> Option<render::Progress> {
+    if status.active_job == 0 {
+        return None;
+    }
+    daemon
+        .get_backup_progress()
+        .await
+        .ok()
+        .and_then(render::Progress::from_reply)
 }
 
 #[cfg(test)]

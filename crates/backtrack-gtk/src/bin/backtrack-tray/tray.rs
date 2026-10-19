@@ -31,6 +31,8 @@ pub struct Tray {
     status: Option<Status>,
     /// The icon, as pixels at every size (see `crate::icon`).
     pixmaps: Vec<ksni::Icon>,
+    /// How far the backup under way has got, in words, while one is.
+    progress: Option<String>,
 }
 
 impl Tray {
@@ -41,19 +43,31 @@ impl Tray {
             quit,
             status: None,
             pixmaps: crate::icon::pixmaps(),
+            progress: None,
         }
     }
 
-    /// Show `status` from now on.
-    pub fn show(&mut self, status: Option<Status>) {
+    /// Show `status`, and how far a backup under way has got, from now on.
+    pub fn show(&mut self, status: Option<Status>, progress: Option<String>) {
         self.status = status;
+        self.progress = progress;
+    }
+
+    /// Say how far the backup under way has got.
+    pub fn show_progress(&mut self, progress: Option<String>) {
+        self.progress = progress;
     }
 
     fn shown(&self) -> text::Shown {
         let now = glib::DateTime::now_utc()
             .map(|now| now.to_unix())
             .unwrap_or(0);
-        text::shown(self.status.as_ref(), now, &glib::TimeZone::local())
+        text::shown(
+            self.status.as_ref(),
+            self.progress.as_deref(),
+            now,
+            &glib::TimeZone::local(),
+        )
     }
 
     /// Ask the daemon for something, then read the status again so the menu
