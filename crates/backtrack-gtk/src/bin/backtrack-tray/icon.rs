@@ -138,9 +138,10 @@ mod tests {
             env!("CARGO_MANIFEST_DIR")
         );
         let svg = std::fs::read_to_string(&path).expect(&path);
-        // Drawn in the colour Plasma repaints.
-        assert!(svg.contains(r#"class="ColorScheme-Text""#));
-        assert!(svg.contains(r#"stroke="currentColor""#));
+        // Drawn in the colour Plasma repaints, as filled shapes, the way
+        // Breeze draws its own.
+        assert!(svg.contains(r#"class="ColorScheme-Text" fill="currentColor""#));
+        assert!(!svg.contains("stroke"));
     }
 
     #[test]

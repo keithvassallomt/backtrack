@@ -120,7 +120,7 @@ in the panel's text colour, which Plasma repaints to suit the panel. It
 repaints a named icon the same way but never pixels, so after S12-T8 the
 full-colour application icon stood out, and the symbolic application icon
 it had shown before was too dense at tray size.
-- A tray icon drawn for 22 pixels in Breeze's line weight,
+- The application icon as line art for 22 pixels, in Breeze's style,
   `tools.backtrack.Backtrack-tray-symbolic`, installed by every package and
   by `just install-tray-dev`.
 - On KDE (`XDG_CURRENT_DESKTOP`) the tray sends that name as well as the

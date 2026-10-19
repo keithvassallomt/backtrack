@@ -2,14 +2,9 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 22 22">
   <!-- SPDX-License-Identifier: GPL-3.0-or-later -->
   <!-- SPDX-FileCopyrightText: 2026 Keith Vassallo <keith@vassallo.cloud> -->
-  <!-- The tray's icon on Plasma (S12-T9): the application icon's swoosh and -->
-  <!-- folder, drawn again for a panel's 22 pixels in the line weight of -->
-  <!-- Breeze's own tray icons. Plasma recolours what is drawn in -->
-  <!-- ColorScheme-Text to its panel's text colour. -->
-  <style id="current-color-scheme" type="text/css">.ColorScheme-Text { color: #2e3436; }</style>
-  <g class="ColorScheme-Text" fill="none" stroke="currentColor" stroke-width="1" stroke-linejoin="miter" stroke-linecap="square">
-    <path d="M17.06 14.5 A7 7 0 1 0 4.94 14.5"/>
-    <path d="M2.5 12.5 l2.5 2 l1 -3"/>
-    <path d="M7.5 14.5 V8.5 h2.5 l1 1 h4.5 v5 z"/>
-  </g>
+  <!-- The tray's icon on Plasma (S12-T9): the application icon as line art, -->
+  <!-- in one colour, for a panel's 22 pixels. Plasma recolours what is drawn -->
+  <!-- in ColorScheme-Text to its panel's text colour. -->
+  <style id="current-color-scheme" type="text/css">.ColorScheme-Text { color: #232629; }</style>
+  <path class="ColorScheme-Text" fill="currentColor" d="m18.852 13.246 -1.43 -1.407c-0.108 -0.106 -0.253 -0.158 -0.401 -0.158h-2.058c-0.335 0 -0.599 0.259 -0.599 0.589v1.628c-4.147 -0.222 -10.019 -2.61 -10.019 -4.266 0 -0.572 0.589 -1.053 1.341 -1.272v-1.99c0 -0.509 0.406 -0.908 0.908 -0.908h2.327c0.219 0 0.319 0.172 0.409 0.354l-2.504 0.032c-0.441 0 -0.77 0.319 -0.77 0.755v3.821c0 0.272 0.156 0.501 0.396 0.618 0.269 0.135 0.549 0.253 0.77 0.34v-3.71c0 -0.565 0.435 -0.976 0.992 -0.976h2.776c0.237 0 0.348 0.232 0.454 0.404h-3.05c-0.433 0 -0.739 0.311 -0.739 0.747v3.883c0.406 0.164 0.844 0.33 1.214 0.457v-3.213c0 -0.559 0.459 -0.971 1 -0.971h3.635c0.227 0 0.338 0.216 0.433 0.396h-3.808c-0.425 0 -0.741 0.311 -0.741 0.731v3.301c0.266 0.087 0.523 0.166 0.755 0.232v-3.143c0 -0.232 0.166 -0.388 0.393 -0.388h6.222c0.227 0 0.393 0.15 0.393 0.375v1.818h0.675v-1.945c0 -0.541 -0.467 -0.998 -0.968 -0.998h-1.504v-0.462c0 -0.488 -0.367 -0.852 -0.829 -0.852h-1.346v-0.441c0 -0.493 -0.385 -0.866 -0.863 -0.866l-2.203 0.018 -0.077 -0.214c-0.127 -0.327 -0.443 -0.546 -0.792 -0.546h-1.623l-0.301 -0.364c-0.095 -0.121 -0.23 -0.203 -0.38 -0.203h-1.668c-0.462 0 -0.818 0.343 -0.818 0.8v2.657c0 0.129 0.026 0.24 0.063 0.338 -0.918 0.472 -1.517 1.143 -1.517 1.971 0 1.942 3.477 3.479 6.385 4.305v0.757c0 0.586 0.493 1.058 1.021 1.058h3.544v-0.726h-3.428c-0.222 0 -0.383 -0.172 -0.383 -0.385v-0.48c1.427 0.364 3.003 0.552 4.23 0.57v1.62c0 0.351 0.277 0.612 0.604 0.612h3.428c0.332 0 0.599 -0.266 0.599 -0.596v-3.28c0 -0.158 -0.045 -0.314 -0.148 -0.425zm-0.541 3.642h-3.13v-4.483h1.834v0.995c0 0.172 0.129 0.298 0.293 0.298h1.003v3.19z"/>
 </svg>

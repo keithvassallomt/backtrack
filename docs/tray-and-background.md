@@ -106,8 +106,8 @@ Plasma is the exception (S12-T9). Its own tray icons are line drawings in the
 panel's text colour, which it repaints to suit the panel; it repaints a named
 icon the same way, but never pixels, so the full-colour application icon
 stands out there. On KDE (`XDG_CURRENT_DESKTOP`) the icon also sends the name
-`tools.backtrack.Backtrack-tray-symbolic`, a line drawing made for 22 pixels
-that every package installs (`packaging/icons/hicolor/symbolic/apps`), and
+`tools.backtrack.Backtrack-tray-symbolic`, the application icon as line art
+for 22 pixels, which every package installs (`packaging/icons/hicolor/symbolic/apps`), and
 Plasma uses the pixels only when it cannot find that icon. It is a separate
 drawing from the application's symbolic icon, which is too dense at tray size.
 
