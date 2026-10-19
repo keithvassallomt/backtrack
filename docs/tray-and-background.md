@@ -88,6 +88,20 @@ links GLib and no GTK.
 Ubuntu's session (`ubuntu:GNOME`) as well. On a systemd session the desktop
 turns it into a unit, `app-backtrack\x2dtray@autostart.service`.
 
+That is at login. The daemon also starts the icon when it starts, so that it
+appears the first time Backtrack is opened after being installed, without a
+login (S12-T7): on a desktop other than GNOME, where a tray is listening
+(`org.kde.StatusNotifierWatcher`) and the icon is not up already, through
+systemd's `StartUnit` on that same unit, reloading the user manager once if
+the unit is not there yet, and starting the program itself only if systemd
+will not. Inside a Flatpak the daemon starts the icon at every start instead
+(S14-T3), since a Flatpak cannot export an autostart file.
+
+The icon carries its picture as pixels at seven sizes (S12-T8, `just
+tray-icons`), not as an icon name: a panel that read its icon theme before
+Backtrack was installed may never find the name. Quickshell, and so
+Caelestia's bar, keeps its lookups for as long as it runs.
+
 For development, `just install-tray-dev` installs it to `~/.config/autostart`
 with the command rewritten to this checkout's debug build and
 `BACKTRACK_DEV=1`, and `just uninstall-tray-dev` removes it. `scripts/dev-machine`
@@ -134,6 +148,25 @@ sign, a pause from the menu lifted itself after its minute, and a click
 opened the window (see the limitation above for one already open).
 Screenshots: `backtrack_plan/screenshots/stage-12-tray-menu.png` and
 `stage-12-tray-attention.png`.
+
+### Plasma's background apps, for the Flatpak
+
+Plasma 6.7 lists every Flatpak running without a window in its tray, from the
+portal's background-app list, with the app's icon, the message the app sets
+through the Background portal (S14-T10's status line) and one action, Quit
+([plasma-workspace!5703](https://invent.kde.org/plasma/plasma-workspace/-/merge_requests/5703)).
+It hides that entry while the Flatpak shows a tray icon of its own, matching
+the icon's process to the Flatpak's. So a Flatpak install shows one icon,
+Backtrack's own, checked on the Plasma VM (Plasma 6.7.5, 2026-10-19): with the
+Flatpak's daemon and its tray running, one icon, with Backtrack's menu.
+Plasma's entry appears only when the Flatpak's daemon runs without its tray,
+as after Quit Tray Icon.
+
+Two icons on the development VMs are not this. A development build's tray is
+not a Flatpak, so Plasma cannot match it to the Flatpak's daemon, and with
+both installed and running the panel shows the development icon and Plasma's
+entry for the Flatpak. Where people see a Flatpak's icon twice outside such a
+setup, it is a Plasma 6.7 bug ([KDE bug 521540](https://bugs.kde.org/show_bug.cgi?id=521540)).
 
 ## GNOME
 
