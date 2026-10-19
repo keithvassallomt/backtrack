@@ -103,6 +103,7 @@ modules:
           packaging/icons/hicolor/scalable/apps/tools.backtrack.Backtrack.svg
       - install -Dm644 -t /app/share/icons/hicolor/symbolic/apps
           packaging/icons/hicolor/symbolic/apps/tools.backtrack.Backtrack-symbolic.svg
+          packaging/icons/hicolor/symbolic/apps/tools.backtrack.Backtrack-tray-symbolic.svg
       - install -Dm644 -t /app/share/dbus-1/services
           packaging/flatpak/tools.backtrack.Backtrack.Daemon1.service
       # The window's activation file (S14-T2), with the binary where the

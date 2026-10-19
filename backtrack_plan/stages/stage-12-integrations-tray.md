@@ -114,6 +114,24 @@ its icon itself, as pixels or a file's path.
 without restarting the panel; `IconPixmap` holds the seven sizes and
 `IconName` is empty; the icon still shows on Plasma.
 
+### S12-T9 — The tray's icon matches Plasma's own
+Found 2026-10-19 on the Plasma VM: Plasma's own tray icons are line drawings
+in the panel's text colour, which Plasma repaints to suit the panel. It
+repaints a named icon the same way but never pixels, so after S12-T8 the
+full-colour application icon stood out, and the symbolic application icon
+it had shown before was too dense at tray size.
+- A tray icon drawn for 22 pixels in Breeze's line weight,
+  `tools.backtrack.Backtrack-tray-symbolic`, installed by every package and
+  by `just install-tray-dev`.
+- On KDE (`XDG_CURRENT_DESKTOP`) the tray sends that name as well as the
+  pixels; Plasma falls back to the pixels if it cannot find the icon.
+  Elsewhere the name stays empty, as S12-T8 needs.
+
+**Accept:** on Plasma the icon is the line drawing, in the panel's text
+colour in both light and dark themes; `IconName` is the tray icon's name on
+KDE and empty elsewhere; the RPM, deb, AUR and Flatpak packages install the
+icon.
+
 ## Definition of Done
 Demo videos/screenshots for GNOME (menu + background presence) and KDE (menu +
 tray) attached to the PR; the outside-roots friendly state implemented; CI green

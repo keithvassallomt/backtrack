@@ -134,6 +134,7 @@ Nothing right now.
 - [x] S12-T6 Development VMs: one-command setup and push for GNOME and Plasma
 - [x] S12-T7 The tray starts with Backtrack, not only at login
 - [x] S12-T8 The tray sends its icon as pixels
+- [/] S12-T9 The tray's icon matches Plasma's own
 
 ## Stage 13 — Packaging & release ([stage file](stages/stage-13-packaging-release.md))
 - [x] S13-T1 Flatpak manifest (GNOME runtime, portals, bundled borg)

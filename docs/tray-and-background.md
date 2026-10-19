@@ -102,9 +102,19 @@ tray-icons`), not as an icon name: a panel that read its icon theme before
 Backtrack was installed may never find the name. Quickshell, and so
 Caelestia's bar, keeps its lookups for as long as it runs.
 
+Plasma is the exception (S12-T9). Its own tray icons are line drawings in the
+panel's text colour, which it repaints to suit the panel; it repaints a named
+icon the same way, but never pixels, so the full-colour application icon
+stands out there. On KDE (`XDG_CURRENT_DESKTOP`) the icon also sends the name
+`tools.backtrack.Backtrack-tray-symbolic`, a line drawing made for 22 pixels
+that every package installs (`packaging/icons/hicolor/symbolic/apps`), and
+Plasma uses the pixels only when it cannot find that icon. It is a separate
+drawing from the application's symbolic icon, which is too dense at tray size.
+
 For development, `just install-tray-dev` installs it to `~/.config/autostart`
 with the command rewritten to this checkout's debug build and
-`BACKTRACK_DEV=1`, and `just uninstall-tray-dev` removes it. `scripts/dev-machine`
+`BACKTRACK_DEV=1`, and the tray's icon to `~/.local/share/icons`;
+`just uninstall-tray-dev` removes both. `scripts/dev-machine`
 installs it, and on a desktop other than GNOME starts the icon, or restarts
 it when it is not the build just made.
 
@@ -118,8 +128,10 @@ just vm-push "fedora45 (KDE)"
 scripts/vm run "fedora45 (KDE)" scripts/tray-check
 ```
 
-It finds the icon the way a panel does (the StatusNotifierWatcher), reads
-what a panel would draw, clicks the menu through `com.canonical.dbusmenu`, and
+It finds this checkout's icon the way a panel does (the StatusNotifierWatcher;
+a Flatpak's icon beside it is left alone), reads what a panel would draw,
+including the icon's name for the desktop and its pixels, clicks the menu
+through `com.canonical.dbusmenu`, and
 checks each result: a pause made elsewhere and one from the menu, Resume,
 Back Up Now, `AT_RISK` and `BROKEN` (forced through the development
 interface), the daemon stopped (and not started again by the icon) and

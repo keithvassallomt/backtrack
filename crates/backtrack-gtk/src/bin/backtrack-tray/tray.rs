@@ -31,6 +31,8 @@ pub struct Tray {
     status: Option<Status>,
     /// The icon, as pixels at every size (see `crate::icon`).
     pixmaps: Vec<ksni::Icon>,
+    /// The icon's name in the icon theme, or "" to send only the pixels.
+    name: &'static str,
     /// How far the backup under way has got, in words, while one is.
     progress: Option<String>,
 }
@@ -43,6 +45,7 @@ impl Tray {
             quit,
             status: None,
             pixmaps: crate::icon::pixmaps(),
+            name: crate::icon::name(std::env::var("XDG_CURRENT_DESKTOP").ok().as_deref()),
             progress: None,
         }
     }
@@ -119,9 +122,15 @@ impl ksni::Tray for Tray {
         }
     }
 
-    /// The icon as pixels, and no icon name: a panel shows pixels as they
-    /// are, where a name has to be found in its icon theme, and a panel that
-    /// read its theme before Backtrack was installed may never find it.
+    /// The icon by name on Plasma, and nowhere else (see `crate::icon::name`).
+    fn icon_name(&self) -> String {
+        self.name.to_string()
+    }
+
+    /// The icon as pixels: a panel shows pixels as they are, where a name
+    /// has to be found in its icon theme, and a panel that read its theme
+    /// before Backtrack was installed may never find it. Plasma, given a name
+    /// too, uses these only when it cannot find the named icon.
     fn icon_pixmap(&self) -> Vec<ksni::Icon> {
         self.pixmaps.clone()
     }

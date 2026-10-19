@@ -15,9 +15,34 @@
 //! (`just tray-icons`), built into the program. That also serves a
 //! development build, whose icon no theme has, and the Flatpak, whose files
 //! a panel outside the sandbox cannot read.
+//!
+//! Plasma is the exception (S12-T9). Its own tray icons are line drawings in
+//! the panel's text colour, which it repaints to match the panel, and it
+//! repaints a named icon the same way but never pixels, so the full-colour
+//! application icon stands out there. On Plasma the icon is named as well:
+//! a line drawing made for the tray, which Plasma finds and repaints, and
+//! the pixels stay for when it cannot find it.
 
 use gtk4::{gdk_pixbuf, gio, glib};
 use tracing::warn;
+
+/// The tray's own icon in the icon theme, as `packaging/icons` installs it.
+const NAME: &str = "tools.backtrack.Backtrack-tray-symbolic";
+
+/// The icon's name for a desktop that `XDG_CURRENT_DESKTOP` (a colon-separated
+/// list) describes: the tray's line drawing on KDE's, nothing elsewhere.
+pub fn name(desktop: Option<&str>) -> &'static str {
+    let on_kde = desktop.is_some_and(|desktop| {
+        desktop
+            .split(':')
+            .any(|name| name.eq_ignore_ascii_case("KDE"))
+    });
+    if on_kde {
+        NAME
+    } else {
+        ""
+    }
+}
 
 /// Each rendered size, with its PNG.
 const RENDERED: [(i32, &[u8]); 7] = [
@@ -94,6 +119,29 @@ fn argb(pixels: &[u8], width: usize, height: usize, rowstride: usize, channels: 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_icon_is_named_on_plasma_alone() {
+        assert_eq!(name(Some("KDE")), NAME);
+        assert_eq!(name(Some("kde")), NAME);
+        assert_eq!(name(Some("ubuntu:KDE")), NAME);
+        assert_eq!(name(Some("Hyprland")), "");
+        assert_eq!(name(Some("GNOME")), "");
+        assert_eq!(name(Some("")), "");
+        assert_eq!(name(None), "");
+    }
+
+    #[test]
+    fn the_named_icon_is_the_one_packaging_installs() {
+        let path = format!(
+            "{}/../../packaging/icons/hicolor/symbolic/apps/{NAME}.svg",
+            env!("CARGO_MANIFEST_DIR")
+        );
+        let svg = std::fs::read_to_string(&path).expect(&path);
+        // Drawn in the colour Plasma repaints.
+        assert!(svg.contains(r#"class="ColorScheme-Text""#));
+        assert!(svg.contains(r#"stroke="currentColor""#));
+    }
 
     #[test]
     fn pixels_go_alpha_first_row_after_row() {

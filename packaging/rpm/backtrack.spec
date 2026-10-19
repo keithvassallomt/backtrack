@@ -97,7 +97,8 @@ install -Dm644 -t %{buildroot}%{_metainfodir} packaging/tools.backtrack.Backtrac
 install -Dm644 -t %{buildroot}%{_datadir}/icons/hicolor/scalable/apps \
     packaging/icons/hicolor/scalable/apps/tools.backtrack.Backtrack.svg
 install -Dm644 -t %{buildroot}%{_datadir}/icons/hicolor/symbolic/apps \
-    packaging/icons/hicolor/symbolic/apps/tools.backtrack.Backtrack-symbolic.svg
+    packaging/icons/hicolor/symbolic/apps/tools.backtrack.Backtrack-symbolic.svg \
+    packaging/icons/hicolor/symbolic/apps/tools.backtrack.Backtrack-tray-symbolic.svg
 install -Dm644 -t %{buildroot}%{_sysconfdir}/xdg/autostart packaging/autostart/backtrack-tray.desktop
 install -Dm644 -t %{buildroot}%{_datadir}/nautilus-python/extensions integrations/nautilus/backtrack.py
 install -Dm644 -t %{buildroot}%{_datadir}/kio/servicemenus \
@@ -130,6 +131,7 @@ appstreamcli validate --no-net %{buildroot}%{_metainfodir}/tools.backtrack.Backt
 %{_metainfodir}/tools.backtrack.Backtrack.metainfo.xml
 %{_datadir}/icons/hicolor/scalable/apps/tools.backtrack.Backtrack.svg
 %{_datadir}/icons/hicolor/symbolic/apps/tools.backtrack.Backtrack-symbolic.svg
+%{_datadir}/icons/hicolor/symbolic/apps/tools.backtrack.Backtrack-tray-symbolic.svg
 %config(noreplace) %{_sysconfdir}/xdg/autostart/backtrack-tray.desktop
 
 %files nautilus

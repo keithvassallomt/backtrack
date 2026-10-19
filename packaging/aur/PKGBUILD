@@ -81,7 +81,8 @@ package_backtrack() {
   install -Dm644 -t "$pkgdir/usr/share/icons/hicolor/scalable/apps" \
     packaging/icons/hicolor/scalable/apps/tools.backtrack.Backtrack.svg
   install -Dm644 -t "$pkgdir/usr/share/icons/hicolor/symbolic/apps" \
-    packaging/icons/hicolor/symbolic/apps/tools.backtrack.Backtrack-symbolic.svg
+    packaging/icons/hicolor/symbolic/apps/tools.backtrack.Backtrack-symbolic.svg \
+    packaging/icons/hicolor/symbolic/apps/tools.backtrack.Backtrack-tray-symbolic.svg
   install -Dm644 -t "$pkgdir/etc/xdg/autostart" packaging/autostart/backtrack-tray.desktop
 }
 

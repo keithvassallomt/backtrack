@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 22 22">
+  <!-- SPDX-License-Identifier: GPL-3.0-or-later -->
+  <!-- SPDX-FileCopyrightText: 2026 Keith Vassallo <keith@vassallo.cloud> -->
+  <!-- The tray's icon on Plasma (S12-T9): the application icon's swoosh and -->
+  <!-- folder, drawn again for a panel's 22 pixels in the line weight of -->
+  <!-- Breeze's own tray icons. Plasma recolours what is drawn in -->
+  <!-- ColorScheme-Text to its panel's text colour. -->
+  <style id="current-color-scheme" type="text/css">.ColorScheme-Text { color: #2e3436; }</style>
+  <g class="ColorScheme-Text" fill="none" stroke="currentColor" stroke-width="1" stroke-linejoin="miter" stroke-linecap="square">
+    <path d="M17.06 14.5 A7 7 0 1 0 4.94 14.5"/>
+    <path d="M2.5 12.5 l2.5 2 l1 -3"/>
+    <path d="M7.5 14.5 V8.5 h2.5 l1 1 h4.5 v5 z"/>
+  </g>
+</svg>

@@ -733,6 +733,12 @@ install-tray-dev:
     fi
     mv "${dir}/backtrack-tray.desktop.tmp" "${dir}/backtrack-tray.desktop"
     echo "Installed ${dir}/backtrack-tray.desktop"
+
+    # The icon Plasma shows by name (S12-T9), where a package would put it.
+    icons="${XDG_DATA_HOME:-${HOME}/.local/share}/icons/hicolor/symbolic/apps"
+    install -Dm644 -t "${icons}" \
+        "${root}/packaging/icons/hicolor/symbolic/apps/tools.backtrack.Backtrack-tray-symbolic.svg"
+    echo "Installed ${icons}/tools.backtrack.Backtrack-tray-symbolic.svg"
     echo
     echo "The icon starts at the next login on desktops other than GNOME. To start"
     echo "it now: BACKTRACK_DEV=1 ${tray}"
@@ -740,6 +746,7 @@ install-tray-dev:
 # Stop starting the development tray icon at login.
 uninstall-tray-dev:
     rm -f "${XDG_CONFIG_HOME:-${HOME}/.config}/autostart/backtrack-tray.desktop"
+    rm -f "${XDG_DATA_HOME:-${HOME}/.local/share}/icons/hicolor/symbolic/apps/tools.backtrack.Backtrack-tray-symbolic.svg"
     @echo "Removed. An icon already showing stays until it is quit or the session ends."
 
 # ─── Packaging ──────────────────────────────────────────────────────────────
