@@ -13,6 +13,8 @@
 #   scripts/smoke-check rpm gnome|kde   build the RPMs, start the VM, add the user
 #                                       smoke and install the packages for it
 #   scripts/smoke-check deb             the same on the Ubuntu VM, from the testing PPA
+#   scripts/smoke-check flatpak         the Flatpak from FriendlyHub on the Ubuntu VM, installed
+#                                       as FRIENDLYHUB.md says; checks 1 to 3, S14-T9's round trip
 #   scripts/smoke-check reinstall       after a fix: rebuild the RPMs and install them
 #                                       over the ones on the VM
 #   scripts/smoke-check aur             build the AUR packages here and say how to
@@ -26,6 +28,9 @@
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 STATE="$ROOT/target/smoke-check.target"
+# On the Ubuntu VM: which channel the packages came from, deb or flatpak.
+CHANNEL="$ROOT/target/smoke-check.channel"
+FLATPAKREF=https://dl.friendlyhub.org/repo/appstream/tools.backtrack.Backtrack.flatpakref
 GNOME="fedora45 (GNOME)"
 KDE="fedora45 (KDE)"
 UBUNTU="ubuntu2604 (GNOME)"
@@ -39,6 +44,7 @@ want() { printf '\nWhat I want back:\n'; local i=1; for line in "$@"; do printf 
 target() { cat "$STATE" 2>/dev/null || { echo "Run scripts/smoke-check rpm gnome|kde, deb, or aur, first." >&2; exit 2; }; }
 here() { [ "$(target)" = here ]; }
 ubuntu() { [ "$(target)" = "$UBUNTU" ]; }
+from_friendlyhub() { [ "$(cat "$CHANNEL" 2>/dev/null)" = flatpak ]; }
 desktop() {
     case "$(target)" in
     here) echo here ;;
@@ -99,6 +105,15 @@ file_manager() {
 }
 
 case "${1:-}" in [1-7] | verify | done) target >/dev/null ;; esac
+case "${1:-} ${2:-}" in
+"4 "* | "5 "* | "6 "* | "7 "* | "verify 4" | "verify 5" | "verify 6" | "verify 7")
+    if from_friendlyhub; then
+        echo "The FriendlyHub round trip is checks 1 to 3; scripts/flatpak-check covers the rest of the Flatpak."
+        echo "Then: scripts/smoke-check done"
+        exit 0
+    fi
+    ;;
+esac
 
 case "${1:-}" in
 rpm)
@@ -138,24 +153,34 @@ or wallet.
 EOF
     echo "Then: scripts/smoke-check 1"
     ;;
-deb)
-    # The PPA's own packages, on a machine that has had nothing of Backtrack's.
+deb | flatpak)
+    # On a machine that has had nothing of Backtrack's: the PPA's own
+    # packages, or FriendlyHub's Flatpak installed as FRIENDLYHUB.md says.
     ppa="$(sed -n 's/^testing = "\(ppa:[^"]*\)"/\1/p' "$ROOT/packaging/release.toml")"
     echo "$UBUNTU" > "$STATE"
+    echo "$1" > "$CHANNEL"
     "$ROOT/scripts/ubuntu-vm" fresh | tail -1
     just --justfile "$ROOT/Justfile" vm-start "$UBUNTU" | tail -1
+    [ "$1" = flatpak ] && say "Installing Flatpak, then Backtrack from FriendlyHub for $USER_NAME (its GNOME runtime comes from Flathub: a few minutes)…"
     on 'bash -s' <<EOF
 set -eu
-sudo -n add-apt-repository -y $ppa >/dev/null 2>&1
-# needrestart's report after an install says nothing about Backtrack.
-sudo -n DEBIAN_FRONTEND=noninteractive NEEDRESTART_SUSPEND=1 apt-get install -y -q backtrack backtrack-nautilus >/dev/null
-dpkg-query -W backtrack backtrack-nautilus
 id $USER_NAME >/dev/null 2>&1 || sudo -n useradd -m -s /bin/bash -c "Smoke Test" $USER_NAME
 # Ubuntu's password check warns that the password has the user's name in it,
 # and, for root, sets it anyway.
 echo "$USER_NAME:$PASSWORD" | sudo -n chpasswd 2>&1 | grep -v '^BAD PASSWORD' >&2 || true
 sudo -n -u $USER_NAME mkdir -p /home/$USER_NAME/.config
 echo yes | sudo -n -u $USER_NAME tee /home/$USER_NAME/.config/gnome-initial-setup-done >/dev/null
+# needrestart's report after an install says nothing about Backtrack.
+apt() { sudo -n DEBIAN_FRONTEND=noninteractive NEEDRESTART_SUSPEND=1 apt-get install -y -q "\$@" >/dev/null; }
+if [ "$1" = deb ]; then
+    sudo -n add-apt-repository -y $ppa >/dev/null 2>&1
+    apt backtrack backtrack-nautilus
+    dpkg-query -W backtrack backtrack-nautilus
+else
+    apt flatpak
+    sudo -n -u $USER_NAME -H flatpak install --user -y --noninteractive $FLATPAKREF >/dev/null
+    sudo -n -u $USER_NAME -H flatpak list --user --app --columns=application,version,origin
+fi
 EOF
     cat <<EOF
 
@@ -168,7 +193,7 @@ EOF
 reinstall)
     # After a fix found mid-run: the same checks go on with the new build.
     here && { echo "Here, rebuild with scripts/smoke-check aur and install with pacman -U again." >&2; exit 2; }
-    ubuntu && { echo "The deb comes from the PPA: a fix goes out as the next release candidate." >&2; exit 2; }
+    ubuntu && { echo "On the Ubuntu VM Backtrack comes from the PPA or FriendlyHub: a fix goes out as the next release candidate." >&2; exit 2; }
     case "$(desktop)" in gnome) integration=nautilus ;; *) integration=dolphin ;; esac
     build_rpms
     say "Installing them over the ones on $(target)…"
@@ -411,7 +436,7 @@ EOF
         "$ROOT/scripts/vm" drive-out "$(target)" --discard 2>/dev/null || true
         just --justfile "$ROOT/Justfile" vm-stop "$(target)" | tail -1
     fi
-    rm -f "$STATE" "$ROOT/target/smoke-check.last"
+    rm -f "$STATE" "$CHANNEL" "$ROOT/target/smoke-check.last"
     ;;
 *)
     sed -n '/^#   scripts/,/^$/s/^#   //p' "$0" >&2

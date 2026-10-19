@@ -5,10 +5,8 @@
 Steps only Keith can take, kept current as work turns them up. Tick each when
 done; Claude removes ticked items.
 
-- [ ] Once FriendlyHub's form asks for included modules, submit the fourth
-  candidate's FriendlyHub files, in
-  `~/Downloads/backtrack-0.1.0-rc4-friendlyhub/`, as
-  `packaging/flatpak/FRIENDLYHUB.md` describes (S14-T9).
+- [ ] Resubmit `~/Downloads/backtrack-0.1.0-rc4-friendlyhub/` to FriendlyHub:
+  the set now carries the metainfo's branding.
 
 > **Contract:** Update this file in the SAME COMMIT as the work it describes.
 > `[ ]` upcoming · `[/]` in progress · `[x]` done (acceptance criteria verified) ·
@@ -22,7 +20,7 @@ done; Claude removes ticked items.
 > tasks: add them here + to the stage file, then `just provision-board-apply`.
 > See [../CLAUDE.md](../CLAUDE.md) for the full workflow.
 
-**Current stage:** 14 (in progress)
+**Current stage:** 6 (S06-T11)
 **Last updated:** 2026-10-18
 
 ## Stage 0 — Bootstrap ([stage file](stages/stage-00-bootstrap.md))
@@ -84,6 +82,7 @@ done; Claude removes ticked items.
 - [x] S06-T8 Primary menu (mockup 14) with working Back Up Now / Pause
 - [x] S06-T9 Demo fixture dated relative to now (so the sidebar's bands appear)
 - [x] S06-T10 JobFinished signal, replacing the GUI's completion polling
+- [ ] S06-T11 No dead end above the backed-up folders
 
 ## Stage 7 — Restore engine ([stage file](stages/stage-07-restore-engine.md))
 - [x] S07-T1 Staging→compare→rename pipeline in core
@@ -157,7 +156,7 @@ done; Claude removes ticked items.
 - [x] S14-T6 Secret Service keyring in every build
 - [x] S14-T7 Restart the daemon after a failure, as the unit does
 - [x] S14-T8 Btrfs snapshots inside the Flatpak (bundled btrfs-progs)
-- [/] S14-T9 Publish on FriendlyHub
+- [x] S14-T9 Publish on FriendlyHub
 - [x] S14-T10 Status line in GNOME's Background Apps
 
 ## Blocked

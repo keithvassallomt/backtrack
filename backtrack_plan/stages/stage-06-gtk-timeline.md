@@ -116,6 +116,24 @@ thing.
 toasts on completion without polling; a daemon test asserts the signal is
 emitted once per terminal job with the right outcome.
 
+### S06-T11 — No dead end above the backed-up folders
+Found in the FriendlyHub round trip (S14-T9, 2026-10-19), on Ubuntu with
+only `~/Smoke/Documents` backed up. The window that ran the wizard was still
+at the home folder after the first backup, and the home folder, being outside
+the backups, showed "This folder is not backed up" with nothing to step into:
+the breadcrumb leads only up, so the backed-up folder below could not be
+reached from there. A window opened afterwards starts at the backed-up
+folders' parent, as `backed_up_target` intends.
+- A folder outside the backups that holds backed-up folders lists the
+  folders that lead down to them, and says that it is not backed up itself.
+- The window that ran the wizard moves to the backed-up folders once the
+  first backup is catalogued, where a window opened then would start.
+
+**Accept:** with only `~/Smoke/Documents` backed up, the home folder lists
+Smoke, which leads to Documents, and says the home folder itself is not
+backed up; the window the wizard ran in shows the backed-up folders once the
+first backup is catalogued, without being closed.
+
 ## Definition of Done
 The Alice story runs end to end on demo-repo (browse → step back → deleted folder
 reappears → preview) in both themes with keyboard only; screenshots of light+dark
