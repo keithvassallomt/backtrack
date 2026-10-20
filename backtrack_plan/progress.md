@@ -162,7 +162,7 @@ Nothing right now.
 - [x] S14-T10 Status line in GNOME's Background Apps
 
 ## Stage 15 — Refinements from daily use ([stage file](stages/stage-15-refinements-from-daily-use.md))
-- [ ] S15-T1 The backups that differ under a folder
+- [x] S15-T1 The backups that differ under a folder
 - [ ] S15-T2 The sidebar and the stepping list only those backups
 - [ ] S15-T3 The density strip and the calendar show the same backups
 - [ ] S15-T4 A folder says when something inside it changed

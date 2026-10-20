@@ -611,6 +611,66 @@ impl IndexReader {
             .optional()?)
     }
 
+    /// The backups worth listing while `folder` is viewed, newest first: each
+    /// one holding a version of some file at or below the folder that is
+    /// changed or gone in the next newer backup, and the newest backup always.
+    ///
+    /// Interval encoding makes this a question of where intervals end. A
+    /// version spans `first_seq..=last_seq`, so the backups in which something
+    /// under the folder was last seen as it was are the distinct `last_seq`s
+    /// there. A backup left out hides nothing: every version in it carries on
+    /// into the next one listed, which may hold newer files besides.
+    ///
+    /// Folders' own records do not count. Creating a file changes its
+    /// folder's modification time, and counting that would list every backup
+    /// in which a file was only created: a file that did not exist yet is
+    /// nothing to restore, which is the case this exists to leave out.
+    ///
+    /// The tree root lists every catalogued backup, and a folder the
+    /// catalogue has never seen lists only the newest. Backups not yet
+    /// catalogued have no versions, so they are not reported here; the caller
+    /// knows them from [`Self::archives_overview`].
+    ///
+    /// The cost follows the size of the folder's subtree, which is walked.
+    /// Measured on 2026-10-20: 27 ms for a real home folder of 54,000 paths,
+    /// and 243 ms for a synthetic one of 500,000 files with a year of
+    /// backups, deep folders taking well under a millisecond. Working upwards
+    /// from the versions that ended instead costs the same 90 ms or so for
+    /// every folder at that size, deep ones included, which is the worse
+    /// trade for a window that mostly looks at deep folders.
+    pub fn listed_for(&self, folder: &str) -> Result<Vec<i64>> {
+        let Some(newest) = self.latest_catalogued_seq()? else {
+            return Ok(Vec::new());
+        };
+        let mut listed = match self.folder_id(folder)? {
+            Some(0) => {
+                let mut stmt = self
+                    .conn
+                    .prepare_cached("SELECT seq FROM archives WHERE status IS NULL")?;
+                let rows = stmt.query_map([], |r| r.get(0))?;
+                rows.collect::<std::result::Result<Vec<i64>, _>>()?
+            }
+            None => vec![newest],
+            Some(folder_id) => {
+                let mut stmt = self.conn.prepare_cached(
+                    "WITH RECURSIVE below(id) AS (
+                         SELECT ?1
+                         UNION ALL
+                         SELECT p.id FROM paths p JOIN below ON p.parent_id = below.id
+                     )
+                     SELECT DISTINCT v.last_seq FROM versions v JOIN below ON v.path_id = below.id
+                     WHERE v.kind != 'dir' AND v.last_seq < ?2",
+                )?;
+                let rows = stmt.query_map(params![folder_id, newest], |r| r.get(0))?;
+                let mut ended = rows.collect::<std::result::Result<Vec<i64>, _>>()?;
+                ended.push(newest);
+                ended
+            }
+        };
+        listed.sort_unstable_by(|a, b| b.cmp(a));
+        Ok(listed)
+    }
+
     /// Which repository holds the archive called `name`, if the catalogue has
     /// it.
     ///
@@ -976,6 +1036,193 @@ mod tests {
         assert_eq!(r.repo_of("bt-local-2").unwrap(), Some(Repo::Spool));
         assert_eq!(r.repo_of("bt-local-3").unwrap(), Some(Repo::FsSnapshot));
         assert_eq!(r.repo_of("never").unwrap(), None);
+    }
+
+    /// A catalogue of full listings, oldest first: archive `n` is `a{n}`,
+    /// with seq `n`.
+    fn listings(archives: Vec<Vec<BorgItem>>) -> (tempfile::TempDir, IndexReader) {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("index.db");
+        {
+            let mut w = IndexWriter::open(&path).unwrap();
+            for (n, items) in archives.into_iter().enumerate() {
+                let n = n as i64 + 1;
+                w.ingest_archive(
+                    &meta(&format!("a{n}"), n * 1_000),
+                    Repo::Primary,
+                    items.into_iter(),
+                )
+                .unwrap();
+            }
+        }
+        (tmp, IndexReader::open(&path).unwrap())
+    }
+
+    /// The folders above `home/k/Docs`, and it.
+    fn docs() -> Vec<BorgItem> {
+        vec![dir("home"), dir("home/k"), dir("home/k/Docs")]
+    }
+
+    #[test]
+    fn the_listed_backups_follow_the_stage_files_worked_example() {
+        // Stage 15's example, backups numbered from the newest backwards, so
+        // backup n is seq 10 - n. Backup 9 has A and no B yet; 8 to 6 an
+        // earlier B; 5 to 1 A and B as they are now.
+        let a = || file("home/k/Docs/A", 1);
+        let mut archives = vec![[docs(), vec![a()]].concat()];
+        for _ in 0..3 {
+            archives.push([docs(), vec![a(), file("home/k/Docs/B", 1)]].concat());
+        }
+        for _ in 0..5 {
+            archives.push([docs(), vec![a(), file("home/k/Docs/B", 2)]].concat());
+        }
+        let (_tmp, r) = listings(archives);
+        assert_eq!(
+            r.listed_for("home/k/Docs").unwrap(),
+            vec![9, 4],
+            "backup 1, the newest, and backup 6, the newest copy of the earlier B"
+        );
+    }
+
+    #[test]
+    fn a_file_deleted_since_lists_the_last_backup_that_held_it() {
+        let a = || file("home/k/Docs/A", 1);
+        let c = || file("home/k/Docs/C", 1);
+        let (_tmp, r) = listings(vec![
+            [docs(), vec![a(), c()]].concat(),
+            [docs(), vec![a(), c()]].concat(),
+            [docs(), vec![a()]].concat(),
+            [docs(), vec![a()]].concat(),
+        ]);
+        assert_eq!(r.listed_for("home/k/Docs").unwrap(), vec![4, 2]);
+    }
+
+    #[test]
+    fn a_backup_in_which_files_were_only_created_is_not_listed() {
+        let a = || file("home/k/Docs/A", 1);
+        let (_tmp, r) = listings(vec![
+            [docs(), vec![a()]].concat(),
+            [docs(), vec![a(), file("home/k/Docs/New", 1)]].concat(),
+            [docs(), vec![a(), file("home/k/Docs/New", 1)]].concat(),
+        ]);
+        assert_eq!(r.listed_for("home/k/Docs").unwrap(), vec![3]);
+    }
+
+    #[test]
+    fn a_folder_whose_own_time_changed_is_not_a_change() {
+        // A file created and deleted between two backups leaves the folder's
+        // modification time moved and nothing else.
+        let touched = BorgItem {
+            mtime: 200,
+            ..dir("home/k/Docs")
+        };
+        let a = || file("home/k/Docs/A", 1);
+        let (_tmp, r) = listings(vec![
+            [docs(), vec![a()]].concat(),
+            vec![dir("home"), dir("home/k"), touched, a()],
+        ]);
+        assert_eq!(r.listed_for("home/k/Docs").unwrap(), vec![2]);
+        assert_eq!(
+            r.listed_for("home/k").unwrap(),
+            vec![2],
+            "nor from above it"
+        );
+    }
+
+    #[test]
+    fn a_change_three_folders_down_is_listed_at_every_folder_above_it() {
+        let tree = || {
+            [
+                docs(),
+                vec![dir("home/k/Docs/tax"), dir("home/k/Docs/tax/2025")],
+            ]
+            .concat()
+        };
+        let receipt = |size| file("home/k/Docs/tax/2025/receipt.pdf", size);
+        let (_tmp, r) = listings(vec![
+            [tree(), vec![receipt(1)]].concat(),
+            [tree(), vec![receipt(2)]].concat(),
+        ]);
+        for folder in [
+            "home/k/Docs/tax/2025",
+            "home/k/Docs/tax",
+            "home/k/Docs",
+            "home/k",
+            "home",
+        ] {
+            assert_eq!(r.listed_for(folder).unwrap(), vec![2, 1], "at {folder}");
+        }
+    }
+
+    #[test]
+    fn after_a_prune_every_listed_backup_still_exists() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("index.db");
+        {
+            let mut w = IndexWriter::open(&path).unwrap();
+            for n in 1..=5i64 {
+                let items = [docs(), vec![file("home/k/Docs/A", n)]].concat();
+                w.ingest_archive(
+                    &meta(&format!("a{n}"), n * 1_000),
+                    Repo::Primary,
+                    items.into_iter(),
+                )
+                .unwrap();
+            }
+            w.remove_archives(&[2, 4]).unwrap();
+        }
+        let r = IndexReader::open(&path).unwrap();
+        let exists: std::collections::HashSet<i64> = r
+            .archives_overview()
+            .unwrap()
+            .iter()
+            .map(|a| a.seq)
+            .collect();
+        let listed = r.listed_for("home/k/Docs").unwrap();
+        assert_eq!(
+            listed.len(),
+            3,
+            "each surviving backup holds its own A: {listed:?}"
+        );
+        assert!(
+            listed.iter().all(|seq| exists.contains(seq)),
+            "{listed:?} against {exists:?}"
+        );
+    }
+
+    #[test]
+    fn the_tree_root_lists_every_catalogued_backup_and_no_other() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("index.db");
+        {
+            let mut w = IndexWriter::open(&path).unwrap();
+            for n in 1..=3i64 {
+                let items = [docs(), vec![file("home/k/Docs/A", 1)]].concat();
+                w.ingest_archive(
+                    &meta(&format!("a{n}"), n * 1_000),
+                    Repo::Primary,
+                    items.into_iter(),
+                )
+                .unwrap();
+            }
+            // Recorded, not yet read: there is nothing to say about it.
+            w.append_archive(&meta("a4", 4_000), Repo::Primary).unwrap();
+        }
+        let r = IndexReader::open(&path).unwrap();
+        assert_eq!(r.listed_for("").unwrap(), vec![3, 2, 1]);
+        assert_eq!(r.listed_for("/").unwrap(), vec![3, 2, 1]);
+        assert_eq!(r.listed_for("home/k/Docs").unwrap(), vec![3]);
+    }
+
+    #[test]
+    fn a_folder_the_catalogue_never_saw_lists_only_the_newest() {
+        let (_tmp, r) = listings(vec![
+            [docs(), vec![file("home/k/Docs/A", 1)]].concat(),
+            [docs(), vec![file("home/k/Docs/A", 2)]].concat(),
+        ]);
+        assert_eq!(r.listed_for("home/k/Elsewhere").unwrap(), vec![2]);
+        let (_tmp, empty) = listings(Vec::new());
+        assert_eq!(empty.listed_for("home/k/Docs").unwrap(), Vec::<i64>::new());
     }
 
     #[test]

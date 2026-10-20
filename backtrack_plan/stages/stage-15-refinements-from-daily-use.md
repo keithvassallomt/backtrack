@@ -25,7 +25,8 @@ newest backwards:
 
 | Backup | What it holds | Listed |
 |---|---|---|
-| 1 to 5 | A and B as they are now | No |
+| 1 | A and B as they are now | Yes: the newest backup is always listed |
+| 2 to 5 | A and B as they are now | No: backup 1 holds them |
 | 6 | The newest copy of an earlier B | Yes |
 | 7, 8 | The same earlier B | No: 6 holds it |
 | 9 | A as now, and no B yet | No: a file that did not exist yet is nothing to restore |
