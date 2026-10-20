@@ -126,21 +126,38 @@ badged and previewable; emptying the Trash removes the entry while the window
 is open.
 
 ### S16-T4 — Restore from the Trash
+Restoring a trashed item takes it out of the Trash, as the file manager's own
+Restore does, and Undo puts it back in.
+
 The restore pipeline (stage, compare, rename; S07-T1) gains the Trash as a
-source: a trashed item is staged by copying it out of the Trash, and from there
-it is skipped when identical, offered through the conflict dialog when
-something else is in its place, stashed and undoable, exactly as a backup's
-file is. Restore To (S07-T7) works the same way. A folder restored from a Trash
-entry restores the backup's files and the Trash's items in one summary.
+source. The Trash is already on the same drive as the item's original place
+(that is what a per-drive Trash is for), so the item needs no staging copy: it
+is renamed from the Trash into place, and its `.trashinfo` removed. Before
+that, it goes through the same steps as a backup's file: skipped when
+identical, offered through the conflict dialog when something else is in its
+place, and the file it replaces stashed. Restore To (S07-T7) moves it as well,
+copying first when the destination is on another drive. A folder restored from
+a Trash entry restores the backup's files and the Trash's items in one summary.
 
-The Trash is left as it was. Removing the item from it, as the file manager's
-own Restore does, would make an undo lose the only copy; the Trash stays the
-user's to empty.
+The move log (`restore::execute`) records a move out of the Trash as a kind of
+its own, carrying the item's name in the Trash and its `.trashinfo` as it was.
+Undo, walking the log backwards, renames the file back into the Trash and
+writes that `.trashinfo` again, original deletion time included, so the
+timeline's entry returns where it was. If another item has taken the name in
+the meantime, the file goes back under a free name, as the specification
+allows. Undoing a restore never deletes a file that came from the Trash.
 
-**Accept:** core tests: a trashed file staged and restored, a conflict with a
-file now at its path, an undo, and a mixed folder restore; on the GNOME VM,
-restoring C from its entry puts C back with its content, leaves it in the
-Trash, and Undo removes it from the folder again.
+Decided with Keith, 2026-10-20: a restore moves the item out of the Trash
+rather than copying it, and Undo returns it there.
+
+**Accept:** core tests: a trashed file restored by rename with its
+`.trashinfo` gone; a conflict with a file now at its path, replaced and kept
+both; Undo putting the file back in the Trash with its original `.trashinfo`,
+including when the name has been taken; Restore To across drives; a mixed
+folder restore undone in one step. On the GNOME and Plasma VMs, restoring C
+from its entry puts C back in the folder and takes it out of the file manager's
+Trash; Undo returns it to the Trash with its original deletion time, and the
+timeline's entry comes back.
 
 ### S16-T5 — Search finds what is in the Trash
 `SearchFiles` includes the Trash's counting items. A result says that the file
