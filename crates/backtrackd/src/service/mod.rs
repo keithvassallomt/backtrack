@@ -40,7 +40,7 @@ use backtrack_core::dbus::Reason;
 use backtrack_core::engine::{
     ArchiveId, BackupEngine, BorgCli, CheckLevel, CreateSpec, HealthFailure, JobStream, PrunePolicy,
 };
-use backtrack_core::index::{IndexReader, IndexWriter, Kind};
+use backtrack_core::index::{IndexReader, IndexWriter, Kind, Repo};
 use backtrack_core::paths;
 use backtrack_core::restore::{self, Decision, Decisions};
 use backtrack_core::roots::Roots;
@@ -399,7 +399,7 @@ impl Shared {
     /// Everything that can be refused before a job exists is refused here, so
     /// a client hears "that path is empty" as an error to its call rather than
     /// as a job that fails a moment later.
-    fn restore_preflight(
+    async fn restore_preflight(
         &self,
         archive: &str,
         paths: &[String],
@@ -411,7 +411,7 @@ impl Shared {
             ));
         }
         Ok(PendingRestore {
-            engine: self.engine()?,
+            engine: self.engine_for(archive).await?,
             archive: ArchiveId(archive.to_string()),
             paths: paths.to_vec(),
             dest: PathBuf::from(dest),
@@ -1801,6 +1801,27 @@ impl Shared {
         })
     }
 
+    /// The engine holding `archive`, for anything that reads its contents back:
+    /// the destination's for a backup made there, the spool's for a local
+    /// snapshot taken while it was away.
+    ///
+    /// Asking the destination for every archive is what made local snapshots
+    /// impossible to restore from: while the destination is away it cannot be
+    /// asked at all, and once it is back it has never heard of them. An
+    /// archive the catalogue does not know is asked of the destination, which
+    /// is where a name given on the command line will be.
+    async fn engine_for(&self, archive: &str) -> Result<Arc<dyn BackupEngine>> {
+        let repo = IndexReader::open(&self.index_path)?.repo_of(archive)?;
+        match repo {
+            Some(Repo::Spool) => self.spool_engine().await,
+            Some(Repo::FsSnapshot) => Err(DaemonError::RestoreFailed(format!(
+                "{archive} is a filesystem snapshot on this computer, and Backtrack \
+                 cannot read one back yet"
+            ))),
+            Some(Repo::Primary) | None => self.engine(),
+        }
+    }
+
     fn config(&self) -> Config {
         self.config.lock().unwrap().clone()
     }
@@ -2522,7 +2543,7 @@ impl Daemon1 {
         policy: &str,
     ) -> Result<u64> {
         let policy = RestorePolicy::parse(policy)?;
-        let prepared = self.shared.restore_preflight(archive, &paths, dest)?;
+        let prepared = self.shared.restore_preflight(archive, &paths, dest).await?;
         info!(archive, dest, policy = policy.as_str(), "restore requested");
 
         let decisions = Decisions::all(match policy {
@@ -2543,7 +2564,7 @@ impl Daemon1 {
     /// answer is read with `GetRestorePreview` using the same id, applied with
     /// `ExecuteRestore`, and thrown away with `DiscardRestore`.
     async fn prepare_restore(&self, archive: &str, paths: Vec<String>, dest: &str) -> Result<u64> {
-        let prepared = self.shared.restore_preflight(archive, &paths, dest)?;
+        let prepared = self.shared.restore_preflight(archive, &paths, dest).await?;
         info!(archive, dest, "working out a restore");
         Ok(self
             .shared
@@ -2628,7 +2649,7 @@ impl Daemon1 {
                 paths.len()
             )));
         }
-        let mut prepared = self.shared.restore_preflight(archive, &paths, dest)?;
+        let mut prepared = self.shared.restore_preflight(archive, &paths, dest).await?;
         prepared.into_dest = true;
 
         // Made here rather than left to the moves, so a destination that cannot
@@ -2745,7 +2766,7 @@ impl Daemon1 {
         let entry = cache.entry_path(archive, path);
 
         if !cache.contains(archive, path) {
-            let engine = self.shared.engine()?;
+            let engine = self.shared.engine_for(archive).await?;
             cache
                 .ensure_dir()
                 .map_err(|e| DaemonError::LocalDiskFull(e.to_string()))?;
@@ -2820,7 +2841,7 @@ impl Daemon1 {
     /// Prepare the archived copy of `path` so it can be compared with the live
     /// one. The diff view itself is Stage 8; this is the extraction it needs.
     async fn compare_file(&self, archive: &str, path: &str) -> Result<u64> {
-        let engine = self.shared.engine()?;
+        let engine = self.shared.engine_for(archive).await?;
         let cache = self.shared.preview.clone();
         let archive = archive.to_string();
         let path = path.to_string();

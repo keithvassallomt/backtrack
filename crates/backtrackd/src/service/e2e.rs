@@ -784,7 +784,6 @@ async fn preview_and_restore(
 }
 
 #[tokio::test]
-#[ignore = "S15-T5: preview and restore ask the destination, which has no spool archives"]
 async fn a_local_snapshot_is_previewed_and_restored_from_while_the_destination_is_away() {
     let fixture = small_fixture().await;
     let shared = Arc::clone(&fixture.shared);
@@ -806,7 +805,6 @@ async fn a_local_snapshot_is_previewed_and_restored_from_while_the_destination_i
 }
 
 #[tokio::test]
-#[ignore = "S15-T5: preview and restore ask the destination, which has no spool archives"]
 async fn a_local_snapshot_is_previewed_and_restored_from_once_the_destination_is_back() {
     let fixture = small_fixture().await;
     let shared = Arc::clone(&fixture.shared);
@@ -825,6 +823,42 @@ async fn a_local_snapshot_is_previewed_and_restored_from_once_the_destination_is
         ),
         "the preview, the restore, and what is on disk afterwards"
     );
+}
+
+/// The compare view's copy of a local snapshot's file comes from the spool,
+/// not from a destination that has never heard of the snapshot.
+#[tokio::test]
+async fn a_local_snapshot_is_compared_from_the_spool() {
+    let fixture = small_fixture().await;
+    let shared = Arc::clone(&fixture.shared);
+    let (archive, member) = a_local_snapshot_of_a_lost_edit(&shared).await;
+    let (_server, client) = connect(Arc::clone(&shared)).await;
+
+    let job = match client
+        .call_method(
+            None::<()>,
+            PATH,
+            Some(IFACE),
+            "CompareFile",
+            &(archive.as_str(), member.as_str()),
+        )
+        .await
+    {
+        Ok(reply) => Ok(reply.body().deserialize::<u64>().expect("a job id")),
+        Err(error) => Err(error.to_string()),
+    };
+    let state = match job {
+        Ok(job) => Ok(settle(&shared, job).await),
+        Err(error) => Err(error),
+    };
+    let held = std::fs::read_to_string(shared.preview.entry_path(&archive, &member));
+    restore_the_destination(&shared);
+
+    assert!(
+        matches!(&state, Ok(state) if completed(state)),
+        "the compare's extraction finished: {state:?}"
+    );
+    assert_eq!(held.ok().as_deref(), Some("edited while away"));
 }
 
 /// A preview that could not be fetched is an error, and is not remembered:

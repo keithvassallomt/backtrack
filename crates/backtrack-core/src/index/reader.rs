@@ -611,6 +611,26 @@ impl IndexReader {
             .optional()?)
     }
 
+    /// Which repository holds the archive called `name`, if the catalogue has
+    /// it.
+    ///
+    /// A local snapshot is kept in a store of its own, never at the
+    /// destination, so anything that reads an archive's contents has to ask
+    /// this first: the destination has never heard of a local snapshot's name.
+    /// Should a spool archive and a filesystem snapshot ever share a name, the
+    /// newer one is meant, as it is the one a client listing them shows last.
+    pub fn repo_of(&self, name: &str) -> Result<Option<Repo>> {
+        let token: Option<String> = self
+            .conn
+            .query_row(
+                "SELECT repo FROM archives WHERE name = ?1 ORDER BY seq DESC LIMIT 1",
+                params![name],
+                |r| r.get(0),
+            )
+            .optional()?;
+        Ok(token.as_deref().and_then(Repo::from_token))
+    }
+
     /// Cross-snapshot filename search over FTS5. Each hit aggregates a path's
     /// whole history: lifespan, version count, and whether it still exists.
     /// Results are ranked deleted-first, then by most-recent existence, then by
@@ -932,6 +952,30 @@ mod tests {
         let (_tmp, r) = a_home();
         assert_eq!(r.seq_of("a2").unwrap(), Some(2));
         assert_eq!(r.seq_of("never").unwrap(), None);
+    }
+
+    #[test]
+    fn an_archive_says_which_repository_holds_it() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("index.db");
+        {
+            let mut w = IndexWriter::open(&path).unwrap();
+            w.ingest_archive(
+                &meta("a1", 1_000),
+                Repo::Primary,
+                vec![dir("home")].into_iter(),
+            )
+            .unwrap();
+            w.append_archive(&meta("bt-local-2", 2_000), Repo::Spool)
+                .unwrap();
+            w.append_archive(&meta("bt-local-3", 3_000), Repo::FsSnapshot)
+                .unwrap();
+        }
+        let r = IndexReader::open(&path).unwrap();
+        assert_eq!(r.repo_of("a1").unwrap(), Some(Repo::Primary));
+        assert_eq!(r.repo_of("bt-local-2").unwrap(), Some(Repo::Spool));
+        assert_eq!(r.repo_of("bt-local-3").unwrap(), Some(Repo::FsSnapshot));
+        assert_eq!(r.repo_of("never").unwrap(), None);
     }
 
     #[test]
