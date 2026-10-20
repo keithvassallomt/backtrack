@@ -864,7 +864,6 @@ async fn a_local_snapshot_is_compared_from_the_spool() {
 /// A preview that could not be fetched is an error, and is not remembered:
 /// once the destination is back, the same preview shows the file.
 #[tokio::test]
-#[ignore = "S15-T6: a failed extraction is cached as an empty preview"]
 async fn a_preview_that_could_not_be_fetched_is_not_kept_as_an_empty_file() {
     use std::io::Read as _;
     let fixture = small_fixture().await;

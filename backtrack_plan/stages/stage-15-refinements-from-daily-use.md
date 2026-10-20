@@ -186,15 +186,18 @@ empty when it is back.
 - Nothing reaches the cache unless the extraction succeeded.
 - The preview pane and the compare view say what went wrong instead of showing
   an empty file.
-- Empty files already cached by this defect are cleared once, on the first
-  start of the version that fixes it.
+- Empty files already cached by this defect are cleared at every start of
+  the daemon. Not once: the cache counts every file in its folder as an
+  entry, so a marker saying it had been done would be evicted with the rest,
+  and clearing at every start costs only extracting a genuinely empty file
+  again.
 
 **Accept:** `a_preview_that_could_not_be_fetched_is_not_kept_as_an_empty_file`
 in `crates/backtrackd/src/service/e2e.rs` passes with its `#[ignore]` removed
 (as written on 2026-10-20 it fails: an empty preview while the destination is
 away, and still empty once it is back); a Borg engine test: `extract_stdout`
-from a missing archive is an error, not an empty read; a test that the one-time
-clear runs once; on a VM, previewing with the destination unplugged shows the
+from a missing archive is an error, not an empty read; a test that the clear
+removes the empty entries and keeps the rest; on a VM, previewing with the destination unplugged shows the
 reason, and plugging it back in shows the file.
 
 ## Definition of Done

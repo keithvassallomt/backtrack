@@ -168,6 +168,7 @@ pub async fn run() -> Result<Outcome, StartupError> {
     shared.seed_last_backup();
     // As must a pause and the attempt clock, which only this daemon records.
     shared.restore_persisted_state();
+    shared.drop_empty_previews();
 
     // Before the name is claimed, and emphatically so: this deletes staging
     // directories, and the first thing an activating client does is ask for a

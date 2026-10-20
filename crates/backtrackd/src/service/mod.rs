@@ -38,7 +38,8 @@ use std::time::{Duration, SystemTime};
 use backtrack_core::config::Config;
 use backtrack_core::dbus::Reason;
 use backtrack_core::engine::{
-    ArchiveId, BackupEngine, BorgCli, CheckLevel, CreateSpec, HealthFailure, JobStream, PrunePolicy,
+    ArchiveId, BackupEngine, BorgCli, CheckLevel, CreateSpec, EngineError, HealthFailure,
+    JobStream, PrunePolicy,
 };
 use backtrack_core::index::{IndexReader, IndexWriter, Kind, Repo};
 use backtrack_core::paths;
@@ -1005,6 +1006,15 @@ impl Shared {
     /// restart is a lid closing.
     pub fn restore_persisted_state(&self) {
         self.adopt_state(RuntimeState::load_from(&self.state_path));
+    }
+
+    /// Drop the empty previews a failed extraction used to leave in the cache.
+    /// See [`PreviewCache::drop_empty`].
+    pub fn drop_empty_previews(&self) {
+        let dropped = self.preview.drop_empty();
+        if dropped > 0 {
+            info!(dropped, "removed empty previews from the cache");
+        }
     }
 
     /// Take on a previously-saved state. Split from the load so the rules can be
@@ -2789,7 +2799,7 @@ impl Daemon1 {
             };
             if let Err(e) = finish.await {
                 let _ = tokio::fs::remove_file(&staging).await;
-                return Err(DaemonError::LocalDiskFull(e.to_string()));
+                return Err(extraction_error(e));
             }
             drop(file);
             tokio::fs::rename(&staging, &entry)
@@ -3596,6 +3606,16 @@ impl Daemon1 {
     ) -> zbus::Result<()>;
 }
 
+/// What went wrong while an archived file was being copied out: Borg's own
+/// failure when it was Borg's, carried by the reader, and this computer's disk
+/// otherwise.
+fn extraction_error(error: std::io::Error) -> DaemonError {
+    match EngineError::from_io(&error) {
+        Some(engine) => engine.into(),
+        None => DaemonError::LocalDiskFull(error.to_string()),
+    }
+}
+
 /// Extract one file into the preview cache, replacing any partial attempt.
 async fn cache_extraction(
     engine: &dyn BackupEngine,
@@ -3617,9 +3637,10 @@ async fn cache_extraction(
         stderr: e.to_string(),
     };
     let mut file = tokio::fs::File::create(&staging).await.map_err(map_io)?;
-    tokio::io::copy(&mut reader, &mut file)
-        .await
-        .map_err(map_io)?;
+    if let Err(e) = tokio::io::copy(&mut reader, &mut file).await {
+        let _ = tokio::fs::remove_file(&staging).await;
+        return Err(EngineError::from_io(&e).unwrap_or_else(|| map_io(e)));
+    }
     file.sync_all().await.map_err(map_io)?;
     drop(file);
     tokio::fs::rename(&staging, &entry).await.map_err(map_io)?;

@@ -4,11 +4,14 @@
 //! Process plumbing for `BorgCli`: environment, the version probe, and the
 //! stderr-reader task that turns `--log-json` output into a [`JobStream`].
 
+use std::future::Future;
 use std::path::Path;
+use std::pin::Pin;
 use std::process::Stdio;
+use std::task::{ready, Context, Poll};
 use std::time::Duration;
 
-use tokio::io::{AsyncBufReadExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncRead, BufReader, ReadBuf};
 use tokio::process::{Child, Command};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
@@ -191,6 +194,99 @@ fn spawn(mut cmd: Command, warnings: Warnings) -> Result<JobStream> {
     });
 
     Ok(JobStream::new(rx, cancel))
+}
+
+/// Spawn a `borg extract --stdout` and return a reader of the file it writes.
+///
+/// The reader ends cleanly only if Borg says the extraction succeeded. When
+/// Borg fails (the repository unreachable, the archive not there, the
+/// passphrase wrong) it reports on stderr and simply closes stdout, which on
+/// its own reads exactly like a complete, empty file. So the end of stdout is
+/// not the end of the read: the reader waits for Borg to exit, and a failure
+/// becomes the read's error, carrying the classified [`EngineError`] for
+/// [`EngineError::from_io`] to recover.
+pub(super) fn spawn_stdout(mut cmd: Command) -> Result<Pin<Box<dyn AsyncRead + Send>>> {
+    cmd.stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
+    let mut child = cmd.spawn().map_err(|e| EngineError::BorgFailed {
+        code: -1,
+        stderr: format!("spawning borg extract --stdout: {e}"),
+    })?;
+    let stdout = child.stdout.take().expect("stdout piped");
+    let stderr = child.stderr.take().expect("stderr piped");
+
+    // Read while the file streams rather than after it: a Borg with a full
+    // stderr pipe would wait on us while we waited on its stdout.
+    let errors = tokio::spawn(async move {
+        let mut errors = Vec::new();
+        let mut lines = BufReader::new(stderr).lines();
+        while let Ok(Some(line)) = lines.next_line().await {
+            if let Parsed::Log {
+                level,
+                msgid,
+                message,
+            } = parse_log_line(&line)
+            {
+                if is_evidence(level, &message) {
+                    errors.push(ErrLine { msgid, message });
+                }
+            }
+        }
+        errors
+    });
+    let verdict = async move {
+        let errors = errors.await.unwrap_or_default();
+        let status = child.wait().await.map_err(|e| EngineError::BorgFailed {
+            code: -1,
+            stderr: e.to_string(),
+        })?;
+        let code = status.code().unwrap_or(-1);
+        match classify_exit(code) {
+            // A warning is Borg reaching its normal end, as for every other
+            // command that tolerates them.
+            ExitClass::Success | ExitClass::Warning => Ok(()),
+            ExitClass::Error => Err(classify(code, &errors)),
+        }
+    };
+    Ok(Box::pin(BorgStdout {
+        stdout,
+        verdict: Some(Box::pin(verdict)),
+    }))
+}
+
+/// The reader [`spawn_stdout`] returns.
+struct BorgStdout {
+    stdout: tokio::process::ChildStdout,
+    /// Borg's exit, awaited once stdout has ended, and `None` once it has
+    /// been. It owns the child, so a reader dropped early still has Borg
+    /// killed.
+    verdict: Option<Pin<Box<dyn Future<Output = Result<()>> + Send>>>,
+}
+
+impl AsyncRead for BorgStdout {
+    fn poll_read(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        let this = self.get_mut();
+        if buf.remaining() == 0 {
+            return Poll::Ready(Ok(()));
+        }
+        let before = buf.filled().len();
+        ready!(Pin::new(&mut this.stdout).poll_read(cx, buf))?;
+        if buf.filled().len() > before {
+            return Poll::Ready(Ok(()));
+        }
+        // Stdout has ended. Whether that is the whole file is Borg's to say.
+        let Some(verdict) = this.verdict.as_mut() else {
+            return Poll::Ready(Ok(()));
+        };
+        let outcome = ready!(verdict.as_mut().poll(cx));
+        this.verdict = None;
+        Poll::Ready(outcome.map_err(std::io::Error::other))
+    }
 }
 
 async fn forward_line(

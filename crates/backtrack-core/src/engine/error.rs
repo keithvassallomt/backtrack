@@ -151,6 +151,13 @@ impl HealthFailure {
 }
 
 impl EngineError {
+    /// The engine error inside an I/O error, when that is what it carries: a
+    /// reader of Borg's output reports a failed extraction this way (see
+    /// [`BackupEngine::extract_stdout`](crate::engine::BackupEngine::extract_stdout)).
+    pub fn from_io(error: &std::io::Error) -> Option<EngineError> {
+        error.get_ref()?.downcast_ref::<EngineError>().cloned()
+    }
+
     /// Which health.md failure-catalogue row this error surfaces as, if any.
     /// `None` for errors that are not banner-failures (see the module docs). The
     /// `match` is total, so the compiler forces every variant to be classified.
