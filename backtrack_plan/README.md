@@ -81,6 +81,7 @@ Each `stages/stage-NN-*.md` contains: **Objective** (what exists at the end),
 | 12 | [stage-12-integrations-tray.md](stages/stage-12-integrations-tray.md) | Nautilus/Dolphin menus, tray, background portal |
 | 13 | [stage-13-packaging-release.md](stages/stage-13-packaging-release.md) | Application ID, Flatpak manifest and sources, RPM/DEB/AUR, `just release` |
 | 14 | [stage-14-flatpak-first-class.md](stages/stage-14-flatpak-first-class.md) | The Flatpak as a first-class build; FriendlyHub (runs inside Stage 13) |
+| 15 | [stage-15-refinements-from-daily-use.md](stages/stage-15-refinements-from-daily-use.md) | Changes from daily use: the timeline lists only the backups in which the folder differs |
 
 ## Reference documents (in `reference/`)
 
