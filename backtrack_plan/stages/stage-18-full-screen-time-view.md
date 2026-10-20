@@ -10,8 +10,10 @@ from the file manager's right-click menu, from the launcher and from the tray.
 The main window stays the everyday tool; this is a second way in, made for
 the moment someone wants a thing back and wants it to feel like going back
 for it. "Time Machine" is Apple's trademark and appears nowhere in the
-interface. The view's name is settled with the mockups (S18-T1); until then
-these files call it the full-screen view.
+interface. The view is called **Rewind** (Keith, 2026-10-20): it says what
+the view does, and reads naturally in a menu ("Rewind This Folder…"). Warp was
+considered and set aside, as the name of a GNOME Circle application and of a
+well-known terminal. These files also call it the full-screen view.
 
 What makes it practical here: every folder at every backup is listed from the
 local catalogue, without Borg, so flying through fifty backups costs fifty
@@ -44,10 +46,9 @@ anything is built. They differ in:
 
 Each direction is an HTML prototype Keith opens in a browser, animated with
 the arrow keys, so the motion is judged and not imagined; light and dark. After
-each round, the chosen direction is refined until Keith settles it. The view's
-name is decided in the same rounds.
+each round, the chosen direction is refined until Keith settles it.
 
-**Accept:** Keith has chosen a direction and a name; stills of it, light and
+**Accept:** Keith has chosen a direction; stills of it, light and
 dark, are committed as mockups 25 and 26 in `backtrack_plan/mockups/`, and the
 later tasks here are updated to cite them.
 
@@ -195,7 +196,6 @@ timeline reads as a list of them; the whole of S18-T6's restore done with the
 keyboard alone.
 
 ## Definition of Done
-All tasks done; the CHANGELOG's Unreleased section introduces the view by its
-chosen name; mockups 25 and 26 match what was built; the README and the file
+All tasks done; the CHANGELOG's Unreleased section introduces Rewind; mockups 25 and 26 match what was built; the README and the file
 manager documentation (`docs/file-manager-integration.md`) mention the new
 menu items.
