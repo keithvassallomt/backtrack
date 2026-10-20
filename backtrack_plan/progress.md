@@ -166,6 +166,8 @@ Nothing right now.
 - [ ] S15-T2 The sidebar and the stepping list only those backups
 - [ ] S15-T3 The density strip and the calendar show the same backups
 - [ ] S15-T4 A folder says when something inside it changed
+- [ ] S15-T5 Preview and restore from the offline spool
+- [ ] S15-T6 A preview that could not be fetched is an error, not an empty file
 
 ## Stage 16 — The Trash in the timeline ([stage file](stages/stage-16-trash-in-the-timeline.md))
 - [ ] S16-T1 Read the Trash

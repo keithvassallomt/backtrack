@@ -45,7 +45,8 @@ Stage 5 (`snapshot::containing_subvolume`, and `walk::walk_as`, which reads a
 snapshot as the subvolume it copies), Stage 1 (archives inserted into the
 middle of the catalogue in time order, as `sync_archives` does for backfill),
 Stage 15 (the timeline lists only the backups in which the folder differs,
-Snapper's snapshots included).
+Snapper's snapshots included; S15-T5, which routes preview and restore by the
+archive's kind).
 
 ## Order of work
 T1, T2 and T3 in order: each reads what the one before provides. T4 after T2.
@@ -98,9 +99,9 @@ Preview, the compare view and the restore pipeline (S07-T1) choose where an
 archive's files come from by the archive's kind. For a snapshot folder
 (Snapper's, and Stage 5's own btrfs snapshots), the fetch is a copy out of the
 snapshot rather than a `borg extract`, and everything after it (skip
-identical, conflicts, stash, Undo) is unchanged. Today every archive is asked
-of the destination's repository (`restore_preflight` and `preview_file` in
-`crates/backtrackd/src/service/mod.rs`), which holds no snapshot.
+identical, conflicts, stash, Undo) is unchanged. S15-T5 makes the three choose
+between the destination's repository and the spool's; this adds snapshot
+folders, which neither repository holds.
 
 **Accept:** daemon tests on the loopback image: a file previewed from a Snapper
 snapshot and one from a Stage 5 snapshot; a file and a folder restored from

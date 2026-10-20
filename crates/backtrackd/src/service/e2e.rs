@@ -687,6 +687,195 @@ async fn losing_the_destination_protects_the_changed_files_on_this_computer() {
     restore_the_destination(&shared);
 }
 
+/// A local snapshot holding an edit that is then lost on disk, which is the
+/// moment anyone comes looking for it. Returns the snapshot's name and the
+/// archive-relative path of the edited file. Leaves the destination away.
+async fn a_local_snapshot_of_a_lost_edit(shared: &Arc<Shared>) -> (String, String) {
+    let src = source(shared);
+    let job = Daemon1::new(Arc::clone(shared))
+        .backup_now()
+        .await
+        .expect("backup starts");
+    wait_for_job(shared, job).await;
+
+    cut_the_destination(shared);
+    let edited = src.join("docs/a.txt");
+    std::fs::write(&edited, b"edited while away").unwrap();
+    let job = shared
+        .start_scheduled_backup()
+        .await
+        .expect("the tick is not an error")
+        .expect("an unreachable destination starts local protection instead");
+    wait_for_job(shared, job).await;
+
+    let local = local_rows(shared).await;
+    assert_eq!(local.len(), 1, "one local snapshot: {local:?}");
+    std::fs::write(&edited, b"overwritten by mistake").unwrap();
+    let member = edited.strip_prefix("/").unwrap().display().to_string();
+    (local[0].name.clone(), member)
+}
+
+/// Preview `member` of `archive` and restore it over the disk copy, through
+/// the interface the window uses. Returns what each step said went wrong.
+async fn preview_and_restore(
+    shared: &Arc<Shared>,
+    archive: &str,
+    member: &str,
+) -> (Result<String, String>, Result<(), String>) {
+    use std::io::Read as _;
+    let (_server, client) = connect(Arc::clone(shared)).await;
+
+    let preview = match client
+        .call_method(
+            None::<()>,
+            PATH,
+            Some(IFACE),
+            "PreviewFile",
+            &(archive, member),
+        )
+        .await
+    {
+        Ok(reply) => {
+            let fd: zbus::zvariant::OwnedFd = reply.body().deserialize().expect("a descriptor");
+            let mut contents = String::new();
+            std::fs::File::from(std::os::fd::OwnedFd::from(fd))
+                .read_to_string(&mut contents)
+                .expect("readable");
+            Ok(contents)
+        }
+        Err(error) => Err(error.to_string()),
+    };
+
+    let restore = async {
+        let reply = client
+            .call_method(
+                None::<()>,
+                PATH,
+                Some(IFACE),
+                "PrepareRestore",
+                &(archive, vec![member.to_string()], "/"),
+            )
+            .await
+            .map_err(|e| format!("PrepareRestore refused: {e}"))?;
+        let job: u64 = reply.body().deserialize().expect("a job id");
+        let state = settle(shared, job).await;
+        if !completed(&state) {
+            return Err(format!("preparing failed: {state:?}"));
+        }
+        let reply = client
+            .call_method(
+                None::<()>,
+                PATH,
+                Some(IFACE),
+                "ExecuteRestore",
+                &(job, "replace", Vec::<(String, String)>::new()),
+            )
+            .await
+            .map_err(|e| format!("ExecuteRestore refused: {e}"))?;
+        let run: u64 = reply.body().deserialize().expect("a job id");
+        let state = settle(shared, run).await;
+        if !completed(&state) {
+            return Err(format!("executing failed: {state:?}"));
+        }
+        Ok(())
+    }
+    .await;
+    (preview, restore)
+}
+
+#[tokio::test]
+#[ignore = "S15-T5: preview and restore ask the destination, which has no spool archives"]
+async fn a_local_snapshot_is_previewed_and_restored_from_while_the_destination_is_away() {
+    let fixture = small_fixture().await;
+    let shared = Arc::clone(&fixture.shared);
+    let (archive, member) = a_local_snapshot_of_a_lost_edit(&shared).await;
+
+    let (preview, restore) = preview_and_restore(&shared, &archive, &member).await;
+    let on_disk = std::fs::read_to_string(std::path::Path::new("/").join(&member)).unwrap();
+    restore_the_destination(&shared);
+
+    assert_eq!(
+        (preview, restore, on_disk.as_str()),
+        (
+            Ok("edited while away".to_string()),
+            Ok(()),
+            "edited while away"
+        ),
+        "the preview, the restore, and what is on disk afterwards"
+    );
+}
+
+#[tokio::test]
+#[ignore = "S15-T5: preview and restore ask the destination, which has no spool archives"]
+async fn a_local_snapshot_is_previewed_and_restored_from_once_the_destination_is_back() {
+    let fixture = small_fixture().await;
+    let shared = Arc::clone(&fixture.shared);
+    let (archive, member) = a_local_snapshot_of_a_lost_edit(&shared).await;
+    restore_the_destination(&shared);
+
+    let (preview, restore) = preview_and_restore(&shared, &archive, &member).await;
+    let on_disk = std::fs::read_to_string(std::path::Path::new("/").join(&member)).unwrap();
+
+    assert_eq!(
+        (preview, restore, on_disk.as_str()),
+        (
+            Ok("edited while away".to_string()),
+            Ok(()),
+            "edited while away"
+        ),
+        "the preview, the restore, and what is on disk afterwards"
+    );
+}
+
+/// A preview that could not be fetched is an error, and is not remembered:
+/// once the destination is back, the same preview shows the file.
+#[tokio::test]
+#[ignore = "S15-T6: a failed extraction is cached as an empty preview"]
+async fn a_preview_that_could_not_be_fetched_is_not_kept_as_an_empty_file() {
+    use std::io::Read as _;
+    let fixture = small_fixture().await;
+    let shared = Arc::clone(&fixture.shared);
+    let job = Daemon1::new(Arc::clone(&shared))
+        .backup_now()
+        .await
+        .expect("backup starts");
+    wait_for_job(&shared, job).await;
+    let archive = newest_archive(&shared).await;
+    let member = archived_path(&shared, &archive, "docs/a.txt").await;
+
+    let (_server, client) = connect(Arc::clone(&shared)).await;
+    let preview = || async {
+        let reply = client
+            .call_method(
+                None::<()>,
+                PATH,
+                Some(IFACE),
+                "PreviewFile",
+                &(archive.as_str(), member.as_str()),
+            )
+            .await
+            .map_err(|e| e.to_string())?;
+        let fd: zbus::zvariant::OwnedFd = reply.body().deserialize().expect("a descriptor");
+        let mut contents = String::new();
+        std::fs::File::from(std::os::fd::OwnedFd::from(fd))
+            .read_to_string(&mut contents)
+            .expect("readable");
+        Ok::<String, String>(contents)
+    };
+
+    cut_the_destination(&shared);
+    let away = preview().await;
+    restore_the_destination(&shared);
+    let back = preview().await;
+
+    assert_eq!(
+        (away.is_err(), back.clone()),
+        (true, Ok("original".to_string())),
+        "an error while the destination is away, then the file once it is back; \
+         got {away:?} then {back:?}"
+    );
+}
+
 #[tokio::test]
 async fn status_reports_what_is_held_on_this_computer() {
     // S05-T5's acceptance: the offline block has to carry real numbers during

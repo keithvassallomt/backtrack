@@ -63,6 +63,9 @@ that still exists).
 T1 first: its timing on a real index decides how T2 asks the question. T2
 before T3, since both read the list T2 introduces. T4 last.
 
+T5 and T6 are defects found on 2026-10-20 while planning Stage 17, in what
+users already have. They stand apart from T1 to T4 and can go first.
+
 ## Tasks
 
 ### S15-T1 — The backups that differ under a folder
@@ -146,6 +149,53 @@ it in each listing; an entry added inside a folder, with nothing changed or
 removed, does not badge it; on the demo repository, the badges lead from a
 listed backup down to the file that differs, and a folder listing still answers
 as quickly as before on Keith's index.
+
+### S15-T5 — Preview and restore from the offline spool
+Preview, the compare view and the restore pipeline ask the destination's
+repository for every archive (`restore_preflight`, `preview_file` and
+`compare_file` in `crates/backtrackd/src/service/mod.rs`). The spool's local
+snapshots (Stage 5) are in the spool's own repository. So while the
+destination is away, a restore from one fails with `RepoUnreachable`, and once
+it is back, Borg answers that the archive does not exist. These are the
+snapshots that exist so that work done away from the destination can be got
+back, and on a stock desktop the spool is what takes them.
+- Each of the three chooses its engine by the archive's kind: the
+  destination's for `primary`, the spool's for `spool`. Stage 5's btrfs
+  snapshots (`fs-snapshot`) are S17-T3's, which adds snapshot folders to the
+  same choice.
+
+**Accept:**
+`a_local_snapshot_is_previewed_and_restored_from_while_the_destination_is_away`
+and `a_local_snapshot_is_previewed_and_restored_from_once_the_destination_is_back`
+in `crates/backtrackd/src/service/e2e.rs` pass with their `#[ignore]` removed
+(as written on 2026-10-20 they fail: an empty preview, then `RepoUnreachable`
+or "Archive … does not exist"); a compare from a spool snapshot reads the
+spool's copy. On a VM, with the destination unplugged, a file edited and then
+lost is restored from its local snapshot through the window.
+
+### S15-T6 — A preview that could not be fetched is an error, not an empty file
+`extract_stdout` (`crates/backtrack-core/src/engine/borg/mod.rs`) discards
+Borg's error output and never reads its exit status, so a failed extraction
+reads as an empty file. The preview (`preview_file`) and the compare view
+(`cache_extraction`) then keep that empty file in the preview cache as though
+it were the real one, and go on serving it after the cause has gone. A laptop
+away from its destination shows every file previewed as empty, and they stay
+empty when it is back.
+- The reader reports Borg's failure once the output ends, with its exit code
+  and error output classified as every other Borg call's are.
+- Nothing reaches the cache unless the extraction succeeded.
+- The preview pane and the compare view say what went wrong instead of showing
+  an empty file.
+- Empty files already cached by this defect are cleared once, on the first
+  start of the version that fixes it.
+
+**Accept:** `a_preview_that_could_not_be_fetched_is_not_kept_as_an_empty_file`
+in `crates/backtrackd/src/service/e2e.rs` passes with its `#[ignore]` removed
+(as written on 2026-10-20 it fails: an empty preview while the destination is
+away, and still empty once it is back); a Borg engine test: `extract_stdout`
+from a missing archive is an error, not an empty read; a test that the one-time
+clear runs once; on a VM, previewing with the destination unplugged shows the
+reason, and plugging it back in shows the file.
 
 ## Definition of Done
 All tasks done; the CHANGELOG's Unreleased section says what changed for the
