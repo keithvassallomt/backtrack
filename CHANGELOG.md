@@ -326,6 +326,15 @@ All notable changes to Backtrack are documented here. This project adheres to
   The restored files are moved into place from a working copy on the same
   disk, which takes no extra room, but a large folder was refused on any disk
   with less than twice its size free.
+- Backups kept on this computer while the backup destination was away can now
+  be previewed, compared and restored from. Until now they appeared in the
+  list, but anything you tried to get out of them was asked of the
+  destination, which never had them: an error while it was away, and another
+  once it was back.
+- A preview that could not be fetched, for instance with the backup
+  destination unplugged, now says why and offers to try again. It used to
+  show an empty file, and went on showing it empty after the destination was
+  back. Empty previews left over from this are cleared when Backtrack starts.
 
 ## [0.1.0] - TBD
 
