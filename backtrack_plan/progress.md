@@ -167,6 +167,13 @@ Nothing right now.
 - [ ] S15-T3 The density strip and the calendar show the same backups
 - [ ] S15-T4 A folder says when something inside it changed
 
+## Stage 16 — The Trash in the timeline ([stage file](stages/stage-16-trash-in-the-timeline.md))
+- [ ] S16-T1 Read the Trash
+- [ ] S16-T2 The daemon watches the Trash and serves it
+- [ ] S16-T3 Trash entries in the timeline
+- [ ] S16-T4 Restore from the Trash
+- [ ] S16-T5 Search finds what is in the Trash
+
 ## Blocked
 
 
