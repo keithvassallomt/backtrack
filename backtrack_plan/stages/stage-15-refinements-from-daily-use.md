@@ -201,6 +201,25 @@ from a missing archive is an error, not an empty read; a test that the clear
 removes the empty entries and keeps the rest; on a VM, previewing with the destination unplugged shows the
 reason, and plugging it back in shows the file.
 
+### S15-T7 — A switch to list every backup
+Keith, 2026-10-20: a way to see every backup again, off by default.
+- A check item in the primary menu, **Show All Backups**, with Ctrl+H. A
+  menu item rather than a preference, because it is a way of looking that is
+  switched while browsing, as Nautilus's Show Hidden Files is (on the same
+  key).
+- On: the sidebar, the stepping and the position label (and S15-T3's strip
+  and calendar) offer every backup, and nothing is landed elsewhere. Off:
+  the listing this stage describes.
+- Remembered across launches as `general.show_all_backups` in `config.toml`
+  (default `false`), written through `SetConfig`. Without the service the
+  switch still works in that window, and is not remembered.
+- Listed in the keyboard shortcuts window.
+
+**Accept:** unit tests on the state with the switch on and off: what is
+listed, how stepping goes, and that nothing is landed elsewhere while it is
+on; on a VM, the switch shows all 30 demo backups in `home`, is still on after
+the window is closed and opened again, and off shows the 6 again.
+
 ## Definition of Done
 All tasks done; the CHANGELOG's Unreleased section says what changed for the
 user; the timeline browser on the GNOME VM behaves as described on the demo

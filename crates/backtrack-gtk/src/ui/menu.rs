@@ -16,7 +16,8 @@ use tracing::warn;
 
 use crate::model::pause;
 
-/// The menu model, in mockup 14's order.
+/// The menu model, in mockup 14's order, with Show All Backups (S15-T7)
+/// added as a section of its own after the backup actions.
 pub fn model() -> gio::Menu {
     let menu = gio::Menu::new();
 
@@ -30,6 +31,12 @@ pub fn model() -> gio::Menu {
     actions.append_submenu(Some("Pause Backups"), &pauses);
     actions.append(Some("Resume Backups"), Some("win.resume"));
     menu.append_section(None, &actions);
+
+    // A way of looking, switched while browsing: a check item, because the
+    // action is a stateful boolean.
+    let view = gio::Menu::new();
+    view.append(Some("Show All Backups"), Some("win.show-all-backups"));
+    menu.append_section(None, &view);
 
     let stash = gio::Menu::new();
     stash.append(
@@ -78,6 +85,10 @@ pub fn shortcuts_dialog() -> adw::ShortcutsDialog {
     time.add(adw::ShortcutsItem::from_action(
         "One backup newer",
         "win.newer",
+    ));
+    time.add(adw::ShortcutsItem::from_action(
+        "Show every backup, or only those with changes to this folder",
+        "win.show-all-backups",
     ));
     dialog.add(time);
 

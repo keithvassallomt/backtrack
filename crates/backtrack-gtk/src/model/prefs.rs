@@ -349,9 +349,17 @@ mod tests {
     use super::*;
     use backtrack_core::config::Config;
 
+    /// Keys of `config.toml` whose one control is in the window rather than
+    /// in Preferences, and where it is.
+    const CONTROLLED_ELSEWHERE: &[(&str, &str)] = &[(
+        "general.show_all_backups",
+        "Show All Backups in the primary menu (S15-T7)",
+    )];
+
     /// S09-T4's acceptance: every key `config.toml` can hold has a control,
-    /// and exactly one. The list of keys is generated from the schema, not
-    /// written out here, so it cannot fall behind it.
+    /// and exactly one, in Preferences or in [`CONTROLLED_ELSEWHERE`]. The
+    /// list of keys is generated from the schema, not written out here, so it
+    /// cannot fall behind it.
     #[test]
     fn every_setting_in_the_file_has_exactly_one_control() {
         let mut config = Config::default();
@@ -365,6 +373,7 @@ mod tests {
         let mut controls: Vec<String> = Setting::ALL
             .iter()
             .map(|setting| setting.key().to_string())
+            .chain(CONTROLLED_ELSEWHERE.iter().map(|(key, _)| key.to_string()))
             .collect();
         controls.sort();
         let before = controls.len();

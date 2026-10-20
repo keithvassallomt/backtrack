@@ -83,6 +83,8 @@ pub struct View {
     pub listing: Option<Listing>,
     /// Counts loads of the catalogue, so a late answer can be recognised.
     pub generation: u64,
+    /// Every backup is listed, whatever the listing says (Show All Backups).
+    pub show_all: bool,
     /// The backup being viewed. `None` before the first load, and when the
     /// index holds no backups at all.
     pub seq: Option<i64>,
@@ -128,7 +130,7 @@ impl View {
     /// out). Only once the list is this folder's: until then, the request is
     /// taken as it stands and settled when the list arrives.
     fn landing(&self, seq: i64) -> i64 {
-        if !self.listing_is_current() {
+        if self.show_all || !self.listing_is_current() {
             return seq;
         }
         let Some(listing) = &self.listing else {
@@ -169,6 +171,7 @@ impl View {
     /// backup being viewed.
     fn relist(&mut self) {
         let listed: Vec<ArchiveSummary> = match &self.listing {
+            _ if self.show_all => self.archives.as_ref().clone(),
             None => self.archives.as_ref().clone(),
             Some(listing) => self
                 .archives
@@ -365,6 +368,25 @@ impl AppState {
         if seq_after != seq_before {
             self.announce(Change::Seq);
         }
+    }
+
+    /// List every backup, or only those the folder's listing names. Switching
+    /// it off lands as any other listing does: the backup being viewed may be
+    /// one this folder leaves out.
+    pub fn set_show_all(&self, on: bool) {
+        if self.view.borrow().show_all == on {
+            return;
+        }
+        let before = self.marks();
+        {
+            let mut view = self.view.borrow_mut();
+            view.show_all = on;
+            if let Some(seq) = view.seq {
+                view.seq = Some(view.landing(seq));
+            }
+            view.relist();
+        }
+        self.announce_moves(before);
     }
 
     /// View a different backup, or the nearest newer one listed when this one
@@ -775,6 +797,40 @@ mod tests {
             Some(10),
             "9 is now left out: 10 holds all of it"
         );
+    }
+
+    #[test]
+    fn showing_all_backups_lists_and_steps_through_every_one() {
+        let state = docs_listing_9_and_4();
+        state.set_show_all(true);
+        let view = state.view();
+        assert_eq!(view.listed.len(), 9);
+        assert!(!view.is_filtered(), "the label counts every backup again");
+        assert_eq!(view.older(), Some(8));
+        state.set_seq(6);
+        assert_eq!(state.view().seq, Some(6), "nothing is landed elsewhere");
+    }
+
+    #[test]
+    fn switching_all_backups_off_lands_on_what_the_folder_lists() {
+        let state = docs_listing_9_and_4();
+        state.set_show_all(true);
+        state.set_seq(6);
+        let seen = changes_seen(&state);
+        state.set_show_all(false);
+        let view = state.view();
+        assert_eq!(view.seq, Some(9));
+        assert_eq!(view.listed.len(), 2);
+        assert_eq!(*seen.borrow(), [Change::Listed, Change::Seq]);
+    }
+
+    #[test]
+    fn showing_all_backups_survives_walking_into_another_folder() {
+        let state = docs_listing_9_and_4();
+        state.set_show_all(true);
+        state.set_folder("home/Docs/tax");
+        state.set_listing("home/Docs/tax", state.view().generation, vec![9]);
+        assert_eq!(state.view().listed.len(), 9);
     }
 
     #[test]

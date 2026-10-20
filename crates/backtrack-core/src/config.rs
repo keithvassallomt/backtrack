@@ -76,6 +76,10 @@ pub struct General {
     /// detected at runtime (Stage 12); this is only whether it is wanted.
     pub nautilus_integration: bool,
     pub dolphin_integration: bool,
+    /// The timeline offers every backup, not only those in which the folder
+    /// being viewed differs (Stage 15). Off by default; switched from the
+    /// window's primary menu rather than in Preferences.
+    pub show_all_backups: bool,
 }
 
 impl Default for General {
@@ -85,6 +89,7 @@ impl Default for General {
             notifications: Notifications::default(),
             nautilus_integration: true,
             dolphin_integration: true,
+            show_all_backups: false,
         }
     }
 }

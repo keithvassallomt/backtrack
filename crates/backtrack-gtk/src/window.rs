@@ -392,6 +392,25 @@ impl Window {
             self.window.add_action(&action);
         }
 
+        // Every backup, or only those in which the folder differs (Stage 15).
+        // Stateful and boolean, so the menu draws it as a check item and
+        // activating it toggles it. Ctrl+H, as Show Hidden Files in Nautilus.
+        let show_all =
+            gio::SimpleAction::new_stateful("show-all-backups", None, &false.to_variant());
+        let shower = Rc::clone(self);
+        show_all.connect_change_state(move |action, value| {
+            let Some(on) = value.and_then(|v| v.get::<bool>()) else {
+                return;
+            };
+            action.set_state(&on.to_variant());
+            shower.state.set_show_all(on);
+            shower.remember_show_all(on);
+        });
+        self.window.add_action(&show_all);
+        if let Some(app) = self.window.application() {
+            app.set_accels_for_action("win.show-all-backups", &["<Control>h"]);
+        }
+
         // Up a folder, the way every file manager spells it. The breadcrumb
         // does the same thing with a click; this is the same journey without
         // one.
@@ -1188,6 +1207,40 @@ impl Window {
         });
     }
 
+    /// Write Show All Backups to the configuration, so the next window opens
+    /// the same way. Without the service it holds for this window only.
+    fn remember_show_all(self: &Rc<Self>, on: bool) {
+        let Some(proxy) = self.daemon.borrow().clone() else {
+            return;
+        };
+        ui::spawn(async move {
+            let literal = if on { "true" } else { "false" };
+            if let Err(error) = proxy.set_config("general.show_all_backups", literal).await {
+                warn!(%error, "Show All Backups could not be remembered");
+            }
+        });
+    }
+
+    /// Take Show All Backups from the configuration, as the window opens.
+    /// Sets the action's state directly, which does not write it back.
+    async fn adopt_show_all(&self, proxy: &Daemon1Proxy<'static>) {
+        let Ok(text) = proxy.get_config().await else {
+            return;
+        };
+        let Ok((config, _)) = backtrack_core::config::Config::parse(&text) else {
+            return;
+        };
+        let on = config.general.show_all_backups;
+        if let Some(action) = self
+            .window
+            .lookup_action("show-all-backups")
+            .and_then(|a| a.downcast::<gio::SimpleAction>().ok())
+        {
+            action.set_state(&on.to_variant());
+        }
+        self.state.set_show_all(on);
+    }
+
     /// Reach the daemon, which D-Bus starts if it is not already running.
     ///
     /// Building a proxy proves nothing — zbus does not touch the bus until a
@@ -1230,6 +1283,7 @@ impl Window {
                     ui::menu::set_enabled(&this.window, "backup-now", true);
                     ui::menu::set_enabled(&this.window, "pause", true);
                     ui::menu::set_enabled(&this.window, "preferences", true);
+                    this.adopt_show_all(&proxy_for_name).await;
                     this.learn_destination(&proxy_for_name, &status).await;
                     this.render_status(&status);
                     let pending = this.pending_fix.borrow_mut().take();

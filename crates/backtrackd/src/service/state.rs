@@ -330,6 +330,13 @@ mod tests {
     }
 
     #[test]
+    fn show_all_backups_is_off_until_the_window_switches_it_on() {
+        assert!(!Config::default().general.show_all_backups);
+        let updated = config_set(&Config::default(), "general.show_all_backups", "true").unwrap();
+        assert!(updated.general.show_all_backups);
+    }
+
+    #[test]
     fn config_set_applies_a_list() {
         // The reason configuration crosses as TOML rather than as strings.
         let updated = config_set(
