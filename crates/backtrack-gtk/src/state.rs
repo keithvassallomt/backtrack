@@ -12,7 +12,8 @@
 //!
 //! Changes are announced with what changed, because the panes care about
 //! different parts. Stepping through time must not make the breadcrumb rebuild
-//! itself, and walking into a folder must not redraw the density strip.
+//! itself, and walking into a folder redraws the density strip only when the
+//! folder lists different backups (Stage 15), which `Change::Listed` says.
 
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};

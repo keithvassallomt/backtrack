@@ -192,6 +192,32 @@ mod tests {
     }
 
     #[test]
+    fn only_days_with_a_backup_listed_are_shaded_and_go_to_the_newest_listed() {
+        // As the window hands it over: the folder's listed backups (Stage 15).
+        // The 12th had a midday backup too, which the folder does not list;
+        // only its morning one, and the 20th's, are here.
+        let twelfth = date_to_day(2026, 6, 12) * DAY;
+        let listed = vec![
+            archive(20, date_to_day(2026, 6, 20) * DAY + 12 * 3600),
+            archive(9, twelfth + 9 * 3600),
+        ];
+        let grid = month(&listed, 2026, 6, NOW, &utc());
+        let shaded: Vec<i32> = grid
+            .days
+            .iter()
+            .filter(|d| d.has_backups)
+            .map(|d| d.day_of_month)
+            .collect();
+        assert_eq!(shaded, [12, 20]);
+        assert_eq!(
+            grid.days[11].seq,
+            Some(9),
+            "the morning backup, the newest listed"
+        );
+        assert_eq!(grid.days[11].count, 1);
+    }
+
+    #[test]
     fn the_grid_starts_on_the_right_weekday() {
         // 1 June 2026 was a Monday, so the month begins flush with the column.
         let grid = month(&june_with_a_gap(), 2026, 6, NOW, &utc());

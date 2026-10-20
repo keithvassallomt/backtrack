@@ -82,7 +82,7 @@ pub fn build(state: &Rc<AppState>) -> Rc<Calendar> {
         let tz = glib::TimeZone::local();
         let month = view
             .seq
-            .and_then(|seq| calendar::month_of(&view.archives, seq, &tz))
+            .and_then(|seq| calendar::month_of(&view.listed, seq, &tz))
             .unwrap_or_else(|| today(&tz));
         opening.show_month(month);
     });
@@ -154,7 +154,9 @@ impl Calendar {
         let tz = glib::TimeZone::local();
         let now = glib::DateTime::now_utc().map(|d| d.to_unix()).unwrap_or(0);
         let view = self.state.view();
-        let grid = calendar::month(&view.archives, year, month, now, &tz);
+        // The listed backups (Stage 15): a day is shaded only when something
+        // in the folder changed on it, and picking it goes to the newest such.
+        let grid = calendar::month(&view.listed, year, month, now, &tz);
         *self.showing.borrow_mut() = (year, month);
         self.heading.set_text(&grid.title);
 
