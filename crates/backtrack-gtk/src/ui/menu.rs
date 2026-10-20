@@ -87,7 +87,7 @@ pub fn shortcuts_dialog() -> adw::ShortcutsDialog {
         "win.newer",
     ));
     time.add(adw::ShortcutsItem::from_action(
-        "Show every backup, or only those with changes to this folder",
+        "Show all backups",
         "win.show-all-backups",
     ));
     dialog.add(time);
