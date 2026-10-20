@@ -168,6 +168,7 @@ impl Window {
         this.assemble();
         this.fill_panes();
         this.watch_state();
+        this.watch_listing();
         this.load_archives();
         this.connect_daemon();
 
@@ -691,8 +692,11 @@ impl Window {
             seq = hit.last_seq,
             "opening a search result"
         );
-        self.state.set_seq(hit.last_seq);
+        // The folder first: a backup asked for is landed against the folder's
+        // list (Stage 15), and the last folder's could move it to a backup
+        // that no longer holds the file.
         self.state.set_folder(folder);
+        self.state.set_seq(hit.last_seq);
         self.state.set_selected(Some(crate::state::Selected {
             path: hit.path.clone(),
             name: hit.name.clone(),
@@ -1082,14 +1086,19 @@ impl Window {
     fn watch_state(self: &Rc<Self>) {
         let this = Rc::clone(self);
         self.state.subscribe(move |view, change| {
-            if !matches!(change, Change::Archives | Change::Seq) {
+            if !matches!(change, Change::Archives | Change::Listed | Change::Seq) {
                 return;
             }
             let tz = glib::TimeZone::local();
             match (view.archive(), view.position()) {
                 (Some(archive), Some((ordinal, total))) => {
-                    this.position
-                        .set_text(&format::position(archive.ts, ordinal, total, &tz));
+                    this.position.set_text(&format::position(
+                        archive.ts,
+                        ordinal,
+                        total,
+                        view.is_filtered(),
+                        &tz,
+                    ));
                 }
                 _ => this.position.set_text(format::NO_BACKUPS),
             }
@@ -1121,20 +1130,61 @@ impl Window {
         });
     }
 
-    /// Read the list of backups, off the main loop.
+    /// Read the list of backups, off the main loop, with the backups to list
+    /// for the folder being viewed asked of the same reading, so a prune in
+    /// between cannot leave the two naming different backups.
     fn load_archives(self: &Rc<Self>) {
         let this = Rc::clone(self);
+        let folder = self.state.view().folder;
         ui::spawn(async move {
-            match this.index.query(|reader| reader.archives_overview()).await {
-                Ok(archives) => {
-                    info!(count = archives.len(), "catalogue loaded");
-                    this.state.set_archives(archives);
+            let asked = folder.clone();
+            let answer = this
+                .index
+                .query(move |reader| Ok((reader.archives_overview()?, reader.listed_for(&asked)?)))
+                .await;
+            match answer {
+                Ok((archives, listed)) => {
+                    info!(
+                        count = archives.len(),
+                        listed = listed.len(),
+                        "catalogue loaded"
+                    );
+                    this.state.set_catalogue(archives, &folder, listed);
                 }
                 Err(error) => {
                     warn!(%error, "the catalogue could not be read");
                     this.toast(&error);
                 }
             }
+        });
+    }
+
+    /// Ask which backups to list for the folder being viewed, whenever the
+    /// list on screen is not that folder's: another folder, or a reload of the
+    /// catalogue that brought another folder's answer with it. The answer is
+    /// dropped by the state if the window has moved on before it arrives.
+    fn watch_listing(self: &Rc<Self>) {
+        let this = Rc::clone(self);
+        self.state.subscribe(move |view, change| {
+            if !matches!(change, Change::Folder | Change::Archives) || view.listing_is_current() {
+                return;
+            }
+            let folder = view.folder.clone();
+            let generation = view.generation;
+            let asker = Rc::clone(&this);
+            ui::spawn(async move {
+                let asked = folder.clone();
+                match asker
+                    .index
+                    .query(move |reader| reader.listed_for(&asked))
+                    .await
+                {
+                    Ok(listed) => asker.state.set_listing(&folder, generation, listed),
+                    Err(error) => {
+                        warn!(%error, folder, "the backups to list could not be read");
+                    }
+                }
+            });
         });
     }
 

@@ -15,6 +15,7 @@
 //! itself, and walking into a folder must not redraw the density strip.
 
 use std::cell::RefCell;
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
 use backtrack_core::index::ArchiveSummary;
@@ -25,6 +26,9 @@ use backtrack_core::index::ArchiveSummary;
 pub enum Change {
     /// The set of backups was loaded or reloaded.
     Archives,
+    /// The backups listed for the folder being viewed changed: it is a
+    /// different folder, or its answer has arrived.
+    Listed,
     /// A different backup is being viewed.
     Seq,
     /// A different folder is being viewed.
@@ -54,11 +58,31 @@ pub struct Selected {
     pub on_disk: u8,
 }
 
+/// Which backups the catalogue said to list for a folder
+/// (`IndexReader::listed_for`), and which load of the catalogue it said so of.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Listing {
+    pub folder: String,
+    /// The [`View::generation`] the answer belongs to. A prune renumbers the
+    /// backups, so an answer from before a reload names the wrong ones.
+    pub generation: u64,
+    pub seqs: Rc<HashSet<i64>>,
+}
+
 /// Everything the panes read, as one value they can be handed a copy of.
 #[derive(Debug, Clone, Default)]
 pub struct View {
     /// Every archive, newest first, as `archives_overview` returns them.
     pub archives: Rc<Vec<ArchiveSummary>>,
+    /// The backups the time controls offer for the folder being viewed,
+    /// newest first: those in which something in it differs (Stage 15), every
+    /// backup still being catalogued, and always the one being viewed. Every
+    /// backup until the catalogue has said which to list.
+    pub listed: Rc<Vec<ArchiveSummary>>,
+    /// What [`Self::listed`] was worked out from.
+    pub listing: Option<Listing>,
+    /// Counts loads of the catalogue, so a late answer can be recognised.
+    pub generation: u64,
     /// The backup being viewed. `None` before the first load, and when the
     /// index holds no backups at all.
     pub seq: Option<i64>,
@@ -74,12 +98,93 @@ impl View {
         self.archives.iter().find(|a| a.seq == seq)
     }
 
-    /// Position of the current backup counting from the newest, 1-based, and
-    /// the total — the two numbers the position label spells out.
+    /// Position of the current backup among those listed, counting from the
+    /// newest, 1-based, and how many are listed: the two numbers the position
+    /// label spells out.
     pub fn position(&self) -> Option<(usize, usize)> {
         let seq = self.seq?;
-        let index = self.archives.iter().position(|a| a.seq == seq)?;
-        Some((index + 1, self.archives.len()))
+        let index = self.listed.iter().position(|a| a.seq == seq)?;
+        Some((index + 1, self.listed.len()))
+    }
+
+    /// Whether some backups are left out for this folder, which the position
+    /// label has to say, or "3 of 7" reads as though there were only seven.
+    pub fn is_filtered(&self) -> bool {
+        self.listed.len() < self.archives.len()
+    }
+
+    /// Whether [`Self::listed`] is the catalogue's answer for the folder being
+    /// viewed now, rather than the last folder's, still on screen until this
+    /// one's arrives.
+    pub fn listing_is_current(&self) -> bool {
+        self.listing
+            .as_ref()
+            .is_some_and(|l| l.folder == self.folder && l.generation == self.generation)
+    }
+
+    /// Where a request to view `seq` lands: `seq` itself if it is listed, and
+    /// otherwise the nearest newer backup that is, which holds every version
+    /// of every file `seq` held in this folder (that is why `seq` was left
+    /// out). Only once the list is this folder's: until then, the request is
+    /// taken as it stands and settled when the list arrives.
+    fn landing(&self, seq: i64) -> i64 {
+        if !self.listing_is_current() {
+            return seq;
+        }
+        let Some(listing) = &self.listing else {
+            return seq;
+        };
+        if listing.seqs.contains(&seq) {
+            return seq;
+        }
+        self.archives
+            .iter()
+            .filter(|a| a.catalogued && a.seq > seq && listing.seqs.contains(&a.seq))
+            .map(|a| a.seq)
+            .min()
+            .or_else(|| {
+                self.archives
+                    .iter()
+                    .find(|a| a.catalogued && listing.seqs.contains(&a.seq))
+                    .map(|a| a.seq)
+            })
+            .unwrap_or(seq)
+    }
+
+    /// Take `seqs` as the listing for the folder being viewed, and land on
+    /// what it lists.
+    fn adopt(view: &mut View, seqs: Rc<HashSet<i64>>) {
+        view.listing = Some(Listing {
+            folder: view.folder.clone(),
+            generation: view.generation,
+            seqs,
+        });
+        if let Some(seq) = view.seq {
+            view.seq = Some(view.landing(seq));
+        }
+        view.relist();
+    }
+
+    /// Work [`Self::listed`] out again from the archives, the listing and the
+    /// backup being viewed.
+    fn relist(&mut self) {
+        let listed: Vec<ArchiveSummary> = match &self.listing {
+            None => self.archives.as_ref().clone(),
+            Some(listing) => self
+                .archives
+                .iter()
+                .filter(|a| {
+                    !a.catalogued || listing.seqs.contains(&a.seq) || Some(a.seq) == self.seq
+                })
+                .cloned()
+                .collect(),
+        };
+        self.listed = Rc::new(listed);
+    }
+
+    /// The seqs listed, for telling whether a relist changed anything.
+    fn listed_seqs(&self) -> Vec<i64> {
+        self.listed.iter().map(|a| a.seq).collect()
     }
 
     /// The backup one step older, or `None` at the end of the history.
@@ -115,15 +220,16 @@ impl View {
         }
     }
 
-    /// Step `by` places through the newest-first list. Positive is older.
+    /// Step `by` places through the newest-first list of backups listed.
+    /// Positive is older.
     fn step(&self, by: isize) -> Option<i64> {
         let seq = self.seq?;
-        let index = self.archives.iter().position(|a| a.seq == seq)? as isize;
+        let index = self.listed.iter().position(|a| a.seq == seq)? as isize;
         let target = index.checked_add(by)?;
         if target < 0 {
             return None;
         }
-        self.archives.get(target as usize).map(|a| a.seq)
+        self.listed.get(target as usize).map(|a| a.seq)
     }
 }
 
@@ -133,6 +239,10 @@ type Subscriber = Rc<dyn Fn(&View, Change)>;
 pub struct AppState {
     view: RefCell<View>,
     subscribers: RefCell<Vec<Subscriber>>,
+    /// Every folder's listing known for the current load of the catalogue, so
+    /// walking back to a folder already seen costs nothing. Emptied when the
+    /// catalogue is reloaded, since a prune renumbers what it names.
+    listings: RefCell<HashMap<String, Rc<HashSet<i64>>>>,
 }
 
 impl AppState {
@@ -144,6 +254,7 @@ impl AppState {
                 ..View::default()
             }),
             subscribers: RefCell::new(Vec::new()),
+            listings: RefCell::new(HashMap::new()),
         })
     }
 
@@ -160,51 +271,145 @@ impl AppState {
         self.subscribers.borrow_mut().push(Rc::new(on_change));
     }
 
-    /// Replace the list of archives, keeping the current position if it still
-    /// exists and falling back to the newest backup if it does not — which is
-    /// what a prune does to whatever the user was looking at.
+    /// Replace the list of archives, with nothing yet known about which to
+    /// list: every one is, until a listing arrives. See [`Self::set_catalogue`]
+    /// for a load that brings its listing with it, which is how the window
+    /// loads them.
+    #[cfg(test)]
     pub fn set_archives(&self, archives: Vec<ArchiveSummary>) {
-        let mut seq_changed = false;
+        self.load(archives, None);
+    }
+
+    /// Replace the list of archives together with the backups to list for
+    /// `folder`, asked of the same reading of the catalogue, so the two can
+    /// never disagree about what a seq names.
+    pub fn set_catalogue(&self, archives: Vec<ArchiveSummary>, folder: &str, listed: Vec<i64>) {
+        self.load(archives, Some((folder.to_string(), listed)));
+    }
+
+    /// Keep the current position if it still exists, and fall back to the
+    /// newest backup if it does not, which is what a prune does to whatever
+    /// the user was looking at. Then land as [`View::landing`] says: a new
+    /// backup can leave the one being viewed with nothing of its own to show.
+    fn load(&self, archives: Vec<ArchiveSummary>, listed: Option<(String, Vec<i64>)>) {
+        let seq_before = self.view.borrow().seq;
         {
+            let mut listings = self.listings.borrow_mut();
+            listings.clear();
             let mut view = self.view.borrow_mut();
+            view.generation += 1;
             let still_there = view
                 .seq
                 .is_some_and(|s| archives.iter().any(|a| a.seq == s));
             if !still_there {
-                let newest = archives.iter().find(|a| a.catalogued).map(|a| a.seq);
-                seq_changed = view.seq != newest;
-                view.seq = newest;
+                view.seq = archives.iter().find(|a| a.catalogued).map(|a| a.seq);
             }
             view.archives = Rc::new(archives);
+            view.listing = listed.map(|(folder, seqs)| {
+                let seqs = Rc::new(seqs.into_iter().collect::<HashSet<i64>>());
+                listings.insert(folder.clone(), Rc::clone(&seqs));
+                Listing {
+                    folder,
+                    generation: view.generation,
+                    seqs,
+                }
+            });
+            if let Some(seq) = view.seq {
+                view.seq = Some(view.landing(seq));
+            }
+            view.relist();
         }
         self.announce(Change::Archives);
-        if seq_changed {
+        if self.view.borrow().seq != seq_before {
             self.announce(Change::Seq);
         }
     }
 
-    /// View a different backup. Announces nothing if it is the one already open.
-    pub fn set_seq(&self, seq: i64) {
-        if self.view.borrow().seq == Some(seq) {
-            return;
+    /// The catalogue's answer to which backups to list for `folder`, asked of
+    /// load `generation`. Ignored once it is stale: the window has moved to
+    /// another folder, or the catalogue has been reloaded since.
+    pub fn set_listing(&self, folder: &str, generation: u64, listed: Vec<i64>) {
+        {
+            let view = self.view.borrow();
+            if view.folder != folder || view.generation != generation {
+                return;
+            }
         }
-        self.view.borrow_mut().seq = Some(seq);
+        let seqs = Rc::new(listed.into_iter().collect::<HashSet<i64>>());
+        self.listings
+            .borrow_mut()
+            .insert(folder.to_string(), Rc::clone(&seqs));
+        self.adopt_listing(seqs);
+    }
+
+    /// Make `seqs` the current folder's listing, landing and announcing as it
+    /// requires.
+    fn adopt_listing(&self, seqs: Rc<HashSet<i64>>) {
+        let before = self.marks();
+        View::adopt(&mut self.view.borrow_mut(), seqs);
+        self.announce_moves(before);
+    }
+
+    /// What [`Self::announce_moves`] compares against.
+    fn marks(&self) -> (Option<i64>, Vec<i64>) {
+        let view = self.view.borrow();
+        (view.seq, view.listed_seqs())
+    }
+
+    /// Say what a listing changed: the list, and the backup it landed on.
+    fn announce_moves(&self, (seq_before, listed_before): (Option<i64>, Vec<i64>)) {
+        let (seq_after, listed_after) = self.marks();
+        if listed_after != listed_before {
+            self.announce(Change::Listed);
+        }
+        if seq_after != seq_before {
+            self.announce(Change::Seq);
+        }
+    }
+
+    /// View a different backup, or the nearest newer one listed when this one
+    /// is not (see [`View::landing`]). Announces nothing if that is the one
+    /// already open.
+    pub fn set_seq(&self, seq: i64) {
+        let listed_before = self.view.borrow().listed_seqs();
+        {
+            let mut view = self.view.borrow_mut();
+            let landing = view.landing(seq);
+            if view.seq == Some(landing) {
+                return;
+            }
+            view.seq = Some(landing);
+            view.relist();
+        }
+        if self.view.borrow().listed_seqs() != listed_before {
+            self.announce(Change::Listed);
+        }
         self.announce(Change::Seq);
     }
 
-    /// View a different folder, clearing the selection with it.
+    /// View a different folder, clearing the selection with it. A folder
+    /// already seen since the catalogue was loaded brings its listing straight
+    /// back; for any other, the last folder's stays on screen until the
+    /// window has asked for this one's (see [`View::listing_is_current`]).
     pub fn set_folder(&self, folder: impl Into<String>) {
         let folder = folder.into();
         if self.view.borrow().folder == folder {
             return;
         }
+        let before = self.marks();
+        let known = self.listings.borrow().get(&folder).cloned();
         {
             let mut view = self.view.borrow_mut();
             view.folder = folder;
             view.selected = None;
+            // In place before anyone is told, so nobody asks for it again.
+            if let Some(seqs) = known {
+                View::adopt(&mut view, seqs);
+            }
         }
         self.announce(Change::Folder);
         self.announce(Change::Selection);
+        self.announce_moves(before);
     }
 
     /// Select an entry in the current folder, or clear the selection.
@@ -400,6 +605,176 @@ mod tests {
         assert_eq!(*seen.borrow(), [Change::Disk]);
         assert_eq!(state.view().folder, "home");
         assert!(state.view().selected.is_some(), "the selection is kept");
+    }
+
+    /// Nine backups, seq 9 the newest, with "home/Docs" listing only 9 and 4:
+    /// Stage 15's worked example.
+    fn docs_listing_9_and_4() -> Rc<AppState> {
+        let state = AppState::new("home/Docs".to_string());
+        state.set_catalogue(
+            archives(&[9, 8, 7, 6, 5, 4, 3, 2, 1]),
+            "home/Docs",
+            vec![9, 4],
+        );
+        state
+    }
+
+    fn changes_seen(state: &AppState) -> Rc<RefCell<Vec<Change>>> {
+        let seen = Rc::new(RefCell::new(Vec::new()));
+        let changes = Rc::clone(&seen);
+        state.subscribe(move |_, change| changes.borrow_mut().push(change));
+        seen
+    }
+
+    #[test]
+    fn stepping_goes_only_through_the_backups_listed() {
+        let state = docs_listing_9_and_4();
+        let view = state.view();
+        assert_eq!(view.seq, Some(9));
+        assert_eq!(view.older(), Some(4), "5 to 8 hold nothing 9 does not");
+        assert_eq!(view.position(), Some((1, 2)));
+        assert!(view.is_filtered(), "the label must say what it counts");
+        state.set_seq(4);
+        assert_eq!(state.view().older(), None, "1 to 3 are left out too");
+        assert_eq!(state.view().newer(), Some(9));
+    }
+
+    #[test]
+    fn a_backup_not_listed_lands_on_the_nearest_newer_one_that_is() {
+        let state = docs_listing_9_and_4();
+        state.set_seq(2);
+        assert_eq!(state.view().seq, Some(4));
+        state.set_seq(6);
+        assert_eq!(state.view().seq, Some(9));
+        state.set_seq(4);
+        assert_eq!(state.view().seq, Some(4), "a listed backup stays put");
+    }
+
+    #[test]
+    fn walking_into_a_folder_lands_on_what_it_lists_once_its_answer_arrives() {
+        let state = AppState::new("home".to_string());
+        state.set_catalogue(
+            archives(&[9, 8, 7, 6, 5, 4, 3, 2, 1]),
+            "home",
+            vec![9, 7, 4],
+        );
+        state.set_seq(7);
+        let seen = changes_seen(&state);
+
+        state.set_folder("home/Docs");
+        let view = state.view();
+        assert!(
+            !view.listing_is_current(),
+            "home's list is still the one on screen"
+        );
+        assert_eq!(view.seq, Some(7), "nothing moves before the answer");
+        assert_eq!(view.position(), Some((2, 3)));
+
+        let generation = view.generation;
+        state.set_listing("home/Docs", generation, vec![9, 4]);
+        let view = state.view();
+        assert_eq!(
+            view.seq,
+            Some(9),
+            "7 holds nothing in home/Docs that 9 does not"
+        );
+        assert_eq!(view.position(), Some((1, 2)));
+        assert_eq!(
+            *seen.borrow(),
+            [
+                Change::Folder,
+                Change::Selection,
+                Change::Listed,
+                Change::Seq
+            ]
+        );
+    }
+
+    #[test]
+    fn an_answer_for_another_folder_or_an_older_catalogue_is_dropped() {
+        let state = AppState::new("home".to_string());
+        state.set_catalogue(archives(&[3, 2, 1]), "home", vec![3, 2, 1]);
+        let generation = state.view().generation;
+        state.set_folder("home/Docs");
+
+        state.set_listing("home", generation, vec![3]);
+        assert!(
+            !state.view().listing_is_current(),
+            "home is not being viewed"
+        );
+
+        state.set_catalogue(archives(&[4, 3, 2, 1]), "home/Docs", vec![4, 2]);
+        state.set_listing("home/Docs", generation, vec![3]);
+        let view = state.view();
+        assert_eq!(
+            view.listed.len(),
+            2,
+            "the reload's answer stands: {:?}",
+            view.listed
+        );
+        assert!(view.listing_is_current());
+    }
+
+    #[test]
+    fn a_folder_seen_since_the_catalogue_was_read_needs_no_second_answer() {
+        let state = AppState::new("home".to_string());
+        state.set_catalogue(archives(&[3, 2, 1]), "home", vec![3, 2, 1]);
+        state.set_folder("home/Docs");
+        state.set_listing("home/Docs", state.view().generation, vec![3]);
+
+        state.set_folder("home");
+        assert!(state.view().listing_is_current());
+        assert_eq!(state.view().listed.len(), 3);
+        state.set_folder("home/Docs");
+        assert!(state.view().listing_is_current());
+        assert_eq!(state.view().listed.len(), 1);
+
+        // A reload renumbers, so nothing from before it is kept.
+        state.set_catalogue(archives(&[4, 3, 2, 1]), "home/Docs", vec![4]);
+        state.set_folder("home");
+        assert!(!state.view().listing_is_current());
+    }
+
+    #[test]
+    fn a_backup_still_being_catalogued_stays_listed() {
+        let mut pending = archive(10);
+        pending.catalogued = false;
+        let mut all = vec![pending];
+        all.extend(archives(&[9, 8, 7, 6, 5, 4, 3, 2, 1]));
+        let state = AppState::new("home/Docs".to_string());
+        state.set_catalogue(all, "home/Docs", vec![9, 4]);
+        let listed: Vec<i64> = state.view().listed.iter().map(|a| a.seq).collect();
+        assert_eq!(listed, [10, 9, 4]);
+        assert_eq!(state.view().seq, Some(9), "and is not landed on");
+    }
+
+    #[test]
+    fn the_backup_being_viewed_is_listed_while_the_folder_is_awaiting_its_list() {
+        let state = AppState::new("home".to_string());
+        state.set_catalogue(archives(&[3, 2, 1]), "home", vec![3, 1]);
+        state.set_folder("home/Docs");
+        state.set_seq(2);
+        let view = state.view();
+        assert_eq!(view.seq, Some(2), "not landed against home's list");
+        assert!(
+            view.listed.iter().any(|a| a.seq == 2),
+            "so the sidebar can show it"
+        );
+    }
+
+    #[test]
+    fn a_new_backup_with_nothing_new_here_moves_the_view_onto_it() {
+        let state = docs_listing_9_and_4();
+        state.set_catalogue(
+            archives(&[10, 9, 8, 7, 6, 5, 4, 3, 2, 1]),
+            "home/Docs",
+            vec![10, 4],
+        );
+        assert_eq!(
+            state.view().seq,
+            Some(10),
+            "9 is now left out: 10 holds all of it"
+        );
     }
 
     #[test]

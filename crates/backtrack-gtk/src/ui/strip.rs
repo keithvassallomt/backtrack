@@ -220,7 +220,7 @@ impl Strip {
                 gtk4::accessible::Property::ValueNow(from_oldest),
             ]);
             if let Some(archive) = view.archive() {
-                let text = format::position(archive.ts, ordinal, total, &tz);
+                let text = format::position(archive.ts, ordinal, total, view.is_filtered(), &tz);
                 self.area
                     .update_property(&[gtk4::accessible::Property::ValueText(&text)]);
             }
