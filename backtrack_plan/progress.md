@@ -174,6 +174,13 @@ Nothing right now.
 - [ ] S16-T4 Restore from the Trash
 - [ ] S16-T5 Search finds what is in the Trash
 
+## Stage 17 — Snapper snapshots in the timeline ([stage file](stages/stage-17-snapper-snapshots.md))
+- [ ] S17-T1 Find Snapper's snapshots
+- [ ] S17-T2 Catalogue Snapper's snapshots
+- [ ] S17-T3 Preview, compare and restore from a snapshot
+- [ ] S17-T4 Snapper's snapshots in the window
+- [ ] S17-T5 A guide to Snapper
+
 ## Blocked
 
 
