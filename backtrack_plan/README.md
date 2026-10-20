@@ -84,6 +84,7 @@ Each `stages/stage-NN-*.md` contains: **Objective** (what exists at the end),
 | 15 | [stage-15-refinements-from-daily-use.md](stages/stage-15-refinements-from-daily-use.md) | Changes from daily use: the timeline lists only the backups in which the folder differs |
 | 16 | [stage-16-trash-in-the-timeline.md](stages/stage-16-trash-in-the-timeline.md) | What is in the Trash shown and restored from the timeline, at the time it was deleted |
 | 17 | [stage-17-snapper-snapshots.md](stages/stage-17-snapper-snapshots.md) | Snapper's btrfs snapshots read into the timeline; a guide to setting Snapper up |
+| 18 | [stage-18-full-screen-time-view.md](stages/stage-18-full-screen-time-view.md) | A full-screen view through the history in the spirit of Time Machine's, opened from the app, the file managers, the launcher and the tray |
 
 ## Reference documents (in `reference/`)
 
