@@ -67,7 +67,7 @@ interface. The `1` is the API's major version: an incompatible change ships as
 | `GetStatus()` | State, last/next backup, destination reachability, spool usage |
 | `GetBackupProgress() → (job, phase, current, total)` | The backup under way, as its last `BackupProgress` said; job 0 when none (S06-T12) |
 | `RestoreFiles(archive, paths[], dest, policy) → job` | policy = ask / keep-both / replace / skip-identical |
-| `PreviewFile(archive, path) → fd` | Extracted content over a pipe fd; daemon caches by chunk hash |
+| `PreviewFile(archive, path) → fd` | Extracted content over a pipe fd; daemon caches by chunk hash. An archive named `trash:<.trashinfo>` reads the file from the Trash instead (S16-T2) |
 | `CompareFile(archive, path) → job` | Produces a diff artifact for the compare view |
 | `Prune()` / `Verify()` / `Compact()` | Maintenance (Preferences → Advanced) |
 | `CancelJob(id)` / `PauseJob(id)` | Cancel / pause any long-running job |
@@ -75,9 +75,11 @@ interface. The `1` is the API's major version: an incompatible change ships as
 | `SetupRepo(...)` / `ImportRepo(path)` | Wizard operations (create vs adopt existing repo) |
 | `SearchFiles(query) → results` | FTS5 cross-snapshot search over the index (grouped-by-file results incl. deleted files) |
 | `RestoreEverything(archive, policy) → job` | Guided disaster recovery: per-top-level-folder extract jobs, resumable |
+| `ListTrashed() → items` | What the desktop's Trash holds from the backed-up folders: archive name, original path, deletion time, kind, size, modification time, and whether it holds something no backup has (S16-T2) |
 
 **Signals:** `BackupProgress(job, phase, current, total)`, `RestoreProgress(job, bytes, total)`,
-`IndexingProgress(archive, pct)`, `StatusChanged(state)`. Long operations return a job ID;
+`IndexingProgress(archive, pct)`, `StatusChanged(state)`, `TrashChanged()` (what `ListTrashed`
+lists has changed). Long operations return a job ID;
 signals carry it. Restore progress is computed from the index's byte totals, not Borg's
 percent (unreliable on partial extracts — see research).
 

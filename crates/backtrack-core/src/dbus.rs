@@ -269,6 +269,29 @@ pub struct SearchResult {
     pub gone_from_disk: bool,
 }
 
+/// Something in the desktop's Trash that came from a backed-up folder, as
+/// `ListTrashed` reports it (Stage 16).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+pub struct TrashedItem {
+    /// The archive name its files are read through (`PreviewFile`,
+    /// `CompareFile`): `trash:` and its `.trashinfo`.
+    pub archive: String,
+    /// Where it was, archive-relative.
+    pub path: String,
+    /// When it was moved to the Trash, seconds since the epoch.
+    pub deleted_at: i64,
+    /// "file", "dir", "symlink", or "other".
+    pub kind: String,
+    /// Bytes, for a file; 0 for a folder.
+    pub size: i64,
+    /// Its modification time, microseconds since the epoch, as the catalogue
+    /// keeps them.
+    pub mtime: i64,
+    /// It holds something no backup has, which is what gives it a place in
+    /// the timeline.
+    pub counts: bool,
+}
+
 /// One path a restore needs an answer about, as `GetRestorePreview` reports it.
 ///
 /// Only the paths that need a decision cross the bus. A folder restore may

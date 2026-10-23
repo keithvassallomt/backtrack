@@ -41,6 +41,7 @@ pub const METHODS: &[(&str, &str, &str)] = &[
     ("ImportRepo", "ss", ""),
     ("InspectDestination", "s", "s"),
     ("ListReplaced", "u", "a(sstxx)"),
+    ("ListTrashed", "", "a(ssxsxxb)"),
     ("LiveFile", "s", "h"),
     ("PathsOnDisk", "as", "ay"),
     ("Pause", "t", ""),
@@ -76,6 +77,7 @@ pub const SIGNALS: &[(&str, &str)] = &[
     ("JobFinished", "tss"),
     ("RestoreProgress", "ttt"),
     ("StatusChanged", "ss"),
+    ("TrashChanged", ""),
 ];
 
 #[cfg(test)]

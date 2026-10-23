@@ -237,6 +237,10 @@ pub struct Shared {
     catalogue_rebuilding: Mutex<bool>,
     /// The disaster recovery, if one is under way or waiting on its summary.
     recovery: Arc<crate::recovery::Recovery>,
+    /// The data home the home Trash is in: the host's, or a test's own.
+    data_home: PathBuf,
+    /// What is in the desktop's Trash from the backed-up folders (Stage 16).
+    pub trash: crate::trash::TrashState,
 }
 
 impl Shared {
@@ -264,6 +268,7 @@ impl Shared {
                 replaced_dir: paths::replaced_dir(),
                 recovery_manifest: paths::recovery_manifest(),
                 recovery_dir: paths::recovery_dir(),
+                data_home: paths::host_data_home(),
             },
         )
     }
@@ -295,6 +300,7 @@ impl Shared {
                 replaced_dir: dir.join("replaced"),
                 recovery_manifest: dir.join("dr-job.json"),
                 recovery_dir: dir.join("recovery"),
+                data_home: dir.join("share"),
             },
         )
     }
@@ -322,6 +328,7 @@ impl Shared {
             replaced_dir,
             recovery_manifest,
             recovery_dir,
+            data_home,
         } = layout;
         Arc::new(Shared {
             config: Mutex::new(config),
@@ -372,7 +379,36 @@ impl Shared {
                 recovery_manifest,
                 recovery_dir,
             )),
+            data_home,
+            trash: crate::trash::TrashState::default(),
         })
+    }
+
+    /// What a look at the Trash needs, taken in one go.
+    pub fn trash_scope(&self) -> crate::trash::Scope {
+        let config = self.config();
+        crate::trash::Scope {
+            data_home: self.data_home.clone(),
+            sources: config.backup.include.clone(),
+            excludes: backtrack_core::pattern::ExcludeSet::compile(&config.backup.exclude),
+            index: self.index_path.clone(),
+        }
+    }
+
+    /// A file in the Trash, for `PreviewFile`: the file at `path` in the
+    /// trashed item `archive` names. Only an item in the listing is read.
+    fn trashed_file(&self, archive: &str, path: &str) -> Result<OwnedFd> {
+        let entry = self
+            .trash
+            .find(archive)
+            .ok_or_else(|| DaemonError::NotFound(format!("{path} is no longer in the Trash")))?;
+        let file = backtrack_core::trash::copy_of(&entry.item, path).ok_or_else(|| {
+            DaemonError::NotFound(format!("{path} is not part of what was moved to the Trash"))
+        })?;
+        let opened = std::fs::File::open(&file).map_err(|e| {
+            DaemonError::NotFound(format!("{path} could not be opened in the Trash: {e}"))
+        })?;
+        Ok(OwnedFd::from(std::os::fd::OwnedFd::from(opened)))
     }
 
     /// Swap the destination probe. Used by the tests to script a sequence of
@@ -1821,6 +1857,11 @@ impl Shared {
     /// archive the catalogue does not know is asked of the destination, which
     /// is where a name given on the command line will be.
     async fn engine_for(&self, archive: &str) -> Result<Arc<dyn BackupEngine>> {
+        if backtrack_core::trash::info_of(archive).is_some() {
+            return Err(DaemonError::RestoreFailed(
+                "restoring from the Trash is not supported yet".to_string(),
+            ));
+        }
         let repo = IndexReader::open(&self.index_path)?.repo_of(archive)?;
         match repo {
             Some(Repo::Spool) => self.spool_engine().await,
@@ -1842,6 +1883,8 @@ impl Shared {
         let dolphin_was = std::mem::replace(&mut *self.config.lock().unwrap(), config)
             .general
             .dolphin_integration;
+        // The backed-up folders, or what is excluded, may be different now.
+        self.trash.rescan.notify_one();
         self.publish_roots();
         self.apply_dolphin_switch(Some(dolphin_was));
         Ok(())
@@ -2417,6 +2460,7 @@ struct Layout {
     replaced_dir: PathBuf,
     recovery_manifest: PathBuf,
     recovery_dir: PathBuf,
+    data_home: PathBuf,
 }
 
 /// A restore request that has passed its checks but has no job yet.
@@ -2772,6 +2816,11 @@ impl Daemon1 {
     /// path is what lets a sandboxed GUI read a file it could not open itself,
     /// and it keeps the cache directory the daemon's business alone.
     async fn preview_file(&self, archive: &str, path: &str) -> Result<OwnedFd> {
+        // Something in the Trash is already a file on this computer: no
+        // extraction, and nothing to cache.
+        if backtrack_core::trash::info_of(archive).is_some() {
+            return self.shared.trashed_file(archive, path);
+        }
         let cache = self.shared.preview.clone();
         let entry = cache.entry_path(archive, path);
 
@@ -2851,6 +2900,21 @@ impl Daemon1 {
     /// Prepare the archived copy of `path` so it can be compared with the live
     /// one. The diff view itself is Stage 8; this is the extraction it needs.
     async fn compare_file(&self, archive: &str, path: &str) -> Result<u64> {
+        // The comparison reads its copy through PreviewFile, and a trashed
+        // file needs nothing extracted first: the job is done as it starts.
+        if backtrack_core::trash::info_of(archive).is_some() {
+            self.shared.trash.find(archive).ok_or_else(|| {
+                DaemonError::NotFound(format!("{path} is no longer in the Trash"))
+            })?;
+            let factory: JobFactory = Arc::new(|_job| {
+                Box::pin(async {
+                    Ok(backtrack_core::engine::JobStream::from_events(vec![
+                        backtrack_core::engine::JobEvent::Finished(Ok(Default::default())),
+                    ]))
+                }) as BoxFuture<'_, _>
+            });
+            return Ok(self.shared.jobs.submit(JobKind::Restore, factory));
+        }
         let engine = self.shared.engine_for(archive).await?;
         let cache = self.shared.preview.clone();
         let archive = archive.to_string();
@@ -2888,6 +2952,19 @@ impl Daemon1 {
                 DaemonError::IndexUnavailable(format!("the folder listing task failed: {error}"))
             })?;
         Ok(answers.into_iter().map(on_disk::OnDisk::as_byte).collect())
+    }
+
+    /// What is in the desktop's Trash from the backed-up folders, oldest
+    /// deletion first, each with whether it holds something no backup has
+    /// (Stage 16). Kept current by the daemon; `TrashChanged` says when it
+    /// changes.
+    async fn list_trashed(&self) -> Vec<backtrack_core::dbus::TrashedItem> {
+        self.shared
+            .trash
+            .entries()
+            .iter()
+            .map(crate::trash::Entry::published)
+            .collect()
     }
 
     /// Filename search across every snapshot, including files that have since
@@ -3580,6 +3657,10 @@ impl Daemon1 {
 
     /// The overall health state changed. `reason` is what it is about, as a
     /// `Reason` token, and empty when healthy.
+    /// What `ListTrashed` lists has changed.
+    #[zbus(signal)]
+    pub async fn trash_changed(emitter: &SignalEmitter<'_>) -> zbus::Result<()>;
+
     #[zbus(signal)]
     pub async fn status_changed(
         emitter: &SignalEmitter<'_>,
@@ -3665,6 +3746,16 @@ const KEYRING_LOOK_EVERY: Duration = Duration::from_secs(1);
 /// Runs for the daemon's lifetime. `StatusChanged` is emitted only when the
 /// computed state actually differs from the last one announced — a signal per
 /// job event would make "the state changed" meaningless.
+/// Say `TrashChanged` each time the daemon's listing of the Trash changes.
+pub async fn announce_trash(shared: Arc<Shared>, emitter: SignalEmitter<'static>) {
+    loop {
+        shared.trash.changed.notified().await;
+        if let Err(error) = Daemon1::trash_changed(&emitter).await {
+            debug!(%error, "TrashChanged could not be sent");
+        }
+    }
+}
+
 pub async fn fan_out_signals(shared: Arc<Shared>, emitter: SignalEmitter<'static>) {
     let mut updates = shared.jobs.subscribe();
     let health_changed = shared.health_waker();
@@ -3767,6 +3858,9 @@ pub async fn fan_out_signals(shared: Arc<Shared>, emitter: SignalEmitter<'static
                     // declined to queue while busy can be reconsidered now
                     // rather than at the next tick.
                     shared.wake_scheduler();
+                    // A backup or a prune can change which trashed items hold
+                    // something no backup has.
+                    shared.trash.rescan.notify_one();
                 }
                 // Announced once the catalogue says what the job did, local
                 // snapshots marked as caught up included: a window reloads

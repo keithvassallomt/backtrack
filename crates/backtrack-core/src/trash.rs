@@ -27,7 +27,7 @@ use std::path::{Component, Path, PathBuf};
 
 use tracing::debug;
 
-use crate::index::{IndexReader, LiveEntry, Result};
+use crate::index::{IndexReader, Kind, LiveEntry, Result};
 use crate::pattern::{is_within, ExcludeSet};
 use crate::walk::{self, WalkSpec};
 
@@ -52,17 +52,64 @@ pub struct Item {
     pub info: PathBuf,
     /// When it was moved there, epoch seconds.
     pub deleted_at: i64,
-    pub is_dir: bool,
+    pub kind: Kind,
+    /// Bytes, for a file; 0 for a folder.
+    pub size: i64,
+    /// Its modification time, epoch microseconds, as the catalogue keeps them.
+    pub mtime: i64,
+}
+
+impl Item {
+    pub fn is_dir(&self) -> bool {
+        self.kind == Kind::Dir
+    }
+}
+
+/// How an archive name names something in the Trash, for the calls that read
+/// an archive's files (`PreviewFile`, `CompareFile`): `trash:` and the item's
+/// `.trashinfo`, which is unique even when the same file was trashed twice.
+pub const ARCHIVE_PREFIX: &str = "trash:";
+
+/// The archive name `item` is read through.
+pub fn archive_name(item: &Item) -> String {
+    format!("{ARCHIVE_PREFIX}{}", item.info.display())
+}
+
+/// The `.trashinfo` an archive name names, if it names one.
+pub fn info_of(archive: &str) -> Option<&Path> {
+    archive.strip_prefix(ARCHIVE_PREFIX).map(Path::new)
+}
+
+/// Where the file at archive-relative `path` is, inside the Trash's copy of
+/// `item`: the copy itself, or a file below it for a trashed folder. None for
+/// a path outside the item, or one that climbs with `..`.
+pub fn copy_of(item: &Item, path: &str) -> Option<PathBuf> {
+    let original = walk::archive_path(&item.original);
+    let rest = if path == original {
+        ""
+    } else {
+        path.strip_prefix(&original)?.strip_prefix('/')?
+    };
+    if rest.is_empty() {
+        // Joined, an empty path would add a trailing slash, which names a
+        // folder: a trashed file would then fail to open.
+        return Some(item.copy.clone());
+    }
+    let rest = Path::new(rest);
+    if rest
+        .components()
+        .any(|c| !matches!(c, Component::Normal(_)))
+    {
+        return None;
+    }
+    Some(item.copy.join(rest))
 }
 
 impl Trash {
-    /// The home Trash, `$XDG_DATA_HOME/Trash`: the host's inside the Flatpak,
-    /// whose own data home is the sandbox's.
-    pub fn home() -> Trash {
-        Trash::in_data_home(&crate::paths::host_data_home())
-    }
-
-    fn in_data_home(data_home: &Path) -> Trash {
+    /// The home Trash of `data_home`, `<data_home>/Trash`. The daemon's is the
+    /// host's ([`crate::paths::host_data_home`]): inside the Flatpak, the
+    /// sandbox's own data home is somewhere else.
+    pub fn in_data_home(data_home: &Path) -> Trash {
         Trash {
             root: data_home.join("Trash"),
             base: data_home.to_path_buf(),
@@ -100,6 +147,12 @@ impl Trash {
         found
     }
 
+    /// Everything in this Trash that can be read, its deletion dates read in
+    /// the local zone, as the desktop wrote them.
+    pub fn local_items(&self) -> Vec<Item> {
+        self.items(&glib::TimeZone::local())
+    }
+
     /// Everything in this Trash that can be read, in no particular order.
     pub fn items(&self, tz: &glib::TimeZone) -> Vec<Item> {
         let Ok(listing) = std::fs::read_dir(self.root.join("info")) else {
@@ -132,12 +185,19 @@ impl Trash {
         let deleted_at = deletion_time(date, tz)?;
         let copy = self.root.join("files").join(name);
         let meta = std::fs::symlink_metadata(&copy).ok()?;
+        let kind = walk::kind_of(&meta);
         Some(Item {
             original,
             copy,
             info: info.to_path_buf(),
             deleted_at,
-            is_dir: meta.is_dir(),
+            size: if kind == Kind::Dir {
+                0
+            } else {
+                meta.len() as i64
+            },
+            mtime: walk::mtime_micros(&meta),
+            kind,
         })
     }
 
@@ -157,11 +217,11 @@ impl Trash {
     }
 }
 
-/// Every Trash that can hold something deleted from `sources`: the home Trash,
-/// and the Trashes at the top of each drive a source is on.
-pub fn trashes_for(sources: &[PathBuf]) -> Vec<Trash> {
+/// Every Trash that can hold something deleted from `sources`: the home Trash
+/// of `data_home`, and the Trashes at the top of each drive a source is on.
+pub fn trashes_for(data_home: &Path, sources: &[PathBuf]) -> Vec<Trash> {
     let uid = rustix::process::getuid().as_raw();
-    let mut trashes = vec![Trash::home()];
+    let mut trashes = vec![Trash::in_data_home(data_home)];
     let mut tops: Vec<PathBuf> = sources.iter().filter_map(|s| mount_top(s)).collect();
     tops.sort();
     tops.dedup();
@@ -220,7 +280,7 @@ pub fn counts(reader: &IndexReader, item: &Item, excludes: &ExcludeSet) -> Resul
         // Nothing was backed up before it went, so nothing has it.
         return Ok(true);
     };
-    let held = if item.is_dir {
+    let held = if item.is_dir() {
         let spec = WalkSpec {
             sources: vec![item.copy.clone()],
             excludes: excludes.clone(),
@@ -230,13 +290,10 @@ pub fn counts(reader: &IndexReader, item: &Item, excludes: &ExcludeSet) -> Resul
         };
         walk::walk_as(&spec, &item.copy, &item.original).live_entries()
     } else {
-        let Ok(meta) = std::fs::symlink_metadata(&item.copy) else {
-            return Ok(false);
-        };
         vec![LiveEntry {
             path: PathBuf::from(walk::archive_path(&item.original)),
-            size: meta.len() as i64,
-            mtime: walk::mtime_micros(&meta),
+            size: item.size,
+            mtime: item.mtime,
         }]
     };
     if held.is_empty() {
@@ -286,6 +343,16 @@ fn decode(value: &str) -> Option<Vec<u8>> {
         }
     }
     Some(out)
+}
+
+/// `at` (epoch seconds) as a `DeletionDate=` value: `YYYY-MM-DDThh:mm:ss` in
+/// local time, as the desktop writes it.
+pub fn format_deletion_date(at: i64) -> Option<String> {
+    let local = glib::DateTime::from_unix_local(at).ok()?;
+    local
+        .format("%Y-%m-%dT%H:%M:%S")
+        .ok()
+        .map(|s| s.to_string())
 }
 
 /// `DeletionDate=` as epoch seconds. It is written `YYYY-MM-DDThh:mm:ss` in
@@ -365,6 +432,7 @@ mod tests {
             Some("draft"),
         );
         let items = f.trash.items(&utc());
+        let meta = std::fs::symlink_metadata(&copy).unwrap();
         assert_eq!(
             items,
             [Item {
@@ -372,7 +440,9 @@ mod tests {
                 copy,
                 info: f.trash.root.join("info/report.odt.trashinfo"),
                 deleted_at: QUARTER_TO_ONE,
-                is_dir: false,
+                kind: Kind::File,
+                size: 5,
+                mtime: walk::mtime_micros(&meta),
             }]
         );
     }
@@ -457,6 +527,15 @@ mod tests {
     }
 
     #[test]
+    fn a_deletion_date_written_here_reads_back_as_the_same_moment() {
+        let written = format_deletion_date(QUARTER_TO_ONE).unwrap();
+        assert_eq!(
+            deletion_time(&written, &glib::TimeZone::local()),
+            Some(QUARTER_TO_ONE)
+        );
+    }
+
+    #[test]
     fn entries_that_cannot_be_read_are_left_out() {
         let f = fixture();
         f.put(
@@ -497,6 +576,48 @@ mod tests {
     }
 
     #[test]
+    fn an_item_is_named_as_an_archive_and_found_from_its_name() {
+        let f = fixture();
+        f.put(
+            "a.txt",
+            &info("/home/k/a.txt", "2026-10-20T12:45:00"),
+            Some("x"),
+        );
+        let item = &f.trash.items(&utc())[0];
+        let name = archive_name(item);
+        assert!(name.starts_with("trash:"));
+        assert_eq!(info_of(&name), Some(item.info.as_path()));
+        assert_eq!(info_of("bt-fedora-20261020T085450Z"), None);
+    }
+
+    #[test]
+    fn a_path_inside_a_trashed_folder_is_found_in_its_copy_and_nothing_outside() {
+        let item = Item {
+            original: PathBuf::from("/home/k/project"),
+            copy: PathBuf::from("/t/files/project"),
+            info: PathBuf::new(),
+            deleted_at: 0,
+            kind: Kind::Dir,
+            size: 0,
+            mtime: 0,
+        };
+        // Compared as text: `PathBuf` equality ignores a trailing slash, and a
+        // trailing slash is what made a trashed file fail to open.
+        let text = |p: Option<PathBuf>| p.map(|p| p.into_os_string().into_string().unwrap());
+        assert_eq!(
+            text(copy_of(&item, "home/k/project")),
+            Some("/t/files/project".to_string())
+        );
+        assert_eq!(
+            text(copy_of(&item, "home/k/project/src/main.rs")),
+            Some("/t/files/project/src/main.rs".to_string())
+        );
+        assert_eq!(copy_of(&item, "home/k/project2/x"), None, "a sibling");
+        assert_eq!(copy_of(&item, "home/k/other"), None);
+        assert_eq!(copy_of(&item, "home/k/project/../../.ssh/id_ed25519"), None);
+    }
+
+    #[test]
     fn the_first_path_and_date_are_the_ones_used() {
         let text = "[Trash Info]\nPath=/first\nDeletionDate=2026-10-20T12:45:00\nPath=/second\n";
         assert_eq!(parse_info(text), Some(("/first", "2026-10-20T12:45:00")));
@@ -509,7 +630,9 @@ mod tests {
             copy: PathBuf::new(),
             info: PathBuf::new(),
             deleted_at: 0,
-            is_dir: false,
+            kind: Kind::File,
+            size: 0,
+            mtime: 0,
         };
         let kept = in_backups(
             vec![
@@ -571,13 +694,20 @@ mod tests {
     }
 
     fn trashed(copy: PathBuf, original: &str, deleted_at: i64) -> Item {
-        let is_dir = copy.is_dir();
+        let meta = std::fs::symlink_metadata(&copy).unwrap();
+        let kind = walk::kind_of(&meta);
         Item {
             original: PathBuf::from(original),
             copy,
             info: PathBuf::new(),
             deleted_at,
-            is_dir,
+            size: if kind == Kind::Dir {
+                0
+            } else {
+                meta.len() as i64
+            },
+            mtime: walk::mtime_micros(&meta),
+            kind,
         }
     }
 

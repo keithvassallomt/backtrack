@@ -278,7 +278,7 @@ pub(crate) fn mtime_micros(meta: &std::fs::Metadata) -> i64 {
 }
 
 /// The object type, in the vocabulary the catalogue stores.
-fn kind_of(meta: &std::fs::Metadata) -> Kind {
+pub(crate) fn kind_of(meta: &std::fs::Metadata) -> Kind {
     let t = meta.file_type();
     if t.is_dir() {
         Kind::Dir
