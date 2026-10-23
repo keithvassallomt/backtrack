@@ -82,6 +82,9 @@ pub struct Window {
     restore_button: Button,
     restore_to_button: Button,
     compare_button: Button,
+    /// Opens search, and shows pressed while it is open, so it is also the
+    /// way out (S16-T8).
+    search_button: gtk4::ToggleButton,
     /// The header's title: the breadcrumb, or the search box.
     title_slot: gtk4::Stack,
     /// The window's body: the timeline, or the search results.
@@ -157,6 +160,7 @@ impl Window {
             restore_button: Button::builder().build(),
             restore_to_button: Button::builder().build(),
             compare_button: Button::builder().build(),
+            search_button: gtk4::ToggleButton::new(),
             title_slot: gtk4::Stack::new(),
             content_slot: gtk4::Stack::new(),
             search: RefCell::new(None),
@@ -227,11 +231,25 @@ impl Window {
 
         header.pack_end(&ui::menu::button());
 
-        let search = Button::from_icon_name("system-search-symbolic");
-        search.set_tooltip_text(Some("Search every backup"));
-        search.update_property(&[gtk4::accessible::Property::Label("Search every backup")]);
-        search.set_action_name(Some("win.search"));
-        header.pack_end(&search);
+        // A toggle, as in GNOME's own applications: pressed while searching,
+        // and clicked again to leave. Kept in step with search however it was
+        // opened or closed, Ctrl+F and Escape included.
+        let search = &self.search_button;
+        search.set_icon_name("system-search-symbolic");
+        search.set_tooltip_text(Some(SEARCH_OPEN));
+        search.update_property(&[gtk4::accessible::Property::Label(SEARCH_OPEN)]);
+        let searcher = Rc::clone(self);
+        search.connect_toggled(move |button| {
+            let open = searcher
+                .search
+                .borrow()
+                .as_ref()
+                .is_some_and(|pane| pane.is_open());
+            if button.is_active() != open {
+                let _ = button.activate_action("win.search", None);
+            }
+        });
+        header.pack_end(search);
 
         header
     }
@@ -1131,6 +1149,11 @@ impl Window {
             let page = if open { "search" } else { "browse" };
             swapper.title_slot.set_visible_child_name(page);
             swapper.content_slot.set_visible_child_name(page);
+            let button = &swapper.search_button;
+            button.set_active(open);
+            let label = if open { SEARCH_CLOSE } else { SEARCH_OPEN };
+            button.set_tooltip_text(Some(label));
+            button.update_property(&[gtk4::accessible::Property::Label(label)]);
         });
         *self.search.borrow_mut() = Some(search);
 
@@ -1564,6 +1587,10 @@ const STATUS_TICK_SECONDS: u32 = 30;
 
 /// What the window says when something needs the daemon and there isn't one.
 const NO_SERVICE: &str = "The Backtrack service is not running, so this cannot be done from here";
+
+/// What the search button says it does, closed and open.
+const SEARCH_OPEN: &str = "Search every backup";
+const SEARCH_CLOSE: &str = "Close search";
 
 /// Strip the D-Bus error-name prefix, which is addressed to programs.
 fn clean(message: &str) -> String {

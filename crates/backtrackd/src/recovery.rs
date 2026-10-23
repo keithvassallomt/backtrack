@@ -429,6 +429,9 @@ impl Recovery {
                 error: String::new(),
             };
         };
+        // Read before `live` is taken, so that no lock is held while another
+        // is (S16-T6).
+        let job = self.job().unwrap_or(0);
         let live = self.live.lock().unwrap();
         let state = match (manifest.stage, job_state) {
             (Stage::Review, _) => "review",
@@ -471,7 +474,7 @@ impl Recovery {
         };
         RecoveryStatus {
             state: state.into(),
-            job: self.job().unwrap_or(0),
+            job,
             archive: manifest.archive.clone(),
             taken: manifest.taken,
             done,

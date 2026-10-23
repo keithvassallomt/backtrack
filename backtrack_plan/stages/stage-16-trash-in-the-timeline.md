@@ -168,6 +168,50 @@ every backup's.
 **Accept:** unit tests on the result's wording and on which copy Restore
 Latest picks; on the GNOME VM, searching for C finds it, and both actions work.
 
+### S16-T6 — The daemon cannot deadlock on its own locks
+Found during S16-T5's check on the GNOME VM, 2026-10-23: the daemon stopped
+answering. Every worker thread was waiting on a lock. `schedule_input` took
+the persisted state's lock and then the pause's; `health_inputs` took the
+pause's and then the persisted state's. Each read its values inside one
+struct literal, where a lock guard made for one field lives until the whole
+literal is built, so the two held one lock each while waiting for the other.
+A job ending sets both off at once: the window asks for the status, which
+reads the schedule, while the daemon reassesses its health. `status_at` holds
+`last_backup` the same way while it takes `destination_reachable`, which
+`health_inputs` takes in the other order. The Trash's watcher, woken on the
+deadlocked thread, never ran again, which is why the Trash's listing went
+stale first.
+- No lock is held while another is taken: each value is read under its own
+  lock in a statement of its own.
+- The same is checked across the daemon, not only in these three.
+
+**Accept:** a test that reads the schedule and the health on two threads at
+once, many times over, finishes (as written before the fix, it deadlocks);
+the audit's findings are in the commit; on the GNOME VM, the S16-T5 check
+runs through without the daemon stopping.
+
+### S16-T7 — Two previews of the same file at once both succeed
+Found with S16-T6: selecting a search result asks for its preview twice in a
+moment, and the daemon extracted both into the same `.partial` file. The
+first renamed it into place; the second's rename found nothing, and failed
+with "No such file or directory", reported as the local disk being full.
+- Each extraction has a temporary file of its own.
+- A failure on this computer's disk is reported as a full disk only when the
+  disk is full.
+
+**Accept:** a test that previews the same file twice at once gets the file's
+contents both times; a test that an error other than a full disk is not
+reported as one.
+
+### S16-T8 — Search can be closed from its button
+Keith, 2026-10-23: there is no button to leave search. The header's search
+button already toggles it, but looks the same while searching, so nothing
+says it closes it. It becomes a toggle button, pressed while search is open,
+as in GNOME's own applications.
+
+**Accept:** on the GNOME VM, the button shows pressed while searching, and
+clicking it leaves search; Escape and Ctrl+F still do.
+
 ## Definition of Done
 All tasks done; the CHANGELOG's Unreleased section says what changed for the
 user; the user documentation says what the Trash can and cannot bring back,

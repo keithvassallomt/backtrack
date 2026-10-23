@@ -43,6 +43,10 @@ pub enum DaemonError {
     DestinationFull(String),
     /// This computer is out of space.
     LocalDiskFull(String),
+    /// Something this computer holds could not be read or written, for a
+    /// reason other than a full disk: a permission, a failing disk, a file
+    /// gone from under the daemon.
+    LocalFailed(String),
     /// The repository is damaged and needs repair.
     RepoCorrupt(String),
     /// Another process holds the repository lock.

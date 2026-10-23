@@ -885,21 +885,29 @@ impl Shared {
             next_due(schedule.interval, schedule.last_attempt, now)
         };
         let health = self.health();
+        // Each read in a statement of its own, so that no lock is held while
+        // another is taken (S16-T6).
+        let last_backup = *self.last_backup.lock().unwrap();
+        let destination_reachable = self.destination_reachable();
+        let active_job = self.active_job();
+        let configured = self.config().is_configured();
+        let since = self.state_since(health, now);
+        let recovery_job = self.recovery_job().unwrap_or(0);
         Status {
             state: health.state.as_str().to_string(),
-            last_backup: to_epoch(*self.last_backup.lock().unwrap()),
+            last_backup: to_epoch(last_backup),
             next_backup: to_epoch(next),
-            destination_reachable: self.destination_reachable(),
+            destination_reachable,
             spool_bytes: 0,
             offline_mode: String::new(),
             local_snapshots: 0,
             expirable_snapshots: 0,
-            active_job: self.active_job(),
+            active_job,
             paused_until: to_epoch(paused_until),
-            configured: self.config().is_configured(),
+            configured,
             reason: health.reason_str().to_string(),
-            since: self.state_since(health, now),
-            recovery_job: self.recovery_job().unwrap_or(0),
+            since,
+            recovery_job,
         }
     }
 
@@ -1096,7 +1104,10 @@ impl Shared {
     pub fn drop_empty_previews(&self) {
         let dropped = self.preview.drop_empty();
         if dropped > 0 {
-            info!(dropped, "removed empty previews from the cache");
+            info!(
+                dropped,
+                "removed empty and unfinished previews from the cache"
+            );
         }
     }
 
@@ -1146,12 +1157,17 @@ impl Shared {
     /// The facts the schedule is decided from, assembled fresh.
     pub fn schedule_input(&self) -> ScheduleInput {
         let config = self.config();
+        // Each read in a statement of its own: a guard made inside the
+        // literal below would be held until the whole of it was built, while
+        // the next field took its own lock (S16-T6).
+        let last_attempt = self.persisted.lock().unwrap().last_attempt;
+        let paused_until = self.pause.lock().unwrap().until(SystemTime::now());
+        let restoring = self.recovery.restoring();
+        let busy = self.busy();
         ScheduleInput {
             interval: schedule::interval_for(&config),
-            last_attempt: backtrack_core::state::from_epoch(
-                self.persisted.lock().unwrap().last_attempt,
-            ),
-            paused_until: self.pause.lock().unwrap().until(SystemTime::now()),
+            last_attempt: backtrack_core::state::from_epoch(last_attempt),
+            paused_until,
             // A destination with nothing chosen to put in it has no schedule.
             // That is the state an import leaves a new computer in until the
             // person decides what to back up there, and a backup of nothing
@@ -1163,10 +1179,8 @@ impl Shared {
             // once the restore has finished. The record on disk is what says
             // so, which keeps the schedule held across a restart, before the
             // recovery's job has even been registered again.
-            configured: config.is_configured()
-                && !config.backup.include.is_empty()
-                && !self.recovery.restoring(),
-            busy: self.busy(),
+            configured: config.is_configured() && !config.backup.include.is_empty() && !restoring,
+            busy,
             // Owned by the scheduler loop, which is the only thing that knows
             // whether it has already served a catch-up delay.
             catch_up_deferred: false,
@@ -1390,8 +1404,12 @@ impl Shared {
             .repository
             .ok_or_else(|| DaemonError::NotConfigured("no destination is configured".into()))?;
         let path = self.spool_dir.clone();
-        std::fs::create_dir_all(&path)
-            .map_err(|e| DaemonError::LocalDiskFull(format!("cannot create the spool: {e}")))?;
+        std::fs::create_dir_all(&path).map_err(|e| {
+            local_error(std::io::Error::new(
+                e.kind(),
+                format!("cannot create the spool: {e}"),
+            ))
+        })?;
 
         let engine =
             BorgCli::new(path.display().to_string(), repository, self.secrets.clone()).await?;
@@ -2018,7 +2036,14 @@ impl Shared {
         // The engine's own failure first: it is the one a job actually hit.
         // The disk and the spool are facts about this computer that the next
         // look may find already cleared.
-        let local_full = *self.local_disk_full.lock().unwrap() || *self.spool_held.lock().unwrap();
+        //
+        // Each lock is taken alone, in a statement of its own: a guard lives
+        // until its statement ends, and one held while another lock is taken
+        // is how two readers taking them in different orders deadlock
+        // (S16-T6).
+        let local_disk_full = *self.local_disk_full.lock().unwrap();
+        let spool_held = *self.spool_held.lock().unwrap();
+        let local_full = local_disk_full || spool_held;
         let blocking = self
             .latched
             .lock()
@@ -2027,24 +2052,30 @@ impl Shared {
         // Most pressing first: a disk filling up turns into a stopped backup,
         // the other two only ever into a slower timeline, and a rebuild in
         // progress explains any backups not yet browsable.
-        let attention = if *self.local_disk_low.lock().unwrap() || self.spool_over_limit() {
+        let local_disk_low = *self.local_disk_low.lock().unwrap();
+        let rebuilding = *self.catalogue_rebuilding.lock().unwrap();
+        let pending = *self.pending.lock().unwrap();
+        let attention = if local_disk_low || self.spool_over_limit() {
             Some(Reason::LocalDiskFull)
-        } else if *self.catalogue_rebuilding.lock().unwrap() {
+        } else if rebuilding {
             Some(Reason::CatalogueRebuilding)
-        } else if *self.pending.lock().unwrap() > 0 && !self.cataloguing() {
+        } else if pending > 0 && !self.cataloguing() {
             Some(Reason::NotYetBrowsable)
         } else {
             None
         };
+        let paused_until = self.pause.lock().unwrap().until(now);
+        let destination_reachable = *self.destination_reachable.lock().unwrap();
+        let offline_protection_active = self.offline_protection_active();
+        let last_success = *self.last_backup.lock().unwrap();
+        let protected_since = self.persisted.lock().unwrap().protected_since;
         HealthInputs {
             blocking,
-            paused_until: self.pause.lock().unwrap().until(now),
-            destination_reachable: *self.destination_reachable.lock().unwrap(),
-            offline_protection_active: self.offline_protection_active(),
-            last_success: *self.last_backup.lock().unwrap(),
-            protected_since: backtrack_core::state::from_epoch(
-                self.persisted.lock().unwrap().protected_since,
-            ),
+            paused_until,
+            destination_reachable,
+            offline_protection_active,
+            last_success,
+            protected_since: backtrack_core::state::from_epoch(protected_since),
             // What the schedule will actually do: a destination with nothing
             // chosen to back up has no schedule, and cannot be late.
             frequency: schedule.interval.filter(|_| schedule.configured),
@@ -2923,9 +2954,7 @@ impl Daemon1 {
 
         if !cache.contains(archive, path) {
             let engine = self.shared.engine_for(archive).await?;
-            cache
-                .ensure_dir()
-                .map_err(|e| DaemonError::LocalDiskFull(e.to_string()))?;
+            cache.ensure_dir().map_err(local_error)?;
             let mut reader = engine
                 .extract_stdout(&ArchiveId(archive.to_string()), path)
                 .await?;
@@ -2933,10 +2962,10 @@ impl Daemon1 {
             // Extract to a temporary name and rename into place, so a cancelled
             // or failed extraction can never leave a truncated file looking like
             // a valid cache hit.
-            let staging = entry.with_extension("partial");
+            let staging = cache.partial_path(&entry);
             let mut file = tokio::fs::File::create(&staging)
                 .await
-                .map_err(|e| DaemonError::LocalDiskFull(e.to_string()))?;
+                .map_err(local_error)?;
             let copied = tokio::io::copy(&mut reader, &mut file).await;
             let finish = async {
                 copied?;
@@ -2950,7 +2979,7 @@ impl Daemon1 {
             drop(file);
             tokio::fs::rename(&staging, &entry)
                 .await
-                .map_err(|e| DaemonError::LocalDiskFull(e.to_string()))?;
+                .map_err(local_error)?;
             cache.evict_to_fit();
         }
 
@@ -3728,7 +3757,7 @@ impl Daemon1 {
         let shared = Arc::clone(&self.shared);
         tokio::task::spawn_blocking(move || shared.local_storage())
             .await
-            .map_err(|e| DaemonError::LocalDiskFull(e.to_string()))
+            .map_err(|e| DaemonError::LocalFailed(e.to_string()))
     }
 
     /// Remove the copies extracted for previews. Returns the bytes freed.
@@ -3736,7 +3765,7 @@ impl Daemon1 {
         let cache = self.shared.preview.clone();
         let freed = tokio::task::spawn_blocking(move || cache.clear())
             .await
-            .map_err(|e| DaemonError::LocalDiskFull(e.to_string()))?;
+            .map_err(|e| DaemonError::LocalFailed(e.to_string()))?;
         info!(bytes = freed, "the preview cache was cleared");
         Ok(freed)
     }
@@ -3913,7 +3942,19 @@ fn from_trash(
 fn extraction_error(error: std::io::Error) -> DaemonError {
     match EngineError::from_io(&error) {
         Some(engine) => engine.into(),
-        None => DaemonError::LocalDiskFull(error.to_string()),
+        None => local_error(error),
+    }
+}
+
+/// What went wrong on this computer's own disk: a full one reported as full,
+/// and anything else as what it is (S16-T7).
+fn local_error(error: std::io::Error) -> DaemonError {
+    use std::io::ErrorKind;
+    match error.kind() {
+        ErrorKind::StorageFull | ErrorKind::QuotaExceeded => {
+            DaemonError::LocalDiskFull(error.to_string())
+        }
+        _ => DaemonError::LocalFailed(error.to_string()),
     }
 }
 
@@ -3932,10 +3973,12 @@ async fn cache_extraction(
     let mut reader = engine
         .extract_stdout(&ArchiveId(archive.to_string()), path)
         .await?;
-    let staging = entry.with_extension("partial");
-    let map_io = |e: std::io::Error| backtrack_core::engine::EngineError::BorgFailed {
-        code: -1,
-        stderr: e.to_string(),
+    let staging = cache.partial_path(&entry);
+    // This computer's side, not Borg's: a full disk said as one, anything
+    // else as what it is.
+    let map_io = |e: std::io::Error| match local_error(e) {
+        DaemonError::LocalDiskFull(_) => EngineError::LocalDiskFull,
+        other => EngineError::Local(other.to_string()),
     };
     let mut file = tokio::fs::File::create(&staging).await.map_err(map_io)?;
     if let Err(e) = tokio::io::copy(&mut reader, &mut file).await {
@@ -4391,6 +4434,94 @@ mod tests {
             IndexWriter::open(&dir.join("index.db")).unwrap(),
         )));
         shared
+    }
+
+    #[tokio::test]
+    async fn two_previews_of_the_same_file_at_once_both_get_it() {
+        // S16-T7: selecting a search result asks for its preview twice in a
+        // moment. Both extracted into one temporary file, and the second found
+        // nothing left to rename into place.
+        use std::io::Read as _;
+        let dir = tempfile::tempdir().unwrap();
+        let shared = configured(dir.path());
+        let contents: Vec<u8> = (0..4096u32).map(|i| (i % 251) as u8).collect();
+        shared.set_engine(Arc::new(MockEngine::default().with_file(contents.clone())));
+        let daemon = Daemon1::new(Arc::clone(&shared));
+
+        let (first, second) = tokio::join!(
+            daemon.preview_file("a1", "home/notes.txt"),
+            daemon.preview_file("a1", "home/notes.txt"),
+        );
+
+        for preview in [first, second] {
+            let mut read = Vec::new();
+            std::fs::File::from(std::os::fd::OwnedFd::from(preview.expect("a preview")))
+                .read_to_end(&mut read)
+                .unwrap();
+            assert_eq!(read, contents);
+        }
+    }
+
+    #[test]
+    fn only_a_full_disk_is_called_a_full_disk() {
+        use std::io::{Error, ErrorKind};
+        assert!(matches!(
+            local_error(Error::from(ErrorKind::StorageFull)),
+            DaemonError::LocalDiskFull(_)
+        ));
+        assert!(matches!(
+            local_error(Error::from(ErrorKind::QuotaExceeded)),
+            DaemonError::LocalDiskFull(_)
+        ));
+        for other in [
+            ErrorKind::NotFound,
+            ErrorKind::PermissionDenied,
+            ErrorKind::Other,
+        ] {
+            assert!(
+                matches!(local_error(Error::from(other)), DaemonError::LocalFailed(_)),
+                "{other:?}"
+            );
+        }
+        assert!(matches!(
+            extraction_error(Error::from(ErrorKind::NotFound)),
+            DaemonError::LocalFailed(_)
+        ));
+    }
+
+    #[test]
+    fn reading_the_schedule_the_health_and_the_status_at_once_never_deadlocks() {
+        // S16-T6: a job's end has the window ask for the status, which reads
+        // the schedule, while the daemon reassesses its health. Each used to
+        // hold one lock while taking another, in opposite orders, until every
+        // worker thread was waiting and the daemon stopped answering.
+        let dir = tempfile::tempdir().unwrap();
+        let shared = configured(dir.path());
+        let (done, finished) = std::sync::mpsc::channel();
+        let readers: Vec<_> = (0..3)
+            .map(|which| {
+                let shared = Arc::clone(&shared);
+                let done = done.clone();
+                std::thread::spawn(move || {
+                    for _ in 0..20_000 {
+                        match which {
+                            0 => drop(shared.schedule_input()),
+                            1 => drop(shared.health_inputs(SystemTime::now())),
+                            _ => drop(shared.status_at(SystemTime::now())),
+                        }
+                    }
+                    let _ = done.send(which);
+                })
+            })
+            .collect();
+        for _ in 0..3 {
+            finished
+                .recv_timeout(Duration::from_secs(30))
+                .expect("the readers deadlocked");
+        }
+        for reader in readers {
+            reader.join().unwrap();
+        }
     }
 
     #[test]

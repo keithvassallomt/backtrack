@@ -177,6 +177,9 @@ Nothing right now.
 - [x] S16-T3 Trash entries in the timeline
 - [x] S16-T4 Restore from the Trash
 - [/] S16-T5 Search finds what is in the Trash
+- [/] S16-T6 The daemon cannot deadlock on its own locks
+- [/] S16-T7 Two previews of the same file at once both succeed
+- [/] S16-T8 Search can be closed from its button
 
 ## Stage 17 — Snapper snapshots in the timeline ([stage file](stages/stage-17-snapper-snapshots.md))
 - [ ] S17-T1 Find Snapper's snapshots
