@@ -1262,6 +1262,86 @@ async fn a_restore_from_a_trash_entry_moves_out_of_the_trash_and_undo_moves_back
     assert!(!info.exists());
 }
 
+/// S16-T5 through the interface: search finds what the Trash holds that no
+/// backup has, beside what the catalogue found for the same path or as a
+/// result of its own, and leaves alone what the backups already have.
+#[tokio::test]
+async fn search_finds_what_is_in_the_trash() {
+    let fixture = small_fixture().await;
+    let shared = Arc::clone(&fixture.shared);
+    let src = source(&shared);
+    let daemon = Daemon1::new(Arc::clone(&shared));
+    let job = daemon.backup_now().await.expect("backup starts");
+    wait_for_job(&shared, job).await;
+
+    // Written after the backup; edited after it; untouched since it. All three
+    // moved to the Trash.
+    let trash = fixture._dir.path().join("share/Trash");
+    std::fs::create_dir_all(trash.join("info")).unwrap();
+    std::fs::create_dir_all(trash.join("files")).unwrap();
+    std::fs::write(src.join("docs/letter to Ana.txt"), b"Dear Ana,").unwrap();
+    std::fs::write(src.join("docs/a.txt"), b"edited since").unwrap();
+    let now = SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64;
+    let date = backtrack_core::trash::format_deletion_date(now).unwrap();
+    for name in ["letter to Ana.txt", "a.txt", "b.txt"] {
+        let from = src.join("docs").join(name);
+        std::fs::write(
+            trash.join(format!("info/{name}.trashinfo")),
+            format!(
+                "[Trash Info]\nPath={}\nDeletionDate={date}\n",
+                from.display().to_string().replace(' ', "%20")
+            ),
+        )
+        .unwrap();
+        std::fs::rename(&from, trash.join("files").join(name)).unwrap();
+    }
+    tokio::spawn(crate::trash::watch(Arc::clone(&shared)));
+    trash_listing(&shared, 3).await;
+    let relative = |name: &str| {
+        src.join("docs")
+            .join(name)
+            .strip_prefix("/")
+            .unwrap()
+            .display()
+            .to_string()
+    };
+
+    let found = daemon.search_files("Ana").await.expect("a search");
+    assert_eq!(found.len(), 1, "{found:?}");
+    let letter = &found[0];
+    assert_eq!(letter.path, relative("letter to Ana.txt"));
+    assert_eq!(letter.versions, 0, "no backup has it");
+    assert!(letter.trash.starts_with("trash:"), "{letter:?}");
+    assert_eq!(letter.trashed_at, now);
+    assert_eq!(letter.trashed_size, 9);
+    assert!(letter.gone_from_disk);
+
+    let found = daemon.search_files("a.txt").await.expect("a search");
+    let edited = found
+        .iter()
+        .find(|r| r.path == relative("a.txt"))
+        .unwrap_or_else(|| panic!("{found:?}"));
+    assert_eq!(edited.versions, 1, "the backup's version, found as before");
+    assert!(
+        !edited.trash.is_empty(),
+        "and the Trash's newer one beside it"
+    );
+    assert_eq!(edited.trashed_size, "edited since".len() as i64);
+
+    let found = daemon.search_files("b.txt").await.expect("a search");
+    let untouched = found
+        .iter()
+        .find(|r| r.path == relative("b.txt"))
+        .unwrap_or_else(|| panic!("{found:?}"));
+    assert!(
+        untouched.trash.is_empty(),
+        "the backup has it exactly as it was trashed: {untouched:?}"
+    );
+}
+
 #[tokio::test]
 async fn status_reports_what_is_held_on_this_computer() {
     // S05-T5's acceptance: the offline block has to carry real numbers during

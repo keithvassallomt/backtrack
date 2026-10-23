@@ -64,7 +64,12 @@ fn base_for(archives: &[ArchiveSummary], at: i64) -> Option<i64> {
 
 /// The entry `item` belongs to.
 pub fn entry_of(archives: &[ArchiveSummary], item: &TrashedItem) -> i64 {
-    entry_seq(base_for(archives, item.deleted_at))
+    entry_at(archives, item.deleted_at)
+}
+
+/// The entry for something moved to the Trash at `at`.
+pub fn entry_at(archives: &[ArchiveSummary], at: i64) -> i64 {
+    entry_seq(base_for(archives, at))
 }
 
 fn within(path: &str, folder: &str) -> bool {

@@ -698,7 +698,8 @@ impl Window {
     }
 
     /// Leave search and show a result where it lived, at the last backup that
-    /// had it.
+    /// had it, or at its Trash entry when the Trash holds its newest copy
+    /// (Stage 16). Restore Latest restores whatever this selects.
     ///
     /// The last backup rather than the newest: a file deleted three backups
     /// ago is not in the newest one, and landing somebody on a folder that
@@ -706,30 +707,36 @@ impl Window {
     /// action exists to avoid.
     fn go_to_hit(self: &Rc<Self>, hit: &backtrack_core::dbus::SearchResult) {
         let folder = crate::path::parent(&hit.path).unwrap_or_default();
+        let (seq, trash) = crate::model::search::place(hit, &self.state.view().archives);
         info!(
             path = hit.path,
-            seq = hit.last_seq,
+            seq,
+            in_trash = trash.is_some(),
             "opening a search result"
         );
+        let (size, when) = match trash {
+            Some(_) => (hit.trashed_size, hit.trashed_at),
+            None => (hit.size, hit.last_ts),
+        };
         // The folder first: a backup asked for is landed against the folder's
         // list (Stage 15), and the last folder's could move it to a backup
         // that no longer holds the file.
         self.state.set_folder(folder);
-        self.state.set_seq(hit.last_seq);
+        self.state.set_seq(seq);
         self.state.set_selected(Some(crate::state::Selected {
             path: hit.path.clone(),
             name: hit.name.clone(),
             is_dir: hit.kind == "dir",
-            size: hit.size,
+            size,
             // The catalogue's time for the newest version; the pane replaces
             // this with the entry's own once the folder has loaded.
-            mtime: hit.last_ts.saturating_mul(1_000_000),
+            mtime: when.saturating_mul(1_000_000),
             on_disk: if hit.gone_from_disk {
                 ON_DISK_ABSENT
             } else {
                 ON_DISK_PRESENT
             },
-            archive: None,
+            archive: trash,
         }));
     }
 

@@ -306,7 +306,16 @@ impl Search {
         row.set_subtitle_lines(2);
         row.add_prefix(&gtk4::Image::from_gicon(&icon_for(card)));
 
-        if card.gone {
+        // The Trash's copy is the newest: on this computer, and only until the
+        // Trash is emptied, which the tag says as the timeline's does.
+        if card.in_trash {
+            let tag = Label::new(Some("in the Trash"));
+            tag.add_css_class("badge");
+            tag.add_css_class("in-trash");
+            tag.set_tooltip_text(Some(crate::model::group::IN_TRASH_TOOLTIP));
+            tag.set_valign(Align::Center);
+            row.add_suffix(&tag);
+        } else if card.gone {
             let tag = Label::new(Some("no longer on your disk"));
             tag.add_css_class("badge");
             tag.add_css_class("deleted");

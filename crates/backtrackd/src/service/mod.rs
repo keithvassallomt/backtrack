@@ -3116,35 +3116,97 @@ impl Daemon1 {
         // already puts what the newest backup has lost at the top.
         hits.truncate(SEARCH_LIMIT);
 
-        let paths: Vec<String> = hits.iter().map(|hit| hit.path.clone()).collect();
-        let presence = tokio::task::spawn_blocking(move || on_disk::resolve(&paths))
+        // What the Trash holds that no backup has (Stage 16), found by the
+        // catalogue's own rules: the newest of each path, beside what the
+        // catalogue found there, or as a result of its own when no backup has
+        // the path at all, most recently trashed first.
+        let trashed: Vec<_> = self
+            .shared
+            .trash
+            .entries()
+            .into_iter()
+            .filter(|entry| entry.counts)
+            .map(|entry| entry.published())
+            .collect();
+        let names: Vec<String> = trashed
+            .iter()
+            .map(|item| last_name(&item.path).to_string())
+            .collect();
+        let matched = backtrack_core::index::names_matching(trimmed, &names)?;
+        let mut in_trash: std::collections::BTreeMap<String, backtrack_core::dbus::TrashedItem> =
+            std::collections::BTreeMap::new();
+        for (item, _) in trashed.into_iter().zip(matched).filter(|(_, m)| *m) {
+            if in_trash
+                .get(&item.path)
+                .is_none_or(|kept| kept.deleted_at < item.deleted_at)
+            {
+                in_trash.insert(item.path.clone(), item);
+            }
+        }
+        let mut only_in_trash: Vec<_> = in_trash
+            .values()
+            .filter(|item| !hits.iter().any(|hit| hit.path == item.path))
+            .cloned()
+            .collect();
+        only_in_trash.sort_by_key(|item| std::cmp::Reverse(item.deleted_at));
+
+        let paths: Vec<String> = only_in_trash
+            .iter()
+            .map(|item| item.path.clone())
+            .chain(hits.iter().map(|hit| hit.path.clone()))
+            .collect();
+        let mut presence = tokio::task::spawn_blocking(move || on_disk::resolve(&paths))
             .await
             .map_err(|error| {
                 DaemonError::IndexUnavailable(format!("the folder listing task failed: {error}"))
             })?;
+        let hits_presence = presence.split_off(only_in_trash.len());
+
+        let found = only_in_trash
+            .into_iter()
+            .zip(presence)
+            .map(|(item, presence)| SearchResult {
+                name: last_name(&item.path).to_string(),
+                path: item.path,
+                kind: item.kind,
+                first_seq: 0,
+                last_seq: 0,
+                first_ts: 0,
+                last_ts: 0,
+                versions: 0,
+                size: item.size,
+                gone_from_disk: presence == on_disk::OnDisk::Absent,
+                trash: item.archive,
+                trashed_at: item.deleted_at,
+                trashed_size: item.size,
+            })
+            .chain(hits.into_iter().zip(hits_presence).map(|(hit, presence)| {
+                let trashed = in_trash.get(&hit.path);
+                SearchResult {
+                    path: hit.path,
+                    name: hit.name,
+                    kind: kind_name(hit.kind).to_string(),
+                    first_seq: hit.first_seq,
+                    last_seq: hit.last_seq,
+                    first_ts: hit.first_ts,
+                    last_ts: hit.last_ts,
+                    versions: hit.version_count.max(0) as u32,
+                    size: hit.size,
+                    gone_from_disk: presence == on_disk::OnDisk::Absent,
+                    trash: trashed.map(|t| t.archive.clone()).unwrap_or_default(),
+                    trashed_at: trashed.map_or(0, |t| t.deleted_at),
+                    trashed_size: trashed.map_or(0, |t| t.size),
+                }
+            }));
 
         // What a person searching has lost is what they are looking for, so it
         // goes first. A *stable* sort, which leaves the catalogue's own
         // ranking — most recent existence, then relevance — intact inside each
         // group.
-        let mut ranked: Vec<_> = hits.into_iter().zip(presence).collect();
-        ranked.sort_by_key(|(_, presence)| *presence != on_disk::OnDisk::Absent);
-
-        Ok(ranked
-            .into_iter()
-            .map(|(hit, presence)| SearchResult {
-                path: hit.path,
-                name: hit.name,
-                kind: kind_name(hit.kind).to_string(),
-                first_seq: hit.first_seq,
-                last_seq: hit.last_seq,
-                first_ts: hit.first_ts,
-                last_ts: hit.last_ts,
-                versions: hit.version_count.max(0) as u32,
-                size: hit.size,
-                gone_from_disk: presence == on_disk::OnDisk::Absent,
-            })
-            .collect())
+        let mut ranked: Vec<SearchResult> = found.collect();
+        ranked.sort_by_key(|result| !result.gone_from_disk);
+        ranked.truncate(SEARCH_LIMIT);
+        Ok(ranked)
     }
 
     /// Guided disaster recovery: bring back everything in `archive` into this
@@ -4190,6 +4252,11 @@ fn percentage(current: u64, total: u64) -> u32 {
         return 0;
     }
     ((current.min(total) * 100) / total) as u32
+}
+
+/// The last part of an archive-relative path: a file's name.
+fn last_name(path: &str) -> &str {
+    path.rsplit('/').next().unwrap_or(path)
 }
 
 fn kind_name(kind: Kind) -> &'static str {

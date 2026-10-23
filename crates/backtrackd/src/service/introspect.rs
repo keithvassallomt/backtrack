@@ -64,7 +64,7 @@ pub const METHODS: &[(&str, &str, &str)] = &[
     ("Resume", "", ""),
     ("ResumeJob", "t", ""),
     ("ResumeRecovery", "", "t"),
-    ("SearchFiles", "s", "a(sssxxxxuxb)"),
+    ("SearchFiles", "s", "a(sssxxxxuxbsxx)"),
     ("SetConfig", "ss", ""),
     ("SetupRepo", "ss", ""),
     ("StartFresh", "", "s"),

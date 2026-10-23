@@ -267,6 +267,16 @@ pub struct SearchResult {
     /// be an hour old, and the hour since is exactly when the thing a person
     /// is searching for went missing.
     pub gone_from_disk: bool,
+    /// When the Trash holds a version of this path that no backup has (Stage
+    /// 16), the archive name that copy is read and restored through
+    /// (`trash:<…>`); empty when it holds none. A path no backup has at all
+    /// has no versions, and its sequence numbers and times are 0.
+    pub trash: String,
+    /// When that copy was moved to the Trash, seconds since the epoch; 0 when
+    /// there is none.
+    pub trashed_at: i64,
+    /// That copy's size in bytes.
+    pub trashed_size: i64,
 }
 
 /// Something in the desktop's Trash that came from a backed-up folder, as
