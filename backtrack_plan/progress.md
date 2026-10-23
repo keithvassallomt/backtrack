@@ -165,7 +165,7 @@ Nothing right now.
 - [x] S15-T1 The backups that differ under a folder
 - [x] S15-T2 The sidebar and the stepping list only those backups
 - [x] S15-T3 The density strip and the calendar show the same backups
-- [/] S15-T4 A folder says when something inside it changed
+- [x] S15-T4 A folder says when something inside it changed
 - [x] S15-T5 Preview and restore from the offline spool
 - [x] S15-T6 A preview that could not be fetched is an error, not an empty file
 - [x] S15-T7 A switch to list every backup
