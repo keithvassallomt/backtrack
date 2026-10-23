@@ -1227,3 +1227,475 @@ fn the_size_cap_does_not_reach_into_a_restore_that_is_still_running() {
     );
     assert_eq!(list_stash(&f.stash, 50).len(), 1);
 }
+
+// ── From the Trash (Stage 16) ───────────────────────────────────────────────
+
+/// A freedesktop.org Trash beside a fixture's destination.
+fn trash_of(f: &Fixture) -> PathBuf {
+    f._dir.path().join("Trash")
+}
+
+/// What a file manager writes for `original` moved to `trash` as `name`.
+fn info_text(original: &Path) -> String {
+    format!(
+        "[Trash Info]\nPath={}\nDeletionDate=2026-10-23T12:45:00\n",
+        original.display()
+    )
+}
+
+/// Move `relative` in `f.dest` to `trash` as a file manager does: the copy in
+/// `files`, and its `.trashinfo`. Something not on disk is a file written
+/// straight into the Trash with `contents`. Returns it as a restore of it to
+/// where it was takes it.
+fn trash_file(f: &Fixture, trash: &Path, relative: &str, contents: &str) -> FromTrash {
+    let name = Path::new(relative).file_name().unwrap();
+    let copy = trash.join("files").join(name);
+    let info = trash
+        .join("info")
+        .join(format!("{}.trashinfo", name.to_string_lossy()));
+    std::fs::create_dir_all(info.parent().unwrap()).unwrap();
+    std::fs::write(&info, info_text(&f.dest.join(relative))).unwrap();
+    if f.dest.join(relative).exists() {
+        std::fs::create_dir_all(copy.parent().unwrap()).unwrap();
+        std::fs::rename(f.dest.join(relative), &copy).unwrap();
+    } else {
+        write(
+            &trash.join("files"),
+            &name.to_string_lossy(),
+            contents,
+            at(300),
+        );
+    }
+    FromTrash {
+        path: PathBuf::from(relative),
+        copy,
+        info: Some(info),
+    }
+}
+
+/// The inode of `path`, which a rename keeps and a copy does not.
+fn inode(path: &Path) -> u64 {
+    use std::os::unix::fs::MetadataExt;
+    std::fs::symlink_metadata(path).unwrap().ino()
+}
+
+const LETTER: &str = "Documents/letter to Ana.txt";
+
+#[test]
+fn a_trashed_file_is_restored_by_rename_and_leaves_the_trash() {
+    let f = fixture();
+    let trash = trash_of(&f);
+    let letter = trash_file(&f, &trash, LETTER, "Dear Ana,");
+    let moved = inode(&letter.copy);
+
+    let plan = plan_with_trash(
+        "the Trash",
+        &f.staging,
+        &f.dest,
+        &[PathBuf::from(LETTER)],
+        vec![letter.clone()],
+    )
+    .unwrap();
+    assert_eq!(class_of(&plan, LETTER).class, Class::OnlyInBackup);
+    assert!(plan.missing.is_empty(), "{:?}", plan.missing);
+    let report = execute(&plan, &Decisions::all(Decision::Skip), &f.stash, at(900)).unwrap();
+
+    assert_eq!(report.restored, 1, "{:?}", report.failures);
+    let back = f.dest.join(LETTER);
+    assert_eq!(std::fs::read_to_string(&back).unwrap(), "Dear Ana,");
+    assert_eq!(inode(&back), moved, "moved out by rename, not copied");
+    assert!(!letter.copy.exists(), "no longer in the Trash");
+    assert!(
+        !letter.info.as_ref().unwrap().exists(),
+        "and its .trashinfo is gone, so the Trash no longer lists it"
+    );
+}
+
+#[test]
+fn a_trashed_file_takes_the_place_of_the_backups_version() {
+    // Edited after the 12:00 backup and trashed at 12:45: what the entry
+    // shows, and what comes back, is the Trash's copy.
+    let f = fixture();
+    let trash = trash_of(&f);
+    write(&f.staging, "Documents/notes.txt", "as backed up", at(0));
+    let notes = trash_file(&f, &trash, "Documents/notes.txt", "edited since");
+
+    let plan = plan_with_trash(
+        "snapshot-01",
+        &f.staging,
+        &f.dest,
+        &[PathBuf::from("Documents")],
+        vec![notes],
+    )
+    .unwrap();
+    assert_eq!(
+        class_of(&plan, "Documents/notes.txt").backup.unwrap().size,
+        "edited since".len() as u64
+    );
+    execute(&plan, &Decisions::all(Decision::Skip), &f.stash, at(900)).unwrap();
+
+    assert_eq!(
+        std::fs::read_to_string(f.dest.join("Documents/notes.txt")).unwrap(),
+        "edited since"
+    );
+}
+
+#[test]
+fn a_trashed_file_in_the_way_of_one_on_disk_is_replaced_or_kept_both() {
+    for decision in [Decision::Replace, Decision::KeepBoth] {
+        let f = fixture();
+        let trash = trash_of(&f);
+        let letter = trash_file(&f, &trash, LETTER, "Dear Ana,");
+        write(&f.dest, LETTER, "a new letter, written since", at(600));
+
+        let plan = plan_with_trash(
+            "the Trash",
+            &f.staging,
+            &f.dest,
+            &[PathBuf::from(LETTER)],
+            vec![letter.clone()],
+        )
+        .unwrap();
+        assert_eq!(
+            class_of(&plan, LETTER).class,
+            Class::Conflict { disk_newer: true }
+        );
+        let report = execute(&plan, &Decisions::all(decision), &f.stash, at(900)).unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(f.dest.join(LETTER)).unwrap(),
+            "Dear Ana,",
+            "{decision:?}: the Trash's copy takes the name"
+        );
+        let Some(Move::FromTrash {
+            displaced: Some(displaced),
+            ..
+        }) = report.log.moves.first()
+        else {
+            panic!("{decision:?}: {:?}", report.log.moves);
+        };
+        let kept = match (decision, displaced) {
+            (Decision::Replace, Displaced::Stashed(kept)) => kept.clone(),
+            (Decision::KeepBoth, Displaced::Renamed(kept)) => {
+                assert_eq!(kept, &f.dest.join("Documents/letter to Ana (current).txt"));
+                kept.clone()
+            }
+            other => panic!("{other:?}"),
+        };
+        assert_eq!(
+            std::fs::read_to_string(kept).unwrap(),
+            "a new letter, written since",
+            "{decision:?}: the file that was in the way is kept"
+        );
+        assert!(!letter.info.unwrap().exists(), "{decision:?}");
+    }
+}
+
+#[test]
+fn something_skipped_stays_in_the_trash() {
+    let f = fixture();
+    let trash = trash_of(&f);
+    let letter = trash_file(&f, &trash, LETTER, "Dear Ana,");
+    write(&f.dest, LETTER, "a new letter, written since", at(600));
+
+    let plan = plan_with_trash(
+        "the Trash",
+        &f.staging,
+        &f.dest,
+        &[PathBuf::from(LETTER)],
+        vec![letter.clone()],
+    )
+    .unwrap();
+    let report = execute(&plan, &Decisions::all(Decision::Skip), &f.stash, at(900)).unwrap();
+
+    assert!(report.log.moves.is_empty(), "{:?}", report.log.moves);
+    assert_eq!(std::fs::read_to_string(&letter.copy).unwrap(), "Dear Ana,");
+    assert!(letter.info.unwrap().exists());
+}
+
+#[test]
+fn undo_puts_a_restored_file_back_in_the_trash_as_it_was() {
+    let f = fixture();
+    let trash = trash_of(&f);
+    let letter = trash_file(&f, &trash, LETTER, "Dear Ana,");
+    write(&f.dest, LETTER, "a new letter, written since", at(600));
+    let info = letter.info.clone().unwrap();
+    let text = std::fs::read_to_string(&info).unwrap();
+
+    let plan = plan_with_trash(
+        "the Trash",
+        &f.staging,
+        &f.dest,
+        &[PathBuf::from(LETTER)],
+        vec![letter.clone()],
+    )
+    .unwrap();
+    let report = execute(&plan, &Decisions::all(Decision::Replace), &f.stash, at(900)).unwrap();
+    let undone = undo(&report.log);
+
+    assert!(undone.failures.is_empty(), "{:?}", undone.failures);
+    assert_eq!(std::fs::read_to_string(&letter.copy).unwrap(), "Dear Ana,");
+    assert_eq!(
+        std::fs::read_to_string(&info).unwrap(),
+        text,
+        "the .trashinfo as it was, deletion time and all"
+    );
+    assert_eq!(
+        std::fs::read_to_string(f.dest.join(LETTER)).unwrap(),
+        "a new letter, written since",
+        "the file it replaced is back"
+    );
+}
+
+#[test]
+fn undo_finds_a_free_name_when_the_trash_has_given_its_own_away() {
+    let f = fixture();
+    let trash = trash_of(&f);
+    let letter = trash_file(&f, &trash, LETTER, "Dear Ana,");
+    let text = std::fs::read_to_string(letter.info.as_ref().unwrap()).unwrap();
+
+    let plan = plan_with_trash(
+        "the Trash",
+        &f.staging,
+        &f.dest,
+        &[PathBuf::from(LETTER)],
+        vec![letter.clone()],
+    )
+    .unwrap();
+    let report = execute(&plan, &Decisions::all(Decision::Skip), &f.stash, at(900)).unwrap();
+    // Another letter of the same name, from another folder, is moved to the
+    // Trash, and takes the name there.
+    let other = trash_file(&f, &trash, "Letters/letter to Ana.txt", "Dear Ana, again");
+    let other_text = std::fs::read_to_string(other.info.as_ref().unwrap()).unwrap();
+    assert_ne!(other_text, text);
+    let undone = undo(&report.log);
+
+    assert!(undone.failures.is_empty(), "{:?}", undone.failures);
+    assert_eq!(
+        std::fs::read_to_string(trash.join("files/letter to Ana.2.txt")).unwrap(),
+        "Dear Ana,"
+    );
+    assert_eq!(
+        std::fs::read_to_string(trash.join("info/letter to Ana.2.txt.trashinfo")).unwrap(),
+        text,
+        "under the free name, still saying where it came from and when"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&other.copy).unwrap(),
+        "Dear Ana, again",
+        "the item that took the name is left alone"
+    );
+    assert_eq!(
+        std::fs::read_to_string(other.info.unwrap()).unwrap(),
+        other_text
+    );
+}
+
+/// A directory on another filesystem than `than`, for a move that has to
+/// copy. A test that needs one fails without it rather than passing without
+/// having moved anything across.
+fn another_filesystem(than: &Path) -> tempfile::TempDir {
+    let candidates = [
+        PathBuf::from("/dev/shm"),
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target"),
+    ];
+    for candidate in candidates {
+        let Ok(dir) = tempfile::tempdir_in(&candidate) else {
+            continue;
+        };
+        if !same_filesystem(dir.path(), than) {
+            return dir;
+        }
+    }
+    panic!("no directory on another filesystem than {}", than.display());
+}
+
+#[test]
+fn restore_to_another_drive_copies_out_of_the_trash_and_takes_it_out() {
+    let f = fixture();
+    let drive = another_filesystem(&f.dest);
+    let trash = drive.path().join("Trash");
+    let letter = trash_file(&f, &trash, LETTER, "Dear Ana,");
+    let mtime = std::fs::metadata(&letter.copy).unwrap().modified().unwrap();
+    assert!(!same_filesystem(&letter.copy, &f.dest));
+    // Restore To puts it in a folder of its own, by its name.
+    let chosen = f.dest.join("Restored letter");
+    std::fs::create_dir_all(&chosen).unwrap();
+    let into = FromTrash {
+        path: PathBuf::from("letter to Ana.txt"),
+        ..letter.clone()
+    };
+
+    let plan = plan_with_trash(
+        "the Trash",
+        &f.staging,
+        &chosen,
+        &[PathBuf::from("letter to Ana.txt")],
+        vec![into],
+    )
+    .unwrap();
+    let report = execute(&plan, &Decisions::all(Decision::Replace), &f.stash, at(900)).unwrap();
+
+    assert_eq!(report.restored, 1, "{:?}", report.failures);
+    let arrived = chosen.join("letter to Ana.txt");
+    assert_eq!(std::fs::read_to_string(&arrived).unwrap(), "Dear Ana,");
+    assert_eq!(
+        std::fs::metadata(&arrived).unwrap().modified().unwrap(),
+        mtime,
+        "copied with its modification time"
+    );
+    assert!(!letter.copy.exists(), "moved, not only copied");
+    assert!(!letter.info.unwrap().exists());
+}
+
+#[test]
+fn a_folder_restored_from_a_trash_entry_brings_both_back_and_undoes_in_one_step() {
+    // A and B backed up at 12:00; B deleted for good since; C written, and a
+    // folder of drafts, both moved to the Trash by 12:45.
+    let f = fixture();
+    let trash = trash_of(&f);
+    write(&f.staging, "Documents/A.txt", "a", at(0));
+    write(&f.staging, "Documents/B.txt", "b", at(0));
+    write(&f.dest, "Documents/A.txt", "a", at(0));
+    let c = trash_file(&f, &trash, "Documents/C.txt", "c");
+    write(&f.dest, "Documents/Drafts/one.txt", "one", at(300));
+    std::fs::create_dir_all(f.dest.join("Documents/Drafts/empty")).unwrap();
+    let drafts = trash_file(&f, &trash, "Documents/Drafts", "");
+    let before = snapshot(&f.dest);
+    let trash_before = snapshot(&trash);
+
+    let plan = plan_with_trash(
+        "snapshot-01",
+        &f.staging,
+        &f.dest,
+        &[PathBuf::from("Documents")],
+        vec![c.clone(), drafts.clone()],
+    )
+    .unwrap();
+    assert_eq!(class_of(&plan, "Documents/A.txt").class, Class::Identical);
+    for added in [
+        "Documents/B.txt",
+        "Documents/C.txt",
+        "Documents/Drafts",
+        "Documents/Drafts/one.txt",
+        "Documents/Drafts/empty",
+    ] {
+        assert_eq!(class_of(&plan, added).class, Class::OnlyInBackup, "{added}");
+    }
+    let report = execute(&plan, &Decisions::all(Decision::Skip), &f.stash, at(900)).unwrap();
+
+    assert!(report.failures.is_empty(), "{:?}", report.failures);
+    for (path, contents) in [
+        ("Documents/B.txt", "b"),
+        ("Documents/C.txt", "c"),
+        ("Documents/Drafts/one.txt", "one"),
+    ] {
+        assert_eq!(
+            std::fs::read_to_string(f.dest.join(path)).unwrap(),
+            contents
+        );
+    }
+    assert!(f.dest.join("Documents/Drafts/empty").is_dir());
+    assert!(
+        std::fs::read_dir(trash.join("files"))
+            .unwrap()
+            .next()
+            .is_none(),
+        "nothing is left in the Trash"
+    );
+    assert!(std::fs::read_dir(trash.join("info"))
+        .unwrap()
+        .next()
+        .is_none());
+
+    let undone = undo(&report.log);
+
+    assert!(undone.failures.is_empty(), "{:?}", undone.failures);
+    assert_eq!(snapshot(&f.dest), before, "the folder as it was");
+    assert!(
+        !f.dest.join("Documents/Drafts").exists(),
+        "the folder made for the drafts went back with them"
+    );
+    assert_eq!(snapshot(&trash), trash_before, "the Trash as it was");
+    assert!(
+        drafts.copy.join("empty").is_dir(),
+        "with the empty folder inside the trashed one"
+    );
+}
+
+#[test]
+fn a_file_taken_from_inside_a_trashed_folder_leaves_the_folder_in_the_trash() {
+    let f = fixture();
+    let trash = trash_of(&f);
+    write(&f.dest, "Documents/Drafts/one.txt", "one", at(300));
+    write(&f.dest, "Documents/Drafts/two.txt", "two", at(300));
+    let drafts = trash_file(&f, &trash, "Documents/Drafts", "");
+    let one = FromTrash {
+        path: PathBuf::from("Documents/Drafts/one.txt"),
+        copy: drafts.copy.join("one.txt"),
+        info: None,
+    };
+
+    let plan = plan_with_trash(
+        "the Trash",
+        &f.staging,
+        &f.dest,
+        &[PathBuf::from("Documents/Drafts/one.txt")],
+        vec![one],
+    )
+    .unwrap();
+    assert_eq!(plan.entries.len(), 1, "{:?}", plan.entries);
+    let report = execute(&plan, &Decisions::all(Decision::Skip), &f.stash, at(900)).unwrap();
+
+    assert_eq!(
+        std::fs::read_to_string(f.dest.join("Documents/Drafts/one.txt")).unwrap(),
+        "one"
+    );
+    assert!(!drafts.copy.join("one.txt").exists());
+    assert!(drafts.copy.join("two.txt").exists());
+    assert!(drafts.info.as_ref().unwrap().exists(), "still in the Trash");
+
+    let undone = undo(&report.log);
+    assert!(undone.failures.is_empty(), "{:?}", undone.failures);
+    assert_eq!(
+        std::fs::read_to_string(drafts.copy.join("one.txt")).unwrap(),
+        "one"
+    );
+    assert!(!f.dest.join("Documents/Drafts/one.txt").exists());
+}
+
+#[test]
+fn a_trashed_folder_takes_the_place_of_the_backups_whole() {
+    // Drafts held one.txt and old.txt at 12:00; old.txt was deleted, and the
+    // folder moved to the Trash by 12:45. The entry shows the Trash's copy,
+    // and that is what comes back: old.txt is not brought back with it.
+    let f = fixture();
+    let trash = trash_of(&f);
+    write(&f.staging, "Documents/Drafts/one.txt", "one", at(0));
+    write(&f.staging, "Documents/Drafts/old.txt", "old", at(0));
+    write(&f.dest, "Documents/Drafts/one.txt", "one, edited", at(300));
+    let drafts = trash_file(&f, &trash, "Documents/Drafts", "");
+
+    let plan = plan_with_trash(
+        "snapshot-01",
+        &f.staging,
+        &f.dest,
+        &[PathBuf::from("Documents")],
+        vec![drafts],
+    )
+    .unwrap();
+
+    assert!(
+        plan.entries
+            .iter()
+            .all(|e| e.path != Path::new("Documents/Drafts/old.txt")),
+        "{:?}",
+        plan.entries
+    );
+    execute(&plan, &Decisions::all(Decision::Skip), &f.stash, at(900)).unwrap();
+    assert!(!f.dest.join("Documents/Drafts/old.txt").exists());
+    assert_eq!(
+        std::fs::read_to_string(f.dest.join("Documents/Drafts/one.txt")).unwrap(),
+        "one, edited"
+    );
+}

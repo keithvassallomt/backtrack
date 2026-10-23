@@ -52,10 +52,11 @@ pub async fn ask(
     preview: &RestorePreview,
     folder: &str,
     target: &str,
-    taken: i64,
+    at: i64,
+    origin: &copy::Origin,
 ) -> Answer {
     loop {
-        match summary(parent, preview, folder, taken).await {
+        match summary(parent, preview, folder, at, origin).await {
             Summary::Cancel => return Answer::Cancel,
             Summary::KeepBoth => return Answer::KeepBoth,
             Summary::Replace => {
@@ -64,7 +65,7 @@ pub async fn ask(
                 }
             }
             Summary::Review => {
-                if let Some(ticked) = review(parent, preview, folder, target, taken).await {
+                if let Some(ticked) = review(parent, preview, folder, target, at, origin).await {
                     // Every path is answered explicitly, so a change of type
                     // that was ticked actually happens — the blanket answer
                     // deliberately does not reach those.
@@ -100,12 +101,13 @@ async fn summary(
     parent: &impl IsA<gtk4::Widget>,
     preview: &RestorePreview,
     folder: &str,
-    taken: i64,
+    at: i64,
+    origin: &copy::Origin,
 ) -> Summary {
     let tz = glib::TimeZone::local();
     let dialog = adw::AlertDialog::new(
-        Some(&copy::summary_title(folder, taken, &tz)),
-        Some(&copy::summary_subtitle(taken, &tz)),
+        Some(&copy::summary_title(folder, at, origin, &tz)),
+        Some(&copy::summary_subtitle(origin, &tz)),
     );
 
     // Each row is a whole sentence, and "4 files exist only on your disk —
@@ -115,7 +117,7 @@ async fn summary(
     crate::ui::prefer_wide_responses(&dialog);
 
     let reviewing = Rc::new(Cell::new(false));
-    let rows = summary_rows(preview, &dialog, &reviewing);
+    let rows = summary_rows(preview, origin, &dialog, &reviewing);
     rows.set_size_request(SUMMARY_WIDTH - 40, -1);
     dialog.set_extra_child(Some(&rows));
 
@@ -144,6 +146,7 @@ async fn summary(
 /// The boxed list of counts, with Review beside the row it belongs to.
 fn summary_rows(
     preview: &RestorePreview,
+    origin: &copy::Origin,
     dialog: &adw::AlertDialog,
     reviewing: &Rc<Cell<bool>>,
 ) -> GtkBox {
@@ -152,7 +155,7 @@ fn summary_rows(
     rows.add_css_class("boxed-list");
 
     let mut review_added = false;
-    for summary in copy::summary_rows(preview) {
+    for summary in copy::summary_rows(preview, origin) {
         let row = adw::ActionRow::builder()
             .use_markup(false)
             .title(&summary.text)
@@ -200,15 +203,13 @@ async fn review(
     preview: &RestorePreview,
     folder: &str,
     target: &str,
-    taken: i64,
+    at: i64,
+    origin: &copy::Origin,
 ) -> Option<BTreeSet<String>> {
     let tz = glib::TimeZone::local();
     let dialog = adw::AlertDialog::new(
         Some("Review files to be replaced"),
-        Some(&format!(
-            "Restoring “{folder}” from {}",
-            crate::model::format::at(taken, &tz, "%e %b %Y, %H:%M")
-        )),
+        Some(&copy::review_subtitle(folder, at, origin, &tz)),
     );
 
     // Wider still: every row carries two dated versions of the same file.
@@ -236,7 +237,7 @@ async fn review(
     let checks: Rc<RefCell<Vec<(CheckButton, bool)>>> = Rc::new(RefCell::new(Vec::new()));
 
     for entry in &preview.entries {
-        let (check, row) = review_row(entry, target, &tz);
+        let (check, row) = review_row(entry, target, origin, &tz);
         let starts_ticked = ticked.borrow().contains(&entry.path);
         let path = entry.path.clone();
         let watched = Rc::clone(&ticked);
@@ -295,15 +296,20 @@ async fn review(
 fn review_row(
     entry: &RestoreEntry,
     target: &str,
+    origin: &copy::Origin,
     tz: &glib::TimeZone,
 ) -> (CheckButton, adw::ActionRow) {
     let (disk, backup) = copy::version_lines(entry, tz);
     let name = copy::review_name(&entry.path, target);
+    let incoming = match origin.comes_from_trash(&entry.path) {
+        true => "In the Trash",
+        false => "Backup",
+    };
 
     let row = adw::ActionRow::builder()
         .use_markup(false)
         .title(&name)
-        .subtitle(format!("On disk: {disk}\nBackup: {backup}"))
+        .subtitle(format!("On disk: {disk}\n{incoming}: {backup}"))
         .build();
     row.set_subtitle_lines(2);
 

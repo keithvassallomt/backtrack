@@ -31,7 +31,7 @@ mod preview;
 mod recovery_e2e;
 mod state;
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
 
@@ -436,9 +436,17 @@ impl Shared {
     /// Everything that can be refused before a job exists is refused here, so
     /// a client hears "that path is empty" as an error to its call rather than
     /// as a job that fails a moment later.
+    ///
+    /// `trashed` names things in the Trash (archive names from `ListTrashed`)
+    /// to put back in place of whatever `archive` has at their paths, as a
+    /// Trash entry in the timeline shows them, and `archive` is empty when
+    /// nothing comes from a backup. An archive that is itself a trashed item's
+    /// name is that item. What the Trash holds whole is not fetched from the
+    /// backup at all, so restoring it does not need the destination.
     async fn restore_preflight(
         &self,
         archive: &str,
+        trashed: &[String],
         paths: &[String],
         dest: &str,
     ) -> Result<PendingRestore> {
@@ -447,10 +455,47 @@ impl Shared {
                 "restore needs at least one path".into(),
             ));
         }
+        let mut trashed = trashed.to_vec();
+        let archive = if backtrack_core::trash::info_of(archive).is_some() {
+            trashed.push(archive.to_string());
+            ""
+        } else {
+            archive
+        };
+        let mut items = Vec::new();
+        for name in &trashed {
+            // Only what is listed is ever moved, as only what is listed is
+            // ever read.
+            let entry = self.trash.find(name).ok_or_else(|| {
+                DaemonError::NotFound(format!("{name} is no longer in the Trash"))
+            })?;
+            items.push(entry.item);
+        }
+        let trash = from_trash(&items, paths);
+        let fetch: Vec<String> = match archive {
+            "" => Vec::new(),
+            _ => paths
+                .iter()
+                .filter(|p| !trash.iter().any(|t| Path::new(p).starts_with(&t.path)))
+                .cloned()
+                .collect(),
+        };
+        if fetch.is_empty() && trash.is_empty() {
+            return Err(DaemonError::InvalidArgument(
+                "there is nothing to restore: no backup was named, and nothing named is in the Trash"
+                    .into(),
+            ));
+        }
+        let engine = match fetch.is_empty() {
+            true => None,
+            false => Some(self.engine_for(archive).await?),
+        };
         Ok(PendingRestore {
-            engine: self.engine_for(archive).await?,
+            engine,
             archive: ArchiveId(archive.to_string()),
             paths: paths.to_vec(),
+            fetch,
+            trash,
             dest: PathBuf::from(dest),
             into_dest: false,
         })
@@ -472,9 +517,11 @@ impl Shared {
         let staging_root = self.staging_dir.clone();
         let factory: JobFactory = Arc::new(move |job| {
             let plan = crate::restore::PreparePlan {
-                engine: Arc::clone(&pending.engine),
+                engine: pending.engine.clone(),
                 archive: pending.archive.clone(),
                 paths: pending.paths.clone(),
+                fetch: pending.fetch.clone(),
+                trash: pending.trash.clone(),
                 dest: pending.dest.clone(),
                 into_dest: pending.into_dest,
                 staging: staging_root.join(job.to_string()),
@@ -1858,9 +1905,9 @@ impl Shared {
     /// is where a name given on the command line will be.
     async fn engine_for(&self, archive: &str) -> Result<Arc<dyn BackupEngine>> {
         if backtrack_core::trash::info_of(archive).is_some() {
-            return Err(DaemonError::RestoreFailed(
-                "restoring from the Trash is not supported yet".to_string(),
-            ));
+            return Err(DaemonError::NotFound(format!(
+                "{archive} is in the Trash, not in a backup"
+            )));
         }
         let repo = IndexReader::open(&self.index_path)?.repo_of(archive)?;
         match repo {
@@ -2465,9 +2512,12 @@ struct Layout {
 
 /// A restore request that has passed its checks but has no job yet.
 struct PendingRestore {
-    engine: Arc<dyn BackupEngine>,
+    engine: Option<Arc<dyn BackupEngine>>,
     archive: ArchiveId,
     paths: Vec<String>,
+    /// See [`crate::restore::PreparePlan`].
+    fetch: Vec<String>,
+    trash: Vec<backtrack_core::restore::FromTrash>,
     dest: PathBuf,
     /// Whether what was asked for lands inside `dest` rather than at the
     /// absolute path it came from. See [`crate::restore::PreparePlan`].
@@ -2597,7 +2647,10 @@ impl Daemon1 {
         policy: &str,
     ) -> Result<u64> {
         let policy = RestorePolicy::parse(policy)?;
-        let prepared = self.shared.restore_preflight(archive, &paths, dest).await?;
+        let prepared = self
+            .shared
+            .restore_preflight(archive, &[], &paths, dest)
+            .await?;
         info!(archive, dest, policy = policy.as_str(), "restore requested");
 
         let decisions = Decisions::all(match policy {
@@ -2618,8 +2671,35 @@ impl Daemon1 {
     /// answer is read with `GetRestorePreview` using the same id, applied with
     /// `ExecuteRestore`, and thrown away with `DiscardRestore`.
     async fn prepare_restore(&self, archive: &str, paths: Vec<String>, dest: &str) -> Result<u64> {
-        let prepared = self.shared.restore_preflight(archive, &paths, dest).await?;
-        info!(archive, dest, "working out a restore");
+        self.prepare_restore_with_trash(archive, Vec::new(), paths, dest)
+            .await
+    }
+
+    /// As `PrepareRestore`, with each of `trashed` (archive names from
+    /// `ListTrashed`) put back in place of whatever `archive` has at its path,
+    /// as a Trash entry in the timeline shows them. `archive` is empty when
+    /// nothing comes from a backup.
+    ///
+    /// What is restored from the Trash is moved out of it, as the file
+    /// manager's own Restore does, and `UndoRestore` moves it back in with its
+    /// `.trashinfo` as it was.
+    async fn prepare_restore_with_trash(
+        &self,
+        archive: &str,
+        trashed: Vec<String>,
+        paths: Vec<String>,
+        dest: &str,
+    ) -> Result<u64> {
+        let prepared = self
+            .shared
+            .restore_preflight(archive, &trashed, &paths, dest)
+            .await?;
+        info!(
+            archive,
+            dest,
+            from_trash = prepared.trash.len(),
+            "working out a restore"
+        );
         Ok(self
             .shared
             .submit_restore(prepared, crate::restore::start_prepare))
@@ -2697,13 +2777,30 @@ impl Daemon1 {
     /// `dest`, and two folders' contents merged into one directory would be a
     /// different operation wearing this one's name.
     async fn restore_into(&self, archive: &str, paths: Vec<String>, dest: &str) -> Result<u64> {
+        self.restore_into_with_trash(archive, Vec::new(), paths, dest)
+            .await
+    }
+
+    /// As `RestoreInto`, with `trashed` as for `PrepareRestoreWithTrash`:
+    /// what comes from the Trash is moved out of it into `dest`, copied first
+    /// when `dest` is on another drive.
+    async fn restore_into_with_trash(
+        &self,
+        archive: &str,
+        trashed: Vec<String>,
+        paths: Vec<String>,
+        dest: &str,
+    ) -> Result<u64> {
         if paths.len() != 1 {
             return Err(DaemonError::InvalidArgument(format!(
                 "RestoreInto takes exactly one path; got {}",
                 paths.len()
             )));
         }
-        let mut prepared = self.shared.restore_preflight(archive, &paths, dest).await?;
+        let mut prepared = self
+            .shared
+            .restore_preflight(archive, &trashed, &paths, dest)
+            .await?;
         prepared.into_dest = true;
 
         // Made here rather than left to the moves, so a destination that cannot
@@ -3709,6 +3806,43 @@ impl Daemon1 {
         kind: &str,
         outcome: &str,
     ) -> zbus::Result<()>;
+}
+
+/// What a restore of `paths` takes from the trashed `items`, archive-relative:
+/// each item at or below a path asked for, whole, and for a path asked for
+/// inside a trashed folder, that part of it.
+fn from_trash(
+    items: &[backtrack_core::trash::Item],
+    paths: &[String],
+) -> Vec<backtrack_core::restore::FromTrash> {
+    use backtrack_core::restore::FromTrash;
+    let mut taken: Vec<FromTrash> = Vec::new();
+    for item in items {
+        let original = backtrack_core::walk::archive_path(&item.original);
+        for asked in paths {
+            let found = if Path::new(&original).starts_with(asked) {
+                Some(FromTrash {
+                    path: PathBuf::from(&original),
+                    copy: item.copy.clone(),
+                    info: Some(item.info.clone()),
+                })
+            } else if Path::new(asked).starts_with(&original) {
+                backtrack_core::trash::copy_of(item, asked).map(|copy| FromTrash {
+                    path: PathBuf::from(asked),
+                    copy,
+                    info: None,
+                })
+            } else {
+                None
+            };
+            if let Some(found) = found {
+                if !taken.contains(&found) {
+                    taken.push(found);
+                }
+            }
+        }
+    }
+    taken
 }
 
 /// What went wrong while an archived file was being copied out: Borg's own

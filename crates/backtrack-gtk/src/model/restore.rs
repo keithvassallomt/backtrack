@@ -28,6 +28,42 @@ pub const SAFETY_NOTE: &str = "Replaced files are kept as safety copies for 30 d
 /// click without saying so, which is the same failure wearing a button.
 pub const TYPE_CHANGE_NOTE: &str = "Select All leaves changes of type alone. Tick those yourself.";
 
+/// Where what a restore brings back comes from, which is what the dialogs
+/// call it: a backup, the Trash (Stage 16), or both, for a folder restored
+/// from a Trash entry.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Origin {
+    /// When the backup it comes from was taken; None when none of it does.
+    pub taken: Option<i64>,
+    /// The paths it takes from the Trash: anything at or below one of them is
+    /// the Trash's copy.
+    pub trashed: Vec<String>,
+}
+
+impl Origin {
+    /// All of it from the backup taken at `taken`.
+    pub fn backup(taken: i64) -> Origin {
+        Origin {
+            taken: Some(taken),
+            trashed: Vec::new(),
+        }
+    }
+
+    /// Whether what is restored to `path` is the Trash's copy.
+    pub fn comes_from_trash(&self, path: &str) -> bool {
+        self.trashed.iter().any(|t| crate::path::is_within(path, t))
+    }
+}
+
+/// What the dialogs call the version being restored to `path`.
+pub fn incoming(origin: &Origin, path: &str) -> &'static str {
+    if origin.comes_from_trash(path) {
+        "In the Trash"
+    } else {
+        "Backup version"
+    }
+}
+
 /// The single-file dialog's title: `Replace "report.odt"?`
 pub fn conflict_title(name: &str) -> String {
     format!("Replace “{name}”?")
@@ -39,15 +75,16 @@ pub fn conflict_title(name: &str) -> String {
 /// the one that matters — restoring over newer work is the risky direction,
 /// and a dialog that leaves the user to work that out from two timestamps has
 /// wasted the only chance it had to say so.
-pub fn conflict_body(folder: &str, disk_newer: bool) -> String {
+pub fn conflict_body(folder: &str, disk_newer: bool, from_trash: bool) -> String {
     let where_ = match folder {
         "" => "A file with this name already exists here.".to_string(),
         folder => format!("A file with this name already exists in {folder}."),
     };
-    let which = if disk_newer {
-        "The file on your disk is newer than the backup version."
-    } else {
-        "The backup version is newer than the file on your disk."
+    let which = match (disk_newer, from_trash) {
+        (true, false) => "The file on your disk is newer than the backup version.",
+        (false, false) => "The backup version is newer than the file on your disk.",
+        (true, true) => "The file on your disk is newer than the one in the Trash.",
+        (false, true) => "The one in the Trash is newer than the file on your disk.",
     };
     format!("{where_}\n{which}")
 }
@@ -109,20 +146,39 @@ pub fn review_name(path: &str, target: &str) -> String {
     }
 }
 
-/// The folder summary's title: `Restore "Projects" from 28 June?`
-pub fn summary_title(folder: &str, taken: i64, tz: &glib::TimeZone) -> String {
-    format!(
-        "Restore “{folder}” from {}?",
-        format::at(taken, tz, "%e %B")
-    )
+/// The folder summary's title: `Restore "Projects" from 28 June?`, dated by
+/// the backup or Trash entry being viewed.
+pub fn summary_title(folder: &str, at: i64, origin: &Origin, tz: &glib::TimeZone) -> String {
+    match origin.taken {
+        None => format!("Restore “{folder}” from the Trash?"),
+        Some(_) => format!("Restore “{folder}” from {}?", format::at(at, tz, "%e %B")),
+    }
 }
 
 /// The folder summary's subtitle, which dates the backup in full.
-pub fn summary_subtitle(taken: i64, tz: &glib::TimeZone) -> String {
-    format!(
-        "Restoring from the backup of {}",
-        format::at(taken, tz, "%e %b %Y, %H:%M")
-    )
+pub fn summary_subtitle(origin: &Origin, tz: &glib::TimeZone) -> String {
+    match (origin.taken, origin.trashed.is_empty()) {
+        (None, _) => "Restoring from the Trash".to_string(),
+        (Some(taken), true) => format!(
+            "Restoring from the backup of {}",
+            format::at(taken, tz, "%e %b %Y, %H:%M")
+        ),
+        (Some(taken), false) => format!(
+            "Restoring from the backup of {}, and from the Trash",
+            format::at(taken, tz, "%e %b %Y, %H:%M")
+        ),
+    }
+}
+
+/// The review list's subtitle: what is restored, and from where.
+pub fn review_subtitle(folder: &str, at: i64, origin: &Origin, tz: &glib::TimeZone) -> String {
+    match origin.taken {
+        None => format!("Restoring “{folder}” from the Trash"),
+        Some(_) => format!(
+            "Restoring “{folder}” from {}",
+            format::at(at, tz, "%e %b %Y, %H:%M")
+        ),
+    }
 }
 
 /// One row of the summary, with the icon that goes beside it.
@@ -140,7 +196,7 @@ pub struct SummaryRow {
 /// noise, and the screen is meant to be read at a glance rather than parsed.
 /// The one that is never left out when it applies is the last — that nothing
 /// is deleted is the thing people most need to be told.
-pub fn summary_rows(preview: &RestorePreview) -> Vec<SummaryRow> {
+pub fn summary_rows(preview: &RestorePreview, origin: &Origin) -> Vec<SummaryRow> {
     let mut rows = Vec::new();
     if preview.identical > 0 {
         rows.push(SummaryRow {
@@ -168,9 +224,14 @@ pub fn summary_rows(preview: &RestorePreview) -> Vec<SummaryRow> {
         rows.push(SummaryRow {
             icon: "list-add-symbolic",
             text: format!(
-                "{} {} only in the backup — will be added",
+                "{} {} only in the {} — will be added",
                 count_items(preview.only_in_backup),
-                verb(preview.only_in_backup, "exists", "exist")
+                verb(preview.only_in_backup, "exists", "exist"),
+                match (origin.taken, origin.trashed.is_empty()) {
+                    (None, _) => "Trash",
+                    (Some(_), true) => "backup",
+                    (Some(_), false) => "backup or the Trash",
+                }
             ),
             reviewable: false,
         });
@@ -539,18 +600,19 @@ mod tests {
     #[test]
     fn the_conflict_dialog_always_says_which_side_is_newer() {
         // The single most complained-about omission in Time Machine's.
-        let newer_on_disk = conflict_body("Documents", true);
+        let newer_on_disk = conflict_body("Documents", true, false);
         assert!(newer_on_disk.contains("A file with this name already exists in Documents."));
         assert!(newer_on_disk.contains("The file on your disk is newer"));
 
-        let newer_in_backup = conflict_body("Documents", false);
+        let newer_in_backup = conflict_body("Documents", false, false);
         assert!(newer_in_backup.contains("The backup version is newer"));
         assert_ne!(newer_on_disk, newer_in_backup);
     }
 
     #[test]
     fn a_restore_into_the_top_of_the_tree_does_not_name_an_empty_folder() {
-        assert!(conflict_body("", true).starts_with("A file with this name already exists here."));
+        assert!(conflict_body("", true, false)
+            .starts_with("A file with this name already exists here."));
     }
 
     #[test]
@@ -560,7 +622,7 @@ mod tests {
 
     #[test]
     fn the_summary_reads_like_the_mockup() {
-        let rows = summary_rows(&preview());
+        let rows = summary_rows(&preview(), &Origin::backup(0));
         let text: Vec<&str> = rows.iter().map(|r| r.text.as_str()).collect();
         assert_eq!(
             text,
@@ -586,7 +648,10 @@ mod tests {
         one.disk_newer = 0;
         one.only_in_backup = 1;
         one.only_on_disk = 1;
-        let text: Vec<String> = summary_rows(&one).iter().map(|r| r.text.clone()).collect();
+        let text: Vec<String> = summary_rows(&one, &Origin::backup(0))
+            .iter()
+            .map(|r| r.text.clone())
+            .collect();
         assert_eq!(
             text,
             [
@@ -603,7 +668,7 @@ mod tests {
         let mut nothing = preview();
         nothing.only_on_disk = 0;
         nothing.only_in_backup = 0;
-        let rows = summary_rows(&nothing);
+        let rows = summary_rows(&nothing, &Origin::backup(0));
         assert_eq!(rows.len(), 2);
         assert!(!rows.iter().any(|r| r.text.starts_with('0')));
     }
@@ -612,7 +677,7 @@ mod tests {
     fn a_change_of_type_is_called_out_even_though_the_mockup_has_no_row_for_it() {
         let mut typed = preview();
         typed.type_changed = 1;
-        let rows = summary_rows(&typed);
+        let rows = summary_rows(&typed, &Origin::backup(0));
         let last = rows.last().unwrap();
         assert_eq!(
             last.text,
@@ -625,7 +690,7 @@ mod tests {
     fn the_replacements_row_only_mentions_newer_copies_when_there_are_some() {
         let mut none_newer = preview();
         none_newer.disk_newer = 0;
-        let rows = summary_rows(&none_newer);
+        let rows = summary_rows(&none_newer, &Origin::backup(0));
         assert_eq!(rows[1].text, "6 files will be replaced");
     }
 
@@ -658,12 +723,84 @@ mod tests {
         // 2026-06-28 09:00:00 UTC.
         let taken = 1_782_637_200;
         assert_eq!(
-            summary_title("Projects", taken, &utc()),
+            summary_title("Projects", taken, &Origin::backup(taken), &utc()),
             "Restore “Projects” from 28 June?"
         );
         assert_eq!(
-            summary_subtitle(taken, &utc()),
+            summary_subtitle(&Origin::backup(taken), &utc()),
             "Restoring from the backup of 28 Jun 2026, 09:00"
+        );
+    }
+
+    /// A folder restored from a Trash entry: the backup before its gap, and
+    /// what went to the Trash in it.
+    fn from_an_entry(taken: Option<i64>) -> Origin {
+        Origin {
+            taken,
+            trashed: vec!["home/ana/Documents/letter to Ana.txt".to_string()],
+        }
+    }
+
+    #[test]
+    fn what_comes_from_the_trash_is_called_the_trashs() {
+        let origin = from_an_entry(Some(0));
+        let letter = "home/ana/Documents/letter to Ana.txt";
+        assert_eq!(incoming(&origin, letter), "In the Trash");
+        assert_eq!(
+            incoming(&origin, "home/ana/Documents/notes.txt"),
+            "Backup version"
+        );
+        assert_eq!(
+            incoming(&origin, "home/ana/Documents/letter to Ana.txt.bak"),
+            "Backup version",
+            "a path that only begins the same is not inside it"
+        );
+        assert!(conflict_body("Documents", false, true)
+            .ends_with("The one in the Trash is newer than the file on your disk."));
+        assert!(conflict_body("Documents", true, true)
+            .ends_with("The file on your disk is newer than the one in the Trash."));
+    }
+
+    #[test]
+    fn a_summary_from_a_trash_entry_says_where_each_part_comes_from() {
+        // 2026-06-28 09:00:00 UTC, and the letter trashed at 09:45.
+        let taken = 1_782_637_200;
+        let at = taken + 45 * 60;
+        let both = from_an_entry(Some(taken));
+        assert_eq!(
+            summary_title("Documents", at, &both, &utc()),
+            "Restore “Documents” from 28 June?"
+        );
+        assert_eq!(
+            summary_subtitle(&both, &utc()),
+            "Restoring from the backup of 28 Jun 2026, 09:00, and from the Trash"
+        );
+        let mut adding = preview();
+        adding.only_in_backup = 2;
+        let added = |origin: &Origin| {
+            summary_rows(&adding, origin)
+                .into_iter()
+                .find(|r| r.icon == "list-add-symbolic")
+                .unwrap()
+                .text
+        };
+        assert_eq!(
+            added(&both),
+            "2 items exist only in the backup or the Trash — will be added"
+        );
+
+        let trash_only = from_an_entry(None);
+        assert_eq!(
+            summary_title("Documents", at, &trash_only, &utc()),
+            "Restore “Documents” from the Trash?"
+        );
+        assert_eq!(
+            summary_subtitle(&trash_only, &utc()),
+            "Restoring from the Trash"
+        );
+        assert_eq!(
+            added(&trash_only),
+            "2 items exist only in the Trash — will be added"
         );
     }
 }

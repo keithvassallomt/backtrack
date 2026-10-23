@@ -1089,7 +1089,11 @@ impl Window {
         *self.restores.borrow_mut() = Some(Rc::clone(&restores));
         let this = Rc::clone(self);
         self.state.subscribe(move |_, change| {
-            if matches!(change, Change::Selection | Change::Seq | Change::Archives) {
+            // What a Trash entry restores from changes with the Trash.
+            if matches!(
+                change,
+                Change::Selection | Change::Seq | Change::Archives | Change::Trash
+            ) {
                 this.refresh_restore_action();
             }
         });

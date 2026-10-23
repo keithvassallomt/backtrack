@@ -1166,8 +1166,12 @@ impl AddedLog {
             Move::Added { path } => ('F', path),
             Move::MadeDir { path } => ('D', path),
             // A recovery answers every clash with "leave it alone", so it
-            // never replaces or renames anything.
-            Move::Replaced { .. } | Move::KeptBoth { .. } => return,
+            // never replaces or renames anything, and it restores from
+            // backups alone.
+            Move::Replaced { .. }
+            | Move::KeptBoth { .. }
+            | Move::FromTrash { .. }
+            | Move::LeftTrash { .. } => return,
         };
         let (size, mtime) = std::fs::symlink_metadata(path)
             .map(|f| (f.len(), f.mtime() * 1_000_000 + f.mtime_nsec() / 1_000))

@@ -34,9 +34,10 @@ mod tests;
 
 pub use classify::{classify, Class, FileFacts, Kind};
 pub use execute::{
-    execute, execute_watched, keep_both_name, set_aside, undo, Move, MoveLog, Outcome, Report,
+    execute, execute_watched, keep_both_name, set_aside, undo, Displaced, Move, MoveLog, Outcome,
+    Report,
 };
-pub use plan::{plan, Counts, Decision, Decisions, Entry, RestorePlan};
+pub use plan::{plan, plan_with_trash, Counts, Decision, Decisions, Entry, FromTrash, RestorePlan};
 pub use safety::{free_space, safe_join, same_filesystem, SafetyError};
 pub use stash::{
     expire as expire_stash, find as find_stashed, list as list_stash, put_back, Expiry, Replaced,

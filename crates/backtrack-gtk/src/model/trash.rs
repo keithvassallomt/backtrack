@@ -26,6 +26,7 @@ use std::collections::BTreeMap;
 use backtrack_core::dbus::TrashedItem;
 use backtrack_core::index::{ArchiveSummary, Entry, Kind};
 
+use crate::model::restore::Origin;
 use crate::path;
 
 /// The `repo` an entry carries, which is what the sidebar badges it by.
@@ -137,10 +138,7 @@ pub fn overlay(
     items: &[TrashedItem],
     base: Vec<Entry>,
 ) -> Vec<Row> {
-    let in_gap: Vec<&TrashedItem> = items
-        .iter()
-        .filter(|i| entry_of(archives, i) == seq)
-        .collect();
+    let in_gap: Vec<&TrashedItem> = in_gap(seq, archives, items).collect();
     let mut rows: Vec<Row> = base
         .into_iter()
         .map(|entry| Row { entry, trash: None })
@@ -172,6 +170,54 @@ pub fn overlay(
     }
     rows.sort_by(|a, b| a.entry.name.cmp(&b.entry.name));
     rows
+}
+
+/// What was moved to the Trash in the gap of entry `seq`.
+fn in_gap<'a>(
+    seq: i64,
+    archives: &'a [ArchiveSummary],
+    items: &'a [TrashedItem],
+) -> impl Iterator<Item = &'a TrashedItem> {
+    items.iter().filter(move |i| entry_of(archives, i) == seq)
+}
+
+/// What restoring something takes, and from where.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Restoring {
+    /// The backup's archive name; empty when nothing comes from a backup.
+    pub archive: String,
+    /// The archive names (`trash:<…>`) of what comes from the Trash.
+    pub trashed: Vec<String>,
+    /// What the dialogs call each part of it.
+    pub origin: Origin,
+}
+
+/// What restoring `target` at entry `seq` takes, as the entry shows it: what
+/// the backup before the gap has, and in place of it, every item moved to the
+/// Trash in the gap at or below `target`. Inside a folder that went to the
+/// Trash whole, everything comes from the Trash.
+pub fn restoring(
+    target: &str,
+    seq: i64,
+    archives: &[ArchiveSummary],
+    items: &[TrashedItem],
+) -> Restoring {
+    let taking: Vec<&TrashedItem> = in_gap(seq, archives, items)
+        .filter(|i| path::is_within(&i.path, target) || path::is_within(target, &i.path))
+        .collect();
+    let whole = taking.iter().any(|i| path::is_within(target, &i.path));
+    let backup = base_of(seq)
+        .flatten()
+        .filter(|_| !whole)
+        .and_then(|base| archives.iter().find(|a| a.seq == base));
+    Restoring {
+        archive: backup.map(|a| a.name.clone()).unwrap_or_default(),
+        trashed: taking.iter().map(|i| i.archive.clone()).collect(),
+        origin: Origin {
+            taken: backup.map(|a| a.ts),
+            trashed: taking.iter().map(|i| i.path.clone()).collect(),
+        },
+    }
 }
 
 /// The name of the entry directly inside `folder` on the way to `path`, if
@@ -399,5 +445,53 @@ mod tests {
             None,
             "only at its own entry"
         );
+    }
+
+    #[test]
+    fn a_folder_restored_from_its_entry_takes_the_backup_and_whatever_was_trashed_in_the_gap() {
+        let items = [
+            trashed("home/k/Docs/C", QUARTER_TO_ONE, true),
+            // In another gap, and in another folder.
+            trashed("home/k/Docs/D", 13 * 3600 + 60, true),
+            trashed("home/k/Music/E", QUARTER_TO_ONE, true),
+        ];
+        let archives = noon_and_one();
+        let seq = entry_seq(Some(1));
+
+        let folder = restoring("home/k/Docs", seq, &archives, &items);
+        assert_eq!(folder.archive, "a1", "the backup before the gap");
+        assert_eq!(folder.trashed, [items[0].archive.clone()]);
+        assert_eq!(folder.origin.taken, Some(12 * 3600));
+        assert!(folder.origin.comes_from_trash("home/k/Docs/C"));
+        assert!(!folder.origin.comes_from_trash("home/k/Docs/A"));
+
+        let backed_up = restoring("home/k/Docs/A", seq, &archives, &items);
+        assert_eq!(backed_up.archive, "a1");
+        assert!(
+            backed_up.trashed.is_empty(),
+            "a backed-up file is the backup's"
+        );
+    }
+
+    #[test]
+    fn what_is_in_the_trash_whole_is_restored_from_the_trash_alone() {
+        let mut project = trashed("home/k/Docs/project", QUARTER_TO_ONE, true);
+        project.kind = "dir".to_string();
+        let items = [project.clone()];
+        let seq = entry_seq(Some(1));
+        for target in ["home/k/Docs/project", "home/k/Docs/project/src/main.rs"] {
+            let inside = restoring(target, seq, &noon_and_one(), &items);
+            assert_eq!(inside.archive, "", "{target}: nothing from the backup");
+            assert_eq!(inside.trashed, [project.archive.clone()], "{target}");
+            assert_eq!(inside.origin.taken, None, "{target}");
+        }
+    }
+
+    #[test]
+    fn before_the_first_backup_a_folder_is_restored_from_the_trash_alone() {
+        let items = [trashed("home/k/Docs/C", 11 * 3600, true)];
+        let before = restoring("home/k/Docs", entry_seq(None), &noon_and_one(), &items);
+        assert_eq!(before.archive, "");
+        assert_eq!(before.trashed, [items[0].archive.clone()]);
     }
 }

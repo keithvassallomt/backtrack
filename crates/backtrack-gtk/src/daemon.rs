@@ -64,6 +64,16 @@ pub trait Daemon1 {
     /// of it. Returns the job doing the working out; everything after this is
     /// addressed with the same id.
     fn prepare_restore(&self, archive: &str, paths: &[String], dest: &str) -> zbus::Result<u64>;
+    /// As `prepare_restore`, with each of `trashed` put back in place of what
+    /// `archive` has at its path, as a Trash entry shows them. `archive` is
+    /// empty when nothing comes from a backup.
+    fn prepare_restore_with_trash(
+        &self,
+        archive: &str,
+        trashed: &[String],
+        paths: &[String],
+        dest: &str,
+    ) -> zbus::Result<u64>;
     /// What the restore prepared under `job` would do.
     fn get_restore_preview(&self, job: u64) -> zbus::Result<RestorePreview>;
     /// Carry it out: `blanket` answers every conflict, `decisions` overrides
@@ -78,6 +88,14 @@ pub trait Daemon1 {
     /// arise, so there is nothing to ask and no preview to read: the job id
     /// this returns is the whole of it.
     fn restore_into(&self, archive: &str, paths: &[String], dest: &str) -> zbus::Result<u64>;
+    /// As `restore_into`, with `trashed` as for `prepare_restore_with_trash`.
+    fn restore_into_with_trash(
+        &self,
+        archive: &str,
+        trashed: &[String],
+        paths: &[String],
+        dest: &str,
+    ) -> zbus::Result<u64>;
     /// Put back everything that restore moved.
     fn undo_restore(&self, job: u64) -> zbus::Result<u64>;
     /// Throw away a prepared restore and the copy it extracted.

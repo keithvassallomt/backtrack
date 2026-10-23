@@ -144,6 +144,25 @@ impl View {
             .map(|a| a.name.clone())
     }
 
+    /// What restoring the selected entry, or the folder being viewed, takes
+    /// and from where: at a Trash entry, the backup before its gap and what
+    /// went to the Trash in it (see [`trash::restoring`]). None when there is
+    /// nothing to restore it from.
+    pub fn restoring(&self) -> Option<trash::Restoring> {
+        let target = self.change_target()?;
+        let seq = self.seq?;
+        if !trash::is_entry(seq) {
+            let backup = self.archive()?;
+            return Some(trash::Restoring {
+                archive: backup.name.clone(),
+                trashed: Vec::new(),
+                origin: crate::model::restore::Origin::backup(backup.ts),
+            });
+        }
+        let restoring = trash::restoring(&target, seq, &self.archives, &self.trash);
+        (!restoring.archive.is_empty() || !restoring.trashed.is_empty()).then_some(restoring)
+    }
+
     /// Whether a Trash entry is being viewed rather than a backup.
     pub fn at_trash_entry(&self) -> bool {
         self.seq.is_some_and(trash::is_entry)
@@ -1067,6 +1086,36 @@ mod tests {
             state.view().reading_archive(),
             Some("snapshot-1".to_string())
         );
+    }
+
+    #[test]
+    fn a_restore_at_a_trash_entry_takes_the_backup_before_it_and_the_trash() {
+        let state = AppState::new("home/Docs".to_string());
+        state.set_catalogue(archives(&[3, 2, 1]), "home/Docs", vec![3, 1]);
+        let c = trashed_after(1, "home/Docs/C", true);
+        state.set_trash(vec![c.clone()]);
+
+        state.set_seq(3);
+        let at_a_backup = state.view().restoring().expect("a backup restores");
+        assert_eq!(at_a_backup.archive, "snapshot-3");
+        assert!(at_a_backup.trashed.is_empty());
+
+        state.set_seq(trash::entry_seq(Some(1)));
+        let folder = state.view().restoring().expect("the entry restores");
+        assert_eq!(folder.archive, "snapshot-1");
+        assert_eq!(folder.trashed, std::slice::from_ref(&c.archive));
+        assert!(folder.origin.comes_from_trash("home/Docs/C"));
+
+        // Before the first backup, there is only the Trash to restore from.
+        let early = TrashedItem {
+            deleted_at: archive(1).ts - 1800,
+            ..trashed_after(1, "home/Docs/B", true)
+        };
+        state.set_trash(vec![early.clone()]);
+        state.set_seq(trash::entry_seq(None));
+        let before = state.view().restoring().expect("the Trash restores");
+        assert_eq!(before.archive, "");
+        assert_eq!(before.trashed, [early.archive]);
     }
 
     #[test]

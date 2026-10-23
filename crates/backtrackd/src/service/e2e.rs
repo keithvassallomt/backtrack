@@ -1133,6 +1133,135 @@ async fn the_trash_is_watched_listed_and_read() {
     assert!(listed.is_empty(), "{listed:?}");
 }
 
+/// What the daemon lists from the Trash, once it lists `count` items.
+async fn trash_listing(
+    shared: &Arc<Shared>,
+    count: usize,
+) -> Vec<backtrack_core::dbus::TrashedItem> {
+    for _ in 0..50 {
+        let entries = shared.trash.entries();
+        if entries.len() == count {
+            return entries.iter().map(crate::trash::Entry::published).collect();
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    panic!(
+        "the Trash never listed {count}: {:?}",
+        shared.trash.entries()
+    );
+}
+
+/// S16-T4 through the interface: a folder restored from a Trash entry takes
+/// what the backup has and what the Trash has in one restore, moving the
+/// Trash's out of it, and Undo puts each back where it came from. Then the
+/// trashed file alone, with the destination away, which a restore from the
+/// Trash never needs.
+#[tokio::test]
+async fn a_restore_from_a_trash_entry_moves_out_of_the_trash_and_undo_moves_back() {
+    let fixture = small_fixture().await;
+    let shared = Arc::clone(&fixture.shared);
+    let src = source(&shared);
+    let daemon = Daemon1::new(Arc::clone(&shared));
+    let job = daemon.backup_now().await.expect("backup starts");
+    wait_for_job(&shared, job).await;
+    let archive = newest_archive(&shared).await;
+
+    // a.txt deleted for good since the backup; a letter written, and trashed.
+    std::fs::remove_file(src.join("docs/a.txt")).unwrap();
+    let trash = fixture._dir.path().join("share/Trash");
+    std::fs::create_dir_all(trash.join("info")).unwrap();
+    std::fs::create_dir_all(trash.join("files")).unwrap();
+    let letter = src.join("docs/letter to Ana.txt");
+    let copy = trash.join("files/letter to Ana.txt");
+    let info = trash.join("info/letter to Ana.txt.trashinfo");
+    std::fs::write(&letter, b"Dear Ana,").unwrap();
+    let now = SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64;
+    let text = format!(
+        "[Trash Info]\nPath={}\nDeletionDate={}\n",
+        letter.display().to_string().replace(' ', "%20"),
+        backtrack_core::trash::format_deletion_date(now).unwrap()
+    );
+    std::fs::write(&info, &text).unwrap();
+    std::fs::rename(&letter, &copy).unwrap();
+    tokio::spawn(crate::trash::watch(Arc::clone(&shared)));
+    let trashed = trash_listing(&shared, 1).await.remove(0).archive;
+    let relative = |path: &std::path::Path| path.strip_prefix("/").unwrap().display().to_string();
+
+    // ── The folder, from its entry ──
+    let job = daemon
+        .prepare_restore_with_trash(
+            &archive,
+            vec![trashed.clone()],
+            vec![relative(&src.join("docs"))],
+            "/",
+        )
+        .await
+        .expect("PrepareRestoreWithTrash accepted");
+    wait_for_job(&shared, job).await;
+    let preview = daemon.get_restore_preview(job).await.expect("a preview");
+    assert_eq!(
+        preview.only_in_backup, 2,
+        "a.txt from the backup and the letter from the Trash: {preview:?}"
+    );
+    let run = daemon
+        .execute_restore(job, "skip", Vec::new())
+        .await
+        .expect("ExecuteRestore accepted");
+    wait_for_job(&shared, run).await;
+
+    assert_eq!(
+        std::fs::read_to_string(src.join("docs/a.txt")).unwrap(),
+        "original"
+    );
+    assert_eq!(std::fs::read_to_string(&letter).unwrap(), "Dear Ana,");
+    assert!(!copy.exists(), "moved out of the Trash");
+    assert!(!info.exists(), "and no longer listed there");
+    trash_listing(&shared, 0).await;
+
+    // ── Undo ──
+    let undo = daemon
+        .undo_restore(job)
+        .await
+        .expect("UndoRestore accepted");
+    wait_for_job(&shared, undo).await;
+
+    assert!(
+        !src.join("docs/a.txt").exists(),
+        "deleted for good, as it was"
+    );
+    assert!(!letter.exists());
+    assert_eq!(std::fs::read_to_string(&copy).unwrap(), "Dear Ana,");
+    assert_eq!(
+        std::fs::read_to_string(&info).unwrap(),
+        text,
+        "its .trashinfo as it was, so its entry comes back where it was"
+    );
+    let back = trash_listing(&shared, 1).await.remove(0);
+    assert_eq!(back.archive, trashed);
+    assert_eq!(back.deleted_at, now);
+
+    // ── The letter alone, with the destination away ──
+    cut_the_destination(&shared);
+    let job = daemon
+        .prepare_restore_with_trash("", vec![trashed], vec![relative(&letter)], "/")
+        .await
+        .expect("a restore from the Trash alone needs no destination");
+    wait_for_job(&shared, job).await;
+    let run = daemon
+        .execute_restore(job, "skip", Vec::new())
+        .await
+        .expect("ExecuteRestore accepted");
+    wait_for_job(&shared, run).await;
+    restore_the_destination(&shared);
+
+    assert_eq!(std::fs::read_to_string(&letter).unwrap(), "Dear Ana,");
+    assert!(!copy.exists());
+    assert!(!info.exists());
+}
+
 #[tokio::test]
 async fn status_reports_what_is_held_on_this_computer() {
     // S05-T5's acceptance: the offline block has to carry real numbers during

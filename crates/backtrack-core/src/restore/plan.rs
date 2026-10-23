@@ -36,6 +36,26 @@ impl Entry {
     }
 }
 
+/// Something in the Trash a restore takes back out, in place of whatever the
+/// backup has at its path (Stage 16).
+///
+/// The Trash's copy is already on this computer, on the drive it was deleted
+/// from, so it is planned where it lies rather than staged: it arrives by
+/// rename, and leaves the Trash as it does.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FromTrash {
+    /// Where it goes, relative to the destination. Empty when the destination
+    /// is the trashed folder itself, restored somewhere else.
+    pub path: PathBuf,
+    /// The Trash's copy of what goes there.
+    pub copy: PathBuf,
+    /// The `.trashinfo` of the trashed item, when `copy` is the whole of one:
+    /// removed once nothing of the item is left in the Trash, and written back
+    /// by Undo. None for a part of a trashed folder, which leaves the rest of
+    /// the folder in the Trash.
+    pub info: Option<PathBuf>,
+}
+
 /// The whole restore, as a value.
 #[derive(Debug, Clone)]
 pub struct RestorePlan {
@@ -58,6 +78,9 @@ pub struct RestorePlan {
     /// for" — and telling a person the first when the second is true is a
     /// backup tool reassuring them about a file it could not find.
     pub missing: Vec<PathBuf>,
+    /// What comes out of the Trash rather than out of `staging`, shallowest
+    /// first.
+    pub trash: Vec<FromTrash>,
 }
 
 /// The numbers the summary screen is made of.
@@ -144,6 +167,17 @@ impl Decisions {
 }
 
 impl RestorePlan {
+    /// Where the copy of `relative` that is restored lies: in the Trash for
+    /// what comes from there, and otherwise in staging.
+    pub fn source_of(&self, relative: &Path) -> PathBuf {
+        source_of(&self.staging, &self.trash, relative)
+    }
+
+    /// Whether `relative` comes out of the Trash.
+    pub fn from_trash(&self, relative: &Path) -> bool {
+        trashed_at(&self.trash, relative).is_some()
+    }
+
     /// Count the plan up for the summary.
     pub fn counts(&self) -> Counts {
         let mut counts = Counts::default();
@@ -194,7 +228,11 @@ impl RestorePlan {
             if decision == Decision::Skip {
                 continue;
             }
-            needed.dest += entry.backup.map_or(0, |f| f.size);
+            let size = entry.backup.map_or(0, |f| f.size);
+            needed.dest += size;
+            if self.from_trash(&entry.path) {
+                needed.from_trash += size;
+            }
             if decision == Decision::Replace {
                 // The copy that is about to be overwritten is kept, so it has
                 // to go somewhere first.
@@ -210,6 +248,8 @@ impl RestorePlan {
 pub struct SpaceNeeded {
     /// On the filesystem holding the files being restored.
     pub dest: u64,
+    /// How much of `dest` comes out of the Trash rather than out of staging.
+    pub from_trash: u64,
     /// On the filesystem holding the safety stash.
     pub stash: u64,
 }
@@ -232,7 +272,20 @@ pub fn plan(
     dest: &Path,
     asked_for: &[PathBuf],
 ) -> Result<RestorePlan> {
-    let from_backup = walk(staging)?;
+    plan_with_trash(archive, staging, dest, asked_for, Vec::new())
+}
+
+/// [`plan`], with each of `trash` put back in place of whatever the backup has
+/// at its path and below it, as a Trash entry in the timeline shows them.
+pub fn plan_with_trash(
+    archive: &str,
+    staging: &Path,
+    dest: &Path,
+    asked_for: &[PathBuf],
+    mut trash: Vec<FromTrash>,
+) -> Result<RestorePlan> {
+    let mut from_backup = walk(staging)?;
+    overlay(&mut from_backup, &mut trash)?;
     // Only the parts of the destination the restore actually covers. A folder
     // restore covers its whole subtree; a single-file restore covers that file
     // and nothing around it.
@@ -279,7 +332,12 @@ pub fn plan(
             // Only reached for same-size, different-time pairs and for
             // symlinks; a read failure means "assume different", which errs
             // towards asking rather than towards silently skipping.
-            same_content(&staging.join(&path), &dest.join(&path), backup).unwrap_or(false)
+            same_content(
+                &source_of(staging, &trash, &path),
+                &dest.join(&path),
+                backup,
+            )
+            .unwrap_or(false)
         });
         entries.push(Entry {
             path,
@@ -305,7 +363,67 @@ pub fn plan(
         entries,
         refused,
         missing,
+        trash,
     })
+}
+
+/// A folder that is only there to lead to something from the Trash.
+const LEADING_DIR: FileFacts = FileFacts {
+    kind: Kind::Dir,
+    size: 0,
+    mtime: 0,
+};
+
+/// Put what comes from the Trash in place of what the backup has there.
+/// Shallowest first, so something trashed from a folder that was itself
+/// trashed and made again takes its place inside the older one.
+fn overlay(found: &mut BTreeMap<PathBuf, FileFacts>, trash: &mut [FromTrash]) -> Result<()> {
+    trash.sort_by_key(|t| t.path.components().count());
+    for trashed in trash.iter() {
+        found.retain(|path, _| !path.starts_with(&trashed.path));
+        let Some(facts) = facts_of(&trashed.copy)? else {
+            // Gone from the Trash since it was listed: asked for, it is
+            // reported missing rather than replaced by the backup's version,
+            // which is not what was shown.
+            continue;
+        };
+        if !trashed.path.as_os_str().is_empty() {
+            found.insert(trashed.path.clone(), facts);
+            for above in trashed.path.ancestors().skip(1) {
+                if above.as_os_str().is_empty() {
+                    break;
+                }
+                found.entry(above.to_path_buf()).or_insert(LEADING_DIR);
+            }
+        }
+        // Not through a link: a trashed link to a folder is a link.
+        if facts.kind == Kind::Dir {
+            for (path, facts) in walk(&trashed.copy)? {
+                found.insert(trashed.path.join(path), facts);
+            }
+        }
+    }
+    Ok(())
+}
+
+/// The deepest of `trash` that `relative` is at or below.
+fn trashed_at<'a>(trash: &'a [FromTrash], relative: &Path) -> Option<&'a FromTrash> {
+    trash
+        .iter()
+        .filter(|t| relative.starts_with(&t.path))
+        .max_by_key(|t| t.path.components().count())
+}
+
+fn source_of(staging: &Path, trash: &[FromTrash], relative: &Path) -> PathBuf {
+    let Some(trashed) = trashed_at(trash, relative) else {
+        return staging.join(relative);
+    };
+    match relative.strip_prefix(&trashed.path) {
+        // Joined, an empty path would add a trailing slash, which names a
+        // folder: a trashed file would then fail to move.
+        Ok(rest) if !rest.as_os_str().is_empty() => trashed.copy.join(rest),
+        _ => trashed.copy.clone(),
+    }
 }
 
 /// Whether `path` is only there to hold something that was asked for: a
