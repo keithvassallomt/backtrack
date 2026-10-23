@@ -173,7 +173,7 @@ Nothing right now.
 
 ## Stage 16 — The Trash in the timeline ([stage file](stages/stage-16-trash-in-the-timeline.md))
 - [x] S16-T1 Read the Trash
-- [/] S16-T2 The daemon watches the Trash and serves it
+- [x] S16-T2 The daemon watches the Trash and serves it
 - [ ] S16-T3 Trash entries in the timeline
 - [ ] S16-T4 Restore from the Trash
 - [ ] S16-T5 Search finds what is in the Trash
