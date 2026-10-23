@@ -112,8 +112,8 @@ check-integrations:
         ruff=()
     fi
     if (( ${#ruff[@]} > 0 )); then
-        "${ruff[@]}" check integrations
-        "${ruff[@]}" format --check integrations
+        "${ruff[@]}" check integrations scripts/release.py scripts/release_notes.py scripts/test_release.py scripts/test_release_notes.py
+        "${ruff[@]}" format --check integrations scripts/release.py scripts/release_notes.py scripts/test_release.py scripts/test_release_notes.py
     elif [[ -n "${CI:-}" ]]; then
         echo "ruff not found, and CI must lint the extensions." >&2
         exit 1
@@ -121,6 +121,7 @@ check-integrations:
         echo "ruff not found (install it, or uv or pipx); skipping the lint." >&2
     fi
     python3 -m unittest discover --start-directory integrations/nautilus
+    python3 -m unittest discover --start-directory scripts --pattern 'test_*.py'
     if command -v desktop-file-validate >/dev/null 2>&1; then
         desktop-file-validate integrations/dolphin/*.desktop packaging/*/*.desktop
     elif [[ -n "${CI:-}" ]]; then
@@ -191,8 +192,27 @@ bump-version NEW_VERSION:
     ' Cargo.toml > Cargo.toml.tmp && mv Cargo.toml.tmp Cargo.toml
     # Refresh the lockfile so the workspace crates record the new version.
     cargo update --workspace --quiet
+    # The AUR's PKGBUILD keeps the version as tagged; a new version starts at
+    # pkgrel 1. Its .SRCINFO follows (pkgver drops the hyphen, as Arch needs).
+    sed -i -e "s/^_version=.*/_version=${new}/" -e "s/^pkgrel=.*/pkgrel=1/" packaging/aur/PKGBUILD
+    sed -i -e "s/^\tpkgver = .*/\tpkgver = ${new//-/}/" -e "s/^\tpkgrel = .*/\tpkgrel = 1/" \
+        -e "s|backtrack-${old}\.tar\.gz::\(.*\)/v${old}\.tar\.gz|backtrack-${new}.tar.gz::\1/v${new}.tar.gz|" \
+        packaging/aur/.SRCINFO
+    # The RPM spec and the deb's changelog spell a pre-release with a tilde,
+    # which both sort before the release: 0.1.0-rc1 becomes 0.1.0~rc1.
+    tilde="${new/-/\~}"
+    sed -i -e "s/^Version:.*/Version:        ${tilde}/" -e "s/^Release:.*/Release:        1%{?dist}/" \
+        -e "s/^%changelog$/%changelog\n* $(LC_ALL=C date '+%a %b %d %Y') Keith Vassallo <keith@vassallo.cloud> - ${tilde}-1\n- New upstream release.\n/" \
+        packaging/rpm/backtrack.spec
+    {
+        printf 'backtrack (%s-1) resolute; urgency=medium\n\n  * New upstream release.\n\n' "${tilde}"
+        printf ' -- Keith Vassallo <keith@vassallo.cloud>  %s\n\n' "$(date -R)"
+        cat packaging/deb/changelog
+    } > packaging/deb/changelog.tmp && mv packaging/deb/changelog.tmp packaging/deb/changelog
     echo "Bumped version: $old -> $new"
-    echo "Locations updated: Cargo.toml (+ Cargo.lock). Review and commit manually:"
+    echo "Locations updated: Cargo.toml (+ Cargo.lock), packaging/aur/PKGBUILD (+ .SRCINFO),"
+    echo "packaging/rpm/backtrack.spec, packaging/deb/changelog."
+    echo "Review and commit manually:"
     git --no-pager diff --stat
 
 # Fail if version locations disagree (Cargo.toml vs the workspace crates in the lockfile).
@@ -208,11 +228,47 @@ verify-version:
     crates = {"backtrack-core", "backtrackd", "backtrack-gtk", "backtrack-cli"}
     bad = [(p["name"], p["version"]) for p in lock["package"]
            if p["name"] in crates and p["version"] != want]
+    import re
+    pkgbuild = open("packaging/aur/PKGBUILD").read()
+    srcinfo = open("packaging/aur/.SRCINFO").read()
+    tagged = re.search(r"^_version=(\S+)$", pkgbuild, re.M)
+    arch = re.search(r"^\tpkgver = (\S+)$", srcinfo, re.M)
+    if not tagged or tagged.group(1) != want:
+        bad.append(("packaging/aur/PKGBUILD _version", tagged and tagged.group(1)))
+    if not arch or arch.group(1) != want.replace("-", ""):
+        bad.append(("packaging/aur/.SRCINFO pkgver", arch and arch.group(1)))
+    if f"/v{want}.tar.gz" not in srcinfo:
+        bad.append(("packaging/aur/.SRCINFO source", "not v" + want))
+    tilde = want.replace("-", "~")
+    spec = re.search(r"^Version:\s*(\S+)$", open("packaging/rpm/backtrack.spec").read(), re.M)
+    if not spec or spec.group(1) != tilde:
+        bad.append(("packaging/rpm/backtrack.spec Version", spec and spec.group(1)))
+    entry = re.search(r"^%changelog\n\* .* - (\S+)$", open("packaging/rpm/backtrack.spec").read(), re.M)
+    if not entry or entry.group(1).rsplit("-", 1)[0] != tilde:
+        bad.append(("packaging/rpm/backtrack.spec %changelog", entry and entry.group(1)))
+    top = re.match(r"backtrack \(([^)]+)\)", open("packaging/deb/changelog").read())
+    if not top or top.group(1).rsplit("-", 1)[0] != tilde:
+        bad.append(("packaging/deb/changelog top entry", top and top.group(1)))
     if bad:
         print(f"Version mismatch (workspace is {want}): {bad}", file=sys.stderr)
         sys.exit(1)
-    print(f"verify-version OK: all workspace crates at {want}")
+    print(f"verify-version OK: workspace crates and every package at {want}")
     PY
+
+# Take a release from tag to every channel (scripts/release.py, RELEASING.md).
+# Human-only, like bump-version: run once the version bump and the CHANGELOG's
+# move are merged to main. DIR is where the FriendlyHub files go.
+release DIR="":
+    python3 scripts/release.py {{DIR}}
+
+# Everything `just release` does that can be done here: the preflight, every
+# build, the FriendlyHub files. Publishes nothing.
+release-dry DIR="":
+    python3 scripts/release.py --dry-run {{DIR}}
+
+# The FriendlyHub files for the version already tagged (S14-T9).
+friendlyhub-files DIR="":
+    python3 scripts/release.py --friendlyhub-only {{DIR}}
 
 # ─── Run ────────────────────────────────────────────────────────────────────
 
@@ -496,19 +552,19 @@ install-units:
     # them rather than keeping a second copy in the tree, so the thing being
     # tested here is the file that will actually be packaged.
     #
-    # Two substitutions: the binary path, and the bus name — dev mode uses
-    # org.backtrack.Daemon1.Dev so a development daemon and an installed one can
-    # never answer each other's clients.
+    # Two substitutions: the binary path, and the bus name. Dev mode uses
+    # tools.backtrack.Backtrack.Daemon1.Dev so a development daemon and an
+    # installed one can never answer each other's clients.
     sed -e "s|^ExecStart=.*|ExecStart=${binary}|" \
-        -e "s|^BusName=org.backtrack.Daemon1$|BusName=org.backtrack.Daemon1.Dev|" \
+        -e "s|^BusName=tools.backtrack.Backtrack.Daemon1$|BusName=tools.backtrack.Backtrack.Daemon1.Dev|" \
         -e "s|^\[Service\]$|[Service]\nEnvironment=BACKTRACK_DEV=1|" \
         "${root}/packaging/systemd/backtrackd.service" \
         > "${systemd_dir}/backtrackd.service"
 
     sed -e "s|^Exec=.*|Exec=${binary}|" \
-        -e "s|^Name=org.backtrack.Daemon1$|Name=org.backtrack.Daemon1.Dev|" \
-        "${root}/packaging/dbus/org.backtrack.Daemon1.service" \
-        > "${dbus_dir}/org.backtrack.Daemon1.Dev.service"
+        -e "s|^Name=tools.backtrack.Backtrack.Daemon1$|Name=tools.backtrack.Backtrack.Daemon1.Dev|" \
+        "${root}/packaging/dbus/tools.backtrack.Backtrack.Daemon1.service" \
+        > "${dbus_dir}/tools.backtrack.Backtrack.Daemon1.Dev.service"
 
     systemctl --user daemon-reload
     # Ask the bus to rescan its service directory, so activation works in this
@@ -518,11 +574,11 @@ install-units:
 
     echo "Installed:"
     echo "  ${systemd_dir}/backtrackd.service"
-    echo "  ${dbus_dir}/org.backtrack.Daemon1.Dev.service"
+    echo "  ${dbus_dir}/tools.backtrack.Backtrack.Daemon1.Dev.service"
     echo
     echo "The daemon now starts on demand. Try:"
-    echo "  busctl --user call org.backtrack.Daemon1.Dev /org/backtrack/Daemon1 \\"
-    echo "      org.backtrack.Daemon1 GetStatus"
+    echo "  busctl --user call tools.backtrack.Backtrack.Daemon1.Dev /tools/backtrack/Backtrack/Daemon1 \\"
+    echo "      tools.backtrack.Backtrack.Daemon1 GetStatus"
 
 # Remove the dev-mode user units.
 uninstall-units:
@@ -534,7 +590,7 @@ uninstall-units:
     systemctl --user stop backtrackd.service 2>/dev/null || true
     systemctl --user disable backtrackd.service 2>/dev/null || true
     rm -f "${systemd_dir}/backtrackd.service"
-    rm -f "${dbus_dir}/org.backtrack.Daemon1.Dev.service"
+    rm -f "${dbus_dir}/tools.backtrack.Backtrack.Daemon1.Dev.service"
     systemctl --user daemon-reload
     echo "Dev units removed."
 
@@ -564,13 +620,13 @@ install-nautilus-dev:
     # The shipped extension is the one installed, with two lines rewritten, so
     # what is tried here is the file that will be packaged.
     mkdir -p "${dir}"
-    sed -e "s|^APP = \".*\"$|APP = \"${app}\"|" \
+    sed -e "s|^COMMAND = (.*)$|COMMAND = (\"${app}\",)|" \
         -e "s|^DEVELOPMENT = False$|DEVELOPMENT = True|" \
         "${root}/integrations/nautilus/backtrack.py" > "${dir}/backtrack.py.tmp"
-    if ! grep -qx "APP = \"${app}\"" "${dir}/backtrack.py.tmp" \
+    if ! grep -qx "COMMAND = (\"${app}\",)" "${dir}/backtrack.py.tmp" \
         || ! grep -qx "DEVELOPMENT = True" "${dir}/backtrack.py.tmp"; then
         rm -f "${dir}/backtrack.py.tmp"
-        echo "The extension's APP or DEVELOPMENT line has changed shape; update this recipe." >&2
+        echo "The extension's COMMAND or DEVELOPMENT line has changed shape; update this recipe." >&2
         exit 1
     fi
     mv "${dir}/backtrack.py.tmp" "${dir}/backtrack.py"
@@ -634,6 +690,24 @@ uninstall-dolphin-dev:
     done
     echo "Removed."
 
+# Render the tray icon's pixmaps from the application icon, at the sizes
+# panels ask for. The tray sends them as pixels rather than an icon name, so
+# that a panel shows the icon without finding it in an icon theme (S12-T8).
+# Run after the application icon changes, and commit what it writes.
+[doc("Render the tray icon's pixmaps from the application icon.")]
+tray-icons:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    root="{{justfile_directory()}}"
+    svg="${root}/packaging/icons/hicolor/scalable/apps/tools.backtrack.Backtrack.svg"
+    out="${root}/crates/backtrack-gtk/src/bin/backtrack-tray/icons"
+    mkdir -p "${out}"
+    for size in 16 22 24 32 48 64 128; do
+        rsvg-convert --width "${size}" --height "${size}" --keep-aspect-ratio \
+            "${svg}" --output "${out}/${size}.png"
+    done
+    ls -l "${out}"
+
 # Start the tray icon at login, for this checkout: the debug build, against
 # the development daemon. Idempotent.
 [doc("Start the tray icon at login (debug build, dev daemon).")]
@@ -659,6 +733,12 @@ install-tray-dev:
     fi
     mv "${dir}/backtrack-tray.desktop.tmp" "${dir}/backtrack-tray.desktop"
     echo "Installed ${dir}/backtrack-tray.desktop"
+
+    # The icon Plasma shows by name (S12-T9), where a package would put it.
+    icons="${XDG_DATA_HOME:-${HOME}/.local/share}/icons/hicolor/symbolic/apps"
+    install -Dm644 -t "${icons}" \
+        "${root}/packaging/icons/hicolor/symbolic/apps/tools.backtrack.Backtrack-tray-symbolic.svg"
+    echo "Installed ${icons}/tools.backtrack.Backtrack-tray-symbolic.svg"
     echo
     echo "The icon starts at the next login on desktops other than GNOME. To start"
     echo "it now: BACKTRACK_DEV=1 ${tray}"
@@ -666,7 +746,120 @@ install-tray-dev:
 # Stop starting the development tray icon at login.
 uninstall-tray-dev:
     rm -f "${XDG_CONFIG_HOME:-${HOME}/.config}/autostart/backtrack-tray.desktop"
+    rm -f "${XDG_DATA_HOME:-${HOME}/.local/share}/icons/hicolor/symbolic/apps/tools.backtrack.Backtrack-tray-symbolic.svg"
     @echo "Removed. An icon already showing stays until it is quit or the session ends."
+
+# ─── Packaging ──────────────────────────────────────────────────────────────
+
+# Regenerate the Flatpak's offline sources beside its manifest: every crate in
+# Cargo.lock, and Borg's Python packages from borg-requirements.txt. Run it
+# whenever either changes. Idempotent: with nothing changed, no diff.
+flatpak-sources:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cd "{{justfile_directory()}}/packaging/flatpak"
+    uv run --quiet tools/flatpak-cargo-generator.py ../../Cargo.lock -o cargo-sources.json
+    # Inside the SDK, so pip resolves for the runtime's Python, not this machine's.
+    uv run --quiet tools/flatpak-pip-generator.py --runtime org.gnome.Sdk//51 \
+        --requirements-file borg-requirements.txt --output python3-requirements
+    echo "Wrote packaging/flatpak/cargo-sources.json and python3-requirements.json."
+
+# Build the Flatpak from this checkout, offline from the sources above, and
+# install it for this user. Also leaves a repository in target/flatpak/repo.
+flatpak:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    root="{{justfile_directory()}}"
+    flatpak-builder --user --install --force-clean \
+        --install-deps-from=flathub \
+        --state-dir="${root}/target/flatpak/state" \
+        --repo="${root}/target/flatpak/repo" \
+        "${root}/target/flatpak/build" \
+        "${root}/packaging/flatpak/tools.backtrack.Backtrack.yml"
+
+# A single-file bundle of the last `just flatpak` build, for installing on
+# another machine (the development VMs): target/flatpak/backtrack.flatpak.
+flatpak-bundle:
+    flatpak build-bundle --runtime-repo=https://dl.flathub.org/repo/flathub.flatpakrepo \
+        "{{justfile_directory()}}/target/flatpak/repo" \
+        "{{justfile_directory()}}/target/flatpak/backtrack.flatpak" tools.backtrack.Backtrack
+
+# The release's two source tarballs, from this checkout's HEAD, in
+# target/dist: the source as GitHub would archive the tag, and every crate in
+# Cargo.lock vendored, which the RPM and the deb build from offline (Launchpad
+# has no network). The vendor tarball is written reproducibly.
+dist:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    root="{{justfile_directory()}}"
+    out="${root}/target/dist"
+    version="$(awk '/^\[workspace\.package\]/{p=1} p&&/^version = /{gsub(/[",]/,"",$3); print $3; exit}' "${root}/Cargo.toml")"
+    rm -rf "${out}" && mkdir -p "${out}/vendoring"
+    git -C "${root}" archive --format=tar.gz --prefix="backtrack-${version}/" \
+        -o "${out}/backtrack-${version}.tar.gz" HEAD
+    cargo vendor --locked --manifest-path "${root}/Cargo.toml" "${out}/vendoring/vendor" >/dev/null
+    tar --sort=name --mtime=@0 --owner=0 --group=0 --numeric-owner \
+        -C "${out}/vendoring" -cJf "${out}/backtrack-${version}-vendor.tar.xz" vendor
+    rm -rf "${out}/vendoring"
+    ls -l "${out}"
+
+# Build the RPMs and the source RPM from `just dist` in a fresh Fedora 44
+# container, lint them, and install the main one. Left in target/rpm.
+rpm: dist
+    #!/usr/bin/env bash
+    set -euo pipefail
+    root="{{justfile_directory()}}"
+    out="${root}/target/rpm"
+    rm -rf "${out}" && mkdir -p "${out}/SOURCES" "${out}/SPECS"
+    cp "${root}"/target/dist/*.tar.* "${out}/SOURCES/"
+    cp "${root}/packaging/rpm/backtrack.spec" "${out}/SPECS/"
+    podman run --rm -v "${out}:/root/rpmbuild:Z" \
+        -v "${root}/packaging/rpm/build-in-container.sh:/build.sh:ro,Z" \
+        registry.fedoraproject.org/fedora:44 /build.sh
+    ls "${out}"/RPMS/*/*.rpm "${out}"/SRPMS/*.rpm
+
+# Build the source package the PPA takes and the binary debs from `just dist`
+# in a fresh Ubuntu 26.04 container, lint them, and install the main one.
+# Left in target/deb. Debian spells a pre-release with a tilde (0.1.0~rc1).
+deb: dist
+    #!/usr/bin/env bash
+    set -euo pipefail
+    root="{{justfile_directory()}}"
+    out="${root}/target/deb"
+    version="$(awk '/^\[workspace\.package\]/{p=1} p&&/^version = /{gsub(/[",]/,"",$3); print $3; exit}' "${root}/Cargo.toml")"
+    upstream="${version/-/\~}"
+    rm -rf "${out}" && mkdir -p "${out}"
+    cp "${root}/target/dist/backtrack-${version}.tar.gz" "${out}/backtrack_${upstream}.orig.tar.gz"
+    cp "${root}/target/dist/backtrack-${version}-vendor.tar.xz" "${out}/backtrack_${upstream}.orig-vendor.tar.xz"
+    podman run --rm -v "${out}:/build:Z" \
+        -v "${root}/packaging/deb:/debian:ro,Z" \
+        -v "${root}/packaging/deb/build-in-container.sh:/build.sh:ro,Z" \
+        docker.io/library/ubuntu:26.04 /build.sh
+    ls "${out}"/*.deb "${out}"/*.dsc
+
+# Build the AUR packages from this checkout's HEAD in a fresh Arch container,
+# the clean environment `pkgctl build` gives, and run namcap over them. The
+# packages are left in target/aur.
+aur-build:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    root="{{justfile_directory()}}"
+    out="${root}/target/aur"
+    version="$(awk '/^\[workspace\.package\]/{p=1} p&&/^version = /{gsub(/[",]/,"",$3); print $3; exit}' "${root}/Cargo.toml")"
+    rm -rf "${out}" && mkdir -p "${out}"
+    # GitHub's tarball of a tag unpacks to the same folder name.
+    git -C "${root}" archive --format=tar.gz --prefix="backtrack-${version}/" \
+        -o "${out}/backtrack-${version}.tar.gz" HEAD
+    sed "s|^source=.*|source=(\"backtrack-${version}.tar.gz\")|" \
+        "${root}/packaging/aur/PKGBUILD" > "${out}/PKGBUILD"
+    podman run --rm -v "${out}:/build:Z" \
+        -v "${root}/packaging/aur/build-in-container.sh:/build.sh:ro,Z" \
+        docker.io/library/archlinux:latest /build.sh
+    ls "${out}"/*.pkg.tar.zst
+
+# Regenerate the AUR's .SRCINFO from the PKGBUILD. Idempotent.
+aur-srcinfo:
+    cd "{{justfile_directory()}}/packaging/aur" && makepkg --printsrcinfo > .SRCINFO
 
 # ─── Development VMs (see docs/development-vms.md) ───────────────────────────
 

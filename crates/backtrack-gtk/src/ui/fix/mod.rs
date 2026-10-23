@@ -13,6 +13,7 @@ mod passphrase;
 mod repair;
 mod signin;
 mod space;
+mod unwritable;
 
 use backtrack_core::config::Config;
 use backtrack_core::dbus::Reason;
@@ -77,6 +78,7 @@ pub fn open(context: &Context, reason: Reason) {
         Reason::PassphraseMissing => passphrase::present(context, passphrase::Why::Missing),
         Reason::PassphraseWrong => passphrase::present(context, passphrase::Why::Wrong),
         Reason::AuthFailed => signin::present(context),
+        Reason::DestinationUnwritable => unwritable::present(context),
         Reason::DestinationFull => space::destination(context),
         Reason::LocalDiskFull => space::local(context),
         Reason::RepoCorrupt => repair::present(context),
@@ -133,23 +135,26 @@ fn alert(heading: &str, body: &str, go: &str, suggested: bool) -> adw::AlertDial
 }
 
 /// health.md's "Backtrack's backup engine is missing.": the install command
-/// for this distribution, and a way to look again once it is installed.
+/// for this distribution, and a way to look again once it is installed. A
+/// Flatpak carries its own BorgBackup, so no distribution's command can help
+/// there; only reinstalling Backtrack puts it back.
 fn engine_missing(context: &Context) {
-    let release = std::fs::read_to_string("/etc/os-release").unwrap_or_default();
-    let how = match health::install_command(&release) {
-        Some(command) => format!("Install it with:\n\n{command}"),
-        None => "Install BorgBackup with your distribution's software tool.".to_string(),
-    };
-    let heading = backtrack_core::engine::HealthFailure::BorgMissing.copy("");
-    let dialog = alert(
-        &heading,
-        &format!(
+    let body = if backtrack_core::host::in_flatpak() {
+        "Backtrack backs up with BorgBackup, which comes with it. That copy is missing or \
+         damaged; reinstalling Backtrack puts it back."
+            .to_string()
+    } else {
+        let how = match health::install_command(&backtrack_core::host::os_release()) {
+            Some(command) => format!("Install it with:\n\n{command}"),
+            None => "Install BorgBackup with your distribution's software tool.".to_string(),
+        };
+        format!(
             "Backtrack backs up with BorgBackup, which is not installed on this computer or \
              is older than version 1.2. {how}"
-        ),
-        "Check Again",
-        true,
-    );
+        )
+    };
+    let heading = backtrack_core::engine::HealthFailure::BorgMissing.copy("");
+    let dialog = alert(&heading, &body, "Check Again", true);
     let backer = context.clone();
     dialog.connect_response(Some("go"), move |_, _| backer.back_up());
     dialog.present(Some(&context.window));

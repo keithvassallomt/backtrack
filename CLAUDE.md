@@ -19,6 +19,12 @@ edit the checkbox in progress.md and let the sync push it.
 
 Mapping: `[ ]`→Todo, `[/]`→In Progress, `[x]`→Done (issue closed), `[!]`→Blocked.
 
+**progress.md holds task state and nothing else:** the **For Keith to do** list
+at the top (steps only Keith can take, kept current), the checkboxes, and the
+**Blocked** section explaining each `[!]`. Decisions and findings go where they
+are used: the relevant doc under `docs/`, a code comment, the commit message, or
+a comment on the task's issue. Never add notes to progress.md.
+
 **When new tasks are discovered** (scope grows mid-stage):
 1. Add the task to `progress.md` with the next free `S##-T#` id for its stage,
    and add its `### S##-T# — Title` section (with an `**Accept:**` line) to the

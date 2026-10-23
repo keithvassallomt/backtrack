@@ -15,16 +15,20 @@ pub mod config;
 pub mod dbus;
 pub mod destination;
 pub mod engine;
+pub mod host;
 pub mod index;
 pub mod logging;
 pub mod paths;
 pub mod pattern;
+pub mod progress;
 pub mod recovery;
 pub mod restore;
 pub mod roots;
 pub mod secret;
 pub mod servicemenu;
 pub mod state;
+#[cfg(feature = "glib")]
+pub mod status_line;
 pub mod walk;
 
 /// The crate version, sourced from the workspace package version at build time.

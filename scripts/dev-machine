@@ -23,7 +23,7 @@ trap 'echo "dev-machine: stopped at line $LINENO: $BASH_COMMAND" >&2' ERR
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DATA="${XDG_DATA_HOME:-$HOME/.local/share}/backtrack-dev"
-BUS=org.backtrack.Daemon1.Dev
+BUS=tools.backtrack.Backtrack.Daemon1.Dev
 # The demo repository is unencrypted; this protects the local spool only.
 PASSPHRASE="backtrack dev"
 
@@ -32,7 +32,7 @@ export PATH="$HOME/.cargo/bin:$PATH"
 say() { printf '\033[1m%s\033[0m\n' "$*"; }
 
 daemon() {
-    busctl --user call "$BUS" /org/backtrack/Daemon1 org.backtrack.Daemon1 "$@"
+    busctl --user call "$BUS" /tools/backtrack/Backtrack/Daemon1 tools.backtrack.Backtrack.Daemon1 "$@"
 }
 
 family() {
@@ -94,13 +94,23 @@ missing() {
     esac
 }
 
+# The whole system is upgraded first. Installing alone takes newer versions of
+# whatever the new packages need, and only those: on the Plasma VM that
+# brought a newer Qt without the Plasma built against it, and the desktop no
+# longer started.
 install() {
     local family="$1"
     shift
     case "$family" in
-        dnf) sudo dnf install -y --setopt=install_weak_deps=False "$@" ;;
-        apt) sudo apt-get update && sudo apt-get install -y "$@" ;;
-        pacman) sudo pacman -S --needed --noconfirm "$@" ;;
+        dnf)
+            sudo dnf upgrade -y --refresh &&
+                sudo dnf install -y --setopt=install_weak_deps=False "$@"
+            ;;
+        apt)
+            sudo apt-get update && sudo apt-get full-upgrade -y &&
+                sudo apt-get install -y "$@"
+            ;;
+        pacman) sudo pacman -Syu --needed --noconfirm "$@" ;;
     esac
 }
 
@@ -209,15 +219,24 @@ tray() {
         || ! systemctl --user show-environment | grep -qE '^(WAYLAND_DISPLAY|DISPLAY)='; then
         return
     fi
-    local pid
-    pid="$(pgrep -u "$USER" -x backtrack-tray || true)"
-    if [[ -n "$pid" ]]; then
-        if [[ "$(readlink "/proc/$pid/exe" || true)" == "$ROOT/target/debug/backtrack-tray" ]]; then
-            return
-        fi
+    # This checkout's icon only. A Flatpak's own (`/app/bin/backtrack-tray`)
+    # can be running beside it, under another bus name, and is not this
+    # script's to restart. A build replaces the file, so an icon still
+    # running the one before shows its program as deleted.
+    local pid exe old=()
+    for pid in $(pgrep -u "$USER" -x backtrack-tray || true); do
+        exe="$(readlink "/proc/$pid/exe" || true)"
+        case "$exe" in
+        "$ROOT/target/debug/backtrack-tray") return ;;
+        "$ROOT/target/debug/backtrack-tray (deleted)") old+=("$pid") ;;
+        esac
+    done
+    if ((${#old[@]})); then
         say "Restarting the tray icon onto the new build…"
-        kill "$pid"
-        while kill -0 "$pid" 2>/dev/null; do sleep 0.2; done
+        kill "${old[@]}"
+        for pid in "${old[@]}"; do
+            while kill -0 "$pid" 2>/dev/null; do sleep 0.2; done
+        done
     else
         say "Starting the tray icon…"
     fi

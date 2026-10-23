@@ -869,6 +869,40 @@ fn a_backup_that_does_not_contain_what_was_asked_for_says_which() {
 }
 
 #[test]
+fn a_folder_above_the_backed_up_ones_restores_what_is_inside_it() {
+    // With only Smoke/Documents backed up, the window can ask to restore
+    // Smoke, which leads down to it without being in the backup itself
+    // (S06-T11). Borg extracts by prefix, so the extraction holds Smoke with
+    // Documents inside: Smoke is found, not missing, and Documents' file is
+    // what the restore puts back.
+    let f = fixture();
+    write(
+        &f.staging,
+        "Smoke/Documents/Reports/report.txt",
+        "The quarterly report, first draft.",
+        at(0),
+    );
+
+    let plan = plan(
+        "snapshot-30",
+        &f.staging,
+        &f.dest,
+        &[PathBuf::from("Smoke")],
+    )
+    .unwrap();
+
+    assert!(plan.missing.is_empty(), "missing: {:?}", plan.missing);
+    assert!(!plan.is_a_no_op());
+    assert!(
+        plan.entries
+            .iter()
+            .any(|e| e.path == Path::new("Smoke/Documents/Reports/report.txt")),
+        "entries: {:?}",
+        plan.entries.iter().map(|e| &e.path).collect::<Vec<_>>()
+    );
+}
+
+#[test]
 fn a_restore_of_something_entirely_absent_is_all_missing_and_no_work() {
     let f = fixture();
     let plan = plan(

@@ -21,12 +21,15 @@ from pathlib import Path
 
 from gi.repository import Gio, GLib
 
-APP = "io.github.keithvassallomt.Backtrack"
-DAEMON = "org.backtrack.Daemon1.Dev"
-DAEMON_PATH = "/org/backtrack/Daemon1"
+APP = "tools.backtrack.Backtrack"
+DAEMON = "tools.backtrack.Backtrack.Daemon1.Dev"
+DAEMON_PATH = "/tools/backtrack/Backtrack/Daemon1"
 SNI = "org.kde.StatusNotifierItem"
 MENU = "com.canonical.dbusmenu"
 TRAY = Path(__file__).resolve().parent.parent / "target/debug/backtrack-tray"
+# The tray's own icon, which it names on Plasma (S12-T9).
+NAMED = "tools.backtrack.Backtrack-tray-symbolic"
+SIZES = [16, 22, 24, 32, 48, 64, 128]
 
 bus = Gio.bus_get_sync(Gio.BusType.SESSION)
 failures = []
@@ -44,17 +47,17 @@ def prop(name, path, iface, key):
                 GLib.Variant("(ss)", (iface, key)), "(v)")[0]
 
 
-def daemon(method, signature=None, *args, iface="org.backtrack.Daemon1"):
+def daemon(method, signature=None, *args, iface="tools.backtrack.Backtrack.Daemon1"):
     return call(DAEMON, DAEMON_PATH, iface, method,
                 GLib.Variant(signature, args) if signature else None)
 
 
 def force(state, reason=""):
-    daemon("ForceHealth", "(ss)", state, reason, iface="org.backtrack.Daemon1.Dev")
+    daemon("ForceHealth", "(ss)", state, reason, iface="tools.backtrack.Backtrack.Daemon1.Dev")
 
 
 def last_backup():
-    return call(DAEMON, DAEMON_PATH, "org.backtrack.Daemon1", "GetStatus", None,
+    return call(DAEMON, DAEMON_PATH, "tools.backtrack.Backtrack.Daemon1", "GetStatus", None,
                 "(sttbtsuuttbstt)")[1]
 
 
@@ -63,15 +66,23 @@ def running(process):
                           text=True).stdout.split()
 
 
+def owner(name):
+    """The process behind a bus name."""
+    return call("org.freedesktop.DBus", "/org/freedesktop/DBus", "org.freedesktop.DBus",
+                "GetConnectionUnixProcessID", GLib.Variant("(s)", (name,)), "(u)")[0]
+
+
 def find():
-    """The icon's bus name and path, as the watcher lists it, or None."""
+    """This checkout's icon's bus name and path, as the watcher lists it, or
+    None. A Flatpak's icon has the same Id, and is left alone."""
     for entry in prop("org.kde.StatusNotifierWatcher", "/StatusNotifierWatcher",
                       "org.kde.StatusNotifierWatcher", "RegisteredStatusNotifierItems"):
         name, _, path = entry.partition("/")
         try:
-            if prop(name, "/" + path, SNI, "Id") == APP:
+            if (prop(name, "/" + path, SNI, "Id") == APP
+                    and Path(f"/proc/{owner(name)}/exe").resolve() == TRAY):
                 return name, "/" + path
-        except GLib.Error:
+        except (GLib.Error, OSError):
             pass
     return None
 
@@ -147,11 +158,18 @@ def says(icon, start, seconds=5):
 
 
 icon = Icon(find() or start())
+process = Path(f"/proc/{owner(icon.name)}")
 print(f"The icon: {icon.name}, resident "
-      + Path(f"/proc/{running('backtrack-tray')[0]}/status").read_text()
-      .split("VmRSS:")[1].split("\n")[0].strip())
+      + (process / "status").read_text().split("VmRSS:")[1].split("\n")[0].strip())
 
 check("it is drawn normally", icon.get("Status") == "Active")
+environment = dict(entry.split("=", 1) for entry in
+                   (process / "environ").read_text().split("\0") if "=" in entry)
+desktop = environment.get("XDG_CURRENT_DESKTOP", "")
+named = NAMED if "KDE" in desktop.upper().split(":") else ""
+check(f"on {desktop or 'no desktop'} it is named {named!r}, and carries its pixels",
+      icon.get("IconName") == named
+      and sorted(width for width, _, _ in icon.get("IconPixmap")) == SIZES)
 check("its line says when the last backup was", says(icon, "Last backup: "))
 items = icon.items()
 check("its menu has the items",
@@ -211,7 +229,7 @@ for pid in opened:
 
 icon.click("Quit Tray Icon")
 check("Quit Tray Icon takes the icon away",
-      until(lambda: not running("backtrack-tray") and not find(), "the icon to go"))
+      until(lambda: not process.exists() and not find(), "the icon to go"))
 start()
 print("The icon is showing again.")
 

@@ -238,6 +238,15 @@ class WhereTheFileIs(unittest.TestCase):
         with mock.patch.dict(os.environ, {"XDG_DATA_HOME": "", "HOME": "/home/k"}):
             self.assertEqual(backtrack.roots_file(), "/home/k/.local/share/backtrack/roots.json")
 
+    def test_a_copy_that_names_its_file_reads_that_one(self):
+        # The Flatpak install's copy: its daemon keeps its data under ~/.var/app.
+        named = "/home/k/.var/app/tools.backtrack.Backtrack/data/backtrack/roots.json"
+        with (
+            mock.patch.dict(os.environ, {"XDG_DATA_HOME": "/x/data"}),
+            mock.patch.object(backtrack, "ROOTS", named),
+        ):
+            self.assertEqual(backtrack.roots_file(), named)
+
     def test_development_reads_the_development_daemons_file(self):
         with (
             mock.patch.dict(os.environ, {"XDG_DATA_HOME": "/x/data"}),

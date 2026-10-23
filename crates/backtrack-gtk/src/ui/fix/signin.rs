@@ -2,14 +2,14 @@
 // SPDX-FileCopyrightText: 2026 Keith Vassallo <keith@vassallo.cloud>
 
 //! health.md's "Backtrack can't sign in to …": the destination is there and
-//! will not let Backtrack write.
+//! refuses Backtrack's sign-in.
 //!
 //! What can be done about it depends on the kind of place. A network share
 //! GIO mounted can be signed in to again, with GNOME's own credentials dialog.
 //! An SSH server is signed in to with this computer's key, never a password,
 //! so there is nothing to type here; the fix is on the server, and this says
-//! so. A drive or folder has no sign-in at all: it went read-only or its
-//! permissions changed, and this says that instead.
+//! so. A drive or folder has no sign-in at all; one that refuses Backtrack is
+//! the unwritable row, whose fix this hands over to.
 
 use gtk4::gio;
 use gtk4::prelude::*;
@@ -48,14 +48,10 @@ pub fn present(context: &Context) {
                 ),
                 "Try Again",
             ),
-            Place::Folder => (
-                format!(
-                    "Backtrack is not allowed to write to {repository}. The drive may have \
-                     been mounted read-only, or the folder's permissions may have changed. \
-                     Once that is put right, try again."
-                ),
-                "Try Again",
-            ),
+            Place::Folder => {
+                super::unwritable::present(&context);
+                return;
+            }
         };
         let dialog = alert(&heading, &body, go, true);
         let answered = dialog.choose_future(Some(&context.window)).await;
@@ -74,7 +70,10 @@ pub fn present(context: &Context) {
 
 /// Sign in to the share again: unmount it if it is mounted, then mount it
 /// with GTK's operation, which is what puts GNOME's credentials dialog up.
-async fn sign_in(window: &libadwaita::ApplicationWindow, repository: &str) -> Result<(), String> {
+pub(super) async fn sign_in(
+    window: &libadwaita::ApplicationWindow,
+    repository: &str,
+) -> Result<(), String> {
     let file = gio::File::for_path(repository);
     let operation = gtk4::MountOperation::new(Some(window));
     // Mounted, GIO knows the share's real address; not mounted, it has to be
@@ -99,6 +98,10 @@ async fn sign_in(window: &libadwaita::ApplicationWindow, repository: &str) -> Re
                 .to_string(),
         );
     };
+    if let Some(message) = crate::ui::wizard::unsupported_address(&address) {
+        info!(address, "this computer has nothing that can open the share");
+        return Err(message);
+    }
     match gio::File::for_uri(&address)
         .mount_enclosing_volume_future(gio::MountMountFlags::NONE, Some(&operation))
         .await

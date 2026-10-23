@@ -37,9 +37,10 @@ resolution action. (Typed errors in core → D-Bus error names → this table.)
 
 | Failure | Detection | State | User-facing copy (banner) | Resolution flow |
 |---|---|---|---|---|
-| Passphrase missing (keyring reset/locked) | Secret Service lookup fails | `BROKEN` | "Backtrack needs your backup passphrase again." | Dialog: enter passphrase → re-store in keyring; link to recovery-key help |
+| Passphrase missing (keyring reset/locked) | Secret Service lookup fails, or finds the item locked (never asked for its secret then: KWallet answers that with an empty one) | `BROKEN` | "Backtrack needs your backup passphrase again." | Dialog: enter passphrase → re-store in keyring; link to recovery-key help |
 | Wrong passphrase (repo key changed) | borg exit code / error msg | `BROKEN` | "The saved passphrase no longer matches the backup." | Same dialog + "restore from recovery key" path |
 | Destination credentials expired (SMB/SSH auth) | mount/ssh failure distinct from unreachable | `BROKEN` | "Backtrack can't sign in to nas.local." | Re-auth dialog for that destination |
+| Destination not writable | Borg's permission or read-only error on the repository (`[Errno 13]`, `[Errno 30]`), distinct from ssh's refusal | `BROKEN` | "Backtrack can't write to WD Passport." | Says why for the kind of place (permissions changed or mounted read-only; for a network share, sign in again), then tries again |
 | Destination full | borg ENOSPC / preflight | `BROKEN` | "The backup drive is full." | Offer: run Free Up Space (compact), shorten retention, or change destination |
 | Local disk full (spool/staging) | preflight checks | `DEGRADED`→`BROKEN` | "Not enough space on this computer to keep protecting changes." | Open storage overview; lower spool cap; clear stash |
 | Repo corruption | `borg check` (scheduled monthly, and after repeated failures) | `BROKEN` | "The backup needs repair." | Guided flow: re-run check → `borg check --repair` with plain-language warning → if unrecoverable, guided fresh-repo start that *preserves the old repo* for manual salvage |

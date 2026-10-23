@@ -14,12 +14,45 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use backtrack_core::dbus::{SearchResult, Status};
 
+/// How far the backup under way has got, as the daemon's
+/// `GetBackupProgress` says (S06-T12).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Progress {
+    pub job: u64,
+    pub phase: String,
+    /// Bytes read so far.
+    pub read: u64,
+    /// The sources' measured size, 0 while it is not known.
+    pub total: u64,
+}
+
+impl Progress {
+    /// The daemon's answer, or `None` when no backup is under way.
+    pub fn from_reply((job, phase, read, total): (u64, String, u64, u64)) -> Option<Progress> {
+        (job != 0).then_some(Progress {
+            job,
+            phase,
+            read,
+            total,
+        })
+    }
+
+    /// The line the window's banner and the tray show for it.
+    pub fn line(&self) -> String {
+        backtrack_core::progress::line(&self.phase, self.read, self.total)
+    }
+}
+
 /// The JSON form of `status`.
 ///
 /// Deliberately close to the wire type: the extra fields are the *derived*
 /// answers a script would otherwise have to compute (and get wrong), never a
 /// reinterpretation of the raw ones.
-pub fn status_json(status: &Status, now: SystemTime) -> serde_json::Value {
+pub fn status_json(
+    status: &Status,
+    progress: Option<&Progress>,
+    now: SystemTime,
+) -> serde_json::Value {
     serde_json::json!({
         "state": status.state,
         // What the state is about, or null when healthy: the same token the
@@ -43,6 +76,16 @@ pub fn status_json(status: &Status, now: SystemTime) -> serde_json::Value {
         "offline": !status.destination_reachable,
         "offline_mode": status.offline_mode,
         "local_snapshots": status.local_snapshots,
+        // The backup under way, or null between backups. `total_bytes` and
+        // `percent` are null until the sources have been measured.
+        "progress": progress.map(|p| serde_json::json!({
+            "job": p.job,
+            "phase": p.phase,
+            "read_bytes": p.read,
+            "total_bytes": if p.total == 0 { serde_json::Value::Null } else { p.total.into() },
+            "percent": backtrack_core::progress::percent(p.read, p.total),
+            "line": p.line(),
+        })),
         "expirable_snapshots": status.expirable_snapshots,
     })
 }
@@ -68,7 +111,7 @@ fn age_seconds(seconds: u64, now: SystemTime) -> serde_json::Value {
 
 /// The human rendering of `status`: what happened, what is next, and whether
 /// anything is wrong — in that order, because that is the order people ask.
-pub fn status_human(status: &Status, now: SystemTime) -> String {
+pub fn status_human(status: &Status, progress: Option<&Progress>, now: SystemTime) -> String {
     // Being set up comes first, and overrides the health state entirely. A
     // machine with no destination reports HEALTHY — correctly, since nothing has
     // failed — but printing "Your files are backed up" above "no destination is
@@ -128,7 +171,14 @@ pub fn status_human(status: &Status, now: SystemTime) -> String {
         out.push_str(&format!("  On this PC    {held}\n"));
     }
     if status.active_job > 0 {
-        out.push_str(&format!("  Running       job {}\n", status.active_job));
+        match progress.filter(|p| p.job == status.active_job) {
+            Some(p) => out.push_str(&format!(
+                "  Running       job {} · {}\n",
+                status.active_job,
+                p.line()
+            )),
+            None => out.push_str(&format!("  Running       job {}\n", status.active_job)),
+        }
     }
     out
 }
@@ -237,21 +287,8 @@ fn plural(count: u32, noun: &str) -> String {
     format!("{count} {noun}{}", if count == 1 { "" } else { "s" })
 }
 
-/// Human-readable byte counts.
-pub fn format_bytes(bytes: u64) -> String {
-    const UNITS: [&str; 5] = ["B", "kB", "MB", "GB", "TB"];
-    let mut value = bytes as f64;
-    let mut unit = 0;
-    while value >= 1000.0 && unit < UNITS.len() - 1 {
-        value /= 1000.0;
-        unit += 1;
-    }
-    if unit == 0 {
-        format!("{bytes} B")
-    } else {
-        format!("{value:.1} {}", UNITS[unit])
-    }
-}
+/// Human-readable byte counts, worded as the window and the tray word them.
+pub use backtrack_core::progress::format_bytes;
 
 /// Days-from-epoch to civil date (Howard Hinnant's algorithm). Avoids a date
 /// dependency for the handful of timestamps this tool prints.
@@ -310,7 +347,7 @@ mod tests {
         // This is an interface. Changing a field name or type breaks whatever
         // someone has scripted against it, so the shape is pinned here and any
         // change has to be made deliberately, in this test, in the same commit.
-        let json = status_json(&status(), at(1_700_001_800));
+        let json = status_json(&status(), None, at(1_700_001_800));
         let expected = serde_json::json!({
             "state": "HEALTHY",
             "reason": null,
@@ -328,8 +365,43 @@ mod tests {
             "offline_mode": "spool",
             "local_snapshots": 0u32,
             "expirable_snapshots": 0u32,
+            "progress": null,
         });
         assert_eq!(json, expected);
+    }
+
+    #[test]
+    fn a_backup_under_way_says_how_far_it_has_got() {
+        let status = Status {
+            active_job: 2,
+            ..status()
+        };
+        let progress =
+            Progress::from_reply((2, "archiving".to_string(), 31_496_447_281, 53_100_000_000));
+        let json = status_json(&status, progress.as_ref(), at(1_700_001_800));
+        assert_eq!(
+            json["progress"],
+            serde_json::json!({
+                "job": 2u64,
+                "phase": "archiving",
+                "read_bytes": 31_496_447_281u64,
+                "total_bytes": 53_100_000_000u64,
+                "percent": 59u8,
+                "line": "Backing up… 31.5 GB of about 53.1 GB (59%)",
+            })
+        );
+        let text = status_human(&status, progress.as_ref(), at(1_700_001_800));
+        assert!(
+            text.contains("  Running       job 2 · Backing up… 31.5 GB of about 53.1 GB (59%)\n"),
+            "got: {text}"
+        );
+        // Not measured yet: no total and no percentage, rather than zeros.
+        let early = Progress::from_reply((2, "archiving".to_string(), 1_500, 0));
+        let json = status_json(&status, early.as_ref(), at(1_700_001_800));
+        assert_eq!(json["progress"]["total_bytes"], serde_json::Value::Null);
+        assert_eq!(json["progress"]["percent"], serde_json::Value::Null);
+        // Between backups the daemon answers job 0: nothing under way.
+        assert_eq!(Progress::from_reply((0, String::new(), 0, 0)), None);
     }
 
     #[test]
@@ -343,7 +415,7 @@ mod tests {
             configured: false,
             ..status()
         };
-        let json = status_json(&status, at(1_700_001_800));
+        let json = status_json(&status, None, at(1_700_001_800));
         assert_eq!(json["last_backup"], serde_json::Value::Null);
         assert_eq!(json["next_backup"], serde_json::Value::Null);
         assert_eq!(json["last_backup_age_seconds"], serde_json::Value::Null);
@@ -355,7 +427,7 @@ mod tests {
             paused_until: 1_700_010_000,
             ..status()
         };
-        let json = status_json(&status, at(1_700_001_800));
+        let json = status_json(&status, None, at(1_700_001_800));
         assert_eq!(json["paused"], serde_json::Value::Bool(true));
         assert_eq!(json["paused_until"], serde_json::json!(1_700_010_000u64));
     }
@@ -370,13 +442,13 @@ mod tests {
             expirable_snapshots: 3,
             ..status()
         };
-        let json = status_json(&status, at(1_700_001_800));
+        let json = status_json(&status, None, at(1_700_001_800));
         assert_eq!(json["offline"], serde_json::Value::Bool(true));
         assert_eq!(json["offline_mode"], "spool");
         assert_eq!(json["local_snapshots"], serde_json::json!(14u32));
         assert_eq!(json["expirable_snapshots"], serde_json::json!(3u32));
 
-        let text = status_human(&status, at(1_700_001_800));
+        let text = status_human(&status, None, at(1_700_001_800));
         assert!(text.contains("14 snapshots"), "got: {text}");
         assert!(text.contains("2.5 GB"), "got: {text}");
     }
@@ -391,14 +463,14 @@ mod tests {
             spool_bytes: 0,
             ..status()
         };
-        let text = status_human(&status, at(1_700_001_800));
+        let text = status_human(&status, None, at(1_700_001_800));
         assert!(text.contains("14 snapshots"), "got: {text}");
         assert!(!text.contains("0 B"), "got: {text}");
     }
 
     #[test]
     fn nothing_held_locally_says_nothing_at_all() {
-        let text = status_human(&status(), at(1_700_001_800));
+        let text = status_human(&status(), None, at(1_700_001_800));
         assert!(!text.contains("On this PC"), "got: {text}");
     }
 
@@ -437,7 +509,7 @@ mod tests {
             configured: false,
             ..status()
         };
-        let text = status_human(&status, at(1_700_001_800));
+        let text = status_human(&status, None, at(1_700_001_800));
         assert!(text.contains("setup wizard"), "got: {text}");
         assert!(
             !text.contains("Last backup"),
@@ -455,7 +527,7 @@ mod tests {
             state: "HEALTHY".into(),
             ..status()
         };
-        let text = status_human(&status, at(1_700_001_800));
+        let text = status_human(&status, None, at(1_700_001_800));
         assert!(
             !text.contains("Your files are backed up"),
             "this is the lie the check exists to prevent:\n{text}"
@@ -469,7 +541,7 @@ mod tests {
             next_backup: 1_700_000_100,
             ..status()
         };
-        let text = status_human(&status, at(1_700_001_800));
+        let text = status_human(&status, None, at(1_700_001_800));
         assert!(text.contains("due now"), "got: {text}");
     }
 
@@ -479,7 +551,7 @@ mod tests {
             paused_until: 1_700_010_000,
             ..status()
         };
-        let text = status_human(&status, at(1_700_001_800));
+        let text = status_human(&status, None, at(1_700_001_800));
         assert!(text.contains("paused until"), "got: {text}");
     }
 

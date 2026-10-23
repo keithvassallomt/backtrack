@@ -86,8 +86,8 @@ pub fn build(wizard: &Rc<Wizard>) -> adw::NavigationPage {
     let network_radio = radio(&group);
     network_radio.set_visible(false);
     let network = adw::ActionRow::builder()
-        .title("Network folder")
-        .subtitle("SMB or NFS share")
+        .title("Network/local folder")
+        .subtitle("SMB or NFS share, or a folder on this computer")
         .activatable(true)
         .build();
     network.add_prefix(&super::tile("folder-remote-symbolic"));
@@ -227,16 +227,28 @@ pub fn display(repository: &str) -> String {
     repository.to_string()
 }
 
+/// What to say when this computer cannot open `address` at all, for want of
+/// gvfs or its backend for that kind of address.
+pub fn unsupported_address(address: &str) -> Option<String> {
+    let schemes = gio::Vfs::default().supported_uri_schemes();
+    let schemes: Vec<&str> = schemes.iter().map(|scheme| scheme.as_str()).collect();
+    model::unsupported_address(address, &schemes, &backtrack_core::host::os_release())
+}
+
 /// The removable drives mounted right now, with the room each one has.
 fn removable_drives(monitor: &gio::VolumeMonitor) -> Vec<Drive> {
+    let user = glib::user_name();
     monitor
         .mounts()
         .into_iter()
         .filter(|mount| !mount.is_shadowed())
-        .filter(|mount| {
-            mount
-                .drive()
-                .is_some_and(|drive| drive.is_removable() || drive.is_media_removable())
+        .filter(|mount| match mount.drive() {
+            Some(drive) => drive.is_removable() || drive.is_media_removable(),
+            // No gvfs, so GIO knows mounts but no drives.
+            None => mount
+                .root()
+                .path()
+                .is_some_and(|path| model::removable_media_mount(&path, &user)),
         })
         .filter_map(|mount| {
             let root = mount.root();
@@ -495,15 +507,47 @@ impl Page {
     }
 }
 
-/// The sub-page for a network folder: an address, mounted through GIO.
+/// The sub-page for a network or local folder: an address, mounted through
+/// GIO, or a folder picked in the file chooser.
 fn network_page(page: &Rc<Page>) -> adw::NavigationPage {
     let (nav_page, entry, button, problem) = address_page(
         "network",
-        "Network folder",
+        "Network/local folder",
         "The address of a shared folder, such as smb://nas.local/backups or \
-         nfs://nas.local/backups. A folder on this computer works too.",
+         nfs://nas.local/backups, or a folder on this computer.",
         "Connect",
     );
+    let browse = Button::from_icon_name("folder-open-symbolic");
+    browse.set_tooltip_text(Some("Choose Folder…"));
+    browse.update_property(&[gtk4::accessible::Property::Label("Choose Folder…")]);
+    browse.add_css_class("flat");
+    browse.set_valign(Align::Center);
+    entry.add_suffix(&browse);
+    let this = Rc::clone(page);
+    let field = entry.clone();
+    let connect = button.clone();
+    browse.connect_clicked(move |_| {
+        let this = Rc::clone(&this);
+        let field = field.clone();
+        let connect = connect.clone();
+        crate::ui::spawn(async move {
+            let dialog = gtk4::FileDialog::builder()
+                .title("Choose Where Backups Go")
+                .accept_label("Choose")
+                .modal(true)
+                .build();
+            let Ok(chosen) = dialog.select_folder_future(Some(&this.wizard.window)).await else {
+                return;
+            };
+            match chosen.path() {
+                Some(path) => {
+                    field.set_text(&path.to_string_lossy());
+                    connect.emit_clicked();
+                }
+                None => this.wizard.toast("That folder cannot be opened directly"),
+            }
+        });
+    });
     let this = Rc::clone(page);
     let field = entry.clone();
     button.connect_clicked(move |button| {
@@ -537,6 +581,13 @@ async fn mount(window: &adw::ApplicationWindow, address: &str) -> Result<PathBuf
     if address.is_empty() {
         return Err("Type the folder's address first.".to_string());
     }
+    if let Some(message) = unsupported_address(address) {
+        info!(
+            address,
+            "this computer has nothing that can open that address"
+        );
+        return Err(message);
+    }
     let file = if address.starts_with('/') {
         gio::File::for_path(address)
     } else {
@@ -559,6 +610,15 @@ async fn mount(window: &adw::ApplicationWindow, address: &str) -> Result<PathBuf
     }
     match file.path() {
         Some(path) if path.is_dir() => Ok(path),
+        None if file.uri_scheme().is_some_and(|scheme| scheme != "file") => {
+            info!(
+                address,
+                "the share mounted with no folder: no gvfs FUSE helper"
+            );
+            Err(model::share_without_folder(
+                &backtrack_core::host::os_release(),
+            ))
+        }
         _ => Err("That location cannot be used as a folder on this computer.".to_string()),
     }
 }

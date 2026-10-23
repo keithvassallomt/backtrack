@@ -97,6 +97,8 @@ impl Reach {
 }
 
 /// One look at the destination.
+// See backtrack-core's `BackupEngine`: async-trait's `#[must_use]`, and clippy 1.99.
+#[allow(clippy::double_must_use)]
 #[async_trait]
 pub trait DestinationProbe: Send + Sync {
     /// Whether `repository` answers right now.

@@ -13,17 +13,15 @@
 //! A program of its own rather than a mode of the window, because it runs for
 //! the whole session: started, this release build peaks at 9 MB, and the
 //! window's, which links GTK, at 60 to 95 MB before it opens anything
-//! (measured on Arch, 2026-10-06). It shares two GLib modules with the
-//! window, included by path, and links GLib and no GTK.
+//! (measured on Arch, 2026-10-06). It shares the window's pause module,
+//! included by path, and its status line with the daemon through
+//! `backtrack_core::status_line`; it links GLib and no GTK.
 
-#[path = "../../model/format.rs"]
-// The window uses more of it than the tray does.
-#[allow(dead_code)]
-mod format;
 #[path = "../../model/pause.rs"]
 mod pause;
 
 mod daemon;
+mod icon;
 mod text;
 mod tray;
 
@@ -50,9 +48,9 @@ struct Args {}
 /// session leaves, rather than adding a second icon.
 fn bus_name() -> &'static str {
     if std::env::var_os("BACKTRACK_DEV").is_some() {
-        "org.backtrack.Tray.Dev"
+        "tools.backtrack.Backtrack.Tray.Dev"
     } else {
-        "org.backtrack.Tray"
+        "tools.backtrack.Backtrack.Tray"
     }
 }
 
@@ -107,7 +105,15 @@ async fn run() -> ExitCode {
     let tray = tray::Tray::new(daemon.clone(), Arc::clone(&refresh), Arc::clone(&quit));
     // Started at login, the tray can be ready before the panel that shows it
     // is; it waits for the panel rather than giving up.
-    let handle = match tray.assume_sni_available(true).spawn().await {
+    // Inside a Flatpak, without the per-process `org.kde.StatusNotifierItem-…`
+    // name, which the sandbox cannot own; ksni asks this of sandboxed programs,
+    // and registers the icon by its unique name instead (S14-T3).
+    let handle = match tray
+        .assume_sni_available(true)
+        .disable_dbus_name(backtrack_core::host::in_flatpak())
+        .spawn()
+        .await
+    {
         Ok(handle) => handle,
         Err(error) => {
             error!(%error, "the tray icon could not be shown");
@@ -117,21 +123,38 @@ async fn run() -> ExitCode {
     info!("tray icon showing");
 
     let busy = Arc::new(AtomicBool::new(false));
+    // How far the backup under way has got, as its progress signals say it.
+    let (lines, mut progress) = tokio::sync::watch::channel(None::<String>);
     tokio::spawn(follow(
         daemon.clone(),
         Arc::clone(&refresh),
         Arc::clone(&busy),
+        lines,
     ));
+    if let Ok(program) = std::env::current_exe() {
+        tokio::spawn(leave_when_gone(program, Arc::clone(&quit)));
+    }
     refresh.notify_one();
     loop {
         tokio::select! {
             () = refresh.notified() => {
                 let status = daemon::status(&daemon).await;
-                busy.store(
-                    status.as_ref().is_some_and(|status| status.active_job != 0),
-                    Ordering::Relaxed,
-                );
-                if handle.update(|tray| tray.show(status)).await.is_none() {
+                let running = status.as_ref().is_some_and(|status| status.active_job != 0);
+                busy.store(running, Ordering::Relaxed);
+                // Asked, not waited for: a tray started part way through a
+                // backup, or a backup in a phase that says little, still
+                // shows how far it has got.
+                let progress = match running {
+                    true => daemon::progress(&daemon).await,
+                    false => None,
+                };
+                if handle.update(|tray| tray.show(status, progress)).await.is_none() {
+                    break;
+                }
+            }
+            Ok(()) = progress.changed() => {
+                let line = progress.borrow_and_update().clone();
+                if handle.update(|tray| tray.show_progress(line)).await.is_none() {
                     break;
                 }
             }
@@ -143,15 +166,41 @@ async fn run() -> ExitCode {
     ExitCode::SUCCESS
 }
 
+/// Leave once `program`, this tray's own, is gone: Backtrack has been
+/// uninstalled under it.
+///
+/// Nothing else ends a tray left running by an uninstall. Its autostart file
+/// goes with the package, and with it the unit that would have stopped the
+/// tray with the session, so after logging out and straight back in the tray
+/// ran on with no icon and no program behind it until the user's systemd
+/// stopped.
+async fn leave_when_gone(program: std::path::PathBuf, quit: Arc<Notify>) {
+    backtrack_core::host::wait_until_gone(
+        program.clone(),
+        backtrack_core::host::LOOK_FOR_PROGRAM_EVERY,
+    )
+    .await;
+    info!(
+        program = %program.display(),
+        "Backtrack has been uninstalled; the tray icon leaves with it"
+    );
+    quit.notify_one();
+}
+
 /// Wake the tray whenever what it says may have changed: the health state,
 /// a job ending, a backup starting (its first progress, while none was
 /// known to be running), and the daemon starting or leaving. It starts at
 /// login, perhaps after the tray, and with "Run in background" off it leaves
 /// once nobody needs it.
+///
+/// A backup's progress also goes to `lines`, in words (S06-T12): once a
+/// second at most, since the menu and the tooltip are redrawn for each, and
+/// at once when the backup moves to another phase.
 async fn follow(
     daemon: daemon::Daemon1Proxy<'static>,
     refresh: Arc<Notify>,
     busy: Arc<AtomicBool>,
+    lines: tokio::sync::watch::Sender<Option<String>>,
 ) {
     let streams = async {
         let changed = daemon.receive_status_changed().await?;
@@ -170,11 +219,32 @@ async fn follow(
             return;
         }
     };
-    let progress = progress.filter(move |_| std::future::ready(!busy.load(Ordering::Relaxed)));
+    let starting = Arc::clone(&refresh);
+    tokio::spawn(async move {
+        let mut progress = progress;
+        let mut said: Option<(std::time::Instant, String)> = None;
+        while let Some(signal) = progress.next().await {
+            if !busy.load(Ordering::Relaxed) {
+                // A backup has started that the tray did not know of.
+                starting.notify_one();
+            }
+            let Ok(args) = signal.args() else { continue };
+            let due = said.as_ref().is_none_or(|(at, phase)| {
+                phase != args.phase || at.elapsed() >= std::time::Duration::from_secs(1)
+            });
+            if due {
+                lines.send_replace(Some(backtrack_core::progress::line(
+                    args.phase,
+                    args.current,
+                    args.total,
+                )));
+                said = Some((std::time::Instant::now(), args.phase.to_string()));
+            }
+        }
+    });
     let mut events = stream::select_all([
         changed.map(drop).boxed(),
         finished.map(drop).boxed(),
-        progress.map(drop).boxed(),
         owners.map(drop).boxed(),
     ]);
     while events.next().await.is_some() {

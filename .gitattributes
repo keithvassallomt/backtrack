@@ -1,0 +1,5 @@
+# Left out of release tarballs (`git archive`, and GitHub's own tarball of a
+# tag): the plan, with its 46 MB of mockups, and the working documents of
+# earlier stages. Neither is needed to build or to use Backtrack.
+/backtrack_plan export-ignore
+/docs/superpowers export-ignore

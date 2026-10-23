@@ -7,21 +7,10 @@
 //! units the rest of the desktop uses (`1.2 kB`, not `1.2 KiB` or `1229 bytes`).
 //! Dates go through `GDateTime`, which knows the user's locale and timezone;
 //! the format strings keep the field order from the mockups.
-//!
-//! The tray includes this file by path for its times, so it names `glib`
-//! itself rather than through `gtk4`.
 
 use backtrack_core::index::Kind;
 
-/// Format `ts` (epoch seconds) in `tz` with a `strftime` pattern, collapsing the
-/// double space `%e` leaves in front of a single-digit day.
-pub fn at(ts: i64, tz: &glib::TimeZone, pattern: &str) -> String {
-    let Ok(dt) = glib::DateTime::from_unix_local(ts).and_then(|dt| dt.to_timezone(tz)) else {
-        return String::new();
-    };
-    let text = dt.format(pattern).unwrap_or_default();
-    collapse_spaces(&text)
-}
+pub use backtrack_core::status_line::at;
 
 /// `"08:58"` — a time within a day the user has already been told.
 pub fn clock(ts: i64, tz: &glib::TimeZone) -> String {
@@ -59,33 +48,27 @@ pub fn size(bytes: i64, kind: Kind) -> String {
 /// `ordinal` counts from the newest backup, because the sidebar beside it is
 /// ordered newest-first: the label and the list have to agree about which end
 /// they are counting from, and the list's order is not negotiable.
-pub fn position(ts: i64, ordinal: usize, total: usize, tz: &glib::TimeZone) -> String {
+///
+/// `filtered` says that the folder leaves some backups out (Stage 15), and the
+/// label then says what it is counting: "3 of 7" alone would read as though
+/// there were only seven backups.
+pub fn position(
+    ts: i64,
+    ordinal: usize,
+    total: usize,
+    filtered: bool,
+    tz: &glib::TimeZone,
+) -> String {
     let when = at(ts, tz, "%a %e %b %Y, %H:%M");
-    format!("{when} — backup {ordinal} of {total}")
+    if filtered {
+        format!("{when} — backup {ordinal} of {total} with changes to this folder")
+    } else {
+        format!("{when} — backup {ordinal} of {total}")
+    }
 }
 
 /// What the position line says when the index holds no backups at all.
 pub const NO_BACKUPS: &str = "No backups yet";
-
-/// Squeeze runs of spaces down to one. `%e` pads a single-digit day, and
-/// depending on the locale it pads with either an ordinary space or a figure
-/// space (U+2007) — both of which read as a typo in the middle of a sentence.
-fn collapse_spaces(text: &str) -> String {
-    let mut out = String::with_capacity(text.len());
-    let mut last_was_space = false;
-    for ch in text.chars() {
-        if ch == ' ' || ch == '\u{2007}' {
-            if !last_was_space {
-                out.push(' ');
-            }
-            last_was_space = true;
-        } else {
-            out.push(ch);
-            last_was_space = false;
-        }
-    }
-    out.trim().to_string()
-}
 
 #[cfg(test)]
 mod tests {
@@ -107,8 +90,16 @@ mod tests {
     #[test]
     fn the_position_label_spells_the_position_out() {
         assert_eq!(
-            position(NINTH, 3, 47, &utc()),
+            position(NINTH, 3, 47, false, &utc()),
             "Tue 9 Jun 2026, 09:00 — backup 3 of 47"
+        );
+    }
+
+    #[test]
+    fn a_position_among_some_backups_says_which_ones_it_counts() {
+        assert_eq!(
+            position(NINTH, 2, 7, true, &utc()),
+            "Tue 9 Jun 2026, 09:00 — backup 2 of 7 with changes to this folder"
         );
     }
 

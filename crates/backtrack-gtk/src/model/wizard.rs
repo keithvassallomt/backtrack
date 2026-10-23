@@ -15,6 +15,8 @@ use std::path::{Path, PathBuf};
 use backtrack_core::config::{self, Config, Frequency, Retention};
 use gtk4::glib;
 
+use super::distro::{self, Family};
+
 /// Dot-folders that go with "My personal files", beside the five the wizard
 /// names.
 ///
@@ -289,6 +291,97 @@ pub fn parse_ssh(input: &str) -> Option<String> {
     Some(address.to_string())
 }
 
+/// Whether `path` is where udisks mounts removable media for `user`:
+/// `/run/media/<user>/<name>`, or `/media/<user>/<name>` on Debian's family.
+///
+/// GIO knows a mount is a removable drive through gvfs's udisks2 monitor. A
+/// desktop without gvfs (Plasma, often) still has udisks mounting the drives
+/// it is handed, and GIO still lists the mounts, only with no drive to say
+/// what they are; where they are says it instead.
+pub fn removable_media_mount(path: &Path, user: &std::ffi::OsStr) -> bool {
+    path.parent().is_some_and(|parent| {
+        ["/run/media", "/media"]
+            .iter()
+            .any(|base| parent == Path::new(base).join(user))
+    })
+}
+
+/// What to say when `address` names a kind of share this computer cannot
+/// open, or `None` when it can be tried. `supported` is the URI schemes GIO's
+/// VFS knows here, and `os_release` the distribution's, for what to install.
+///
+/// GIO opens a network address through gvfs, and through gvfs's backend for
+/// that kind of address. Without either it can only fail with an error of its
+/// own ("volume doesn't implement mount"), which says nothing about the cure.
+/// GIO picks gvfs up when a program starts, so once it is installed Backtrack
+/// has to be opened again. The advice names gvfs-fuse as well where it is a
+/// package of its own: without it a share mounts with no folder for Borg to
+/// use (see [`share_without_folder`]).
+pub fn unsupported_address(address: &str, supported: &[&str], os_release: &str) -> Option<String> {
+    let (scheme, _) = address.trim().split_once("://")?;
+    let scheme = scheme.to_ascii_lowercase();
+    let valid = scheme.starts_with(|c: char| c.is_ascii_alphabetic())
+        && scheme
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || "+-.".contains(c));
+    if !valid || scheme == "file" || supported.iter().any(|known| *known == scheme) {
+        return None;
+    }
+    let (kind, package) = match scheme.as_str() {
+        "smb" => ("SMB", "gvfs-smb"),
+        "nfs" => ("NFS", "gvfs-nfs"),
+        _ => {
+            return Some(format!(
+                "Backtrack can't open {scheme}:// addresses on this computer. Type an smb:// \
+                 or nfs:// address, or choose a folder."
+            ))
+        }
+    };
+    let packages = match distro::family(os_release) {
+        // Debian's family puts every gvfs backend in one package.
+        Some(Family::Debian) => Some((Family::Debian, "gvfs-backends gvfs-fuse".to_string())),
+        Some(Family::Fedora) => Some((Family::Fedora, format!("{package} gvfs-fuse"))),
+        // Arch's gvfs has its FUSE helper in it.
+        Some(Family::Arch) => Some((Family::Arch, package.to_string())),
+        Some(Family::Suse) | None => None,
+    };
+    let how = match packages {
+        Some((family, packages)) => format!(
+            "Install it, then open Backtrack again:\n\n{}",
+            family.install(&packages)
+        ),
+        None => "Install it with your distribution's software tool, then open Backtrack again."
+            .to_string(),
+    };
+    Some(format!(
+        "This computer can't open {scheme}:// addresses: that needs GVfs's {kind} support, \
+         which isn't installed. {how}\n\nA share mounted another way can be chosen as a \
+         folder instead."
+    ))
+}
+
+/// What to say when a share mounted but has no folder on this computer.
+///
+/// gvfs gives a share a folder through its FUSE helper, which is a package of
+/// its own on Fedora and Debian (gvfs-fuse) and which gvfs starts only when it
+/// starts itself. Without the folder the share is reachable from a file
+/// manager and not from Borg, and installing the helper takes effect at the
+/// next login.
+pub fn share_without_folder(os_release: &str) -> String {
+    let how = match distro::family(os_release) {
+        Some(family @ (Family::Fedora | Family::Debian)) => format!(
+            "Install it, then log out and back in:\n\n{}",
+            family.install("gvfs-fuse")
+        ),
+        _ => "Install it with your distribution's software tool, then log out and back in."
+            .to_string(),
+    };
+    format!(
+        "Backtrack connected to the share, but can't use it as a folder: that needs GVfs's \
+         FUSE support, which isn't installed. {how}"
+    )
+}
+
 /// Whether the selection fits at the destination.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Fit {
@@ -325,6 +418,16 @@ pub struct Strength {
 
 impl Strength {
     pub const SEGMENTS: u32 = 4;
+}
+
+/// What the strength line says instead, while the confirmation differs.
+pub const PASSPHRASES_DIFFER: &str = "The passphrases don't match";
+
+/// Whether to say [`PASSPHRASES_DIFFER`]: something is in the confirmation,
+/// and it is not the passphrase. Otherwise the button stays off with nothing
+/// to say why.
+pub fn passphrases_differ(passphrase: &str, confirm: &str) -> bool {
+    !confirm.is_empty() && confirm != passphrase
 }
 
 /// Rate a passphrase with zxcvbn.
@@ -683,6 +786,127 @@ mod tests {
         ] {
             assert_eq!(parse_ssh(bad), None, "{bad:?}");
         }
+    }
+
+    #[test]
+    fn udisks_mounts_are_removable_media_and_nothing_else_is() {
+        let user = std::ffi::OsStr::new("keith");
+        for path in ["/run/media/keith/BTMATRIX", "/media/keith/WD Passport"] {
+            assert!(removable_media_mount(Path::new(path), user), "{path}");
+        }
+        for path in [
+            "/run/media/keith",
+            "/run/media/other/WD",
+            "/run/media/keith/WD/inner",
+            "/media/WD",
+            "/mnt/backups",
+            "/home/keith/media/keith/WD",
+            "/",
+        ] {
+            assert!(!removable_media_mount(Path::new(path), user), "{path}");
+        }
+    }
+
+    /// The schemes GIO's own VFS knows, with no gvfs installed: what the
+    /// Plasma VM's sandbox and its native programs both reported.
+    const NO_GVFS: [&str; 2] = ["file", "resource"];
+
+    #[test]
+    fn a_share_without_gvfs_says_what_to_install_for_this_distribution() {
+        let fedora = unsupported_address("smb://nas.local/backups", &NO_GVFS, "ID=fedora\n")
+            .expect("smb:// needs gvfs here");
+        assert!(fedora.contains("GVfs's SMB support"), "{fedora}");
+        assert!(
+            fedora.contains("\n\nsudo dnf install gvfs-smb gvfs-fuse\n\n"),
+            "{fedora}"
+        );
+        assert!(fedora.contains("open Backtrack again"), "{fedora}");
+        assert!(fedora.contains("chosen as a folder"), "{fedora}");
+
+        let ubuntu =
+            unsupported_address("nfs://nas/export", &NO_GVFS, "ID=ubuntu\nID_LIKE=debian\n")
+                .expect("nfs:// needs gvfs here");
+        assert!(ubuntu.contains("GVfs's NFS support"), "{ubuntu}");
+        assert!(
+            ubuntu.contains("sudo apt install gvfs-backends gvfs-fuse"),
+            "{ubuntu}"
+        );
+
+        let arch = unsupported_address("SMB://nas/b", &NO_GVFS, "ID=arch\n").expect("smb");
+        assert!(arch.contains("sudo pacman -S gvfs-smb\n"), "{arch}");
+
+        let unknown = unsupported_address("smb://nas/b", &NO_GVFS, "ID=gentoo\n").expect("smb");
+        assert!(
+            unknown.contains("your distribution's software tool"),
+            "{unknown}"
+        );
+        assert!(!unknown.contains("sudo"), "{unknown}");
+    }
+
+    #[test]
+    fn gvfs_without_the_backend_is_the_same_as_no_gvfs() {
+        // This machine's gvfs, which has the SMB backend and not the NFS one.
+        let schemes = ["file", "ftp", "sftp", "smb", "trash"];
+        assert_eq!(
+            unsupported_address("smb://nas/backups", &schemes, "ID=arch\n"),
+            None
+        );
+        let nfs = unsupported_address("nfs://nas/export", &schemes, "ID=arch\n").expect("nfs");
+        assert!(nfs.contains("sudo pacman -S gvfs-nfs"), "{nfs}");
+    }
+
+    #[test]
+    fn a_share_with_no_folder_needs_the_fuse_helper_and_a_new_login() {
+        let fedora = share_without_folder("ID=fedora\n");
+        assert!(fedora.contains("FUSE support"), "{fedora}");
+        assert!(
+            fedora.contains("log out and back in:\n\nsudo dnf install gvfs-fuse"),
+            "{fedora}"
+        );
+        let debian = share_without_folder("ID=debian\n");
+        assert!(debian.contains("sudo apt install gvfs-fuse"), "{debian}");
+        // Arch's gvfs has the helper in it already, so there is no package to name.
+        let arch = share_without_folder("ID=arch\n");
+        assert!(!arch.contains("sudo"), "{arch}");
+    }
+
+    #[test]
+    fn a_path_or_a_scheme_gio_knows_is_simply_tried() {
+        for address in [
+            "/srv/backups",
+            "file:///srv/backups",
+            "",
+            "nas.local/backups",
+            "not a :// scheme",
+        ] {
+            assert_eq!(
+                unsupported_address(address, &NO_GVFS, "ID=fedora\n"),
+                None,
+                "{address:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_kind_of_address_backtrack_does_not_offer_says_which_it_does() {
+        let afp = unsupported_address("afp://old/volume", &NO_GVFS, "ID=fedora\n").expect("afp");
+        assert!(afp.contains("smb:// or nfs://"), "{afp}");
+        assert!(!afp.contains("sudo"), "{afp}");
+    }
+
+    #[test]
+    fn a_confirmation_that_differs_is_said_to() {
+        assert!(
+            !passphrases_differ("correct horse", ""),
+            "nothing typed yet"
+        );
+        assert!(!passphrases_differ("correct horse", "correct horse"));
+        assert!(passphrases_differ("correct horse", "correct hrose"));
+        assert!(
+            passphrases_differ("correct horse", "correct"),
+            "not finished is not the same"
+        );
+        assert!(passphrases_differ("", "correct horse"));
     }
 
     #[test]

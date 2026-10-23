@@ -15,9 +15,11 @@
 //! which makes "what does the sidebar look like on a Tuesday in June" a
 //! question a test can ask.
 
+pub mod above;
 pub mod calendar;
 pub mod compare;
 pub mod density;
+pub mod distro;
 pub mod empty;
 pub mod everything;
 pub mod exclusions;
@@ -25,6 +27,7 @@ pub mod format;
 pub mod group;
 pub mod health;
 pub mod pause;
+pub mod plugins;
 pub mod prefs;
 pub mod restore;
 pub mod search;

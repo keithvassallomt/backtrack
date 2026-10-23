@@ -3,7 +3,7 @@
 
 //! `backtrack` — the command-line client, and the debugging tool.
 //!
-//! Every command is a call to the daemon over `org.backtrack.Daemon1`; nothing
+//! Every command is a call to the daemon over `tools.backtrack.Backtrack.Daemon1`; nothing
 //! here touches a repository directly. That is the point: the CLI exercises the
 //! same interface the GUI uses, so anything reproducible here is reproducible
 //! there, and `backtrack doctor` describes the system the GUI is actually
@@ -71,8 +71,12 @@ fn explain(name: &str, message: &str) -> String {
             Some("The stored passphrase no longer opens this repository. Re-enter it, or use your recovery key.")
         }
         "RepoUnreachable" => Some("The destination is not reachable right now."),
+        "DestinationUnwritable" => Some(
+            "The destination's permissions, or a read-only mount, refuse the write. Make it writable again, or choose another destination.",
+        ),
         "DestinationFull" => Some("Free space on the destination, or run `backtrack compact`."),
         "LockedByOther" => Some("Another Borg process holds the repository. Try again shortly."),
+        "KeyringLocked" => Some("Unlock the keyring, then try again."),
         "RepoCorrupt" => Some("Run `backtrack verify` to see the extent of the damage."),
         "NotPausable" => Some("Only a full restore can be paused. Cancel it instead."),
         _ => None,
@@ -195,15 +199,21 @@ async fn run(command: Command) -> Result<String, CliError> {
     let now = SystemTime::now();
     match command {
         Command::Status(args) => {
-            let status = proxy::connect().await?.get_status().await?;
+            let daemon = proxy::connect().await?;
+            let status = daemon.get_status().await?;
+            let progress = backup_progress(&daemon, &status).await;
             Ok(if args.json {
                 format!(
                     "{}\n",
-                    serde_json::to_string_pretty(&render::status_json(&status, now))
-                        .expect("status serialises")
+                    serde_json::to_string_pretty(&render::status_json(
+                        &status,
+                        progress.as_ref(),
+                        now
+                    ))
+                    .expect("status serialises")
                 )
             } else {
-                render::status_human(&status, now)
+                render::status_human(&status, progress.as_ref(), now)
             })
         }
 
@@ -302,8 +312,13 @@ async fn run(command: Command) -> Result<String, CliError> {
                 Ok(daemon) => {
                     let status = match daemon.get_status().await {
                         Ok(status) => {
-                            serde_json::to_string_pretty(&render::status_json(&status, now))
-                                .unwrap_or_default()
+                            let progress = backup_progress(&daemon, &status).await;
+                            serde_json::to_string_pretty(&render::status_json(
+                                &status,
+                                progress.as_ref(),
+                                now,
+                            ))
+                            .unwrap_or_default()
                         }
                         Err(e) => format!("{{\"error\": \"{e}\"}}"),
                     };
@@ -363,6 +378,22 @@ fn bad_duration(text: &str) -> CliError {
     ))
 }
 
+/// How far the backup under way has got, asked only while a job runs. A
+/// daemon from before S06-T12 has no such call, and that says nothing.
+async fn backup_progress(
+    daemon: &proxy::Daemon1Proxy<'_>,
+    status: &backtrack_core::dbus::Status,
+) -> Option<render::Progress> {
+    if status.active_job == 0 {
+        return None;
+    }
+    daemon
+        .get_backup_progress()
+        .await
+        .ok()
+        .and_then(render::Progress::from_reply)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -410,10 +441,16 @@ mod tests {
 
     #[test]
     fn named_daemon_errors_become_advice() {
-        let text = explain("org.backtrack.Error.NotConfigured", "not configured");
+        let text = explain(
+            "tools.backtrack.Backtrack.Error.NotConfigured",
+            "not configured",
+        );
         assert!(text.contains("setup wizard"), "got: {text}");
 
-        let text = explain("org.backtrack.Error.PassphraseWrong", "wrong passphrase");
+        let text = explain(
+            "tools.backtrack.Backtrack.Error.PassphraseWrong",
+            "wrong passphrase",
+        );
         assert!(text.contains("recovery key"), "got: {text}");
     }
 
@@ -421,7 +458,7 @@ mod tests {
     fn an_unrecognised_error_is_passed_through_unembellished() {
         // Inventing advice for an error we do not understand is worse than
         // repeating what the daemon said.
-        let text = explain("org.backtrack.Error.Something", "the message");
+        let text = explain("tools.backtrack.Backtrack.Error.Something", "the message");
         assert_eq!(text, "the message");
     }
 

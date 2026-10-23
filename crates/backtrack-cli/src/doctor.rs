@@ -53,7 +53,7 @@ pub fn collect(
     health: &Result<HealthReport, String>,
     now: SystemTime,
 ) -> Result<PathBuf, CliError> {
-    let dir = std::env::temp_dir();
+    let dir = bundle_dir();
     let stamp = crate::render::format_time(now)
         .replace([' ', ':'], "-")
         .replace('Z', "");
@@ -167,6 +167,7 @@ fn catalogue_row(reason: Reason) -> Option<&'static str> {
         Reason::PassphraseMissing => "Passphrase missing (keyring reset/locked)",
         Reason::PassphraseWrong => "Wrong passphrase (repo key changed)",
         Reason::AuthFailed => "Destination credentials expired (SMB/SSH auth)",
+        Reason::DestinationUnwritable => "Destination not writable",
         Reason::DestinationFull => "Destination full",
         Reason::LocalDiskFull => "Local disk full (spool/staging)",
         Reason::RepoCorrupt => "Repo corruption",
@@ -192,6 +193,12 @@ fn versions() -> String {
         command_output("borg", &["--version"]).unwrap_or_else(|| "not found".into())
     ));
     out.push_str(&format!("os {}\n", os_release()));
+    out.push_str(&format!(
+        "package {}\n",
+        backtrack_core::host::flatpak_runtime()
+            .map(|runtime| format!("flatpak on {runtime}"))
+            .unwrap_or_else(|| "native".to_string())
+    ));
     out.push_str(&format!(
         "kernel {}\n",
         command_output("uname", &["-r"]).unwrap_or_else(|| "unknown".into())
@@ -327,6 +334,20 @@ fn append<W: Write>(tar: &mut tar::Builder<W>, name: &str, contents: &str) -> Re
         })
 }
 
+/// Where the bundle is written: the temporary directory. Inside a Flatpak
+/// that is the sandbox's own and goes with it, so there the application's
+/// folder under `$XDG_RUNTIME_DIR` instead, which Flatpak shares with the host
+/// at the same path, so the path printed is one the user can open (S14-T5).
+fn bundle_dir() -> PathBuf {
+    let shared = std::env::var_os("XDG_RUNTIME_DIR").zip(std::env::var_os("FLATPAK_ID"));
+    match shared {
+        Some((runtime, app)) if backtrack_core::host::in_flatpak() => {
+            PathBuf::from(runtime).join("app").join(app)
+        }
+        _ => std::env::temp_dir(),
+    }
+}
+
 fn command_output(program: &str, args: &[&str]) -> Option<String> {
     let out = std::process::Command::new(program)
         .args(args)
@@ -338,14 +359,12 @@ fn command_output(program: &str, args: &[&str]) -> Option<String> {
     Some(String::from_utf8_lossy(&out.stdout).trim().to_string())
 }
 
+/// The host's distribution, also from inside a Flatpak.
 fn os_release() -> String {
-    std::fs::read_to_string("/etc/os-release")
-        .ok()
-        .and_then(|text| {
-            text.lines()
-                .find_map(|l| l.strip_prefix("PRETTY_NAME="))
-                .map(|v| v.trim_matches('"').to_string())
-        })
+    backtrack_core::host::os_release()
+        .lines()
+        .find_map(|l| l.strip_prefix("PRETTY_NAME="))
+        .map(|v| v.trim_matches('"').to_string())
         .unwrap_or_else(|| "unknown".to_string())
 }
 

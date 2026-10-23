@@ -52,9 +52,11 @@ guided full-home disaster recovery · health monitoring with honest failure UX.
 ## Project facts
 
 - **License:** GPL-3.0-or-later.
-- **Distribution:** public repo; Flatpak (Flathub) + Fedora COPR + Ubuntu PPA from v1.
-- **App ID:** `io.github.keithvassallomt.Backtrack` (Flathub-compatible; revisit if a
-  domain is acquired).
+- **Distribution:** public repo; Flatpak (FriendlyHub, not Flathub: Keith, 2026-10-12) +
+  Fedora COPR (Fedora 44+) + Ubuntu PPA (Ubuntu 26.04+) + AUR from v1. Every other
+  distribution uses the Flatpak.
+- **App ID:** `tools.backtrack.Backtrack`, under the project's domain, backtrack.tools
+  (2026-10-12; `io.github.keithvassallomt.Backtrack` until then, renamed in S13-T7).
 - **Naming note:** "Backtrack" collides with the retired BackTrack Linux pentest distro
   in search results. Accepted for now — the association is dated and the name is right —
   but branding (icon, tagline, "Backtrack Backup" in store listings) should lean away

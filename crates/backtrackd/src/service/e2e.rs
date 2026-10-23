@@ -27,8 +27,8 @@ use crate::jobs::JobRegistry;
 use crate::service::{fan_out_signals, Daemon1, Shared, StorageInfo, SEARCH_LIMIT};
 
 const PASS: &str = "e2e-passphrase";
-const PATH: &str = "/org/backtrack/Daemon1";
-const IFACE: &str = "org.backtrack.Daemon1";
+const PATH: &str = "/tools/backtrack/Backtrack/Daemon1";
+const IFACE: &str = "tools.backtrack.Backtrack.Daemon1";
 
 /// A repository with something worth backing up in it.
 struct Fixture {
@@ -293,7 +293,7 @@ async fn errors_cross_the_bus_with_their_documented_names() {
     };
     assert_eq!(
         name.as_str(),
-        "org.backtrack.Error.NotConfigured",
+        "tools.backtrack.Backtrack.Error.NotConfigured",
         "clients match on the name, so it is the contract"
     );
 }
@@ -685,6 +685,320 @@ async fn losing_the_destination_protects_the_changed_files_on_this_computer() {
     assert_eq!(untouched.size, "original".len() as i64);
 
     restore_the_destination(&shared);
+}
+
+/// A local snapshot holding an edit that is then lost on disk, which is the
+/// moment anyone comes looking for it. Returns the snapshot's name and the
+/// archive-relative path of the edited file. Leaves the destination away.
+async fn a_local_snapshot_of_a_lost_edit(shared: &Arc<Shared>) -> (String, String) {
+    let src = source(shared);
+    let job = Daemon1::new(Arc::clone(shared))
+        .backup_now()
+        .await
+        .expect("backup starts");
+    wait_for_job(shared, job).await;
+
+    cut_the_destination(shared);
+    let edited = src.join("docs/a.txt");
+    std::fs::write(&edited, b"edited while away").unwrap();
+    let job = shared
+        .start_scheduled_backup()
+        .await
+        .expect("the tick is not an error")
+        .expect("an unreachable destination starts local protection instead");
+    wait_for_job(shared, job).await;
+
+    let local = local_rows(shared).await;
+    assert_eq!(local.len(), 1, "one local snapshot: {local:?}");
+    std::fs::write(&edited, b"overwritten by mistake").unwrap();
+    let member = edited.strip_prefix("/").unwrap().display().to_string();
+    (local[0].name.clone(), member)
+}
+
+/// Preview `member` of `archive` and restore it over the disk copy, through
+/// the interface the window uses. Returns what each step said went wrong.
+async fn preview_and_restore(
+    shared: &Arc<Shared>,
+    archive: &str,
+    member: &str,
+) -> (Result<String, String>, Result<(), String>) {
+    use std::io::Read as _;
+    let (_server, client) = connect(Arc::clone(shared)).await;
+
+    let preview = match client
+        .call_method(
+            None::<()>,
+            PATH,
+            Some(IFACE),
+            "PreviewFile",
+            &(archive, member),
+        )
+        .await
+    {
+        Ok(reply) => {
+            let fd: zbus::zvariant::OwnedFd = reply.body().deserialize().expect("a descriptor");
+            let mut contents = String::new();
+            std::fs::File::from(std::os::fd::OwnedFd::from(fd))
+                .read_to_string(&mut contents)
+                .expect("readable");
+            Ok(contents)
+        }
+        Err(error) => Err(error.to_string()),
+    };
+
+    let restore = async {
+        let reply = client
+            .call_method(
+                None::<()>,
+                PATH,
+                Some(IFACE),
+                "PrepareRestore",
+                &(archive, vec![member.to_string()], "/"),
+            )
+            .await
+            .map_err(|e| format!("PrepareRestore refused: {e}"))?;
+        let job: u64 = reply.body().deserialize().expect("a job id");
+        let state = settle(shared, job).await;
+        if !completed(&state) {
+            return Err(format!("preparing failed: {state:?}"));
+        }
+        let reply = client
+            .call_method(
+                None::<()>,
+                PATH,
+                Some(IFACE),
+                "ExecuteRestore",
+                &(job, "replace", Vec::<(String, String)>::new()),
+            )
+            .await
+            .map_err(|e| format!("ExecuteRestore refused: {e}"))?;
+        let run: u64 = reply.body().deserialize().expect("a job id");
+        let state = settle(shared, run).await;
+        if !completed(&state) {
+            return Err(format!("executing failed: {state:?}"));
+        }
+        Ok(())
+    }
+    .await;
+    (preview, restore)
+}
+
+#[tokio::test]
+async fn a_local_snapshot_is_previewed_and_restored_from_while_the_destination_is_away() {
+    let fixture = small_fixture().await;
+    let shared = Arc::clone(&fixture.shared);
+    let (archive, member) = a_local_snapshot_of_a_lost_edit(&shared).await;
+
+    let (preview, restore) = preview_and_restore(&shared, &archive, &member).await;
+    let on_disk = std::fs::read_to_string(std::path::Path::new("/").join(&member)).unwrap();
+    restore_the_destination(&shared);
+
+    assert_eq!(
+        (preview, restore, on_disk.as_str()),
+        (
+            Ok("edited while away".to_string()),
+            Ok(()),
+            "edited while away"
+        ),
+        "the preview, the restore, and what is on disk afterwards"
+    );
+}
+
+#[tokio::test]
+async fn a_local_snapshot_is_previewed_and_restored_from_once_the_destination_is_back() {
+    let fixture = small_fixture().await;
+    let shared = Arc::clone(&fixture.shared);
+    let (archive, member) = a_local_snapshot_of_a_lost_edit(&shared).await;
+    restore_the_destination(&shared);
+
+    let (preview, restore) = preview_and_restore(&shared, &archive, &member).await;
+    let on_disk = std::fs::read_to_string(std::path::Path::new("/").join(&member)).unwrap();
+
+    assert_eq!(
+        (preview, restore, on_disk.as_str()),
+        (
+            Ok("edited while away".to_string()),
+            Ok(()),
+            "edited while away"
+        ),
+        "the preview, the restore, and what is on disk afterwards"
+    );
+}
+
+/// The compare view's copy of a local snapshot's file comes from the spool,
+/// not from a destination that has never heard of the snapshot.
+#[tokio::test]
+async fn a_local_snapshot_is_compared_from_the_spool() {
+    let fixture = small_fixture().await;
+    let shared = Arc::clone(&fixture.shared);
+    let (archive, member) = a_local_snapshot_of_a_lost_edit(&shared).await;
+    let (_server, client) = connect(Arc::clone(&shared)).await;
+
+    let job = match client
+        .call_method(
+            None::<()>,
+            PATH,
+            Some(IFACE),
+            "CompareFile",
+            &(archive.as_str(), member.as_str()),
+        )
+        .await
+    {
+        Ok(reply) => Ok(reply.body().deserialize::<u64>().expect("a job id")),
+        Err(error) => Err(error.to_string()),
+    };
+    let state = match job {
+        Ok(job) => Ok(settle(&shared, job).await),
+        Err(error) => Err(error),
+    };
+    let held = std::fs::read_to_string(shared.preview.entry_path(&archive, &member));
+    restore_the_destination(&shared);
+
+    assert!(
+        matches!(&state, Ok(state) if completed(state)),
+        "the compare's extraction finished: {state:?}"
+    );
+    assert_eq!(held.ok().as_deref(), Some("edited while away"));
+}
+
+/// A preview that could not be fetched is an error, and is not remembered:
+/// once the destination is back, the same preview shows the file.
+#[tokio::test]
+async fn a_preview_that_could_not_be_fetched_is_not_kept_as_an_empty_file() {
+    use std::io::Read as _;
+    let fixture = small_fixture().await;
+    let shared = Arc::clone(&fixture.shared);
+    let job = Daemon1::new(Arc::clone(&shared))
+        .backup_now()
+        .await
+        .expect("backup starts");
+    wait_for_job(&shared, job).await;
+    let archive = newest_archive(&shared).await;
+    let member = archived_path(&shared, &archive, "docs/a.txt").await;
+
+    let (_server, client) = connect(Arc::clone(&shared)).await;
+    let preview = || async {
+        let reply = client
+            .call_method(
+                None::<()>,
+                PATH,
+                Some(IFACE),
+                "PreviewFile",
+                &(archive.as_str(), member.as_str()),
+            )
+            .await
+            .map_err(|e| e.to_string())?;
+        let fd: zbus::zvariant::OwnedFd = reply.body().deserialize().expect("a descriptor");
+        let mut contents = String::new();
+        std::fs::File::from(std::os::fd::OwnedFd::from(fd))
+            .read_to_string(&mut contents)
+            .expect("readable");
+        Ok::<String, String>(contents)
+    };
+
+    cut_the_destination(&shared);
+    let away = preview().await;
+    restore_the_destination(&shared);
+    let back = preview().await;
+
+    // Twice in CI (2026-10-20), and never on a desktop or in a Fedora container
+    // run locally, the preview after the destination came back was refused as
+    // LockedByOther. What held the lock is recorded with the failure, and
+    // whether waiting clears it, so the next failure says what it was.
+    let diagnosis = if back.is_err() {
+        let repo = shared
+            .config()
+            .storage
+            .repository
+            .clone()
+            .unwrap_or_default();
+        let held = lock_report(&repo);
+        tokio::time::sleep(Duration::from_secs(3)).await;
+        let later = preview().await;
+        format!(
+            "\nlocks then: {held}\nborg processes: {}\nthree seconds later: {later:?}, locks {}",
+            borg_processes(),
+            lock_report(&repo)
+        )
+    } else {
+        String::new()
+    };
+    assert_eq!(
+        (away.is_err(), back.clone()),
+        (true, Ok("original".to_string())),
+        "an error while the destination is away, then the file once it is back; \
+         got {away:?} then {back:?}{diagnosis}"
+    );
+}
+
+/// What Borg's lock files in `repo` say: the exclusive lock's holders, and the
+/// roster of shared and exclusive owners.
+fn lock_report(repo: &str) -> String {
+    let repo = std::path::Path::new(repo);
+    let exclusive = match std::fs::read_dir(repo.join("lock.exclusive")) {
+        Ok(entries) => entries
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .collect::<Vec<_>>()
+            .join(", "),
+        Err(_) => "none".to_string(),
+    };
+    let roster =
+        std::fs::read_to_string(repo.join("lock.roster")).unwrap_or_else(|_| "none".into());
+    format!("lock.exclusive [{exclusive}], lock.roster {roster}")
+}
+
+/// The Borg processes alive in this container, from /proc, which every
+/// container has where `ps` may not be.
+fn borg_processes() -> String {
+    let Ok(entries) = std::fs::read_dir("/proc") else {
+        return "unknown".to_string();
+    };
+    let found: Vec<String> = entries
+        .filter_map(|e| e.ok())
+        .filter(|e| {
+            e.file_name()
+                .to_string_lossy()
+                .chars()
+                .all(|c| c.is_ascii_digit())
+        })
+        .filter_map(|e| {
+            let raw = std::fs::read(e.path().join("cmdline")).ok()?;
+            let args: Vec<String> = raw
+                .split(|b| *b == 0)
+                .map(|a| String::from_utf8_lossy(a).into_owned())
+                .collect();
+            // Borg itself, or the Python interpreter running it.
+            let is_borg = args.iter().take(2).any(|a| {
+                std::path::Path::new(a)
+                    .file_name()
+                    .is_some_and(|n| n == "borg")
+            });
+            if !is_borg {
+                return None;
+            }
+            let cmdline = args.join(" ");
+            let stat = std::fs::read_to_string(e.path().join("stat")).unwrap_or_default();
+            let state = stat
+                .rsplit(')')
+                .next()
+                .unwrap_or("")
+                .split_whitespace()
+                .next()
+                .unwrap_or("?")
+                .to_string();
+            Some(format!(
+                "{} [{state}] {}",
+                e.file_name().to_string_lossy(),
+                cmdline.trim()
+            ))
+        })
+        .collect();
+    if found.is_empty() {
+        "none".to_string()
+    } else {
+        found.join("; ")
+    }
 }
 
 #[tokio::test]
@@ -1866,9 +2180,10 @@ fn walk(root: &std::path::Path) -> Vec<std::path::PathBuf> {
     found
 }
 
-/// S10-T4, the sign-in row, and the DoD's "make destination unwritable": a
-/// destination that is there and refuses to be written to stops backups with
-/// the banner that says so, and trying again once it accepts them clears it.
+/// The DoD's "make destination unwritable", and S10-T8: a destination that is
+/// there and refuses to be written to stops backups with the banner that says
+/// so, which is not the sign-in one, and trying again once it accepts them
+/// clears it.
 #[tokio::test]
 async fn a_destination_that_refuses_writes_is_broken_until_it_takes_them_again() {
     if rustix::process::geteuid().is_root() {
@@ -1891,9 +2206,9 @@ async fn a_destination_that_refuses_writes_is_broken_until_it_takes_them_again()
     writable(&repo, true);
     assert_eq!(
         failed_with(&ended),
-        Some(backtrack_core::engine::EngineError::AuthFailed)
+        Some(backtrack_core::engine::EngineError::DestinationUnwritable)
     );
-    assert_eq!(health(&shared), ("BROKEN", "auth-failed"));
+    assert_eq!(health(&shared), ("BROKEN", "destination-unwritable"));
 
     // "Try Again", once whoever changed it has changed it back.
     let job = daemon.backup_now().await.unwrap();

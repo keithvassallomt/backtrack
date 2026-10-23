@@ -109,12 +109,53 @@ The interface has no way to learn that a job ended: `StatusChanged` fires only
 when the health *state* moves, which a successful backup on an already-healthy
 machine does not do, so the window polls `GetStatus` to know when a backup it
 started has finished. Add `JobFinished(job, kind, outcome)` to
-`org.backtrack.Daemon1`, emitted from the signal fan-out on any terminal job
+`tools.backtrack.Backtrack.Daemon1`, emitted from the signal fan-out on any terminal job
 state, and use it in place of the polling. Stage 7's restores need the same
 thing.
 **Accept:** the introspection snapshot carries the new signal; the GTK app
 toasts on completion without polling; a daemon test asserts the signal is
 emitted once per terminal job with the right outcome.
+
+### S06-T11 — No dead end above the backed-up folders
+Found in the FriendlyHub round trip (S14-T9, 2026-10-19), on Ubuntu with
+only `~/Smoke/Documents` backed up. The window that ran the wizard was still
+at the home folder after the first backup, and the home folder, being outside
+the backups, showed "This folder is not backed up" with nothing to step into:
+the breadcrumb leads only up, so the backed-up folder below could not be
+reached from there. A window opened afterwards starts at the backed-up
+folders' parent, as `backed_up_target` intends.
+- A folder outside the backups that holds backed-up folders lists the
+  folders that lead down to them, each marked "Some items backed up", above
+  a line saying "Some items in Home are backed up." with Add to Backups….
+- The window that ran the wizard moves to the backed-up folders once the
+  first backup is catalogued, where a window opened then would start.
+
+**Accept:** with only `~/Smoke/Documents` backed up, the home folder lists
+Smoke, which leads to Documents, and says only some of it is backed up; the
+window the wizard opens shows the backed-up folders once the first backup is
+catalogued, without being closed.
+
+### S06-T12 — A backup under way says how far it has got
+Found watching the first backup on the release machine (2026-10-19): the
+status line and the tray said "Backing up now…", `backtrack status` said
+"Running job 2" though `backup-now` promises it shows progress, and only the
+wizard's first-backup page had a bar. The daemon was already sending
+`BackupProgress` four times a second, with no total: Borg gives none.
+- The daemon measures a backup's sources beside the archiving, under the same
+  exclusions, and progress carries that total once it is known.
+- `GetBackupProgress` answers with the backup under way and its last
+  progress, for a window, tray or command that starts watching part way.
+- One line, `backtrack_core::progress`, in the wizard's words: "Backing up…
+  31.5 GB of about 53.1 GB (59%)", or "… so far" before there is a total,
+  never 100% until the backup ends. It shows in a banner under the header
+  bar while a backup runs, in the tray's tooltip and menu, and in `backtrack
+  status` (and its JSON, as `progress`).
+
+**Accept:** during a backup, a window opened part way shows the banner with
+an amount read and, once measured, the total and percentage, and puts it
+away when the backup ends; the tray says the same; `backtrack status` says
+the same beside the job, and its JSON carries `progress`, null between
+backups.
 
 ## Definition of Done
 The Alice story runs end to end on demo-repo (browse → step back → deleted folder

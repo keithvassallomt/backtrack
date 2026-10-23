@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // SPDX-FileCopyrightText: 2026 Keith Vassallo <keith@vassallo.cloud>
 
-//! The tray's side of `org.backtrack.Daemon1`: the calls its menu makes and
+//! The tray's side of `tools.backtrack.Backtrack.Daemon1`: the calls its menu makes and
 //! the signals that say the status line is out of date.
 
 use backtrack_core::dbus::Status;
@@ -9,8 +9,8 @@ use tracing::debug;
 use zbus::proxy::{CacheProperties, MethodFlags};
 
 #[zbus::proxy(
-    interface = "org.backtrack.Daemon1",
-    default_path = "/org/backtrack/Daemon1"
+    interface = "tools.backtrack.Backtrack.Daemon1",
+    default_path = "/tools/backtrack/Backtrack/Daemon1"
 )]
 pub trait Daemon1 {
     fn backup_now(&self) -> zbus::Result<u64>;
@@ -36,6 +36,29 @@ pub async fn proxy(connection: &zbus::Connection) -> zbus::Result<Daemon1Proxy<'
         .cache_properties(CacheProperties::No)
         .build()
         .await
+}
+
+/// How far the backup under way has got, in words, or `None` with none under
+/// way or no daemon to ask. Asked without starting it, as [`status`] is.
+pub async fn progress(daemon: &Daemon1Proxy<'_>) -> Option<String> {
+    match daemon
+        .inner()
+        .call_with_flags::<_, _, (u64, String, u64, u64)>(
+            "GetBackupProgress",
+            MethodFlags::NoAutoStart.into(),
+            &(),
+        )
+        .await
+    {
+        Ok(Some((job, phase, current, total))) if job != 0 => {
+            Some(backtrack_core::progress::line(&phase, current, total))
+        }
+        Ok(_) => None,
+        Err(error) => {
+            debug!(%error, "the daemon did not say how far the backup has got");
+            None
+        }
+    }
 }
 
 /// What the daemon says, or `None` when it is not running.

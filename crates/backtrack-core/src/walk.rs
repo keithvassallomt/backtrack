@@ -96,9 +96,26 @@ impl Walked {
 /// link into `/` turn an offline tick into a walk of the whole machine, and
 /// would archive the same files under two names.
 pub fn walk(spec: &WalkSpec) -> Walked {
+    walk_mapped(spec, None)
+}
+
+/// Walk `spec`'s sources, which lie under `from`, as though they lay under
+/// `to`: the exclusions and the never-walked list are matched against, and the
+/// items reported at, the corresponding path under `to`.
+///
+/// For a filesystem snapshot, walked as the subvolume it is a copy of. Its
+/// files are recorded where they really live, and the rules about what is
+/// never backed up apply to them there. Matched where the snapshot is kept,
+/// inside Backtrack's own data directory, the rules that keep that directory
+/// out of every backup would exclude the whole snapshot.
+pub fn walk_as(spec: &WalkSpec, from: &Path, to: &Path) -> Walked {
+    walk_mapped(spec, Some((from, to)))
+}
+
+fn walk_mapped(spec: &WalkSpec, as_if: Option<(&Path, &Path)>) -> Walked {
     let mut out = Walked::default();
     let mut items = Vec::new();
-    let _ = visit(spec, &mut out.unreadable, &mut |relative, meta| {
+    let _ = visit(spec, as_if, &mut out.unreadable, &mut |relative, meta| {
         let is_dir = meta.is_dir();
         items.push(BorgItem {
             path: relative,
@@ -136,7 +153,7 @@ pub struct Measured {
 pub fn measure(spec: &WalkSpec, cancelled: &AtomicBool) -> Option<Measured> {
     let mut measured = Measured::default();
     let mut unreadable = 0;
-    let flow = visit(spec, &mut unreadable, &mut |_, meta| {
+    let flow = visit(spec, None, &mut unreadable, &mut |_, meta| {
         if cancelled.load(Ordering::Relaxed) {
             return ControlFlow::Break(());
         }
@@ -152,6 +169,7 @@ pub fn measure(spec: &WalkSpec, cancelled: &AtomicBool) -> Option<Measured> {
 /// Every source in turn, handing each entry in scope to `found`.
 fn visit(
     spec: &WalkSpec,
+    as_if: Option<(&Path, &Path)>,
     unreadable: &mut usize,
     found: &mut dyn FnMut(String, &std::fs::Metadata) -> ControlFlow<()>,
 ) -> ControlFlow<()> {
@@ -163,7 +181,7 @@ fn visit(
                 continue;
             }
         };
-        walk_from(source, root_device, spec, unreadable, found)?;
+        walk_from(source, root_device, spec, as_if, unreadable, found)?;
     }
     ControlFlow::Continue(())
 }
@@ -175,6 +193,7 @@ fn walk_from(
     root: &Path,
     root_device: u64,
     spec: &WalkSpec,
+    as_if: Option<(&Path, &Path)>,
     unreadable: &mut usize,
     found: &mut dyn FnMut(String, &std::fs::Metadata) -> ControlFlow<()>,
 ) -> ControlFlow<()> {
@@ -193,7 +212,13 @@ fn walk_from(
                 continue;
             };
             let path = entry.path();
-            if spec.never.iter().any(|skip| is_within(&path, skip)) {
+            // Where the rules apply and the item is reported: here, unless the
+            // tree is being walked as another (see `walk_as`).
+            let real = match as_if.map(|(from, to)| (path.strip_prefix(from), to)) {
+                Some((Ok(rest), to)) => to.join(rest),
+                _ => path.clone(),
+            };
+            if spec.never.iter().any(|skip| is_within(&real, skip)) {
                 continue;
             }
             let Ok(meta) = std::fs::symlink_metadata(&path) else {
@@ -205,7 +230,7 @@ fn walk_from(
             if spec.one_file_system && device_of(&meta) != root_device {
                 continue;
             }
-            let relative = archive_path(&path);
+            let relative = archive_path(&real);
             if spec.excludes.excludes(&relative) {
                 // Matching a directory prunes the subtree, exactly as it does
                 // for Borg — and it is what keeps a cache directory from
@@ -447,6 +472,54 @@ mod tests {
         std::os::unix::fs::symlink(dir.path(), dir.path().join("self")).unwrap();
         let walked = walk(&spec(dir.path(), &[]));
         assert_eq!(names(&walked, dir.path()), vec!["self"]);
+    }
+
+    #[test]
+    fn a_snapshot_is_walked_as_the_subvolume_it_copies() {
+        // Kept where the daemon keeps them, inside its own data directory,
+        // which the never-walked list and an exclusion both name.
+        let dir = tempfile::tempdir().unwrap();
+        let subvolume = dir.path().join("work");
+        let data = dir.path().join("data/backtrack");
+        let snapshot = data.join("snapshots/bt-local-1");
+        std::fs::create_dir_all(snapshot.join("docs")).unwrap();
+        std::fs::create_dir_all(snapshot.join("cache")).unwrap();
+        std::fs::write(snapshot.join("docs/report.odt"), "kept").unwrap();
+        std::fs::write(snapshot.join("cache/blob"), "excluded").unwrap();
+        let mut spec = spec(&snapshot, &[]);
+        spec.excludes = ExcludeSet::compile(&[
+            format!("pp:{}", data.join("snapshots").display()),
+            format!("pp:{}", subvolume.join("cache").display()),
+        ]);
+        spec.never = vec![data.clone()];
+
+        // Walked where it is kept, the rules exclude the whole snapshot.
+        assert!(walk(&spec).items.is_empty());
+
+        // Walked as the subvolume, each file is recorded where it really lives,
+        // and an exclusion of the subvolume's cache still applies to its copy.
+        let paths: Vec<String> = walk_as(&spec, &snapshot, &subvolume)
+            .items
+            .into_iter()
+            .map(|item| item.path)
+            .collect();
+        assert_eq!(
+            paths,
+            vec![archive_path(&subvolume.join("docs/report.odt"))]
+        );
+    }
+
+    #[test]
+    fn a_snapshot_of_the_root_subvolume_gains_no_leading_slash() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("home/k")).unwrap();
+        std::fs::write(dir.path().join("home/k/f"), "x").unwrap();
+        let paths: Vec<String> = walk_as(&spec(dir.path(), &[]), dir.path(), Path::new("/"))
+            .items
+            .into_iter()
+            .map(|item| item.path)
+            .collect();
+        assert_eq!(paths, vec!["home/k/f".to_string()]);
     }
 
     #[test]

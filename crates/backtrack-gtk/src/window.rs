@@ -52,6 +52,9 @@ pub struct Window {
     banner: adw::Banner,
     /// What the banner's button does at the moment.
     banner_action: Cell<Option<crate::model::health::Action>>,
+    /// The line under that one while a backup runs, saying how far it has
+    /// got (S06-T12).
+    progress: adw::Banner,
     /// What the person calls the place backups go, for the one banner that
     /// names it. Read when that banner is showing.
     destination: RefCell<String>,
@@ -136,6 +139,7 @@ impl Window {
             status,
             banner: adw::Banner::new(""),
             banner_action: Cell::new(None),
+            progress: adw::Banner::new(""),
             destination: RefCell::new(String::new()),
             pending_fix: RefCell::new(None),
             older,
@@ -164,6 +168,7 @@ impl Window {
         this.assemble();
         this.fill_panes();
         this.watch_state();
+        this.watch_listing();
         this.load_archives();
         this.connect_daemon();
 
@@ -192,6 +197,7 @@ impl Window {
                 None => {}
             });
         layout.add_top_bar(&self.banner);
+        layout.add_top_bar(&self.progress);
         layout.set_content(Some(&self.body()));
         layout.add_bottom_bar(&self.actions());
 
@@ -203,13 +209,14 @@ impl Window {
         let header = adw::HeaderBar::new();
 
         let identity = GtkBox::new(Orientation::Horizontal, 8);
-        identity.append(&gtk4::Image::from_icon_name(ui::app_icon_name(
-            &self.window,
-        )));
+        let logo = gtk4::Image::from_icon_name(ui::app_icon_name(&self.window));
+        logo.set_pixel_size(24);
+        identity.append(&logo);
         let name = Label::new(Some("Backtrack"));
         name.add_css_class("heading");
         identity.append(&name);
         header.pack_start(&identity);
+        ui::without_window_icon(&header);
 
         // The title position holds the breadcrumb while browsing and the search
         // box while searching, because both are the one thing the window is
@@ -383,6 +390,25 @@ impl Window {
             let this = Rc::clone(self);
             action.connect_activate(move |_, _| this.step_to_change(direction));
             self.window.add_action(&action);
+        }
+
+        // Every backup, or only those in which the folder differs (Stage 15).
+        // Stateful and boolean, so the menu draws it as a check item and
+        // activating it toggles it. Ctrl+H, as Show Hidden Files in Nautilus.
+        let show_all =
+            gio::SimpleAction::new_stateful("show-all-backups", None, &false.to_variant());
+        let shower = Rc::clone(self);
+        show_all.connect_change_state(move |action, value| {
+            let Some(on) = value.and_then(|v| v.get::<bool>()) else {
+                return;
+            };
+            action.set_state(&on.to_variant());
+            shower.state.set_show_all(on);
+            shower.remember_show_all(on);
+        });
+        self.window.add_action(&show_all);
+        if let Some(app) = self.window.application() {
+            app.set_accels_for_action("win.show-all-backups", &["<Control>h"]);
         }
 
         // Up a folder, the way every file manager spells it. The breadcrumb
@@ -685,8 +711,11 @@ impl Window {
             seq = hit.last_seq,
             "opening a search result"
         );
-        self.state.set_seq(hit.last_seq);
+        // The folder first: a backup asked for is landed against the folder's
+        // list (Stage 15), and the last folder's could move it to a backup
+        // that no longer holds the file.
         self.state.set_folder(folder);
+        self.state.set_seq(hit.last_seq);
         self.state.set_selected(Some(crate::state::Selected {
             path: hit.path.clone(),
             name: hit.name.clone(),
@@ -734,22 +763,35 @@ impl Window {
         ui::spawn(async move {
             match proxy.get_status().await {
                 Ok(status) => {
-                    // Only the sign-in banner names the destination, so only
-                    // then is it worth asking for.
-                    if status.reason == Reason::AuthFailed.as_str() {
-                        if let Ok(text) = proxy.get_config().await {
-                            if let Ok((config, _)) = backtrack_core::config::Config::parse(&text) {
-                                *this.destination.borrow_mut() = backtrack_core::destination::name(
-                                    &config.storage.repository.unwrap_or_default(),
-                                );
-                            }
-                        }
-                    }
+                    this.learn_destination(&proxy, &status).await;
                     this.render_status(&status);
                 }
                 Err(error) => warn!(%error, "the status could not be read"),
             }
         });
+    }
+
+    /// Find out what the destination is called, when `status`'s banner names
+    /// it. Only some do, so only then is it worth asking for; every path that
+    /// draws a status comes through here first, or the banner says "… to .".
+    async fn learn_destination(
+        &self,
+        proxy: &Daemon1Proxy<'static>,
+        status: &backtrack_core::dbus::Status,
+    ) {
+        let names_it = Reason::parse(&status.reason)
+            .and_then(Reason::failure)
+            .is_some_and(|failure| failure.names_destination());
+        if !names_it {
+            return;
+        }
+        if let Ok(text) = proxy.get_config().await {
+            if let Ok((config, _)) = backtrack_core::config::Config::parse(&text) {
+                *self.destination.borrow_mut() = backtrack_core::destination::name(
+                    &config.storage.repository.unwrap_or_default(),
+                );
+            }
+        }
     }
 
     fn render_status(&self, status: &backtrack_core::dbus::Status) {
@@ -867,6 +909,61 @@ impl Window {
         };
         while StreamExt::next(&mut announcements).await.is_some() {
             self.refresh_status();
+        }
+    }
+
+    /// Say how far a backup under way has got, in a banner under the header
+    /// bar, for as long as it runs (S06-T12): asked once, for a backup
+    /// already under way when the window opened, then followed as it goes.
+    async fn follow_progress(self: &Rc<Self>, proxy: crate::daemon::Daemon1Proxy<'static>) {
+        use futures::StreamExt;
+        enum Heard {
+            Progress(String),
+            Ended,
+        }
+        // Subscribed before asking, so nothing said in between is missed.
+        let (progress, finished) = (
+            proxy.receive_backup_progress().await,
+            proxy.receive_job_finished().await,
+        );
+        if let Ok((job, phase, current, total)) = proxy.get_backup_progress().await {
+            self.render_progress(
+                (job != 0).then(|| backtrack_core::progress::line(&phase, current, total)),
+            );
+        }
+        let (Ok(progress), Ok(finished)) = (progress, finished) else {
+            warn!("a backup's progress will not be shown");
+            return;
+        };
+        let progress = progress.filter_map(|signal| async move {
+            let args = signal.args().ok()?;
+            Some(Heard::Progress(backtrack_core::progress::line(
+                args.phase,
+                args.current,
+                args.total,
+            )))
+        });
+        let finished = finished.filter_map(|signal| async move {
+            let args = signal.args().ok()?;
+            matches!(args.kind, "backup" | "offline").then_some(Heard::Ended)
+        });
+        let mut heard = std::pin::pin!(futures::stream::select(progress, finished));
+        while let Some(heard) = StreamExt::next(&mut heard).await {
+            self.render_progress(match heard {
+                Heard::Progress(line) => Some(line),
+                Heard::Ended => None,
+            });
+        }
+    }
+
+    /// Show `line` in the progress banner, or, with `None`, put it away.
+    fn render_progress(&self, line: Option<String>) {
+        match line {
+            Some(line) => {
+                self.progress.set_title(&line);
+                self.progress.set_revealed(true);
+            }
+            None => self.progress.set_revealed(false),
         }
     }
 
@@ -1008,14 +1105,19 @@ impl Window {
     fn watch_state(self: &Rc<Self>) {
         let this = Rc::clone(self);
         self.state.subscribe(move |view, change| {
-            if !matches!(change, Change::Archives | Change::Seq) {
+            if !matches!(change, Change::Archives | Change::Listed | Change::Seq) {
                 return;
             }
             let tz = glib::TimeZone::local();
             match (view.archive(), view.position()) {
                 (Some(archive), Some((ordinal, total))) => {
-                    this.position
-                        .set_text(&format::position(archive.ts, ordinal, total, &tz));
+                    this.position.set_text(&format::position(
+                        archive.ts,
+                        ordinal,
+                        total,
+                        view.is_filtered(),
+                        &tz,
+                    ));
                 }
                 _ => this.position.set_text(format::NO_BACKUPS),
             }
@@ -1047,14 +1149,26 @@ impl Window {
         });
     }
 
-    /// Read the list of backups, off the main loop.
+    /// Read the list of backups, off the main loop, with the backups to list
+    /// for the folder being viewed asked of the same reading, so a prune in
+    /// between cannot leave the two naming different backups.
     fn load_archives(self: &Rc<Self>) {
         let this = Rc::clone(self);
+        let folder = self.state.view().folder;
         ui::spawn(async move {
-            match this.index.query(|reader| reader.archives_overview()).await {
-                Ok(archives) => {
-                    info!(count = archives.len(), "catalogue loaded");
-                    this.state.set_archives(archives);
+            let asked = folder.clone();
+            let answer = this
+                .index
+                .query(move |reader| Ok((reader.archives_overview()?, reader.listed_for(&asked)?)))
+                .await;
+            match answer {
+                Ok((archives, listed)) => {
+                    info!(
+                        count = archives.len(),
+                        listed = listed.len(),
+                        "catalogue loaded"
+                    );
+                    this.state.set_catalogue(archives, &folder, listed);
                 }
                 Err(error) => {
                     warn!(%error, "the catalogue could not be read");
@@ -1062,6 +1176,69 @@ impl Window {
                 }
             }
         });
+    }
+
+    /// Ask which backups to list for the folder being viewed, whenever the
+    /// list on screen is not that folder's: another folder, or a reload of the
+    /// catalogue that brought another folder's answer with it. The answer is
+    /// dropped by the state if the window has moved on before it arrives.
+    fn watch_listing(self: &Rc<Self>) {
+        let this = Rc::clone(self);
+        self.state.subscribe(move |view, change| {
+            if !matches!(change, Change::Folder | Change::Archives) || view.listing_is_current() {
+                return;
+            }
+            let folder = view.folder.clone();
+            let generation = view.generation;
+            let asker = Rc::clone(&this);
+            ui::spawn(async move {
+                let asked = folder.clone();
+                match asker
+                    .index
+                    .query(move |reader| reader.listed_for(&asked))
+                    .await
+                {
+                    Ok(listed) => asker.state.set_listing(&folder, generation, listed),
+                    Err(error) => {
+                        warn!(%error, folder, "the backups to list could not be read");
+                    }
+                }
+            });
+        });
+    }
+
+    /// Write Show All Backups to the configuration, so the next window opens
+    /// the same way. Without the service it holds for this window only.
+    fn remember_show_all(self: &Rc<Self>, on: bool) {
+        let Some(proxy) = self.daemon.borrow().clone() else {
+            return;
+        };
+        ui::spawn(async move {
+            let literal = if on { "true" } else { "false" };
+            if let Err(error) = proxy.set_config("general.show_all_backups", literal).await {
+                warn!(%error, "Show All Backups could not be remembered");
+            }
+        });
+    }
+
+    /// Take Show All Backups from the configuration, as the window opens.
+    /// Sets the action's state directly, which does not write it back.
+    async fn adopt_show_all(&self, proxy: &Daemon1Proxy<'static>) {
+        let Ok(text) = proxy.get_config().await else {
+            return;
+        };
+        let Ok((config, _)) = backtrack_core::config::Config::parse(&text) else {
+            return;
+        };
+        let on = config.general.show_all_backups;
+        if let Some(action) = self
+            .window
+            .lookup_action("show-all-backups")
+            .and_then(|a| a.downcast::<gio::SimpleAction>().ok())
+        {
+            action.set_state(&on.to_variant());
+        }
+        self.state.set_show_all(on);
     }
 
     /// Reach the daemon, which D-Bus starts if it is not already running.
@@ -1084,6 +1261,7 @@ impl Window {
             match proxy.get_status().await {
                 Ok(status) => {
                     info!(state = status.state, "connected to the Backtrack service");
+                    let proxy_for_name = proxy.clone();
                     *this.daemon.borrow_mut() = Some(proxy);
                     // The window is usable before the service answers, so a
                     // file may already be selected with its preview parked on
@@ -1105,6 +1283,8 @@ impl Window {
                     ui::menu::set_enabled(&this.window, "backup-now", true);
                     ui::menu::set_enabled(&this.window, "pause", true);
                     ui::menu::set_enabled(&this.window, "preferences", true);
+                    this.adopt_show_all(&proxy_for_name).await;
+                    this.learn_destination(&proxy_for_name, &status).await;
                     this.render_status(&status);
                     let pending = this.pending_fix.borrow_mut().take();
                     if let Some(reason) = pending {
@@ -1118,6 +1298,9 @@ impl Window {
                         ui::spawn(
                             async move { cataloguing.follow_catalogue(catalogue_proxy).await },
                         );
+                        let progressing = Rc::clone(&following);
+                        let progress_proxy = proxy.clone();
+                        ui::spawn(async move { progressing.follow_progress(progress_proxy).await });
                         ui::spawn(async move { following.follow_status(proxy).await });
                     }
                     let ticking = Rc::clone(&this);
@@ -1236,10 +1419,14 @@ impl Window {
 /// Where a window opens when it is not told: over the top of the newest
 /// backup. For backups of the usual folders that is the home folder; for one
 /// folder chosen deep in the tree it is that folder's parent; for somebody's
-/// imported backups it may be anywhere at all. With nothing catalogued yet it
-/// is the home folder.
-pub async fn backed_up_target() -> Target {
-    let found = gio::spawn_blocking(|| {
+/// imported backups it may be anywhere at all.
+///
+/// With nothing catalogued yet, as when the wizard has just started the first
+/// backup, it is over the folders the settings back up, which is where that
+/// backup will be once it is catalogued; and with no daemon to ask, the home
+/// folder.
+pub async fn backed_up_target(daemon: Option<&Daemon1Proxy<'static>>) -> Target {
+    let catalogued = gio::spawn_blocking(|| {
         let reader =
             backtrack_core::index::IndexReader::open(&backtrack_core::paths::index_db()).ok()?;
         let seq = reader.latest_catalogued_seq().ok()??;
@@ -1249,10 +1436,28 @@ pub async fn backed_up_target() -> Target {
     .await
     .ok()
     .flatten();
+    let found = match (catalogued, daemon) {
+        (Some(folder), _) => Some(folder),
+        (None, Some(daemon)) => chosen_parent(daemon).await,
+        (None, None) => None,
+    };
     Target {
         folder: found.unwrap_or_else(|| crate::path::to_archive(&glib::home_dir())),
         select: None,
     }
+}
+
+/// The folder holding every folder the settings back up, or `None` if the
+/// settings cannot be read.
+async fn chosen_parent(daemon: &Daemon1Proxy<'static>) -> Option<String> {
+    let text = daemon.get_config().await.ok()?;
+    let (config, _) = backtrack_core::config::Config::parse(&text).ok()?;
+    let roots: Vec<String> = backtrack_core::roots::Roots::of(&config)
+        .roots
+        .iter()
+        .map(|root| crate::path::to_archive(root))
+        .collect();
+    crate::path::common_parent(&roots)
 }
 
 /// Point every open window at `target` and re-read what it shows, as after

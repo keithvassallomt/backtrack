@@ -12,6 +12,6 @@ Type=Application
 Name=Backtrack Tray Icon
 Comment=Shows how Backtrack's backups are doing in the system tray
 Exec=backtrack-tray
-Icon=io.github.keithvassallomt.Backtrack
+Icon=tools.backtrack.Backtrack
 NotShowIn=GNOME;
 NoDisplay=true

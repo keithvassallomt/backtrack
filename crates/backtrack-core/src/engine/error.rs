@@ -34,6 +34,10 @@ pub enum EngineError {
     PassphraseWrong,
     #[error("authentication to the destination failed")]
     AuthFailed,
+    /// The destination is there, and the operating system will not let Borg
+    /// write to it: its permissions changed, or it is mounted read-only.
+    #[error("the backup destination cannot be written to")]
+    DestinationUnwritable,
     #[error("the backup destination is full")]
     DestinationFull,
     #[error("not enough space on this computer")]
@@ -57,6 +61,10 @@ pub enum EngineError {
     /// Something given as a recovery key that is not one.
     #[error("that file is not a Backtrack recovery key")]
     NotARecoveryKey,
+    /// The keyring stayed locked when a passphrase was to be saved in it: its
+    /// unlock prompt was dismissed, or refused.
+    #[error("the keyring stayed locked, so the passphrase was not saved")]
+    KeyringLocked,
     /// A failure on this machine rather than at the repository — a restore that
     /// could not read its staging directory, say.
     ///
@@ -79,6 +87,8 @@ pub enum HealthFailure {
     PassphraseWrong,
     /// "Destination credentials expired (SMB/SSH auth)"
     AuthExpired,
+    /// "Destination not writable"
+    DestinationUnwritable,
     /// "Destination full"
     DestinationFull,
     /// "Local disk full (spool/staging)"
@@ -91,8 +101,8 @@ pub enum HealthFailure {
 
 impl HealthFailure {
     /// The catalogue's banner copy for this row, word for word from
-    /// health.md, with `destination` naming the place for the one row that
-    /// names one.
+    /// health.md, with `destination` naming the place for the rows that name
+    /// one.
     ///
     /// Here rather than in a client so that the notification and the banner
     /// say the same words: they are two views of one row, and a person who
@@ -106,6 +116,9 @@ impl HealthFailure {
                 "The saved passphrase no longer matches the backup.".to_string()
             }
             HealthFailure::AuthExpired => format!("Backtrack can't sign in to {destination}."),
+            HealthFailure::DestinationUnwritable => {
+                format!("Backtrack can't write to {destination}.")
+            }
             HealthFailure::DestinationFull => "The backup drive is full.".to_string(),
             HealthFailure::LocalDiskFull => {
                 "Not enough space on this computer to keep protecting changes.".to_string()
@@ -115,11 +128,21 @@ impl HealthFailure {
         }
     }
 
+    /// Whether [`HealthFailure::copy`] names the destination, so that a client
+    /// knows to find out what it is called.
+    pub fn names_destination(self) -> bool {
+        matches!(
+            self,
+            HealthFailure::AuthExpired | HealthFailure::DestinationUnwritable
+        )
+    }
+
     /// Every engine-relevant catalogue row, for the coverage test.
     pub const ALL: &'static [HealthFailure] = &[
         HealthFailure::PassphraseMissing,
         HealthFailure::PassphraseWrong,
         HealthFailure::AuthExpired,
+        HealthFailure::DestinationUnwritable,
         HealthFailure::DestinationFull,
         HealthFailure::LocalDiskFull,
         HealthFailure::RepoCorrupt,
@@ -128,6 +151,13 @@ impl HealthFailure {
 }
 
 impl EngineError {
+    /// The engine error inside an I/O error, when that is what it carries: a
+    /// reader of Borg's output reports a failed extraction this way (see
+    /// [`BackupEngine::extract_stdout`](crate::engine::BackupEngine::extract_stdout)).
+    pub fn from_io(error: &std::io::Error) -> Option<EngineError> {
+        error.get_ref()?.downcast_ref::<EngineError>().cloned()
+    }
+
     /// Which health.md failure-catalogue row this error surfaces as, if any.
     /// `None` for errors that are not banner-failures (see the module docs). The
     /// `match` is total, so the compiler forces every variant to be classified.
@@ -136,6 +166,7 @@ impl EngineError {
             EngineError::PassphraseMissing => Some(HealthFailure::PassphraseMissing),
             EngineError::PassphraseWrong => Some(HealthFailure::PassphraseWrong),
             EngineError::AuthFailed => Some(HealthFailure::AuthExpired),
+            EngineError::DestinationUnwritable => Some(HealthFailure::DestinationUnwritable),
             EngineError::DestinationFull => Some(HealthFailure::DestinationFull),
             EngineError::LocalDiskFull => Some(HealthFailure::LocalDiskFull),
             EngineError::RepoCorrupt => Some(HealthFailure::RepoCorrupt),
@@ -146,7 +177,9 @@ impl EngineError {
             EngineError::Cancelled => None,
             // A mistake in what the person offered, answered in the dialog
             // they offered it from.
-            EngineError::KeyForAnotherRepository | EngineError::NotARecoveryKey => None,
+            EngineError::KeyForAnotherRepository
+            | EngineError::NotARecoveryKey
+            | EngineError::KeyringLocked => None,
             // A restore that could not write to the user's disk is a failed
             // restore, not an unhealthy backup: the banner is about whether
             // the machine is being protected, and it still is.
@@ -167,6 +200,7 @@ mod tests {
             EngineError::PassphraseMissing,
             EngineError::PassphraseWrong,
             EngineError::AuthFailed,
+            EngineError::DestinationUnwritable,
             EngineError::DestinationFull,
             EngineError::LocalDiskFull,
             EngineError::RepoCorrupt,
@@ -182,6 +216,7 @@ mod tests {
             EngineError::Cancelled,
             EngineError::KeyForAnotherRepository,
             EngineError::NotARecoveryKey,
+            EngineError::KeyringLocked,
         ]
     }
 

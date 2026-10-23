@@ -124,6 +124,9 @@ pub fn alert(alert: Alert, destination: &str) -> Note {
                 HealthFailure::AuthExpired => {
                     "Backups are paused until Backtrack can sign in again."
                 }
+                HealthFailure::DestinationUnwritable => {
+                    "Backups are paused until Backtrack is allowed to write there again."
+                }
                 HealthFailure::DestinationFull => {
                     "Free up space on it, keep fewer old backups, or choose somewhere else."
                 }
@@ -331,14 +334,6 @@ impl Desktop {
             .get(&note.topic)
             .copied()
             .unwrap_or(0);
-        // `default` is the click on the notification itself. A notification
-        // about a problem also gets a visible button, because health.md's
-        // third principle is that every alert names its fix.
-        let actions: &[&str] = if note.fix.is_some() {
-            &["default", "Fix…", "fix", "Fix…"]
-        } else {
-            &["default", "Open Backtrack"]
-        };
         // `desktop-entry` is what lets the desktop show the application's own
         // name and icon.
         let hints = HashMap::from([("desktop-entry", Value::from(backtrack_core::secret::APP_ID))]);
@@ -349,7 +344,7 @@ impl Desktop {
                 backtrack_core::secret::APP_ID,
                 &note.title,
                 &note.body,
-                actions,
+                actions(&note),
                 hints,
                 -1,
             )
@@ -366,6 +361,22 @@ impl Desktop {
             }
             Err(error) => debug!(%error, "the notification could not be shown"),
         }
+    }
+}
+
+/// What a notification offers, as pairs of action and label.
+///
+/// `default` is the click on the notification itself. GNOME and Plasma draw no
+/// button for it, so a notification about a problem also gets a visible Fix…
+/// button, because health.md's third principle is that every alert names its
+/// fix. Other services draw `default` as a button beside the rest (Caelestia
+/// and the other Quickshell shells do), so its label has to make sense there
+/// without repeating Fix….
+fn actions(note: &Note) -> &'static [&'static str] {
+    if note.fix.is_some() {
+        &["default", "Open", "fix", "Fix…"]
+    } else {
+        &["default", "Open"]
     }
 }
 
@@ -390,7 +401,7 @@ async fn listen(desktop: Arc<Desktop>) {
         // Somebody else's notification, or one of ours already replaced.
         let Some(fix) = fix else { continue };
         info!(id = args.id, fix = ?fix, "a notification was clicked");
-        launch(fix);
+        launch(&desktop.connection, fix);
     }
 }
 
@@ -398,10 +409,24 @@ async fn listen(desktop: Arc<Desktop>) {
 ///
 /// Through the command line, whether or not a window is open: GApplication
 /// hands a second launch to the instance already running, so the one path
-/// covers both.
-fn launch(fix: Option<Reason>) {
+/// covers both. Inside a Flatpak, through the session bus instead.
+fn launch(connection: &zbus::Connection, fix: Option<Reason>) {
+    if backtrack_core::host::in_flatpak() {
+        let connection = connection.clone();
+        tokio::spawn(async move {
+            if let Err(error) = activate_window(&connection, fix).await {
+                warn!(%error, "Backtrack could not be opened through the session bus");
+            }
+        });
+        return;
+    }
     let application = application();
-    let (program, args) = command(&application, fix, which("systemd-run").is_some());
+    let (program, args) = command(
+        &application,
+        fix,
+        which("systemd-run").is_some(),
+        std::env::var_os("BACKTRACK_DEV").is_some(),
+    );
     let mut command = tokio::process::Command::new(&program);
     command.args(&args);
     match command.spawn() {
@@ -414,16 +439,61 @@ fn launch(fix: Option<Reason>) {
     }
 }
 
+/// Ask the session bus for the window, at the fix for `fix` if there is one.
+///
+/// Inside a Flatpak there is no systemd to give the window a unit of its
+/// own, and a window started as this daemon's child would end with this
+/// instance. The bus starts the window in an instance of its own, or hands the
+/// request to the one already open (S14-T2).
+async fn activate_window(connection: &zbus::Connection, fix: Option<Reason>) -> zbus::Result<()> {
+    use backtrack_core::dbus::{APP_ACTION_FIX, APP_ID, APP_OBJECT_PATH};
+    let platform_data: HashMap<&str, Value<'_>> = HashMap::new();
+    let interface = Some("org.freedesktop.Application");
+    match fix {
+        Some(reason) => {
+            let parameter = vec![Value::from(reason.as_str())];
+            connection
+                .call_method(
+                    Some(APP_ID),
+                    APP_OBJECT_PATH,
+                    interface,
+                    "ActivateAction",
+                    &(APP_ACTION_FIX, parameter, platform_data),
+                )
+                .await?
+        }
+        None => {
+            connection
+                .call_method(
+                    Some(APP_ID),
+                    APP_OBJECT_PATH,
+                    interface,
+                    "Activate",
+                    &(platform_data,),
+                )
+                .await?
+        }
+    };
+    info!(fix = ?fix, "asked the session bus for the window");
+    Ok(())
+}
+
 /// The command that opens the application.
 ///
-/// In a scope of its own when systemd can give it one. Started directly, the
-/// window would be a child of this daemon's unit, and stopping the daemon
-/// (`systemctl --user restart`, an update) would close somebody's window
-/// under them.
+/// As a service of the person's systemd manager when there is one. Started
+/// directly, the window would be a child of this daemon's unit, and stopping
+/// the daemon (`systemctl --user restart`, an update) would close somebody's
+/// window under them. A scope would avoid that as well, but a scope's process
+/// keeps this daemon's environment, which was settled when the daemon started
+/// at login, before the desktop gave the manager its display: the window then
+/// had no display to open on. A service is given the manager's environment as
+/// it is when the window starts. `dev` passes `BACKTRACK_DEV` on as well, so
+/// a development daemon opens a development window.
 pub fn command(
     application: &Path,
     fix: Option<Reason>,
     systemd_run: bool,
+    dev: bool,
 ) -> (PathBuf, Vec<String>) {
     let mut args: Vec<String> = Vec::new();
     if let Some(fix) = fix {
@@ -433,13 +503,17 @@ pub fn command(
     if !systemd_run {
         return (application.to_path_buf(), args);
     }
-    let mut scoped: Vec<String> = ["--user", "--scope", "--collect", "--quiet", "--"]
+    let mut service: Vec<String> = ["--user", "--collect", "--quiet"]
         .iter()
         .map(|arg| arg.to_string())
         .collect();
-    scoped.push(application.display().to_string());
-    scoped.extend(args);
-    (PathBuf::from("systemd-run"), scoped)
+    if dev {
+        service.push("--setenv=BACKTRACK_DEV=1".to_string());
+    }
+    service.push("--".to_string());
+    service.push(application.display().to_string());
+    service.extend(args);
+    (PathBuf::from("systemd-run"), service)
 }
 
 /// The application's program: beside this one when it is there, which is
@@ -525,25 +599,26 @@ mod tests {
     #[test]
     fn a_click_opens_the_application_at_the_fix_for_what_it_was_about() {
         let app = Path::new("/usr/bin/backtrack-gtk");
-        let (program, args) = command(app, Some(Reason::PassphraseMissing), false);
+        let (program, args) = command(app, Some(Reason::PassphraseMissing), false, false);
         assert_eq!(program, app);
         assert_eq!(args, vec!["--fix", "passphrase-missing"]);
 
-        let (program, args) = command(app, None, false);
+        let (program, args) = command(app, None, false, false);
         assert_eq!(program, app);
         assert!(args.is_empty(), "no fix: just the window");
     }
 
     #[test]
-    fn the_window_is_started_outside_the_daemon_s_unit_where_systemd_can() {
+    fn the_window_is_a_service_of_the_manager_where_systemd_can_start_one() {
         let app = Path::new("/usr/bin/backtrack-gtk");
-        let (program, args) = command(app, Some(Reason::DestinationFull), true);
+        let (program, args) = command(app, Some(Reason::DestinationFull), true, false);
         assert_eq!(program, PathBuf::from("systemd-run"));
+        // No `--scope`: a scope's process would have the daemon's environment,
+        // which may predate the desktop's display.
         assert_eq!(
             args,
             vec![
                 "--user",
-                "--scope",
                 "--collect",
                 "--quiet",
                 "--",
@@ -551,6 +626,44 @@ mod tests {
                 "--fix",
                 "destination-full"
             ]
+        );
+    }
+
+    #[test]
+    fn a_development_daemon_opens_a_development_window() {
+        let app = Path::new("backtrack-gtk");
+        let (_, args) = command(app, None, true, true);
+        let end = args.iter().position(|arg| arg == "--").unwrap();
+        assert!(
+            args[..end].contains(&"--setenv=BACKTRACK_DEV=1".to_string()),
+            "{args:?}"
+        );
+        let (_, args) = command(app, None, true, false);
+        assert!(
+            !args.iter().any(|arg| arg.contains("BACKTRACK_DEV")),
+            "{args:?}"
+        );
+    }
+
+    #[test]
+    fn no_two_buttons_on_a_notification_say_the_same_thing() {
+        // Some notification services draw `default` as a button beside the
+        // others, where a label used twice is two buttons that look the same.
+        for note in [alert(Alert::AtRisk { days: 1 }, ""), backup_complete()] {
+            let labels: Vec<&str> = actions(&note).iter().skip(1).step_by(2).copied().collect();
+            let distinct: std::collections::HashSet<&str> = labels.iter().copied().collect();
+            assert_eq!(distinct.len(), labels.len(), "{labels:?}");
+        }
+    }
+
+    #[test]
+    fn a_problem_has_a_fix_button_besides_the_click() {
+        let actions = actions(&alert(Alert::AtRisk { days: 1 }, ""));
+        let pairs: Vec<&[&str]> = actions.chunks(2).collect();
+        assert_eq!(pairs[0][0], "default", "the click on the notification");
+        assert!(
+            pairs[1..].iter().any(|pair| pair[1] == "Fix…"),
+            "{actions:?}"
         );
     }
 
@@ -564,7 +677,7 @@ mod tests {
             .chain([Alert::AtRisk { days: 2 }])
         {
             let note = super::alert(alert, "x");
-            let (_, args) = command(Path::new("backtrack-gtk"), note.fix, false);
+            let (_, args) = command(Path::new("backtrack-gtk"), note.fix, false, false);
             assert_eq!(Reason::parse(&args[1]), note.fix, "{alert:?}");
         }
     }

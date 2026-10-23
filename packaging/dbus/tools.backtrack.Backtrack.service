@@ -1,0 +1,11 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# SPDX-FileCopyrightText: 2026 Keith Vassallo <keith@vassallo.cloud>
+#
+# The window's activation file (S14-T2). It lets the session bus open the
+# window for a caller with no window of its own: inside the Flatpak, the
+# daemon's notification clicks and the tray icon ask for it this way.
+# Packages install it to /usr/share/dbus-1/services; the Flatpak installs a
+# copy with the binary under /app/bin.
+[D-BUS Service]
+Name=tools.backtrack.Backtrack
+Exec=/usr/bin/backtrack-gtk --gapplication-service

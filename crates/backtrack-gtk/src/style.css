@@ -287,3 +287,16 @@ progressbar.recovery-bar progress {
     min-height: 14px;
     border-radius: 9999px;
 }
+
+/* A folder that is not backed up itself but leads down to folders that are
+ * (S06-T11). Neutral, because nothing is wrong with it; the word says it. */
+.badge.partly {
+    background-color: alpha(currentColor, 0.08);
+}
+
+/* The line above such a folder's list, saying only some of it is backed up. */
+.partly-notice {
+    padding: 4px 4px 4px 14px;
+    border-radius: 12px;
+    background-color: alpha(currentColor, 0.05);
+}

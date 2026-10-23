@@ -124,6 +124,28 @@ impl PreviewCache {
         }
     }
 
+    /// Remove every empty entry, returning how many there were.
+    ///
+    /// A failed extraction used to read as an empty file, and was kept here and
+    /// served as though it were the file, for good (S15-T6). Run at every
+    /// start rather than once: that clears what the defect left behind, and
+    /// all it costs otherwise is extracting a genuinely empty file again the
+    /// next time it is looked at.
+    pub fn drop_empty(&self) -> usize {
+        let Ok(entries) = self.scan() else { return 0 };
+        entries
+            .into_iter()
+            .filter(|entry| entry.size == 0)
+            .filter(|entry| match std::fs::remove_file(&entry.path) {
+                Ok(()) => true,
+                Err(e) => {
+                    warn!(path = %entry.path.display(), "cannot remove an empty preview: {e}");
+                    false
+                }
+            })
+            .count()
+    }
+
     /// Current size of the cache in bytes.
     pub fn size_bytes(&self) -> u64 {
         self.scan()
@@ -201,6 +223,24 @@ mod tests {
             .unwrap()
             .set_modified(when)
             .unwrap();
+    }
+
+    #[test]
+    fn empty_entries_are_dropped_and_the_rest_kept() {
+        let (_dir, cache) = cache(CAPACITY_BYTES);
+        write_entry(&cache, "a1", "home/k/failed.txt", 0, 10);
+        write_entry(&cache, "a1", "home/k/also-failed.txt", 0, 10);
+        write_entry(&cache, "a1", "home/k/fine.txt", 12, 10);
+
+        assert_eq!(cache.drop_empty(), 2);
+        assert!(!cache.contains("a1", "home/k/failed.txt"));
+        assert!(!cache.contains("a1", "home/k/also-failed.txt"));
+        assert!(cache.contains("a1", "home/k/fine.txt"));
+        assert_eq!(
+            cache.drop_empty(),
+            0,
+            "nothing left to drop the second time"
+        );
     }
 
     #[test]

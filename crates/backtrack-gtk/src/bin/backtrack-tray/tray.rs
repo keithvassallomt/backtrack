@@ -29,7 +29,12 @@ pub struct Tray {
     quit: Arc<Notify>,
     /// The status as last read; `None` while the daemon is not running.
     status: Option<Status>,
-    icon: String,
+    /// The icon, as pixels at every size (see `crate::icon`).
+    pixmaps: Vec<ksni::Icon>,
+    /// The icon's name in the icon theme, or "" to send only the pixels.
+    name: &'static str,
+    /// How far the backup under way has got, in words, while one is.
+    progress: Option<String>,
 }
 
 impl Tray {
@@ -39,20 +44,33 @@ impl Tray {
             refresh,
             quit,
             status: None,
-            icon: icon(),
+            pixmaps: crate::icon::pixmaps(),
+            name: crate::icon::name(std::env::var("XDG_CURRENT_DESKTOP").ok().as_deref()),
+            progress: None,
         }
     }
 
-    /// Show `status` from now on.
-    pub fn show(&mut self, status: Option<Status>) {
+    /// Show `status`, and how far a backup under way has got, from now on.
+    pub fn show(&mut self, status: Option<Status>, progress: Option<String>) {
         self.status = status;
+        self.progress = progress;
+    }
+
+    /// Say how far the backup under way has got.
+    pub fn show_progress(&mut self, progress: Option<String>) {
+        self.progress = progress;
     }
 
     fn shown(&self) -> text::Shown {
         let now = glib::DateTime::now_utc()
             .map(|now| now.to_unix())
             .unwrap_or(0);
-        text::shown(self.status.as_ref(), now, &glib::TimeZone::local())
+        text::shown(
+            self.status.as_ref(),
+            self.progress.as_deref(),
+            now,
+            &glib::TimeZone::local(),
+        )
     }
 
     /// Ask the daemon for something, then read the status again so the menu
@@ -104,8 +122,17 @@ impl ksni::Tray for Tray {
         }
     }
 
+    /// The icon by name on Plasma, and nowhere else (see `crate::icon::name`).
     fn icon_name(&self) -> String {
-        self.icon.clone()
+        self.name.to_string()
+    }
+
+    /// The icon as pixels: a panel shows pixels as they are, where a name
+    /// has to be found in its icon theme, and a panel that read its theme
+    /// before Backtrack was installed may never find it. Plasma, given a name
+    /// too, uses these only when it cannot find the named icon.
+    fn icon_pixmap(&self) -> Vec<ksni::Icon> {
+        self.pixmaps.clone()
     }
 
     /// What a panel shows instead of the icon while it needs attention.
@@ -205,30 +232,25 @@ impl ksni::Tray for Tray {
     }
 }
 
-/// The app's icon where a package has installed it, and a stock one where it
-/// has not, as for a development build: a panel draws an icon name it cannot
-/// find as a broken image.
-fn icon() -> String {
-    let app = backtrack_core::secret::APP_ID;
-    let installed = std::iter::once(glib::user_data_dir())
-        .chain(glib::system_data_dirs())
-        .any(|dir| {
-            dir.join("icons/hicolor/scalable/apps")
-                .join(format!("{app}.svg"))
-                .is_file()
-        });
-    if installed {
-        app.to_string()
-    } else {
-        "document-open-recent".to_string()
-    }
-}
-
 /// Open Backtrack's window: the one beside this program, so that a
 /// development build opens the development window, else the one on `PATH`.
 /// The window is a single application, so this brings forward one that is
 /// already open.
+///
+/// Inside a Flatpak, through the session bus instead: a window started as
+/// this program's child would end with the tray's instance (S14-T2).
 fn open_window() {
+    if backtrack_core::host::in_flatpak() {
+        tokio::spawn(async {
+            match activate_window().await {
+                Ok(()) => info!("asked the session bus for the window"),
+                Err(error) => {
+                    warn!(%error, "the window could not be opened through the session bus")
+                }
+            }
+        });
+        return;
+    }
     let window = std::env::current_exe()
         .ok()
         .and_then(|exe| exe.parent().map(|dir| dir.join("backtrack-gtk")))
@@ -239,4 +261,22 @@ fn open_window() {
         Ok(_) => info!(path = %window.display(), "opening the window from the tray"),
         Err(error) => warn!(%error, path = %window.display(), "the window could not be opened"),
     }
+}
+
+/// Activate the window over `org.freedesktop.Application`, which starts it in
+/// an instance of its own when none is running.
+async fn activate_window() -> zbus::Result<()> {
+    let connection = zbus::Connection::session().await?;
+    let platform_data: std::collections::HashMap<&str, zbus::zvariant::Value<'_>> =
+        std::collections::HashMap::new();
+    connection
+        .call_method(
+            Some(backtrack_core::dbus::APP_ID),
+            backtrack_core::dbus::APP_OBJECT_PATH,
+            Some("org.freedesktop.Application"),
+            "Activate",
+            &(platform_data,),
+        )
+        .await?;
+    Ok(())
 }

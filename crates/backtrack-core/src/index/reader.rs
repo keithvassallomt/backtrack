@@ -26,7 +26,10 @@ pub struct Entry {
     /// The entry existed at the selected archive but is gone in the latest one
     /// ("deleted after this").
     pub deleted_after: bool,
-    /// A newer version of this entry exists after the selected archive.
+    /// "Changed since then". For a file, a newer version of it exists after
+    /// the selected archive. For a folder, something at or below it in the
+    /// selected archive is changed or gone in the latest one, while the folder
+    /// itself is still there (see [`IndexReader::folder_at`]).
     pub changed_since: bool,
 }
 
@@ -233,6 +236,15 @@ impl IndexReader {
     ///
     /// The badges are measured against the newest archive that has actually
     /// been catalogued — see the note inside.
+    ///
+    /// A folder's "changed since then" comes from what is inside it, not from
+    /// its own record (S15-T4). The folder's own modification time changes
+    /// when an entry directly inside it is added or removed, which says
+    /// nothing anyone can act on, and nothing at all about a change two
+    /// folders down. With the timeline listing only the backups in which a
+    /// folder differs (Stage 15), a listed backup can show a folder exactly as
+    /// the next one does; the badge is what leads from it to the file that is
+    /// different.
     pub fn folder_at(&self, folder: &str, seq: i64) -> Result<Vec<Entry>> {
         let Some(folder_id) = self.folder_id(folder)? else {
             return Ok(Vec::new());
@@ -271,6 +283,47 @@ impl IndexReader {
                 changed_since: r.get(6)?,
             })
         })?;
+        let mut entries: Vec<Entry> = rows.collect::<std::result::Result<_, _>>()?;
+
+        let changed_inside = self.changed_inside(folder_id, seq, max)?;
+        for entry in entries.iter_mut().filter(|e| e.kind == Kind::Dir) {
+            entry.changed_since = !entry.deleted_after && changed_inside.contains(&entry.path_id);
+        }
+        Ok(entries)
+    }
+
+    /// Which direct children of `folder_id` hold, at or below them, a file in
+    /// archive `seq` that is changed or gone by archive `max`.
+    ///
+    /// Worked upwards from those files rather than down through each child:
+    /// they are the versions alive at `seq` that end before `max`, found by
+    /// `versions_last_seq`, so the cost follows how much has changed since
+    /// `seq`, and a folder listing stays as quick as a lookup of its own
+    /// entries. Measured on 2026-10-20 at 0.5 ms on a real catalogue of 54,000
+    /// paths, against 27 ms for walking down through a home folder.
+    fn changed_inside(
+        &self,
+        folder_id: i64,
+        seq: i64,
+        max: i64,
+    ) -> Result<std::collections::HashSet<i64>> {
+        if seq >= max {
+            return Ok(std::collections::HashSet::new());
+        }
+        // up(id, child): `child` is at or above a changed file, and `id` is
+        // its parent. Climbing stops at the folder, or at the tree's root.
+        let mut stmt = self.conn.prepare_cached(
+            "WITH RECURSIVE up(id, child) AS (
+                 SELECT p.parent_id, p.id FROM versions v JOIN paths p ON p.id = v.path_id
+                 WHERE v.kind != 'dir' AND v.last_seq >= ?2 AND v.last_seq < ?3
+                   AND v.first_seq <= ?2
+                 UNION
+                 SELECT p.parent_id, p.id FROM up JOIN paths p ON p.id = up.id
+                 WHERE up.id != ?1 AND up.id != 0
+             )
+             SELECT child FROM up WHERE id = ?1",
+        )?;
+        let rows = stmt.query_map(params![folder_id, seq, max], |r| r.get(0))?;
         Ok(rows.collect::<std::result::Result<_, _>>()?)
     }
 
@@ -611,6 +664,86 @@ impl IndexReader {
             .optional()?)
     }
 
+    /// The backups worth listing while `folder` is viewed, newest first: each
+    /// one holding a version of some file at or below the folder that is
+    /// changed or gone in the next newer backup, and the newest backup always.
+    ///
+    /// Interval encoding makes this a question of where intervals end. A
+    /// version spans `first_seq..=last_seq`, so the backups in which something
+    /// under the folder was last seen as it was are the distinct `last_seq`s
+    /// there. A backup left out hides nothing: every version in it carries on
+    /// into the next one listed, which may hold newer files besides.
+    ///
+    /// Folders' own records do not count. Creating a file changes its
+    /// folder's modification time, and counting that would list every backup
+    /// in which a file was only created: a file that did not exist yet is
+    /// nothing to restore, which is the case this exists to leave out.
+    ///
+    /// The tree root lists every catalogued backup, and a folder the
+    /// catalogue has never seen lists only the newest. Backups not yet
+    /// catalogued have no versions, so they are not reported here; the caller
+    /// knows them from [`Self::archives_overview`].
+    ///
+    /// The cost follows the size of the folder's subtree, which is walked.
+    /// Measured on 2026-10-20: 27 ms for a real home folder of 54,000 paths,
+    /// and 243 ms for a synthetic one of 500,000 files with a year of
+    /// backups, deep folders taking well under a millisecond. Working upwards
+    /// from the versions that ended instead costs the same 90 ms or so for
+    /// every folder at that size, deep ones included, which is the worse
+    /// trade for a window that mostly looks at deep folders.
+    pub fn listed_for(&self, folder: &str) -> Result<Vec<i64>> {
+        let Some(newest) = self.latest_catalogued_seq()? else {
+            return Ok(Vec::new());
+        };
+        let mut listed = match self.folder_id(folder)? {
+            Some(0) => {
+                let mut stmt = self
+                    .conn
+                    .prepare_cached("SELECT seq FROM archives WHERE status IS NULL")?;
+                let rows = stmt.query_map([], |r| r.get(0))?;
+                rows.collect::<std::result::Result<Vec<i64>, _>>()?
+            }
+            None => vec![newest],
+            Some(folder_id) => {
+                let mut stmt = self.conn.prepare_cached(
+                    "WITH RECURSIVE below(id) AS (
+                         SELECT ?1
+                         UNION ALL
+                         SELECT p.id FROM paths p JOIN below ON p.parent_id = below.id
+                     )
+                     SELECT DISTINCT v.last_seq FROM versions v JOIN below ON v.path_id = below.id
+                     WHERE v.kind != 'dir' AND v.last_seq < ?2",
+                )?;
+                let rows = stmt.query_map(params![folder_id, newest], |r| r.get(0))?;
+                let mut ended = rows.collect::<std::result::Result<Vec<i64>, _>>()?;
+                ended.push(newest);
+                ended
+            }
+        };
+        listed.sort_unstable_by(|a, b| b.cmp(a));
+        Ok(listed)
+    }
+
+    /// Which repository holds the archive called `name`, if the catalogue has
+    /// it.
+    ///
+    /// A local snapshot is kept in a store of its own, never at the
+    /// destination, so anything that reads an archive's contents has to ask
+    /// this first: the destination has never heard of a local snapshot's name.
+    /// Should a spool archive and a filesystem snapshot ever share a name, the
+    /// newer one is meant, as it is the one a client listing them shows last.
+    pub fn repo_of(&self, name: &str) -> Result<Option<Repo>> {
+        let token: Option<String> = self
+            .conn
+            .query_row(
+                "SELECT repo FROM archives WHERE name = ?1 ORDER BY seq DESC LIMIT 1",
+                params![name],
+                |r| r.get(0),
+            )
+            .optional()?;
+        Ok(token.as_deref().and_then(Repo::from_token))
+    }
+
     /// Cross-snapshot filename search over FTS5. Each hit aggregates a path's
     /// whole history: lifespan, version count, and whether it still exists.
     /// Results are ranked deleted-first, then by most-recent existence, then by
@@ -637,13 +770,17 @@ impl IndexReader {
                     (SELECT kind FROM versions WHERE path_id = p.id ORDER BY last_seq DESC LIMIT 1),
                     (SELECT size FROM versions WHERE path_id = p.id ORDER BY last_seq DESC LIMIT 1)
              FROM paths p JOIN versions v ON v.path_id = p.id
-             WHERE p.id = ?1",
+             WHERE p.id = ?1
+             GROUP BY p.id",
         )?;
 
         let mut hits = Vec::with_capacity(matches.len());
         for (path_id, bm25) in matches {
-            // A matched name might have no versions only if the index is
-            // inconsistent; skip defensively.
+            // A matched name has no versions once every archive that held it
+            // has been removed (a prune, an expired local snapshot, a change
+            // of destination), which leaves the path and its name behind. The
+            // GROUP BY is what makes that no row rather than a row of NULLs:
+            // an aggregate without one always answers.
             let row = agg
                 .query_row(params![path_id], |r| {
                     Ok((
@@ -931,6 +1068,217 @@ mod tests {
     }
 
     #[test]
+    fn an_archive_says_which_repository_holds_it() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("index.db");
+        {
+            let mut w = IndexWriter::open(&path).unwrap();
+            w.ingest_archive(
+                &meta("a1", 1_000),
+                Repo::Primary,
+                vec![dir("home")].into_iter(),
+            )
+            .unwrap();
+            w.append_archive(&meta("bt-local-2", 2_000), Repo::Spool)
+                .unwrap();
+            w.append_archive(&meta("bt-local-3", 3_000), Repo::FsSnapshot)
+                .unwrap();
+        }
+        let r = IndexReader::open(&path).unwrap();
+        assert_eq!(r.repo_of("a1").unwrap(), Some(Repo::Primary));
+        assert_eq!(r.repo_of("bt-local-2").unwrap(), Some(Repo::Spool));
+        assert_eq!(r.repo_of("bt-local-3").unwrap(), Some(Repo::FsSnapshot));
+        assert_eq!(r.repo_of("never").unwrap(), None);
+    }
+
+    /// A catalogue of full listings, oldest first: archive `n` is `a{n}`,
+    /// with seq `n`.
+    fn listings(archives: Vec<Vec<BorgItem>>) -> (tempfile::TempDir, IndexReader) {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("index.db");
+        {
+            let mut w = IndexWriter::open(&path).unwrap();
+            for (n, items) in archives.into_iter().enumerate() {
+                let n = n as i64 + 1;
+                w.ingest_archive(
+                    &meta(&format!("a{n}"), n * 1_000),
+                    Repo::Primary,
+                    items.into_iter(),
+                )
+                .unwrap();
+            }
+        }
+        (tmp, IndexReader::open(&path).unwrap())
+    }
+
+    /// The folders above `home/k/Docs`, and it.
+    fn docs() -> Vec<BorgItem> {
+        vec![dir("home"), dir("home/k"), dir("home/k/Docs")]
+    }
+
+    #[test]
+    fn the_listed_backups_follow_the_stage_files_worked_example() {
+        // Stage 15's example, backups numbered from the newest backwards, so
+        // backup n is seq 10 - n. Backup 9 has A and no B yet; 8 to 6 an
+        // earlier B; 5 to 1 A and B as they are now.
+        let a = || file("home/k/Docs/A", 1);
+        let mut archives = vec![[docs(), vec![a()]].concat()];
+        for _ in 0..3 {
+            archives.push([docs(), vec![a(), file("home/k/Docs/B", 1)]].concat());
+        }
+        for _ in 0..5 {
+            archives.push([docs(), vec![a(), file("home/k/Docs/B", 2)]].concat());
+        }
+        let (_tmp, r) = listings(archives);
+        assert_eq!(
+            r.listed_for("home/k/Docs").unwrap(),
+            vec![9, 4],
+            "backup 1, the newest, and backup 6, the newest copy of the earlier B"
+        );
+    }
+
+    #[test]
+    fn a_file_deleted_since_lists_the_last_backup_that_held_it() {
+        let a = || file("home/k/Docs/A", 1);
+        let c = || file("home/k/Docs/C", 1);
+        let (_tmp, r) = listings(vec![
+            [docs(), vec![a(), c()]].concat(),
+            [docs(), vec![a(), c()]].concat(),
+            [docs(), vec![a()]].concat(),
+            [docs(), vec![a()]].concat(),
+        ]);
+        assert_eq!(r.listed_for("home/k/Docs").unwrap(), vec![4, 2]);
+    }
+
+    #[test]
+    fn a_backup_in_which_files_were_only_created_is_not_listed() {
+        let a = || file("home/k/Docs/A", 1);
+        let (_tmp, r) = listings(vec![
+            [docs(), vec![a()]].concat(),
+            [docs(), vec![a(), file("home/k/Docs/New", 1)]].concat(),
+            [docs(), vec![a(), file("home/k/Docs/New", 1)]].concat(),
+        ]);
+        assert_eq!(r.listed_for("home/k/Docs").unwrap(), vec![3]);
+    }
+
+    #[test]
+    fn a_folder_whose_own_time_changed_is_not_a_change() {
+        // A file created and deleted between two backups leaves the folder's
+        // modification time moved and nothing else.
+        let touched = BorgItem {
+            mtime: 200,
+            ..dir("home/k/Docs")
+        };
+        let a = || file("home/k/Docs/A", 1);
+        let (_tmp, r) = listings(vec![
+            [docs(), vec![a()]].concat(),
+            vec![dir("home"), dir("home/k"), touched, a()],
+        ]);
+        assert_eq!(r.listed_for("home/k/Docs").unwrap(), vec![2]);
+        assert_eq!(
+            r.listed_for("home/k").unwrap(),
+            vec![2],
+            "nor from above it"
+        );
+    }
+
+    #[test]
+    fn a_change_three_folders_down_is_listed_at_every_folder_above_it() {
+        let tree = || {
+            [
+                docs(),
+                vec![dir("home/k/Docs/tax"), dir("home/k/Docs/tax/2025")],
+            ]
+            .concat()
+        };
+        let receipt = |size| file("home/k/Docs/tax/2025/receipt.pdf", size);
+        let (_tmp, r) = listings(vec![
+            [tree(), vec![receipt(1)]].concat(),
+            [tree(), vec![receipt(2)]].concat(),
+        ]);
+        for folder in [
+            "home/k/Docs/tax/2025",
+            "home/k/Docs/tax",
+            "home/k/Docs",
+            "home/k",
+            "home",
+        ] {
+            assert_eq!(r.listed_for(folder).unwrap(), vec![2, 1], "at {folder}");
+        }
+    }
+
+    #[test]
+    fn after_a_prune_every_listed_backup_still_exists() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("index.db");
+        {
+            let mut w = IndexWriter::open(&path).unwrap();
+            for n in 1..=5i64 {
+                let items = [docs(), vec![file("home/k/Docs/A", n)]].concat();
+                w.ingest_archive(
+                    &meta(&format!("a{n}"), n * 1_000),
+                    Repo::Primary,
+                    items.into_iter(),
+                )
+                .unwrap();
+            }
+            w.remove_archives(&[2, 4]).unwrap();
+        }
+        let r = IndexReader::open(&path).unwrap();
+        let exists: std::collections::HashSet<i64> = r
+            .archives_overview()
+            .unwrap()
+            .iter()
+            .map(|a| a.seq)
+            .collect();
+        let listed = r.listed_for("home/k/Docs").unwrap();
+        assert_eq!(
+            listed.len(),
+            3,
+            "each surviving backup holds its own A: {listed:?}"
+        );
+        assert!(
+            listed.iter().all(|seq| exists.contains(seq)),
+            "{listed:?} against {exists:?}"
+        );
+    }
+
+    #[test]
+    fn the_tree_root_lists_every_catalogued_backup_and_no_other() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("index.db");
+        {
+            let mut w = IndexWriter::open(&path).unwrap();
+            for n in 1..=3i64 {
+                let items = [docs(), vec![file("home/k/Docs/A", 1)]].concat();
+                w.ingest_archive(
+                    &meta(&format!("a{n}"), n * 1_000),
+                    Repo::Primary,
+                    items.into_iter(),
+                )
+                .unwrap();
+            }
+            // Recorded, not yet read: there is nothing to say about it.
+            w.append_archive(&meta("a4", 4_000), Repo::Primary).unwrap();
+        }
+        let r = IndexReader::open(&path).unwrap();
+        assert_eq!(r.listed_for("").unwrap(), vec![3, 2, 1]);
+        assert_eq!(r.listed_for("/").unwrap(), vec![3, 2, 1]);
+        assert_eq!(r.listed_for("home/k/Docs").unwrap(), vec![3]);
+    }
+
+    #[test]
+    fn a_folder_the_catalogue_never_saw_lists_only_the_newest() {
+        let (_tmp, r) = listings(vec![
+            [docs(), vec![file("home/k/Docs/A", 1)]].concat(),
+            [docs(), vec![file("home/k/Docs/A", 2)]].concat(),
+        ]);
+        assert_eq!(r.listed_for("home/k/Elsewhere").unwrap(), vec![2]);
+        let (_tmp, empty) = listings(Vec::new());
+        assert_eq!(empty.listed_for("home/k/Docs").unwrap(), Vec::<i64>::new());
+    }
+
+    #[test]
     fn the_roots_of_a_backup_are_what_borg_was_asked_for() {
         // Borg records `/home/k/Documents` and `/home/k/Pictures`, not `/home`
         // or `/home/k`, so those two are the top of the backup.
@@ -994,6 +1342,80 @@ mod tests {
         assert!(
             !old.changed_since,
             "old/ has no newer version, only deletion"
+        );
+    }
+
+    #[test]
+    fn a_change_three_folders_down_badges_every_folder_above_it() {
+        let tree = || {
+            [
+                docs(),
+                vec![dir("home/k/Docs/tax"), dir("home/k/Docs/tax/2025")],
+            ]
+            .concat()
+        };
+        let receipt = |size| file("home/k/Docs/tax/2025/receipt.pdf", size);
+        let (_tmp, r) = listings(vec![
+            [tree(), vec![receipt(1)]].concat(),
+            [tree(), vec![receipt(2)]].concat(),
+            [tree(), vec![receipt(2)]].concat(),
+        ]);
+        for (folder, child) in [
+            ("home", "k"),
+            ("home/k", "Docs"),
+            ("home/k/Docs", "tax"),
+            ("home/k/Docs/tax", "2025"),
+            ("home/k/Docs/tax/2025", "receipt.pdf"),
+        ] {
+            let at_first = r.folder_at(folder, 1).unwrap();
+            assert!(
+                find(&at_first, child).changed_since,
+                "{child} in {folder} at 1"
+            );
+            let at_second = r.folder_at(folder, 2).unwrap();
+            assert!(
+                !find(&at_second, child).changed_since,
+                "{child} in {folder} at 2, which the newest backup still matches"
+            );
+        }
+    }
+
+    #[test]
+    fn an_entry_added_inside_a_folder_does_not_badge_it() {
+        // The folder's own time moves when a file is created in it, which used
+        // to be what badged it.
+        let touched = BorgItem {
+            mtime: 200,
+            ..dir("home/k/Docs")
+        };
+        let a = || file("home/k/Docs/A", 1);
+        let (_tmp, r) = listings(vec![
+            [docs(), vec![a()]].concat(),
+            vec![
+                dir("home"),
+                dir("home/k"),
+                touched,
+                a(),
+                file("home/k/Docs/New", 1),
+            ],
+        ]);
+        let entries = r.folder_at("home/k", 1).unwrap();
+        assert!(!find(&entries, "Docs").changed_since);
+    }
+
+    #[test]
+    fn a_file_gone_from_inside_a_folder_badges_it() {
+        let a = || file("home/k/Docs/A", 1);
+        let (_tmp, r) = listings(vec![
+            [docs(), vec![a(), file("home/k/Docs/C", 1)]].concat(),
+            [docs(), vec![a()]].concat(),
+        ]);
+        let entries = r.folder_at("home/k", 1).unwrap();
+        let docs_entry = find(&entries, "Docs");
+        assert!(docs_entry.changed_since);
+        assert!(
+            !docs_entry.deleted_after,
+            "the folder itself is still there"
         );
     }
 
@@ -1273,6 +1695,35 @@ mod tests {
         assert_eq!(hits.len(), 1);
         assert!(hits[0].exists_today);
         assert_eq!((hits[0].first_seq, hits[0].last_seq), (1, 50));
+    }
+
+    #[test]
+    fn search_skips_a_name_whose_every_version_was_removed() {
+        // Removing archives (a prune, an expired local snapshot, a change of
+        // destination) leaves the path and its name behind with no versions.
+        // The search has to pass over it, not fail for every name it matches.
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("index.db");
+        {
+            let mut w = IndexWriter::open(&path).unwrap();
+            w.ingest_archive(
+                &meta("a1", 1_000),
+                Repo::Primary,
+                vec![dir("home"), file("home/note.txt", 1)].into_iter(),
+            )
+            .unwrap();
+            w.ingest_archive(
+                &meta("a2", 2_000),
+                Repo::Primary,
+                vec![dir("home"), file("home/notes.txt", 1)].into_iter(),
+            )
+            .unwrap();
+            w.remove_archives(&[1]).unwrap();
+        }
+        let r = IndexReader::open(&path).unwrap();
+        let hits = r.search("note*").unwrap();
+        let paths: Vec<&str> = hits.iter().map(|h| h.path.as_str()).collect();
+        assert_eq!(paths, vec!["home/notes.txt"]);
     }
 
     #[test]

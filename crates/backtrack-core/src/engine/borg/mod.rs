@@ -25,7 +25,7 @@ use crate::engine::{
 use crate::index::{ArchiveMeta, BorgItem};
 use crate::secret::SecretStore;
 
-use invoke::{base_command, probe_version, spawn_check, spawn_streamed};
+use invoke::{base_command, probe_version, spawn_check, spawn_stdout, spawn_streamed};
 
 /// The v1 backup engine: drives the `borg` CLI (1.2/1.4).
 pub struct BorgCli {
@@ -392,20 +392,8 @@ impl BackupEngine for BorgCli {
         cmd.arg("extract")
             .arg("--stdout")
             .arg(self.archive_ref(id))
-            .arg(path)
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .kill_on_drop(true);
-        let mut child = cmd.spawn().map_err(|e| EngineError::BorgFailed {
-            code: -1,
-            stderr: format!("spawning borg extract --stdout: {e}"),
-        })?;
-        let stdout = child.stdout.take().expect("stdout piped");
-        // Keep the child alive alongside its stdout; kill_on_drop reaps it.
-        Ok(Box::pin(ChildStdoutReader {
-            _child: child,
-            stdout,
-        }))
+            .arg(path);
+        spawn_stdout(cmd)
     }
 
     async fn prune(&self, policy: &PrunePolicy) -> Result<JobStream> {
@@ -533,22 +521,6 @@ fn parse_archive_line(line: &str) -> Option<ArchiveMeta> {
 /// Whether this is one of Borg's interrupted-run checkpoint archives.
 pub fn is_checkpoint(name: &str) -> bool {
     name.ends_with(".checkpoint") || name.contains(".checkpoint.")
-}
-
-/// A reader that streams a borg-extracted file and keeps the child alive.
-struct ChildStdoutReader {
-    _child: tokio::process::Child,
-    stdout: tokio::process::ChildStdout,
-}
-
-impl AsyncRead for ChildStdoutReader {
-    fn poll_read(
-        mut self: Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-        buf: &mut tokio::io::ReadBuf<'_>,
-    ) -> std::task::Poll<std::io::Result<()>> {
-        Pin::new(&mut self.stdout).poll_read(cx, buf)
-    }
 }
 
 /// Drain a short job stream to its terminal outcome (used by `init_repo`).

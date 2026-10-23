@@ -39,3 +39,24 @@ jobs:
         run: |
           cargo install cargo-audit --locked
           cargo audit
+
+  flatpak:
+    name: Flatpak (offline build)
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/flathub-infra/flatpak-github-actions:gnome-51
+      options: --privileged
+    steps:
+      - uses: actions/checkout@v7
+
+      # flatpak-builder downloads every source first, then builds each module
+      # in a sandbox with no network (none of ours asks for one), so a source
+      # missing from cargo-sources.json or python3-requirements.json fails the
+      # build here rather than being fetched quietly.
+      - name: Build the Flatpak from its offline sources
+        # v6.8
+        uses: flatpak/flatpak-github-actions/flatpak-builder@aa777012a985fe1b1fd3e66ea2173609cf0c9a70
+        with:
+          manifest-path: packaging/flatpak/tools.backtrack.Backtrack.yml
+          bundle: backtrack.flatpak
+          cache-key: flatpak-builder-${{ hashFiles('Cargo.lock', 'packaging/flatpak/*.json') }}

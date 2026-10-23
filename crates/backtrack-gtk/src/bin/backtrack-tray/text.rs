@@ -2,17 +2,11 @@
 // SPDX-FileCopyrightText: 2026 Keith Vassallo <keith@vassallo.cloud>
 
 //! What the tray says, worked out from the daemon's status before the menu
-//! is involved.
-//!
-//! Times are given as times of day, "today 16:00", rather than as "2 hours
-//! ago" the way the window's status line puts them: a tray menu is rebuilt
-//! when somebody opens it, not every minute, and a time of day cannot go
-//! stale while it waits.
+//! is involved. Its first line is `backtrack_core::status_line`'s, which the
+//! Flatpak's daemon also shows in GNOME's Background Apps.
 
 use backtrack_core::dbus::Status;
-
-use crate::format;
-use crate::pause::INDEFINITE_PAUSE_THRESHOLD;
+use backtrack_core::status_line;
 
 /// How loudly the icon asks to be looked at. health.md's two states that
 /// earn attention: `AT_RISK`, the yellow banner, and `BROKEN`, the red one.
@@ -34,7 +28,15 @@ pub struct Shown {
     pub paused: bool,
 }
 
-pub fn shown(status: Option<&Status>, now: i64, tz: &glib::TimeZone) -> Shown {
+/// `progress` is how far a backup under way has got, in
+/// `backtrack_core::progress`'s words, which says more than "Backing up now…"
+/// while there is a backup to say it about (S06-T12).
+pub fn shown(
+    status: Option<&Status>,
+    progress: Option<&str>,
+    now: i64,
+    tz: &glib::TimeZone,
+) -> Shown {
     let Some(status) = status else {
         // Its menu still works: asking for a backup starts it.
         return Shown {
@@ -47,7 +49,10 @@ pub fn shown(status: Option<&Status>, now: i64, tz: &glib::TimeZone) -> Shown {
     };
     let paused = status.paused_until > now.max(0) as u64;
     Shown {
-        line: line(status, now, tz),
+        line: match progress {
+            Some(progress) if status.active_job != 0 => progress.to_string(),
+            _ => status_line::line(status, now, tz),
+        },
         attention: match status.state.as_str() {
             "AT_RISK" => Some(Attention::Warning),
             "BROKEN" => Some(Attention::Error),
@@ -57,65 +62,6 @@ pub fn shown(status: Option<&Status>, now: i64, tz: &glib::TimeZone) -> Shown {
         can_pause: status.configured,
         paused,
     }
-}
-
-/// The status line.
-fn line(status: &Status, now: i64, tz: &glib::TimeZone) -> String {
-    let now_secs = now.max(0) as u64;
-    if !status.configured {
-        return "Backups are not set up yet".to_string();
-    }
-    if status.active_job != 0 {
-        return "Backing up now…".to_string();
-    }
-    if status.paused_until > now_secs {
-        return if status.paused_until - now_secs > INDEFINITE_PAUSE_THRESHOLD {
-            "Backups are paused until you resume them".to_string()
-        } else {
-            format!(
-                "Backups are paused until {}",
-                when(status.paused_until as i64, now, tz)
-            )
-        };
-    }
-    if matches!(status.state.as_str(), "AT_RISK" | "BROKEN") {
-        return "Backups need your attention".to_string();
-    }
-    match status.last_backup {
-        0 => "No backups yet".to_string(),
-        last => format!("Last backup: {}", when(last as i64, now, tz)),
-    }
-}
-
-/// `ts` as a day and a time of day, the day in words when it is close to
-/// `now`: "today 16:00", "yesterday 22:00", "tomorrow 09:00", "Mon 8 Jun
-/// 14:00".
-fn when(ts: i64, now: i64, tz: &glib::TimeZone) -> String {
-    let clock = format::clock(ts, tz);
-    match days_from(now, ts, tz) {
-        Some(0) => format!("today {clock}"),
-        Some(-1) => format!("yesterday {clock}"),
-        Some(1) => format!("tomorrow {clock}"),
-        _ => format::at(ts, tz, "%a %e %b %H:%M"),
-    }
-}
-
-/// Calendar days from the day `now` falls on to the day `ts` does, locally.
-/// Counted between midnights, rounded, so a day of 23 or 25 hours at a clock
-/// change still counts as one.
-fn days_from(now: i64, ts: i64, tz: &glib::TimeZone) -> Option<i64> {
-    Some((midnight(ts, tz)? - midnight(now, tz)? + 43_200).div_euclid(86_400))
-}
-
-/// The start of the local day `ts` falls on.
-fn midnight(ts: i64, tz: &glib::TimeZone) -> Option<i64> {
-    let dt = glib::DateTime::from_unix_local(ts)
-        .ok()?
-        .to_timezone(tz)
-        .ok()?;
-    glib::DateTime::new(tz, dt.year(), dt.month(), dt.day_of_month(), 0, 0, 0.0)
-        .ok()
-        .map(|midnight| midnight.to_unix())
 }
 
 #[cfg(test)]
@@ -150,38 +96,10 @@ mod tests {
 
     #[test]
     fn a_healthy_computer_says_when_it_last_backed_up() {
-        let shown = shown(Some(&status()), NOW, &utc());
+        let shown = shown(Some(&status()), None, NOW, &utc());
         assert_eq!(shown.line, "Last backup: today 10:00");
         assert_eq!(shown.attention, None);
         assert!(shown.can_back_up && shown.can_pause && !shown.paused);
-    }
-
-    #[test]
-    fn days_close_by_are_named() {
-        let tz = utc();
-        assert_eq!(when(NOW - 86_400, NOW, &tz), "yesterday 12:00");
-        assert_eq!(when(NOW + 21 * 3_600, NOW, &tz), "tomorrow 09:00");
-        assert_eq!(when(NOW - 2 * 86_400, NOW, &tz), "Mon 8 Jun 12:00");
-    }
-
-    #[test]
-    fn yesterday_is_the_calendar_day_not_the_last_24_hours() {
-        // 00:30 on the 10th, and a backup at 23:00 on the 9th.
-        let just_after_midnight = NOW - 11 * 3_600 - 1_800;
-        assert_eq!(
-            when(just_after_midnight - 5_400, just_after_midnight, &utc()),
-            "yesterday 23:00"
-        );
-    }
-
-    #[test]
-    fn the_new_year_is_still_the_next_day() {
-        // 2026-12-31 22:00 and 2027-01-01 08:00 UTC.
-        let new_years_eve = 1_798_754_400;
-        assert_eq!(
-            when(new_years_eve + 10 * 3_600, new_years_eve, &utc()),
-            "tomorrow 08:00"
-        );
     }
 
     #[test]
@@ -190,8 +108,23 @@ mod tests {
             active_job: 7,
             ..status()
         };
-        let shown = shown(Some(&running), NOW, &utc());
+        let shown = shown(Some(&running), None, NOW, &utc());
         assert_eq!(shown.line, "Backing up now…");
+        // With the backup's progress, the line says how far it has got.
+        let line = "Backing up… 31.5 GB of about 53.1 GB (59%)";
+        assert_eq!(
+            super::shown(Some(&running), Some(line), NOW, &utc()).line,
+            line
+        );
+        // A line left over from a backup that has ended says nothing now.
+        let idle = Status {
+            active_job: 0,
+            ..running.clone()
+        };
+        assert_ne!(
+            super::shown(Some(&idle), Some(line), NOW, &utc()).line,
+            line
+        );
         assert!(!shown.can_back_up);
     }
 
@@ -202,7 +135,7 @@ mod tests {
             paused_until: (NOW + 21 * 3_600) as u64,
             ..status()
         };
-        let shown = shown(Some(&paused), NOW, &utc());
+        let shown = shown(Some(&paused), None, NOW, &utc());
         assert_eq!(shown.line, "Backups are paused until tomorrow 09:00");
         assert!(shown.paused);
     }
@@ -210,11 +143,11 @@ mod tests {
     #[test]
     fn an_open_ended_pause_is_not_read_back_as_a_date() {
         let paused = Status {
-            paused_until: NOW as u64 + INDEFINITE_PAUSE_THRESHOLD * 100,
+            paused_until: NOW as u64 + status_line::INDEFINITE_PAUSE_THRESHOLD * 100,
             ..status()
         };
         assert_eq!(
-            shown(Some(&paused), NOW, &utc()).line,
+            shown(Some(&paused), None, NOW, &utc()).line,
             "Backups are paused until you resume them"
         );
     }
@@ -233,7 +166,7 @@ mod tests {
                 state: state.to_string(),
                 ..status()
             };
-            let shown = shown(Some(&status), NOW, &utc());
+            let shown = shown(Some(&status), None, NOW, &utc());
             assert_eq!(shown.attention, attention, "{state}");
             if attention.is_some() {
                 assert_eq!(shown.line, "Backups need your attention");
@@ -248,14 +181,14 @@ mod tests {
             last_backup: 0,
             ..status()
         };
-        let shown = shown(Some(&unset), NOW, &utc());
+        let shown = shown(Some(&unset), None, NOW, &utc());
         assert_eq!(shown.line, "Backups are not set up yet");
         assert!(!shown.can_back_up && !shown.can_pause);
     }
 
     #[test]
     fn no_daemon_still_lets_a_backup_be_asked_for() {
-        let shown = shown(None, NOW, &utc());
+        let shown = shown(None, None, NOW, &utc());
         assert_eq!(shown.line, "The Backtrack service is not running");
         assert!(shown.can_back_up);
     }

@@ -44,7 +44,7 @@ If you read nothing else before starting: read [reference/brief.md](reference/br
 
 - **Language:** Rust (stable). Workspace layout is defined in
   [reference/stack.md](reference/stack.md) §1 and created in Stage 0.
-- **License:** GPL-3.0-or-later. App ID: `io.github.keithvassallomt.Backtrack`.
+- **License:** GPL-3.0-or-later. App ID: `tools.backtrack.Backtrack`.
 - **Initial version: 0.1.0** (set by human in Stage 0; never touched by AI after).
 - **Logging from day one:** all crates use `tracing`. No `println!`/`eprintln!` in
   committed code (CI greps for it). Details in Stage 0.
@@ -79,7 +79,12 @@ Each `stages/stage-NN-*.md` contains: **Objective** (what exists at the end),
 | 10 | [stage-10-health.md](stages/stage-10-health.md) | Health states, notifications, resolution flows |
 | 11 | [stage-11-disaster-recovery.md](stages/stage-11-disaster-recovery.md) | "Restore Everything" guided flow |
 | 12 | [stage-12-integrations-tray.md](stages/stage-12-integrations-tray.md) | Nautilus/Dolphin menus, tray, background portal |
-| 13 | [stage-13-packaging-release.md](stages/stage-13-packaging-release.md) | Flatpak (portals, cargo-sources), RPM/DEB, release process |
+| 13 | [stage-13-packaging-release.md](stages/stage-13-packaging-release.md) | Application ID, Flatpak manifest and sources, RPM/DEB/AUR, `just release` |
+| 14 | [stage-14-flatpak-first-class.md](stages/stage-14-flatpak-first-class.md) | The Flatpak as a first-class build; FriendlyHub (runs inside Stage 13) |
+| 15 | [stage-15-refinements-from-daily-use.md](stages/stage-15-refinements-from-daily-use.md) | Changes from daily use: the timeline lists only the backups in which the folder differs |
+| 16 | [stage-16-trash-in-the-timeline.md](stages/stage-16-trash-in-the-timeline.md) | What is in the Trash shown and restored from the timeline, at the time it was deleted |
+| 17 | [stage-17-snapper-snapshots.md](stages/stage-17-snapper-snapshots.md) | Snapper's btrfs snapshots read into the timeline; a guide to setting Snapper up |
+| 18 | [stage-18-full-screen-time-view.md](stages/stage-18-full-screen-time-view.md) | A full-screen view through the history in the spirit of Time Machine's, opened from the app, the file managers, the launcher and the tray |
 
 ## Reference documents (in `reference/`)
 

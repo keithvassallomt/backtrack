@@ -1,0 +1,34 @@
+Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
+Upstream-Name: backtrack
+Upstream-Contact: Keith Vassallo <keith@vassallo.cloud>
+Source: https://github.com/keithvassallomt/backtrack
+
+Files: *
+Copyright: 2026 Keith Vassallo <keith@vassallo.cloud>
+License: GPL-3.0+
+
+Files: packaging/tools.backtrack.Backtrack.metainfo.xml
+Copyright: 2026 Keith Vassallo <keith@vassallo.cloud>
+License: CC0-1.0
+ To the extent possible under law, the author has dedicated all copyright and
+ related and neighbouring rights to this file to the public domain worldwide.
+ It is distributed without any warranty.
+ .
+ On Debian systems, the complete text of the CC0 1.0 Universal licence can be
+ found in /usr/share/common-licenses/CC0-1.0.
+
+Files: vendor/*
+Copyright: The authors of each crate, as its own manifest and licence files say
+License: various
+ Each crate under vendor/ is distributed under the licence its Cargo.toml
+ names and its own licence files state; they are all compatible with the
+ GPL-3.0+.
+
+License: GPL-3.0+
+ This program is free software: you can redistribute it and/or modify it
+ under the terms of the GNU General Public License as published by the Free
+ Software Foundation, either version 3 of the License, or (at your option) any
+ later version.
+ .
+ On Debian systems, the complete text of the GNU General Public License
+ version 3 can be found in /usr/share/common-licenses/GPL-3.

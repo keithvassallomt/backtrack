@@ -30,6 +30,9 @@ pub use spec::{
 /// The one interface every backup engine implements. The daemon holds an
 /// `Arc<dyn BackupEngine>`; `BorgCli` is the v1 implementation and
 /// `backtrack-testkit::MockEngine` the test double.
+// async-trait before 0.1.92 marks each method `#[must_use]`, which clippy
+// 1.99 flags as doubling the boxed future's own must-use.
+#[allow(clippy::double_must_use)]
 #[async_trait]
 pub trait BackupEngine: Send + Sync {
     /// Create the repository (`borg init`).
@@ -87,6 +90,11 @@ pub trait BackupEngine: Send + Sync {
     ) -> Result<JobStream>;
 
     /// Stream a single file's bytes to a reader (`borg extract --stdout`).
+    ///
+    /// The read ends cleanly only if the extraction succeeded. A failure ends
+    /// it with an error carrying the [`EngineError`], which
+    /// [`EngineError::from_io`] recovers, so reaching the end of the reader is
+    /// always the whole file and never a failure that looks like an empty one.
     async fn extract_stdout(
         &self,
         id: &ArchiveId,

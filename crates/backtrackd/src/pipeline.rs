@@ -19,6 +19,7 @@
 //! once catalogued — loses the archive entirely from the daemon's point of view,
 //! and it would be a silent loss.
 
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -270,7 +271,15 @@ async fn run(plan: &BackupPlan, sink: &JobSink) -> Result<JobSummary, EngineErro
     let archive = plan.spec.archive_name.clone();
 
     // ── Archiving ──
-    let summary = drive(plan.engine.create(&plan.spec).await?, sink, PHASE_ARCHIVING).await?;
+    //
+    // Borg gives no total while it reads, so the sources are measured beside
+    // it, under the same exclusions, for the progress to have one (S06-T12).
+    // Until the measuring is done, and if it cannot be, progress says how much
+    // has been read and nothing about how much is left.
+    let measuring = Measuring::start(&plan.spec);
+    let stream = plan.engine.create(&plan.spec).await?;
+    let summary = drive_measured(stream, sink, PHASE_ARCHIVING, Some(&measuring.total)).await?;
+    drop(measuring);
     info!(archive, "archive written");
     if sink.is_cancelled() {
         return Err(EngineError::Cancelled);
@@ -340,14 +349,30 @@ async fn run(plan: &BackupPlan, sink: &JobSink) -> Result<JobSummary, EngineErro
 /// is one phase of a longer job, and a `Finished` in the middle of a stream
 /// would tell the registry the whole backup was over.
 pub(crate) async fn drive(
+    stream: JobStream,
+    sink: &JobSink,
+    phase: &str,
+) -> Result<JobSummary, EngineError> {
+    drive_measured(stream, sink, phase, None).await
+}
+
+/// [`drive`], with `measured` as the total for progress that has none of its
+/// own: bytes, 0 until it is known.
+async fn drive_measured(
     mut stream: JobStream,
     sink: &JobSink,
     phase: &str,
+    measured: Option<&AtomicU64>,
 ) -> Result<JobSummary, EngineError> {
     while let Some(event) = stream.next().await {
         match event {
             JobEvent::Finished(result) => return result,
             JobEvent::Progress { current, total, .. } => {
+                let total = total.or_else(|| {
+                    measured
+                        .map(|bytes| bytes.load(Ordering::Relaxed))
+                        .filter(|bytes| *bytes > 0)
+                });
                 if !sink
                     .send(JobEvent::Progress {
                         current,
@@ -825,23 +850,14 @@ async fn run_snapshot(plan: &SnapshotPlan, sink: &JobSink) -> Result<JobSummary,
         // inside its parent.
         include_dirs: true,
     };
+    // Walked as the subvolume it is a copy of, so that every file is recorded
+    // where it really lives, not where this snapshot happens to keep its copy
+    // (otherwise a file's history splits into two unrelated trees and neither
+    // tells the whole story), and so that the rules about what is never backed
+    // up apply there: matched where the snapshot is kept, inside Backtrack's
+    // own data directory, they excluded the whole snapshot.
     let items = tokio::task::spawn_blocking(move || {
-        let mut walked = backtrack_core::walk::walk(&walk_spec);
-        // Record every file where it really lives, not where this snapshot
-        // happens to keep its copy — otherwise a file's history splits into two
-        // unrelated trees and neither tells the whole story.
-        let from = backtrack_core::walk::archive_path(&snapshot_root);
-        let to = backtrack_core::walk::archive_path(&subvolume);
-        walked
-            .items
-            .retain_mut(|item| match relocate(&item.path, &from, &to) {
-                Some(path) => {
-                    item.path = path;
-                    true
-                }
-                None => false,
-            });
-        walked
+        backtrack_core::walk::walk_as(&walk_spec, &snapshot_root, &subvolume)
     })
     .await
     .map_err(joined)?;
@@ -899,16 +915,6 @@ async fn run_snapshot(plan: &SnapshotPlan, sink: &JobSink) -> Result<JobSummary,
     Ok(JobSummary::default())
 }
 
-/// Rewrite an archive-relative path from inside a snapshot to where the file
-/// really lives. `None` when the path is not inside the snapshot at all.
-fn relocate(path: &str, from: &str, to: &str) -> Option<String> {
-    let rest = path.strip_prefix(from)?.trim_start_matches('/');
-    if to.is_empty() {
-        return Some(rest.to_string());
-    }
-    Some(format!("{to}/{rest}"))
-}
-
 /// Remove local snapshots that have outlived their retention.
 pub async fn expire_snapshots(
     index: &Arc<Mutex<IndexWriter>>,
@@ -931,6 +937,49 @@ pub async fn expire_snapshots(
         .map_err(indexing)?;
     info!(count = expired.len(), "expired local snapshots removed");
     Ok(())
+}
+
+/// The size of a backup's sources, measured on a thread of its own while the
+/// backup reads them, so that its progress has a total. Dropping it stops a
+/// walk that has not finished: once the archive is written there is nothing
+/// left for the number to tell anybody.
+struct Measuring {
+    /// Bytes, 0 until the walk has finished, and for good if it could not.
+    total: Arc<AtomicU64>,
+    stop: Arc<AtomicBool>,
+}
+
+impl Measuring {
+    fn start(spec: &CreateSpec) -> Measuring {
+        let total = Arc::new(AtomicU64::new(0));
+        let stop = Arc::new(AtomicBool::new(false));
+        let walk = backtrack_core::walk::WalkSpec {
+            sources: spec.sources.clone(),
+            excludes: backtrack_core::pattern::ExcludeSet::compile(&spec.excludes),
+            one_file_system: spec.one_file_system,
+            // Backtrack's own data, which the backup leaves out too.
+            never: vec![backtrack_core::paths::data_dir()],
+            include_dirs: false,
+        };
+        let (bytes, stopped) = (Arc::clone(&total), Arc::clone(&stop));
+        tokio::task::spawn_blocking(move || {
+            if let Some(measured) = backtrack_core::walk::measure(&walk, &stopped) {
+                debug!(
+                    bytes = measured.bytes,
+                    files = measured.files,
+                    "the backup's sources measured"
+                );
+                bytes.store(measured.bytes, Ordering::Relaxed);
+            }
+        });
+        Measuring { total, stop }
+    }
+}
+
+impl Drop for Measuring {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Relaxed);
+    }
 }
 
 /// `WalkSpec` holds a compiled `ExcludeSet`, which is not `Clone` — recompiling
@@ -1156,6 +1205,45 @@ mod tests {
             mode: 0o644,
             chunk_hash: None,
         }
+    }
+
+    /// What `drive_measured` forwards of `events`, given `measured` bytes.
+    async fn forwarded(events: Vec<JobEvent>, measured: u64) -> Vec<Option<u64>> {
+        use futures::StreamExt;
+        let (engine_sink, engine_stream) = JobStream::channel(16);
+        for event in events {
+            assert!(engine_sink.send(event).await);
+        }
+        let (sink, mut out) = JobStream::channel(16);
+        let bytes = AtomicU64::new(measured);
+        drive_measured(engine_stream, &sink, PHASE_ARCHIVING, Some(&bytes))
+            .await
+            .unwrap();
+        drop(sink);
+        let mut totals = Vec::new();
+        while let Some(JobEvent::Progress { total, phase, .. }) = out.next().await {
+            assert_eq!(phase, PHASE_ARCHIVING);
+            totals.push(total);
+        }
+        totals
+    }
+
+    #[tokio::test]
+    async fn archiving_progress_takes_the_measured_total_once_there_is_one() {
+        let read = |current, total| JobEvent::Progress {
+            current,
+            total,
+            phase: String::new(),
+        };
+        let done = || JobEvent::Finished(Ok(JobSummary::default()));
+        // Still measuring: no total, rather than a total of nothing.
+        assert_eq!(forwarded(vec![read(10, None), done()], 0).await, [None]);
+        // Measured: Borg's progress, which has no total, takes the measured
+        // one; an engine that knows its own total keeps it.
+        assert_eq!(
+            forwarded(vec![read(10, None), read(20, Some(7)), done()], 500).await,
+            [Some(500), Some(7)]
+        );
     }
 
     fn spec(name: &str) -> CreateSpec {
@@ -1885,34 +1973,6 @@ mod tests {
 
         let _ = std::fs::remove_dir_all(&subvolume);
         let _ = std::fs::remove_dir_all(&scratch);
-    }
-
-    #[test]
-    fn a_snapshots_contents_are_recorded_where_the_files_really_live() {
-        // The catalogue has to hold `home/k/Documents/report.odt`, not the copy
-        // inside a snapshot directory. Getting this wrong splits a file's
-        // history into two unrelated trees, neither of which tells the whole
-        // story.
-        let from = "home/k/.local/share/backtrack/snapshots/bt-local-1";
-        let to = "home";
-        assert_eq!(
-            relocate(&format!("{from}/k/Documents/report.odt"), from, to).as_deref(),
-            Some("home/k/Documents/report.odt")
-        );
-        // The snapshot root itself maps to the subvolume root.
-        assert_eq!(relocate(from, from, to).as_deref(), Some("home/"));
-        // Anything outside the snapshot is not ours to relocate.
-        assert_eq!(relocate("etc/passwd", from, to), None);
-    }
-
-    #[test]
-    fn relocating_into_the_filesystem_root_does_not_invent_a_leading_slash() {
-        // A subvolume mounted at `/` has an empty archive-relative prefix, and
-        // the catalogue stores paths without a leading separator.
-        assert_eq!(
-            relocate("snapshots/one/home/k/f", "snapshots/one", "").as_deref(),
-            Some("home/k/f")
-        );
     }
 
     #[test]

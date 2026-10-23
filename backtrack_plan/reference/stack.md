@@ -12,10 +12,10 @@
 | Process model | **Daemon (`backtrackd`) + thin clients over D-Bus** |
 | Backup engine | **Borg 1.2/1.4 CLI subprocess** behind an adapter trait |
 | Index | **SQLite** (WAL), interval-encoded schema, FTS5 filename search |
-| Local API | **D-Bus** session service `org.backtrack.Daemon1` + `backtrack` CLI |
+| Local API | **D-Bus** session service `tools.backtrack.Backtrack.Daemon1` + `backtrack` CLI |
 | Network API | None in v1 |
 | Packaging | **Flatpak and distro-native (RPM/DEB) from day one** |
-| License / identity | GPL-3.0-or-later · app ID `io.github.keithvassallomt.Backtrack` (see [brief.md](brief.md)) |
+| License / identity | GPL-3.0-or-later · app ID `tools.backtrack.Backtrack` (see [brief.md](brief.md)) |
 | v1 extras | Compare view, btrfs snapshot mode, cross-snapshot search, guided disaster recovery, health model ([health.md](health.md)) |
 | Deferred to v1.x | `backtrack:/` KIO worker, compiled Dolphin FileItemAction plugin, Borg 2, cloud destinations |
 
@@ -47,7 +47,16 @@ the GTK app, and transient `borg` subprocesses owned by the daemon.
 The GUI reads the index directly (SQLite WAL permits concurrent readers) and performs
 every mutation via D-Bus. This eliminates cross-process locking entirely.
 
-## 2. D-Bus API — `org.backtrack.Daemon1` (session bus)
+## 2. D-Bus API — `tools.backtrack.Backtrack.Daemon1` (session bus)
+
+One name for the bus name and the interface, under the application ID
+`tools.backtrack.Backtrack` (S13-T7): Flatpak exports a D-Bus activation file
+only for names under the application ID. The object path is
+`/tools/backtrack/Backtrack/Daemon1`, named errors are
+`tools.backtrack.Backtrack.Error.<Variant>`, and a development daemon
+(`BACKTRACK_DEV`) claims `tools.backtrack.Backtrack.Daemon1.Dev` with the same
+interface. The `1` is the API's major version: an incompatible change ships as
+`Daemon2` beside it.
 
 **Methods**
 
@@ -56,6 +65,7 @@ every mutation via D-Bus. This eliminates cross-process locking entirely.
 | `BackupNow()` | Manual backup trigger |
 | `Pause(until: timestamp)` / `Resume()` | Self-expiring pause (menu options map here) |
 | `GetStatus()` | State, last/next backup, destination reachability, spool usage |
+| `GetBackupProgress() → (job, phase, current, total)` | The backup under way, as its last `BackupProgress` said; job 0 when none (S06-T12) |
 | `RestoreFiles(archive, paths[], dest, policy) → job` | policy = ask / keep-both / replace / skip-identical |
 | `PreviewFile(archive, path) → fd` | Extracted content over a pipe fd; daemon caches by chunk hash |
 | `CompareFile(archive, path) → job` | Produces a diff artifact for the compare view |
@@ -167,18 +177,19 @@ disk-only files.
 
 Launchers only, per research. Nautilus: nautilus-python extension adding
 *Restore Previous Version…* (selection) and *Browse Backups of This Folder…* (background).
-Dolphin: service-menu `.desktop` with the same two actions. Both ship **only in native
-packages**; the Flatpak app detects their absence and points to the distro package from
-Preferences → General. The compiled KF6 FileItemAction plugin and `backtrack:/` KIO
+Dolphin: service-menu `.desktop` with the same two actions. Native packages ship both
+system-wide; a Flatpak install offers per-user copies from Preferences → General
+(S14-T4, reversing the earlier "native packages only"). The compiled KF6 FileItemAction plugin and `backtrack:/` KIO
 worker are v1.x.
 
 ## 9. Packaging (both from day one)
 
 - **Flatpak:** app + daemon + bundled borg in one package; daemon autostart via the
-  Background portal; repo/destination access via filesystem permissions. Accepted
-  limitation: no file-manager plugins from the sandbox.
-- **Native:** Fedora COPR + Ubuntu PPA initially; packages `backtrack`
-  (app + daemon + CLI + systemd user units), `backtrack-nautilus`, `backtrack-dolphin`.
+  Background portal; repo/destination access via filesystem permissions. Published on
+  FriendlyHub; first-class, with the same behaviour as a native install (Stage 14).
+- **Native:** Fedora COPR (Fedora 44+), Ubuntu PPA (Ubuntu 26.04+) and the AUR; packages
+  `backtrack` (app + daemon + CLI + systemd user units), `backtrack-nautilus`,
+  `backtrack-dolphin`. Published by `just release` (S13-T9).
 - CI builds all artifacts on every merge so the two packaging paths cannot drift.
 
 ## 10. Errors, logging, diagnostics
@@ -204,5 +215,5 @@ Rotating JSONL logs in `logs/`; `backtrack doctor` produces a redacted diagnosti
 | Milestone | Contents |
 |---|---|
 | **v1** | Core (hourly backups, timeline browser, restore + conflicts + stash/undo, onboarding, preferences, offline spool, Nautilus/Dolphin menus) + Compare view + btrfs snapshot mode + cross-snapshot search + guided disaster recovery + health model per [health.md](health.md) |
-| **v1.x** | `backtrack:/` KIO worker, compiled Dolphin plugin, Flathub listing polish, per-file "next change" power-step if not landed in v1 |
+| **v1.x** | `backtrack:/` KIO worker, compiled Dolphin plugin, FriendlyHub listing polish, per-file "next change" power-step if not landed in v1 |
 | **v2** | Borg 2 engine (repo migration, `borg transfer` spool consolidation), cloud destinations via borgstore/rclone |

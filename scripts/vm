@@ -17,6 +17,8 @@
 #   vm app <vm> [ARGS]      open Backtrack on the VM's screen
 #   vm run <vm> COMMAND...  run a command in the VM's copy of the checkout
 #   vm address <vm>         the SSH destination <vm> stands for
+#   vm drive-in <vm>        plug a 1 GiB USB drive labelled BTMATRIX into the VM
+#   vm drive-out <vm>       unplug it; --discard deletes its image as well
 
 set -euo pipefail
 trap 'echo "vm: stopped at line $LINENO: $BASH_COMMAND" >&2' ERR
@@ -185,7 +187,56 @@ run() {
     ssh "${SSH[@]}" "${TTY[@]}" "$destination" "cd $CHECKOUT && $*"
 }
 
+# The test drive: an ext4 image beside the VM's own disk, where its QEMU can
+# read it, owned by the VM's user so that it can be written to once mounted.
+DRIVE=sdz
+DRIVE_LABEL=BTMATRIX
+drive_image() {
+    local disk
+    disk="$(virsh -c "$CONNECT" domblklist "$1" | awk '$1 == "vda" {print $2}')"
+    echo "$(dirname "$disk")/backtrack-matrix-drive.img"
+}
+
+drive_in() {
+    local host image owner
+    host="$(domain "$1")"
+    image="$(drive_image "$host")"
+    if [[ ! -f "$image" ]]; then
+        owner="$(ssh "${SSH[@]}" -o BatchMode=yes "$(address "$1")" 'echo "$(id -u):$(id -g)"')"
+        truncate -s 1G "$image"
+        mkfs.ext4 -q -F -L "$DRIVE_LABEL" -E root_owner="$owner" "$image"
+    fi
+    # Removable, as a USB stick is: attach-disk cannot say so, and without it
+    # GNOME does not mount the drive and udisks asks for a password.
+    virsh -c "$CONNECT" attach-device "$host" /dev/stdin --live >/dev/null <<XML
+<disk type='file' device='disk'>
+  <driver name='qemu' type='raw'/>
+  <source file='$image'/>
+  <target dev='$DRIVE' bus='usb' removable='on'/>
+</disk>
+XML
+    echo "A USB drive labelled $DRIVE_LABEL is plugged into $host."
+}
+
+drive_out() {
+    local host
+    host="$(domain "$1")"
+    if virsh -c "$CONNECT" domblklist "$host" | awk '{print $1}' | grep -qx "$DRIVE"; then
+        virsh -c "$CONNECT" detach-disk "$host" "$DRIVE" --live >/dev/null
+        echo "The $DRIVE_LABEL drive is unplugged from $host."
+    fi
+    if [[ "${2:-}" == --discard ]]; then
+        rm -f "$(drive_image "$host")"
+    fi
+}
+
 case "${1:-}" in
+    drive-in)
+        [[ -n "${2:-}" ]] || { echo "usage: vm drive-in <vm>" >&2; exit 2; }
+        drive_in "$2" ;;
+    drive-out)
+        [[ -n "${2:-}" ]] || { echo "usage: vm drive-out <vm> [--discard]" >&2; exit 2; }
+        drive_out "$2" "${3:-}" ;;
     start)
         [[ -n "${2:-}" ]] || { echo "usage: vm start <vm>" >&2; exit 2; }
         start "$2" ;;

@@ -35,7 +35,7 @@ use libadwaita as adw;
 use tracing::{error, info, warn};
 
 /// Freedesktop application ID (see stack.md / brief.md).
-const APP_ID: &str = "io.github.keithvassallomt.Backtrack";
+const APP_ID: &str = "tools.backtrack.Backtrack";
 
 /// Where the window should open.
 #[derive(Debug, Clone, Parser)]
@@ -54,6 +54,11 @@ struct Args {
     /// Open the fix for a problem Backtrack has told you about.
     #[arg(long, value_name = "REASON")]
     fix: Option<String>,
+    /// GApplication's own flag, passed when the session bus starts the window
+    /// to answer an activation (S14-T2). GApplication acts on it; it is
+    /// accepted here only so that parsing does not refuse it.
+    #[arg(long = "gapplication-service", hide = true)]
+    gapplication_service: bool,
 }
 
 /// What the window is being asked to show, in archive-relative paths.
@@ -129,7 +134,10 @@ fn main() -> glib::ExitCode {
         )
         .build();
 
-    app.connect_startup(|_| ui::install_stylesheet());
+    app.connect_startup(|_| {
+        ui::install_stylesheet();
+        refresh_flatpak_plugins();
+    });
 
     app.connect_command_line(
         |app: &adw::Application, command_line: &gio::ApplicationCommandLine| -> glib::ExitCode {
@@ -150,35 +158,96 @@ fn main() -> glib::ExitCode {
             ui::apply_theme_override(command_line.getenv("BACKTRACK_THEME").as_deref());
 
             let target = Target::resolve(&args);
-            let fix = args.fix.as_deref().and_then(|token| {
-                let reason = backtrack_core::dbus::Reason::parse(token);
-                if reason.is_none() {
-                    warn!(token, "ignoring a fix this build does not know");
-                }
-                reason
-            });
-
-            match app.active_window() {
-                Some(existing) => {
-                    // Launched again with nothing to show: bring the window
-                    // forward as it is, rather than moving it somewhere.
-                    if let Some(target) = &target {
-                        window::retarget(&existing, target);
-                    }
-                    existing.present();
-                    if let Some(reason) = fix {
-                        window::fix(&existing, reason);
-                    }
-                }
-                None => open_first_window(app, target, fix),
-            }
+            let fix = args.fix.as_deref().and_then(parse_fix);
+            show(app, target, fix);
             glib::ExitCode::SUCCESS
         },
     );
 
+    // The same requests over the session bus, for a caller with no window of
+    // its own to forward a command line from: the daemon's notifications and
+    // the tray icon inside the Flatpak (S14-T2). A bare activation opens the
+    // window as a launch with no arguments does.
+    app.connect_activate(|app| show(app, None, None));
+    let fix = gio::SimpleAction::new(
+        backtrack_core::dbus::APP_ACTION_FIX,
+        Some(glib::VariantTy::STRING),
+    );
+    let fixer = app.clone();
+    fix.connect_activate(move |_, parameter| {
+        let token = parameter.and_then(|token| token.str()).unwrap_or_default();
+        show(&fixer, None, parse_fix(token));
+    });
+    app.add_action(&fix);
+    let browse = gio::SimpleAction::new(
+        backtrack_core::dbus::APP_ACTION_BROWSE,
+        Some(glib::VariantTy::new("(ss)").expect("a valid variant type")),
+    );
+    let browser = app.clone();
+    browse.connect_activate(move |_, parameter| {
+        let Some((path, select)) = parameter.and_then(|value| value.get::<(String, String)>())
+        else {
+            return;
+        };
+        let given = |path: String| (!path.is_empty()).then(|| PathBuf::from(path));
+        let args = Args {
+            path: given(path),
+            select: given(select),
+            fix: None,
+            gapplication_service: false,
+        };
+        show(&browser, Target::resolve(&args), None);
+    });
+    app.add_action(&browse);
+
     // The user's own argv, forwarded to whichever instance is primary: that is
     // what lets a second `--path` re-point the window already on screen.
     app.run_with_args(&std::env::args().collect::<Vec<String>>())
+}
+
+/// Show `target` and the fix for `fix`: in the window already open, or in a
+/// first one.
+fn show(app: &adw::Application, target: Option<Target>, fix: Option<backtrack_core::dbus::Reason>) {
+    match app.active_window() {
+        Some(existing) => {
+            // Launched again with nothing to show: bring the window forward as
+            // it is, rather than moving it somewhere.
+            if let Some(target) = &target {
+                window::retarget(&existing, target);
+            }
+            existing.present();
+            if let Some(reason) = fix {
+                window::fix(&existing, reason);
+            }
+        }
+        None => open_first_window(app, target, fix),
+    }
+}
+
+/// Inside a Flatpak, bring the file-manager integrations it installed up to
+/// this version, so an update to the Flatpak updates them too (S14-T4).
+fn refresh_flatpak_plugins() {
+    if !backtrack_core::host::in_flatpak() {
+        return;
+    }
+    let home = backtrack_core::paths::host_data_home();
+    let roots = backtrack_core::paths::roots_file();
+    for plugin in model::prefs::Plugin::ALL {
+        match plugin.refresh_flatpak_copy(&home, &roots) {
+            Ok(true) => info!(?plugin, "brought the Flatpak's integration up to date"),
+            Ok(false) => {}
+            Err(error) => warn!(%error, ?plugin, "the Flatpak's integration could not be updated"),
+        }
+    }
+}
+
+/// The fix a `--fix` token or a `fix` action names, if this build knows it.
+fn parse_fix(token: &str) -> Option<backtrack_core::dbus::Reason> {
+    let reason = backtrack_core::dbus::Reason::parse(token);
+    if reason.is_none() {
+        warn!(token, "ignoring a fix this build does not know");
+    }
+    reason
 }
 
 /// Open the timeline, or the welcome wizard if nothing is set up yet.
@@ -226,10 +295,10 @@ fn open_first_window(
                 info!("a restore of this computer is under way; reopening it");
                 ui::everything::present(&app, daemon);
             }
-            _ => {
+            (daemon, _) => {
                 let target = match target {
                     Some(target) => target,
-                    None => window::backed_up_target().await,
+                    None => window::backed_up_target(daemon.as_ref()).await,
                 };
                 let window = window::Window::build(&app, &target);
                 window.present();
@@ -251,7 +320,18 @@ mod tests {
             path: path.map(PathBuf::from),
             select: select.map(PathBuf::from),
             fix: None,
+            gapplication_service: false,
         }
+    }
+
+    #[test]
+    fn a_start_by_the_session_bus_is_not_refused() {
+        // The session bus starts the window with GApplication's own flag; a
+        // parse that refused it would exit before GApplication could answer
+        // the activation that started it.
+        let args = Args::try_parse_from(["backtrack-gtk", "--gapplication-service"]).unwrap();
+        assert!(args.gapplication_service);
+        assert_eq!(Target::resolve(&args), None);
     }
 
     #[test]

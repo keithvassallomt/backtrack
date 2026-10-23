@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // SPDX-FileCopyrightText: 2026 Keith Vassallo <keith@vassallo.cloud>
 
-//! The window's side of `org.backtrack.Daemon1`.
+//! The window's side of `tools.backtrack.Backtrack.Daemon1`.
 //!
 //! Browsing does not go through here: the timeline reads the index directly,
 //! which is what makes it instant and what makes it work with the daemon
@@ -20,14 +20,17 @@ use tracing::warn;
 
 /// The daemon, as the window calls it.
 #[zbus::proxy(
-    interface = "org.backtrack.Daemon1",
-    default_path = "/org/backtrack/Daemon1"
+    interface = "tools.backtrack.Backtrack.Daemon1",
+    default_path = "/tools/backtrack/Backtrack/Daemon1"
 )]
 pub trait Daemon1 {
     fn backup_now(&self) -> zbus::Result<u64>;
     fn pause(&self, until: u64) -> zbus::Result<()>;
     fn resume(&self) -> zbus::Result<()>;
     fn get_status(&self) -> zbus::Result<Status>;
+    /// The backup under way and how far it has got: job (0 for none), phase,
+    /// bytes read, estimated total (0 for none yet).
+    fn get_backup_progress(&self) -> zbus::Result<(u64, String, u64, u64)>;
     /// A readable descriptor onto one file's contents as of `archive` (the
     /// archive's name, as the index records it).
     fn preview_file(&self, archive: &str, path: &str) -> zbus::Result<zbus::zvariant::OwnedFd>;

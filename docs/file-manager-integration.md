@@ -8,9 +8,11 @@ with each GNOME release. See `backtrack_plan/reference/open-questions.md`, Q1.
 
 ## Installing
 
-Preferences → General lists both integrations. One that is installed shows
-*Installed* and a switch that takes its items away without uninstalling it;
-one that is not shows **Install…**, which opens this section.
+Preferences → General lists the integration of each file manager on the
+computer. One that is installed shows *Installed* and a switch that takes its
+items away without uninstalling it; one that is not shows **How to
+Install…**, which opens this section. A file manager that is not installed
+has no row, unless Backtrack's integration for it is.
 
 - **GNOME Files (Nautilus)** needs nautilus-python (`nautilus-python` on
   Fedora, `python3-nautilus` on Ubuntu, `python-nautilus` on Arch) and
@@ -23,8 +25,25 @@ Backtrack's own packages, and their names for each distribution, come with
 the packaging (Stage 13). From a checkout, `just install-nautilus-dev` and
 `just install-dolphin-dev` install the development copies described below.
 
+### From the Flatpak
+
+The Flatpak cannot install files outside itself, so Preferences installs its
+own copies in your data folder instead: **Install** puts them in place and
+**Remove** takes them away. They are the files the packages ship, opening
+the window with `flatpak run tools.backtrack.Backtrack`, and the Nautilus
+copy reads the backed-up folders from the Flatpak's data folder under
+`~/.var/app`. Each start of the window brings them up to date with the
+Flatpak.
+
+- **GNOME Files** still needs nautilus-python from your distribution
+  (package names above); without it, the row says *Needs nautilus-python*
+  and offers **How to Install…** and this page instead. Quit Nautilus after installing: `nautilus -q`.
+- **Dolphin** needs nothing else, and shows the items from the next
+  right-click.
+
 Preferences finds an integration by its file in the user's data directory
-(`~/.local/share`) or a system one (`/usr/share`):
+(`~/.local/share`) or a system one (`/usr/share`; from the Flatpak, the
+host's, which it sees under `/run/host`):
 `nautilus-python/extensions/backtrack.py` and
 `kio/servicemenus/backtrack.desktop`. It looks again each time the
 Preferences window comes back into focus, so an integration installed while it

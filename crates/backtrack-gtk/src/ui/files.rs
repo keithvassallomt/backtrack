@@ -15,6 +15,7 @@
 //! S01-T3, computed in SQL over the interval encoding.
 
 use std::cell::{Cell, RefCell};
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::rc::Rc;
 
@@ -29,6 +30,7 @@ use tracing::{debug, warn};
 
 use crate::daemon::Daemon1Proxy;
 use crate::index::Index;
+use crate::model::above;
 use crate::model::empty::{self, Coverage, Empty};
 use crate::path;
 use crate::state::{AppState, Change, Selected};
@@ -43,6 +45,9 @@ struct RowData {
     /// unknown, 1 absent, 2 present. Unknown when the daemon was not there to
     /// ask, which is why the default says nothing rather than "gone".
     on_disk: u8,
+    /// A folder that is not in the backup itself but leads down to folders
+    /// that are (see `model::above`): it has no size or date to show.
+    partly: bool,
 }
 
 /// The daemon's answers about a path being on the computer now. Three-valued,
@@ -59,6 +64,14 @@ pub struct Files {
     /// "Add to Backups…", on the empty page only when the folder is outside
     /// the backups.
     add: Button,
+    /// The line above the list of a folder only partly backed up, and its
+    /// text.
+    notice: GtkBox,
+    notice_text: Label,
+    /// Each backup's top folders, by sequence number, as asked of the index:
+    /// a folder outside the backups needs them on every visit, and they do
+    /// not change until the backups do.
+    roots: RefCell<HashMap<i64, Rc<Vec<String>>>>,
     state: Rc<AppState>,
     index: Index,
     /// `None` until the daemon answers, and if it never does. Browsing works
@@ -104,6 +117,7 @@ pub fn build(
         .vexpand(true)
         .build();
 
+    let add_to_backups: Rc<dyn Fn(&str)> = Rc::new(add_to_backups);
     let add = Button::builder()
         .label("Add to Backups…")
         .halign(Align::Center)
@@ -111,7 +125,8 @@ pub fn build(
         .build();
     add.add_css_class("pill");
     let adder = Rc::clone(state);
-    add.connect_clicked(move |_| add_to_backups(&adder.view().folder));
+    let adding = Rc::clone(&add_to_backups);
+    add.connect_clicked(move |_| adding(&adder.view().folder));
 
     let empty = adw::StatusPage::builder()
         .icon_name("folder-symbolic")
@@ -120,8 +135,33 @@ pub fn build(
         .build();
     empty.add_css_class("compact");
 
+    // Above the list of a folder that leads down to backed-up folders without
+    // being backed up itself: what is not there, and how to have it be.
+    let notice_text = Label::builder()
+        .xalign(0.0)
+        .hexpand(true)
+        .wrap(true)
+        .build();
+    let notice_add = Button::builder()
+        .label("Add to Backups…")
+        .valign(Align::Center)
+        .build();
+    notice_add.add_css_class("flat");
+    let adder = Rc::clone(state);
+    notice_add.connect_clicked(move |_| add_to_backups(&adder.view().folder));
+    let notice = GtkBox::new(Orientation::Horizontal, 10);
+    notice.add_css_class("partly-notice");
+    notice.append(&Image::from_icon_name("dialog-information-symbolic"));
+    notice.append(&notice_text);
+    notice.append(&notice_add);
+    notice.set_visible(false);
+
+    let listing = GtkBox::new(Orientation::Vertical, 8);
+    listing.append(&notice);
+    listing.append(&scroller);
+
     let stack = Stack::new();
-    stack.add_named(&scroller, Some("files"));
+    stack.add_named(&listing, Some("files"));
     stack.add_named(&empty, Some("empty"));
 
     let files = Rc::new(Files {
@@ -130,6 +170,9 @@ pub fn build(
         selection,
         empty,
         add,
+        notice,
+        notice_text,
+        roots: RefCell::new(HashMap::new()),
         state: Rc::clone(state),
         index: index.clone(),
         daemon: Rc::clone(daemon),
@@ -139,7 +182,14 @@ pub fn build(
 
     let watcher = Rc::clone(&files);
     state.subscribe(move |_, change| {
-        if matches!(change, Change::Folder | Change::Seq | Change::Archives) {
+        if change == Change::Archives {
+            // New backups, or fewer: the top folders are asked for again.
+            watcher.roots.borrow_mut().clear();
+        }
+        if matches!(
+            change,
+            Change::Folder | Change::Seq | Change::Archives | Change::Disk
+        ) {
             watcher.reload();
         }
     });
@@ -198,6 +248,7 @@ impl Files {
     pub fn reload(self: &Rc<Self>) {
         let view = self.state.view();
         let Some(seq) = view.seq else {
+            debug!(folder = view.folder, "no backups catalogued yet");
             self.show_empty(
                 "No backups yet",
                 "Backtrack has not catalogued any backups.",
@@ -216,18 +267,35 @@ impl Files {
                 .index
                 .query(move |reader| {
                     let entries = reader.folder_at(&query_folder, seq)?;
-                    // Only an empty list needs to know whether the folder
-                    // itself is in the backup: if it is, it was empty then.
-                    let in_backup = !entries.is_empty() || present_at(reader, &query_folder, seq)?;
-                    Ok((entries, in_backup))
+                    // Whether the folder itself is in the backup: if it is, an
+                    // empty list means it was empty then, and it is inside the
+                    // backups, with nothing above them to lead down to.
+                    let here = present_at(reader, &query_folder, seq)?;
+                    Ok((entries, here))
                 })
                 .await;
             if this.generation.get() != wanted {
                 // Superseded while the query was in flight.
                 return;
             }
+            // A folder outside the backup may lead down to folders in it.
+            let (leading, partly) = match &answer {
+                Ok((entries, false)) => {
+                    let roots = this.roots_at(seq).await;
+                    if this.generation.get() != wanted {
+                        return;
+                    }
+                    let leading: Vec<String> = above::leading_down(&folder, &roots)
+                        .into_iter()
+                        .filter(|name| !entries.iter().any(|e| &e.name == name))
+                        .collect();
+                    (leading, above::partly(&folder, &roots))
+                }
+                _ => (Vec::new(), false),
+            };
+            let answer = answer.map(|(entries, here)| (entries, here, leading));
             match answer {
-                Ok((entries, in_backup)) if entries.is_empty() => {
+                Ok((entries, in_backup, leading)) if entries.is_empty() && leading.is_empty() => {
                     let coverage = if in_backup || !newest {
                         // Settled already: see `empty::why`.
                         Coverage::Unknown
@@ -241,7 +309,19 @@ impl Files {
                     debug!(folder, seq, ?why, "nothing to show");
                     this.show_why(why, &folder);
                 }
-                Ok((entries, _)) => {
+                Ok((mut entries, _, leading)) => {
+                    // The folders leading down are entries the catalogue does
+                    // not have: in no backup, so with no size, date or badge
+                    // of their own.
+                    entries.extend(leading.iter().map(|name| Entry {
+                        path_id: 0,
+                        name: name.clone(),
+                        kind: Kind::Dir,
+                        size: 0,
+                        mtime: 0,
+                        deleted_after: false,
+                        changed_since: false,
+                    }));
                     // Asked before painting rather than after, so the status
                     // column is right the first time it is drawn. It is one
                     // directory read on the other side of a local socket, and
@@ -251,6 +331,7 @@ impl Files {
                     if this.generation.get() != wanted {
                         return;
                     }
+                    this.show_notice(partly.then_some(folder.as_str()));
                     debug!(
                         folder,
                         seq,
@@ -258,9 +339,11 @@ impl Files {
                         deleted_after = entries.iter().filter(|e| e.deleted_after).count(),
                         changed_since = entries.iter().filter(|e| e.changed_since).count(),
                         gone_from_disk = on_disk.iter().filter(|a| **a == ABSENT).count(),
+                        leading_down = leading.len(),
+                        partly,
                         "folder loaded"
                     );
-                    this.show(entries, on_disk)
+                    this.show(entries, on_disk, &leading)
                 }
                 Err(error) => {
                     warn!(%error, folder, seq, "the folder could not be read");
@@ -270,7 +353,6 @@ impl Files {
         });
     }
 
-    /// Put `entries` on screen, keeping the selection if it survived the change.
     /// What the daemon says about each of these entries being on the computer.
     ///
     /// An empty answer means nobody was asked — the daemon is not there, or it
@@ -345,7 +427,9 @@ impl Files {
         Some(backtrack_core::roots::Roots::of(&config).roots)
     }
 
-    fn show(self: &Rc<Self>, entries: Vec<Entry>, on_disk: Vec<u8>) {
+    /// Put `entries` on screen, keeping the selection if it survived the
+    /// change. `leading` names the ones that lead down to backed-up folders.
+    fn show(self: &Rc<Self>, entries: Vec<Entry>, on_disk: Vec<u8>, leading: &[String]) {
         let previously = self.state.view().selected.map(|s| s.name);
 
         self.syncing.set(true);
@@ -365,11 +449,21 @@ impl Files {
                 .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
         });
         for (entry, on_disk) in sorted {
+            let partly = leading.contains(&entry.name);
             let data = RowData {
-                size: crate::model::format::size(entry.size, entry.kind),
-                modified: crate::model::format::modified(entry.mtime, &tz),
+                size: if partly {
+                    "—".to_string()
+                } else {
+                    crate::model::format::size(entry.size, entry.kind)
+                },
+                modified: if partly {
+                    "—".to_string()
+                } else {
+                    crate::model::format::modified(entry.mtime, &tz)
+                },
                 entry,
                 on_disk,
+                partly,
             };
             self.rows.append(&glib::BoxedAnyObject::new(data));
         }
@@ -396,8 +490,36 @@ impl Files {
     }
 
     fn show_why(&self, why: Empty, folder: &str) {
-        self.show_empty(why.title(), &why.description(path::name(folder)));
+        let name = label(folder).unwrap_or_else(|| path::name(folder).to_string());
+        self.show_empty(why.title(), &why.description(&name));
         self.add.set_visible(why.offers_to_add());
+    }
+
+    /// Say above the list that only some of `folder` is backed up, or, with
+    /// `None`, say nothing.
+    fn show_notice(&self, folder: Option<&str>) {
+        if let Some(folder) = folder {
+            self.notice_text
+                .set_text(&above::notice(label(folder).as_deref()));
+        }
+        self.notice.set_visible(folder.is_some());
+    }
+
+    /// The top folders of backup `seq`, from the index, asked once per
+    /// backup. Empty when the index cannot say, which leads nowhere.
+    async fn roots_at(&self, seq: i64) -> Rc<Vec<String>> {
+        if let Some(roots) = self.roots.borrow().get(&seq) {
+            return Rc::clone(roots);
+        }
+        let roots = match self.index.query(move |r| r.backed_up_roots(seq)).await {
+            Ok(roots) => Rc::new(roots),
+            Err(error) => {
+                debug!(%error, seq, "the backup's top folders could not be read");
+                return Rc::new(Vec::new());
+            }
+        };
+        self.roots.borrow_mut().insert(seq, Rc::clone(&roots));
+        roots
     }
 
     fn position_of(&self, name: &str) -> Option<u32> {
@@ -405,6 +527,15 @@ impl Files {
             row_of(self.rows.item(*index).as_ref()).is_some_and(|row| row.entry.name == name)
         })
     }
+}
+
+/// What the breadcrumb calls `folder` ("Home" for the home folder), or `None`
+/// for the filesystem root, which has no crumb.
+fn label(folder: &str) -> Option<String> {
+    let home = crate::ui::breadcrumb::home_archive_path();
+    path::breadcrumbs(folder, home.as_deref())
+        .pop()
+        .map(|crumb| crumb.label)
 }
 
 /// Whether `path` itself, rather than only something inside it, is in backup
@@ -557,7 +688,12 @@ fn status_factory() -> SignalListItemFactory {
         };
         label.remove_css_class("deleted");
         label.remove_css_class("changed");
-        if row.entry.deleted_after {
+        label.remove_css_class("partly");
+        if row.partly {
+            label.set_text(above::BADGE);
+            label.add_css_class("partly");
+            label.set_visible(true);
+        } else if row.entry.deleted_after {
             label.set_text("deleted after this");
             label.add_css_class("deleted");
             label.set_visible(true);

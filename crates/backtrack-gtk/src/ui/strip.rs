@@ -177,9 +177,10 @@ pub fn build(state: &Rc<AppState>) -> Rc<Strip> {
 
     let watcher = Rc::clone(&strip);
     state.subscribe(move |view, change| match change {
-        Change::Archives => {
+        // The listed backups (Stage 15), on the whole history's axis.
+        Change::Archives | Change::Listed => {
             let tz = glib::TimeZone::local();
-            *watcher.density.borrow_mut() = density::density(&view.archives, &tz);
+            *watcher.density.borrow_mut() = density::density_of(&view.listed, &view.archives, &tz);
             watcher.relabel();
             watcher.refresh(view);
         }
@@ -206,7 +207,7 @@ impl Strip {
         let tz = glib::TimeZone::local();
         let marker = view
             .seq
-            .and_then(|seq| self.density.borrow().bar_of(&view.archives, seq, &tz));
+            .and_then(|seq| self.density.borrow().bar_of(&view.listed, seq, &tz));
         *self.marker.borrow_mut() = marker;
 
         if let Some((ordinal, total)) = view.position() {
@@ -220,7 +221,7 @@ impl Strip {
                 gtk4::accessible::Property::ValueNow(from_oldest),
             ]);
             if let Some(archive) = view.archive() {
-                let text = format::position(archive.ts, ordinal, total, &tz);
+                let text = format::position(archive.ts, ordinal, total, view.is_filtered(), &tz);
                 self.area
                     .update_property(&[gtk4::accessible::Property::ValueText(&text)]);
             }
@@ -287,19 +288,21 @@ impl Strip {
         let view = self.state.view();
         let tz = glib::TimeZone::local();
         let fraction = x / f64::from(width);
-        if let Some(seq) = density::seq_at(&self.density.borrow(), &view.archives, fraction, &tz) {
+        if let Some(seq) = density::seq_at(&self.density.borrow(), &view.listed, fraction, &tz) {
             self.state.set_seq(seq);
         }
     }
 
-    /// Arrow keys step one backup; Home and End go to the ends of the history.
+    /// Arrow keys step one backup; Home and End go to the oldest and newest
+    /// listed that can be looked at.
     fn on_key(&self, key: gdk::Key) -> glib::Propagation {
         let view = self.state.view();
+        let mut browsable = view.listed.iter().filter(|a| a.catalogued);
         let target = match key {
             gdk::Key::Left | gdk::Key::Down => view.older(),
             gdk::Key::Right | gdk::Key::Up => view.newer(),
-            gdk::Key::Home => view.archives.last().map(|a| a.seq),
-            gdk::Key::End => view.archives.first().map(|a| a.seq),
+            gdk::Key::Home => browsable.next_back().map(|a| a.seq),
+            gdk::Key::End => browsable.next().map(|a| a.seq),
             _ => return glib::Propagation::Proceed,
         };
         if let Some(seq) = target {
@@ -455,7 +458,9 @@ fn rounded_bar(
 
 const PI: f64 = std::f64::consts::PI;
 
-/// What the readout says for a day.
+/// What the readout says for a day. An empty day says which kind of empty it
+/// is: backups were taken and none is listed, so nothing in the folder
+/// changed, or none was taken at all.
 fn describe(bar: &density::Bar) -> String {
     let (year, month, day) = day_to_date(bar.day);
     let tz = glib::TimeZone::local();
@@ -464,6 +469,7 @@ fn describe(bar: &density::Bar) -> String {
         .map(|dt| format::weekday_and_day(dt.to_unix(), &tz))
         .unwrap_or_default();
     match bar.count {
+        0 if bar.taken > 0 => format!("{date} · nothing changed here"),
         0 => format!("{date} · no backups"),
         1 => format!("{date} · 1 backup"),
         many => format!("{date} · {many} backups"),
@@ -493,17 +499,14 @@ mod tests {
     fn the_readout_names_the_day_and_says_how_many() {
         // 2026-06-09 was a Tuesday; the day number is days since the epoch.
         let day = crate::model::date_to_day(2026, 6, 9);
+        let bar = |count, taken| density::Bar { day, count, taken };
+        assert_eq!(describe(&bar(1, 1)), "Tue 9 Jun · 1 backup");
+        assert_eq!(describe(&bar(4, 6)), "Tue 9 Jun · 4 backups");
+        assert_eq!(describe(&bar(0, 0)), "Tue 9 Jun · no backups");
         assert_eq!(
-            describe(&density::Bar { day, count: 1 }),
-            "Tue 9 Jun · 1 backup"
-        );
-        assert_eq!(
-            describe(&density::Bar { day, count: 4 }),
-            "Tue 9 Jun · 4 backups"
-        );
-        assert_eq!(
-            describe(&density::Bar { day, count: 0 }),
-            "Tue 9 Jun · no backups"
+            describe(&bar(0, 3)),
+            "Tue 9 Jun · nothing changed here",
+            "backups were taken, and none is listed for this folder"
         );
     }
 }

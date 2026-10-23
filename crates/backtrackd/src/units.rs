@@ -16,7 +16,13 @@
 const SYSTEMD_UNIT: &str = include_str!("../../../packaging/systemd/backtrackd.service");
 
 /// The packaged D-Bus activation file.
-const DBUS_SERVICE: &str = include_str!("../../../packaging/dbus/org.backtrack.Daemon1.service");
+const DBUS_SERVICE: &str =
+    include_str!("../../../packaging/dbus/tools.backtrack.Backtrack.Daemon1.service");
+
+/// The window's activation file (S14-T2), which the daemon and the tray use
+/// to open the window inside the Flatpak.
+const WINDOW_SERVICE: &str =
+    include_str!("../../../packaging/dbus/tools.backtrack.Backtrack.service");
 
 /// The unit's file name, which `SystemdService=` has to match.
 const SYSTEMD_UNIT_NAME: &str = "backtrackd.service";
@@ -33,6 +39,18 @@ mod tests {
             .filter(|line| !line.starts_with('#'))
             .find_map(|line| line.strip_prefix(&format!("{key}=")))
             .map(|v| v.trim().to_string())
+    }
+
+    #[test]
+    fn the_windows_activation_file_starts_the_window_as_a_bus_service() {
+        // The name the window's GApplication owns, and the flag that makes
+        // GApplication answer the activation that started it rather than
+        // open a window of its own accord.
+        assert_eq!(value(WINDOW_SERVICE, "Name").as_deref(), Some(dbus::APP_ID));
+        assert_eq!(
+            value(WINDOW_SERVICE, "Exec").as_deref(),
+            Some("/usr/bin/backtrack-gtk --gapplication-service")
+        );
     }
 
     #[test]
@@ -149,5 +167,12 @@ mod tests {
             Some("on-failure")
         );
         assert!(value(SYSTEMD_UNIT, "RestartSec").is_some());
+    }
+
+    #[test]
+    fn the_flatpaks_supervisor_waits_as_long_as_the_unit_does() {
+        let unit = value(SYSTEMD_UNIT, "RestartSec").unwrap();
+        let seconds: u64 = unit.trim_end_matches('s').parse().unwrap();
+        assert_eq!(crate::supervise::RESTART_DELAY.as_secs(), seconds);
     }
 }

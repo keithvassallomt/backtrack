@@ -23,16 +23,24 @@ pub use keyring::KeyringSecretStore;
 pub use session::SessionSecretStore;
 
 /// Stable Secret Service attribute: the application id.
-pub const APP_ID: &str = "io.github.keithvassallomt.Backtrack";
+pub const APP_ID: &str = "tools.backtrack.Backtrack";
 
 /// Get/set/delete a repository passphrase under a stable attribute set
 /// (`app-id` + `repo-id`).
+// See `engine::BackupEngine`: async-trait's `#[must_use]`, and clippy 1.99.
+#[allow(clippy::double_must_use)]
 #[async_trait]
 pub trait SecretStore: Send + Sync {
     /// Returns the stored passphrase, or [`EngineError::PassphraseMissing`].
     async fn get(&self, repo_id: &str) -> Result<String>;
     async fn set(&self, repo_id: &str, passphrase: &str) -> Result<()>;
     async fn delete(&self, repo_id: &str) -> Result<()>;
+    /// Whether what is saved here can be read now without asking anybody:
+    /// `false` while the store is locked, as a keyring is for a moment at
+    /// login. Never prompts. A store that does not lock is always ready.
+    async fn ready(&self) -> bool {
+        true
+    }
 }
 
 /// The store the daemon uses by default: file-backed under `BACKTRACK_DEV=1`,

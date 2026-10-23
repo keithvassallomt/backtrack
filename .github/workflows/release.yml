@@ -1,0 +1,190 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# SPDX-FileCopyrightText: 2026 Keith Vassallo <keith@vassallo.cloud>
+#
+# A tag `v*` builds every release artifact and makes the GitHub release, with
+# the version's CHANGELOG section as its notes (S13-T5). A pre-release tag
+# (v0.1.0-rc1) makes a GitHub pre-release. CI publishes nowhere else and holds
+# no credential beyond its GitHub token: COPR, the PPA, the AUR and FriendlyHub
+# are `just release`'s, on the release machine.
+
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  version:
+    name: The tag is the workspace version
+    runs-on: ubuntu-latest
+    container: fedora:latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      prerelease: ${{ steps.version.outputs.prerelease }}
+    steps:
+      - uses: actions/checkout@v7
+      - run: dnf install -y -q just python3
+      - id: version
+        name: Read the version, and refuse a tag that disagrees
+        run: |
+          version="$(awk '/^\[workspace\.package\]/{p=1} p&&/^version = /{gsub(/[",]/,"",$3); print $3; exit}' Cargo.toml)"
+          if [ "v${version}" != "${GITHUB_REF_NAME}" ]; then
+            echo "::error::The tag ${GITHUB_REF_NAME} is not the workspace version ${version}. Either just bump-version was not run, or the tag names the wrong version."
+            exit 1
+          fi
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          case "${version}" in
+            *-*) echo "prerelease=true" >> "$GITHUB_OUTPUT" ;;
+            *) echo "prerelease=false" >> "$GITHUB_OUTPUT" ;;
+          esac
+      - name: Every version location agrees
+        run: just verify-version
+      - name: The CHANGELOG has a dated section for it
+        run: python3 scripts/release_notes.py "${{ steps.version.outputs.version }}" > /dev/null
+
+  dist:
+    name: Source tarballs
+    needs: version
+    runs-on: ubuntu-latest
+    container: fedora:latest
+    steps:
+      # git before the checkout: without it, actions/checkout downloads the
+      # tree with no .git, and `just dist` makes the tarball with git archive.
+      - run: dnf install -y -q just cargo git tar xz
+      - uses: actions/checkout@v7
+      - run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+      - run: just dist
+      - uses: actions/upload-artifact@v7
+        with:
+          name: dist
+          path: target/dist/*
+
+  # The packages are built for x86_64 and aarch64, each on a runner of its
+  # own architecture (GitHub's ARM64 runners are free for public
+  # repositories), so nothing is emulated.
+  flatpak:
+    name: Flatpak bundle (${{ matrix.arch }})
+    needs: version
+    strategy:
+      matrix:
+        include:
+          - arch: x86_64
+            runner: ubuntu-latest
+          - arch: aarch64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    container:
+      image: ghcr.io/flathub-infra/flatpak-github-actions:gnome-51
+      options: --privileged
+    steps:
+      - uses: actions/checkout@v7
+      # v6.8
+      - uses: flatpak/flatpak-github-actions/flatpak-builder@aa777012a985fe1b1fd3e66ea2173609cf0c9a70
+        with:
+          manifest-path: packaging/flatpak/tools.backtrack.Backtrack.yml
+          bundle: backtrack-${{ needs.version.outputs.version }}-${{ matrix.arch }}.flatpak
+          arch: ${{ matrix.arch }}
+          upload-artifact: false
+      - uses: actions/upload-artifact@v7
+        with:
+          name: flatpak-${{ matrix.arch }}
+          path: backtrack-${{ needs.version.outputs.version }}-${{ matrix.arch }}.flatpak
+
+  rpm:
+    name: RPMs (Fedora 44, ${{ matrix.arch }})
+    needs: dist
+    strategy:
+      matrix:
+        include:
+          # The noarch packages and the source RPM come from this one only.
+          - arch: x86_64
+            runner: ubuntu-latest
+            files: |
+              /root/rpmbuild/RPMS/*/*.rpm
+              /root/rpmbuild/SRPMS/*.rpm
+          - arch: aarch64
+            runner: ubuntu-24.04-arm
+            files: /root/rpmbuild/RPMS/aarch64/*.rpm
+    runs-on: ${{ matrix.runner }}
+    container: fedora:44
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          name: dist
+          path: /root/rpmbuild/SOURCES
+      - run: |
+          mkdir -p /root/rpmbuild/SPECS
+          cp packaging/rpm/backtrack.spec /root/rpmbuild/SPECS/
+          packaging/rpm/build-in-container.sh
+      - uses: actions/upload-artifact@v7
+        with:
+          name: rpm-${{ matrix.arch }}
+          path: ${{ matrix.files }}
+
+  deb:
+    name: Debs (Ubuntu 26.04, ${{ matrix.arch }})
+    needs: [version, dist]
+    strategy:
+      matrix:
+        include:
+          # The "all" packages come from this one only.
+          - arch: amd64
+            runner: ubuntu-latest
+            files: /build/*.deb
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+            files: /build/*_arm64.deb
+    runs-on: ${{ matrix.runner }}
+    container: ubuntu:26.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          name: dist
+          path: dist
+      - name: Lay out the orig tarballs as `just deb` does
+        run: |
+          version="${{ needs.version.outputs.version }}"
+          upstream="${version/-/\~}"
+          mkdir -p /build
+          cp "dist/backtrack-${version}.tar.gz" "/build/backtrack_${upstream}.orig.tar.gz"
+          cp "dist/backtrack-${version}-vendor.tar.xz" "/build/backtrack_${upstream}.orig-vendor.tar.xz"
+          cp -r packaging/deb /debian
+        shell: bash
+      - run: packaging/deb/build-in-container.sh
+      - uses: actions/upload-artifact@v7
+        with:
+          name: deb-${{ matrix.arch }}
+          path: ${{ matrix.files }}
+
+  release:
+    name: GitHub release
+    needs: [version, dist, flatpak, rpm, deb]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          path: artifacts
+          merge-multiple: true
+      - name: Checksums, notes, and the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version="${{ needs.version.outputs.version }}"
+          mkdir assets
+          find artifacts -type f \( -name '*.tar.*' -o -name '*.flatpak' -o -name '*.rpm' -o -name '*.deb' \) \
+            -exec cp {} assets/ \;
+          (cd assets && sha256sum * > SHA256SUMS)
+          python3 scripts/release_notes.py "${version}" > notes.md
+          prerelease=()
+          if [ "${{ needs.version.outputs.prerelease }}" = "true" ]; then prerelease=(--prerelease); fi
+          gh release create "${GITHUB_REF_NAME}" assets/* --title "Backtrack ${version}" \
+            --notes-file notes.md --verify-tag "${prerelease[@]}"

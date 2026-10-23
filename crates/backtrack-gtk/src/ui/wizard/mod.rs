@@ -19,7 +19,7 @@ mod destination;
 mod everything;
 mod first_backup;
 
-pub use destination::display;
+pub use destination::{display, unsupported_address};
 mod import;
 mod protect;
 mod welcome;
@@ -351,7 +351,9 @@ impl Wizard {
     /// Leave the wizard for the timeline, opened where the backups can be
     /// seen.
     async fn open_timeline(self: &Rc<Self>) {
-        let target = crate::window::backed_up_target().await;
+        // The first backup has only just started, and nothing is catalogued:
+        // the target is over the folders just chosen.
+        let target = crate::window::backed_up_target(Some(&self.daemon)).await;
         if !crate::window::refresh_all(&target) {
             crate::window::Window::build(&self.app, &target).present();
         }
@@ -385,6 +387,10 @@ pub fn explain(error: &zbus::Error) -> String {
             "Borg, the backup engine Backtrack uses, is not installed on this computer.".to_string()
         }
         "DestinationFull" => "There is not enough space at that location.".to_string(),
+        "DestinationUnwritable" => "Backtrack is not allowed to write there.".to_string(),
+        "KeyringLocked" => "The keyring stayed locked, so the passphrase could not be \
+                            remembered. Try again, and unlock the keyring when it asks."
+            .to_string(),
         _ if !message.is_empty() => capitalise(&message),
         _ => "Something went wrong. The logs say what.".to_string(),
     }

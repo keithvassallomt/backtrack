@@ -11,13 +11,22 @@
 //! | Signal | EngineError |
 //! |---|---|
 //! | msgid `PassphraseWrong`; a line with both "passphrase" and "is incorrect"; or "wrong passphrase" | `PassphraseWrong` |
-//! | "Permission denied", "Authentication failed", "Host key verification failed" | `AuthFailed` |
+//! | ssh's refusal, "Permission denied (" with its methods in brackets, or "Permission denied, please try again"; "Authentication failed"; "Host key verification failed" | `AuthFailed` |
+//! | the operating system's refusal, here or relayed from the server: "[Errno 13]", "PermissionError", "[Errno 30]", "Read-only file system" | `DestinationUnwritable` |
 //! | msgid `Repository.DoesNotExist`; a line with both "repository" and "does not exist"; or ssh "No route to host"/"Connection refused"/"Connection closed"/"Network is unreachable"/"Could not resolve hostname" | `RepoUnreachable` |
 //! | "No space left on device", "Errno 28" | `DestinationFull` |
 //! | msgid `LockTimeout`, "Failed to create/acquire the lock" | `LockedByOther` |
 //! | msgid `RepoIdMismatch` / `NotABorgKeyFile` (`key import`) | `KeyForAnotherRepository` / `NotARecoveryKey` |
 //! | msgid `Repository.CheckNeeded`; "Inconsistency detected"; "Data integrity error"; a line with both "manifest" and "corrupt" | `RepoCorrupt` |
 //! | anything else with a non-zero code | `BorgFailed { code, stderr }` |
+//!
+//! The two kinds of "Permission denied" are told apart by their form: ssh's
+//! names the sign-in methods it tried, Python's names the file. A read-only
+//! repository fails while Borg takes its lock (msgid `LockFailed`, "Failed to
+//! create/acquire the lock … [Errno 13] Permission denied"), so it is checked
+//! before lock contention. The repository is the only place Borg writes that
+//! Backtrack does not own; a permission error on Borg's own cache on this
+//! computer would read the same, and nothing Backtrack does causes one.
 //!
 //! Classification only applies to codes that mean *failure*. Which those are is
 //! [`classify_exit`]'s job, and getting it wrong is expensive — see there.
@@ -143,12 +152,24 @@ pub fn classify(code: i32, errors: &[ErrLine]) -> EngineError {
     if any(
         errors,
         &[
-            "Permission denied",
+            "Permission denied (",
+            "Permission denied, please try again",
             "Authentication failed",
             "Host key verification failed",
         ],
     ) {
         return EngineError::AuthFailed;
+    }
+    if any(
+        errors,
+        &[
+            "[Errno 13]",
+            "PermissionError",
+            "[Errno 30]",
+            "Read-only file system",
+        ],
+    ) {
+        return EngineError::DestinationUnwritable;
     }
     if any(
         errors,
@@ -256,6 +277,42 @@ mod tests {
     fn ssh_auth_maps_to_auth_failed() {
         let errs = [line(None, "Permission denied (publickey).")];
         assert_eq!(classify(2, &errs), EngineError::AuthFailed);
+    }
+
+    #[test]
+    fn a_read_only_repository_is_unwritable_not_a_refused_sign_in_or_a_lock() {
+        // Borg 1.4.5's own words, a repository whose folder became read-only:
+        // the lock cannot be created.
+        let errs = [line(
+            Some("LockFailed"),
+            "Failed to create/acquire the lock /media/k/Backups/repo/lock.exclusive \
+             ([Errno 13] Permission denied: '/media/k/Backups/repo/lock.exclusive.8v9x3aju.tmp').",
+        )];
+        assert_eq!(classify(2, &errs), EngineError::DestinationUnwritable);
+    }
+
+    #[test]
+    fn a_segment_that_cannot_be_written_is_unwritable() {
+        // Borg 1.4.5, a repository whose data folder alone became read-only:
+        // the lock is taken, and the write fails in a traceback.
+        let errs = [
+            line(Some("Exception"), "Local Exception"),
+            line(
+                None,
+                "Traceback (most recent call last):\n  ...\nPermissionError: [Errno 13] \
+                 Permission denied: '/media/k/Backups/repo/data/0/6'",
+            ),
+        ];
+        assert_eq!(classify(2, &errs), EngineError::DestinationUnwritable);
+    }
+
+    #[test]
+    fn a_drive_mounted_read_only_is_unwritable() {
+        let errs = [line(
+            None,
+            "OSError: [Errno 30] Read-only file system: '/media/k/Backups/repo/data/0/7'",
+        )];
+        assert_eq!(classify(2, &errs), EngineError::DestinationUnwritable);
     }
 
     #[test]

@@ -8,7 +8,7 @@ Documentation=https://github.com/keithvassallomt/backtrack
 # first method call blocks until the daemon is genuinely ready to answer it,
 # rather than racing a process that has not finished starting.
 Type=dbus
-BusName=org.backtrack.Daemon1
+BusName=tools.backtrack.Backtrack.Daemon1
 ExecStart=/usr/bin/backtrackd
 
 # Losing the single-instance race exits 0, so a restart here only ever follows a

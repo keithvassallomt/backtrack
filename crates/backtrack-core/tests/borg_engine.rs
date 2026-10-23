@@ -235,6 +235,53 @@ async fn unreachable_path_yields_repo_unreachable() {
     assert_eq!(err, EngineError::RepoUnreachable);
 }
 
+/// A file Borg could not extract is an error by the end of the read, never an
+/// empty file: Borg closes stdout either way, so the end of the stream alone
+/// says nothing about whether the file was all there.
+#[tokio::test]
+async fn a_failed_extraction_is_an_error_not_an_empty_file() {
+    let f = fixture().await;
+    let eng = engine(&f).await;
+    eng.init_repo(&RepoSpec {
+        path: f.repo.clone(),
+        encryption: Encryption::RepokeyBlake2,
+    })
+    .await
+    .unwrap();
+
+    async fn read(eng: &BorgCli, archive: &str) -> Result<Vec<u8>, Option<EngineError>> {
+        let mut reader = eng
+            .extract_stdout(&ArchiveId(archive.into()), "anything")
+            .await
+            .map_err(Some)?;
+        let mut buf = Vec::new();
+        match reader.read_to_end(&mut buf).await {
+            Ok(_) => Ok(buf),
+            Err(e) => Err(EngineError::from_io(&e)),
+        }
+    }
+
+    let missing = read(&eng, "never-made").await;
+    assert!(
+        matches!(missing, Err(Some(EngineError::BorgFailed { .. }))),
+        "an archive that is not there: {missing:?}"
+    );
+
+    let away = BorgCli::new(
+        format!("{}/does-not-exist", f.repo),
+        "test".into(),
+        f.secrets.clone(),
+    )
+    .await
+    .unwrap();
+    let unreachable = read(&away, "arch-1").await;
+    assert_eq!(
+        unreachable,
+        Err(Some(EngineError::RepoUnreachable)),
+        "a repository that is not there"
+    );
+}
+
 /// The modification time Borg reports has to be the one the file actually has.
 ///
 /// Borg renders timestamps through Python's local-time conversion and writes

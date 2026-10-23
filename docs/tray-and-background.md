@@ -56,8 +56,8 @@ The daemon announces a pause and a resume at once. It used to leave them to
 its once-a-minute reassessment, which the window never noticed because it
 reads the status again after its own calls.
 
-One icon per session: the tray claims `org.backtrack.Tray`
-(`org.backtrack.Tray.Dev` in development) and a second copy leaves.
+One icon per session: the tray claims `tools.backtrack.Backtrack.Tray`
+(`tools.backtrack.Backtrack.Tray.Dev` in development) and a second copy leaves.
 
 ### Known limitation: an open window is not brought forward
 
@@ -88,9 +88,33 @@ links GLib and no GTK.
 Ubuntu's session (`ubuntu:GNOME`) as well. On a systemd session the desktop
 turns it into a unit, `app-backtrack\x2dtray@autostart.service`.
 
+That is at login. The daemon also starts the icon when it starts, so that it
+appears the first time Backtrack is opened after being installed, without a
+login (S12-T7): on a desktop other than GNOME, where a tray is listening
+(`org.kde.StatusNotifierWatcher`) and the icon is not up already, through
+systemd's `StartUnit` on that same unit, reloading the user manager once if
+the unit is not there yet, and starting the program itself only if systemd
+will not. Inside a Flatpak the daemon starts the icon at every start instead
+(S14-T3), since a Flatpak cannot export an autostart file.
+
+The icon carries its picture as pixels at seven sizes (S12-T8, `just
+tray-icons`), not as an icon name: a panel that read its icon theme before
+Backtrack was installed may never find the name. Quickshell, and so
+Caelestia's bar, keeps its lookups for as long as it runs.
+
+Plasma is the exception (S12-T9). Its own tray icons are line drawings in the
+panel's text colour, which it repaints to suit the panel; it repaints a named
+icon the same way, but never pixels, so the full-colour application icon
+stands out there. On KDE (`XDG_CURRENT_DESKTOP`) the icon also sends the name
+`tools.backtrack.Backtrack-tray-symbolic`, the application icon as line art
+for 22 pixels, which every package installs (`packaging/icons/hicolor/symbolic/apps`), and
+Plasma uses the pixels only when it cannot find that icon. It is a separate
+drawing from the application's symbolic icon, which is too dense at tray size.
+
 For development, `just install-tray-dev` installs it to `~/.config/autostart`
 with the command rewritten to this checkout's debug build and
-`BACKTRACK_DEV=1`, and `just uninstall-tray-dev` removes it. `scripts/dev-machine`
+`BACKTRACK_DEV=1`, and the tray's icon to `~/.local/share/icons`;
+`just uninstall-tray-dev` removes both. `scripts/dev-machine`
 installs it, and on a desktop other than GNOME starts the icon, or restarts
 it when it is not the build just made.
 
@@ -104,8 +128,10 @@ just vm-push "fedora45 (KDE)"
 scripts/vm run "fedora45 (KDE)" scripts/tray-check
 ```
 
-It finds the icon the way a panel does (the StatusNotifierWatcher), reads
-what a panel would draw, clicks the menu through `com.canonical.dbusmenu`, and
+It finds this checkout's icon the way a panel does (the StatusNotifierWatcher;
+a Flatpak's icon beside it is left alone), reads what a panel would draw,
+including the icon's name for the desktop and its pixels, clicks the menu
+through `com.canonical.dbusmenu`, and
 checks each result: a pause made elsewhere and one from the menu, Resume,
 Back Up Now, `AT_RISK` and `BROKEN` (forced through the development
 interface), the daemon stopped (and not started again by the icon) and
@@ -118,10 +144,10 @@ and menu read as above, and while `BROKEN` is forced the icon is the red error
 sign:
 
 ```sh
-scripts/vm run "fedora45 (KDE)" busctl --user call org.backtrack.Daemon1.Dev \
-    /org/backtrack/Daemon1 org.backtrack.Daemon1.Dev ForceHealth ss BROKEN passphrase-missing
-scripts/vm run "fedora45 (KDE)" busctl --user call org.backtrack.Daemon1.Dev \
-    /org/backtrack/Daemon1 org.backtrack.Daemon1.Dev ForceHealth ss "" ""
+scripts/vm run "fedora45 (KDE)" busctl --user call tools.backtrack.Backtrack.Daemon1.Dev \
+    /tools/backtrack/Backtrack/Daemon1 tools.backtrack.Backtrack.Daemon1.Dev ForceHealth ss BROKEN passphrase-missing
+scripts/vm run "fedora45 (KDE)" busctl --user call tools.backtrack.Backtrack.Daemon1.Dev \
+    /tools/backtrack/Backtrack/Daemon1 tools.backtrack.Backtrack.Daemon1.Dev ForceHealth ss "" ""
 ```
 
 ### Checked
@@ -134,6 +160,25 @@ sign, a pause from the menu lifted itself after its minute, and a click
 opened the window (see the limitation above for one already open).
 Screenshots: `backtrack_plan/screenshots/stage-12-tray-menu.png` and
 `stage-12-tray-attention.png`.
+
+### Plasma's background apps, for the Flatpak
+
+Plasma 6.7 lists every Flatpak running without a window in its tray, from the
+portal's background-app list, with the app's icon, the message the app sets
+through the Background portal (S14-T10's status line) and one action, Quit
+([plasma-workspace!5703](https://invent.kde.org/plasma/plasma-workspace/-/merge_requests/5703)).
+It hides that entry while the Flatpak shows a tray icon of its own, matching
+the icon's process to the Flatpak's. So a Flatpak install shows one icon,
+Backtrack's own, checked on the Plasma VM (Plasma 6.7.5, 2026-10-19): with the
+Flatpak's daemon and its tray running, one icon, with Backtrack's menu.
+Plasma's entry appears only when the Flatpak's daemon runs without its tray,
+as after Quit Tray Icon.
+
+Two icons on the development VMs are not this. A development build's tray is
+not a Flatpak, so Plasma cannot match it to the Flatpak's daemon, and with
+both installed and running the panel shows the development icon and Plasma's
+entry for the Flatpak. Where people see a Flatpak's icon twice outside such a
+setup, it is a Plasma 6.7 bug ([KDE bug 521540](https://bugs.kde.org/show_bug.cgi?id=521540)).
 
 ## GNOME
 
@@ -159,7 +204,7 @@ For the Flatpak build:
   which a sandbox does not have (`crates/backtrackd/src/background.rs`). The
   request runs on its own, because the portal may ask on screen first.
 - **The launcher is named for the application ID**,
-  `packaging/desktop/io.github.keithvassallomt.Backtrack.desktop`: the shell
+  `packaging/desktop/tools.backtrack.Backtrack.desktop`: the shell
   looks a background app up as `<app ID>.desktop` and launches it.
 
 Outside a sandbox, nothing here changes: the systemd unit starts the daemon

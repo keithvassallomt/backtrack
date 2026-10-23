@@ -140,9 +140,11 @@ pub enum Reason {
     PassphraseMissing,
     /// Catalogue: "Wrong passphrase (repo key changed)".
     PassphraseWrong,
-    /// Catalogue: "Destination credentials expired (SMB/SSH auth)", which
-    /// also covers a destination that is there and refuses to be written to.
+    /// Catalogue: "Destination credentials expired (SMB/SSH auth)".
     AuthFailed,
+    /// Catalogue: "Destination not writable": the destination is there, and
+    /// its permissions or a read-only mount refuse the write.
+    DestinationUnwritable,
     /// Catalogue: "Destination full".
     DestinationFull,
     /// Catalogue: "Local disk full (spool/staging)", DEGRADED while backups
@@ -167,10 +169,11 @@ pub enum Reason {
 
 impl Reason {
     /// Every reason, for exhaustiveness tests on both sides of the bus.
-    pub const ALL: [Reason; 12] = [
+    pub const ALL: [Reason; 13] = [
         Reason::PassphraseMissing,
         Reason::PassphraseWrong,
         Reason::AuthFailed,
+        Reason::DestinationUnwritable,
         Reason::DestinationFull,
         Reason::LocalDiskFull,
         Reason::RepoCorrupt,
@@ -188,6 +191,7 @@ impl Reason {
             Reason::PassphraseMissing => "passphrase-missing",
             Reason::PassphraseWrong => "passphrase-wrong",
             Reason::AuthFailed => "auth-failed",
+            Reason::DestinationUnwritable => "destination-unwritable",
             Reason::DestinationFull => "destination-full",
             Reason::LocalDiskFull => "local-disk-full",
             Reason::RepoCorrupt => "repo-corrupt",
@@ -224,6 +228,7 @@ impl From<crate::engine::HealthFailure> for Reason {
             HealthFailure::PassphraseMissing => Reason::PassphraseMissing,
             HealthFailure::PassphraseWrong => Reason::PassphraseWrong,
             HealthFailure::AuthExpired => Reason::AuthFailed,
+            HealthFailure::DestinationUnwritable => Reason::DestinationUnwritable,
             HealthFailure::DestinationFull => Reason::DestinationFull,
             HealthFailure::LocalDiskFull => Reason::LocalDiskFull,
             HealthFailure::RepoCorrupt => Reason::RepoCorrupt,
@@ -410,21 +415,34 @@ pub const PHASE_CATALOGUING: &str = "cataloguing";
 pub const PHASE_PRUNING: &str = "pruning";
 
 /// The well-known bus name of an installed daemon.
-pub const BUS_NAME: &str = "org.backtrack.Daemon1";
+pub const BUS_NAME: &str = "tools.backtrack.Backtrack.Daemon1";
 
 /// The bus name of a development daemon (`BACKTRACK_DEV` set).
-pub const BUS_NAME_DEV: &str = "org.backtrack.Daemon1.Dev";
+pub const BUS_NAME_DEV: &str = "tools.backtrack.Backtrack.Daemon1.Dev";
 
 /// The interface every client talks. Fixed in both modes — only the bus name
 /// varies, so introspection output is identical either way.
-pub const INTERFACE: &str = "org.backtrack.Daemon1";
+pub const INTERFACE: &str = "tools.backtrack.Backtrack.Daemon1";
 
 /// The single object the daemon exports.
-pub const OBJECT_PATH: &str = "/org/backtrack/Daemon1";
+pub const OBJECT_PATH: &str = "/tools/backtrack/Backtrack/Daemon1";
+
+/// The window's application ID, which is also its bus name.
+pub const APP_ID: &str = crate::secret::APP_ID;
+
+/// Where GApplication exports the window's `org.freedesktop.Application`.
+pub const APP_OBJECT_PATH: &str = "/tools/backtrack/Backtrack";
+
+/// The window's application actions, which a caller with no window of its own
+/// activates over `org.freedesktop.Application` (S14-T2): `fix` takes a
+/// [`Reason`] token, `browse` a folder and a file to select, either of them
+/// empty for none.
+pub const APP_ACTION_FIX: &str = "fix";
+pub const APP_ACTION_BROWSE: &str = "browse";
 
 /// The prefix for the daemon's named D-Bus errors, which mirror the engine's
-/// error taxonomy (e.g. `org.backtrack.Error.PassphraseMissing`).
-pub const ERROR_PREFIX: &str = "org.backtrack.Error";
+/// error taxonomy (e.g. `tools.backtrack.Backtrack.Error.PassphraseMissing`).
+pub const ERROR_PREFIX: &str = "tools.backtrack.Backtrack.Error";
 
 /// The bus name to own (daemon) or call (clients), honoring `BACKTRACK_DEV`.
 pub fn bus_name() -> &'static str {
@@ -481,7 +499,9 @@ mod tests {
     fn the_published_interface_does_not_vary() {
         // Clients introspect the same interface in both modes; only the name
         // they connect through differs.
-        assert_eq!(INTERFACE, "org.backtrack.Daemon1");
-        assert_eq!(OBJECT_PATH, "/org/backtrack/Daemon1");
+        assert_eq!(INTERFACE, "tools.backtrack.Backtrack.Daemon1");
+        assert_eq!(OBJECT_PATH, "/tools/backtrack/Backtrack/Daemon1");
+        // GApplication derives its object path from the application ID.
+        assert_eq!(APP_OBJECT_PATH, format!("/{}", APP_ID.replace('.', "/")));
     }
 }

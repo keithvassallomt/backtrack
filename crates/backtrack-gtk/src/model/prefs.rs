@@ -303,15 +303,40 @@ impl Plugin {
         }
     }
 
+    /// What a Flatpak install says once it has put its copy in place: when
+    /// the file manager shows the items.
+    pub fn installed_note(self) -> &'static str {
+        match self {
+            Plugin::Nautilus => "Installed. Files shows Backtrack's items once it is restarted.",
+            Plugin::Dolphin => "Installed. Backtrack's items are in Dolphin's menu now.",
+        }
+    }
+
     /// Whether it is installed in any of `data_dirs`, the directories both
     /// file managers load these from: the user's data directory, then the
     /// system's.
     pub fn installed_in(self, data_dirs: &[PathBuf]) -> bool {
         data_dirs.iter().any(|dir| dir.join(self.file()).is_file())
     }
+
+    /// Its file manager's program.
+    fn program(self) -> &'static str {
+        match self {
+            Plugin::Nautilus => "nautilus",
+            Plugin::Dolphin => "dolphin",
+        }
+    }
+
+    /// Whether its file manager is installed: its program in one of
+    /// `program_dirs`.
+    pub fn manager_in(self, program_dirs: &[PathBuf]) -> bool {
+        program_dirs
+            .iter()
+            .any(|dir| dir.join(self.program()).is_file())
+    }
 }
 
-/// The page Install… opens: how to install either integration.
+/// The page How to Install… opens: how to install either integration.
 pub fn install_page() -> String {
     format!(
         "{}/blob/main/docs/file-manager-integration.md#installing",
@@ -324,9 +349,17 @@ mod tests {
     use super::*;
     use backtrack_core::config::Config;
 
+    /// Keys of `config.toml` whose one control is in the window rather than
+    /// in Preferences, and where it is.
+    const CONTROLLED_ELSEWHERE: &[(&str, &str)] = &[(
+        "general.show_all_backups",
+        "Show All Backups in the primary menu (S15-T7)",
+    )];
+
     /// S09-T4's acceptance: every key `config.toml` can hold has a control,
-    /// and exactly one. The list of keys is generated from the schema, not
-    /// written out here, so it cannot fall behind it.
+    /// and exactly one, in Preferences or in [`CONTROLLED_ELSEWHERE`]. The
+    /// list of keys is generated from the schema, not written out here, so it
+    /// cannot fall behind it.
     #[test]
     fn every_setting_in_the_file_has_exactly_one_control() {
         let mut config = Config::default();
@@ -340,6 +373,7 @@ mod tests {
         let mut controls: Vec<String> = Setting::ALL
             .iter()
             .map(|setting| setting.key().to_string())
+            .chain(CONTROLLED_ELSEWHERE.iter().map(|(key, _)| key.to_string()))
             .collect();
         controls.sort();
         let before = controls.len();
@@ -508,6 +542,24 @@ mod tests {
         assert_eq!(found(), [true, true]);
         std::fs::remove_file(user.path().join(Plugin::Nautilus.file())).unwrap();
         assert_eq!(found(), [false, true]);
+    }
+
+    #[test]
+    fn each_file_manager_is_found_by_its_program() {
+        let local = tempfile::tempdir().unwrap();
+        let usr = tempfile::tempdir().unwrap();
+        let dirs = vec![local.path().to_path_buf(), usr.path().to_path_buf()];
+        let found = || Plugin::ALL.map(|plugin| plugin.manager_in(&dirs));
+
+        assert_eq!(found(), [false, false]);
+        std::fs::write(usr.path().join("dolphin"), "").unwrap();
+        assert_eq!(found(), [false, true]);
+        std::fs::write(local.path().join("nautilus"), "").unwrap();
+        assert_eq!(found(), [true, true]);
+        // A folder of the name is not the program.
+        let other = tempfile::tempdir().unwrap();
+        std::fs::create_dir(other.path().join("nautilus")).unwrap();
+        assert!(!Plugin::Nautilus.manager_in(&[other.path().to_path_buf()]));
     }
 
     #[test]

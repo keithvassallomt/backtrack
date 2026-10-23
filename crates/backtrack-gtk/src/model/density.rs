@@ -11,6 +11,12 @@
 //!
 //! As a control it only ever jumps to a snapshot that exists: a position along
 //! the strip resolves to the nearest real archive, never to a point in between.
+//!
+//! With Stage 15 the bars are the backups listed for the folder being viewed,
+//! drawn across the whole history: the axis and its months stay put from
+//! folder to folder, and only the bars change. A day can then be empty in two
+//! ways, which the readout tells apart: nothing in the folder changed, or no
+//! backup was taken at all.
 
 use backtrack_core::index::ArchiveSummary;
 use gtk4::glib;
@@ -22,7 +28,10 @@ use super::{day_to_date, local_day};
 pub struct Bar {
     /// Days since the epoch, local.
     pub day: i64,
+    /// Backups listed that day, which is what the bar's height shows.
     pub count: u32,
+    /// Every backup taken that day, listed or not.
+    pub taken: u32,
 }
 
 /// Where a month begins, for the labels under the strip.
@@ -63,9 +72,20 @@ impl Density {
     }
 }
 
-/// Build the strip from `archives` (any order).
+/// Build the strip from `archives` (any order), every one of them listed.
+#[cfg(test)]
 pub fn density(archives: &[ArchiveSummary], tz: &glib::TimeZone) -> Density {
-    let mut days: Vec<i64> = archives.iter().map(|a| local_day(a.ts, tz)).collect();
+    density_of(archives, archives, tz)
+}
+
+/// Build the strip for the backups `listed`, across the history `all` spans
+/// (both in any order; `listed` drawn from `all`).
+pub fn density_of(
+    listed: &[ArchiveSummary],
+    all: &[ArchiveSummary],
+    tz: &glib::TimeZone,
+) -> Density {
+    let mut days: Vec<i64> = all.iter().map(|a| local_day(a.ts, tz)).collect();
     if days.is_empty() {
         return Density::default();
     }
@@ -74,9 +94,21 @@ pub fn density(archives: &[ArchiveSummary], tz: &glib::TimeZone) -> Density {
 
     // A history is bounded by how long the user has had the machine, so this
     // vector is days-of-history long: thousands at the very most.
-    let mut bars: Vec<Bar> = (first..=last).map(|day| Bar { day, count: 0 }).collect();
+    let mut bars: Vec<Bar> = (first..=last)
+        .map(|day| Bar {
+            day,
+            count: 0,
+            taken: 0,
+        })
+        .collect();
     for day in &days {
-        bars[(day - first) as usize].count += 1;
+        bars[(day - first) as usize].taken += 1;
+    }
+    for archive in listed {
+        let offset = local_day(archive.ts, tz) - first;
+        if let Some(bar) = usize::try_from(offset).ok().and_then(|i| bars.get_mut(i)) {
+            bar.count += 1;
+        }
     }
 
     let max = bars.iter().map(|b| b.count).max().unwrap_or(1).max(1);
@@ -175,6 +207,50 @@ mod tests {
             caught_up: None,
             holds_intermediate: false,
         }
+    }
+
+    #[test]
+    fn only_the_backups_listed_are_drawn_across_the_whole_history() {
+        // Four days of history; the folder lists the backups of the 1st and
+        // the 4th only.
+        let all = vec![
+            at(2026, 6, 4, 12, 5),
+            at(2026, 6, 3, 12, 4),
+            at(2026, 6, 3, 9, 3),
+            at(2026, 6, 2, 12, 2),
+            at(2026, 6, 1, 12, 1),
+        ];
+        let listed = vec![all[0].clone(), all[4].clone()];
+        let strip = density_of(&listed, &all, &utc());
+        let counts: Vec<u32> = strip.bars.iter().map(|b| b.count).collect();
+        let taken: Vec<u32> = strip.bars.iter().map(|b| b.taken).collect();
+        assert_eq!(counts, [1, 0, 0, 1], "bars for the listed backups only");
+        assert_eq!(
+            taken,
+            [1, 1, 2, 1],
+            "on an axis from the first backup to the last"
+        );
+        assert_eq!(strip.max, 1, "scaled to what is drawn");
+    }
+
+    #[test]
+    fn the_strip_resolves_only_to_backups_listed() {
+        let all = vec![
+            at(2026, 6, 4, 12, 5),
+            at(2026, 6, 3, 12, 4),
+            at(2026, 6, 3, 9, 3),
+            at(2026, 6, 2, 12, 2),
+            at(2026, 6, 1, 12, 1),
+        ];
+        let listed = vec![all[0].clone(), all[4].clone()];
+        let strip = density_of(&listed, &all, &utc());
+        for step in 0..=20 {
+            let fraction = f64::from(step) / 20.0;
+            let seq = seq_at(&strip, &listed, fraction, &utc()).unwrap();
+            assert!(seq == 5 || seq == 1, "{fraction} landed on {seq}");
+        }
+        assert_eq!(strip.bar_of(&listed, 1, &utc()), Some(0));
+        assert_eq!(strip.bar_of(&listed, 5, &utc()), Some(3));
     }
 
     #[test]

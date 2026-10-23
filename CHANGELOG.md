@@ -48,6 +48,10 @@ All notable changes to Backtrack are documented here. This project adheres to
   until tomorrow, or until you resume — along with keyboard shortcuts, help
   and about. There is no way to switch backups off from here, deliberately.
   A line along the bottom of the window says how backups are doing.
+- While a backup is running, Backtrack says how far it has got: a banner
+  across the window, the tray icon's tooltip and menu, and `backtrack status`
+  all show how much has been backed up of about how much, then what is left
+  to do once the files have been read.
 - Backtrack keeps protecting your files when the backup destination isn't
   reachable. Away from your backup drive, on a train, or off the network, the
   files you change are kept safely on this computer instead, hourly, and appear
@@ -233,14 +237,37 @@ All notable changes to Backtrack are documented here. This project adheres to
 - A tray icon on desktops that have a system tray (Plasma, Xfce, Cinnamon and
   others; not GNOME). It says when the last backup was, asks for attention
   only when backups are at risk or stopped, and offers Back Up Now, Pause
-  Backups, Resume Backups and Open Backtrack. It starts at login.
+  Backups, Resume Backups and Open Backtrack. It starts at login, and as soon
+  as Backtrack itself does, so a newly installed Backtrack has its icon
+  without logging out. On Plasma it is drawn in the panel's own style and
+  colour, like the icons beside it.
+- On a desktop without GVfs, which many Plasma installs leave out, the wizard
+  still finds a drive the desktop has mounted. A network address it cannot
+  open says what to install for it, and that a share mounted another way can
+  be chosen as a folder instead.
 - A folder with nothing to show now says why: it is not one of the folders
   Backtrack backs up (with a button to add it), it will be in the next
   backup, or it was not in the latest one and may be excluded or on another
   disk.
+- A folder that holds backed-up folders without being backed up itself, such
+  as your Home folder when you back up Documents and Pictures, is no longer
+  a dead end. It is marked "Some items backed up" and lists the way down to
+  what is, with a note saying so and Add to Backups… for the rest.
+- Packages for Fedora (COPR), Ubuntu (PPA) and Arch (AUR), and a Flatpak on
+  FriendlyHub, each for both x86_64 and 64-bit ARM (aarch64) computers.
 - Project bootstrap: Cargo workspace (core library plus daemon, GTK app, and CLI
   binaries), structured logging with JSONL rotation, developer task runner,
   versioning policy, and continuous integration.
+- The timeline now lists only the backups in which the folder you are viewing
+  is different. A folder that changed once in a week of hourly backups is one
+  entry rather than forty: the sidebar, the Older and Newer buttons, the strip
+  along the bottom and the calendar all skip the backups that hold nothing new
+  for it, and the line under the files says what it is counting. A backup that
+  is left out never hides anything you could restore, because everything in it
+  is also in the next one listed. On the strip, a day with backups but nothing
+  new says "nothing changed here", and a day without any says "no backups".
+- Show All Backups in the main menu (Ctrl+H) lists every backup again. It is
+  off to begin with, and Backtrack remembers which you chose.
 
 ### Changed
 - Backtrack now requires GNOME 50 or newer (GTK 4.22, libadwaita 1.9).
@@ -268,6 +295,15 @@ All notable changes to Backtrack are documented here. This project adheres to
   Afterwards, one that still holds versions of files the destination never
   got is marked "local snapshot", in yellow, and says when it will be
   removed; one holding nothing of its own is no longer marked at all.
+- A folder is marked "changed since then" when something inside it, at any
+  depth, is different or gone in the newest backup, so the marks lead down to
+  the file that changed. The mark used to follow the folder's own modification
+  time, which moves whenever a file is added and says nothing about changes
+  further down.
+- The suggested exclusions now leave out the Nextcloud and ownCloud desktop
+  clients' own sync databases and logs, which change inside every synced
+  folder at every backup. They are suggested to new setups; an existing setup
+  can add them in Preferences → Backup.
 
 ### Fixed
 - Pausing or resuming backups is announced to other programs straight away,
@@ -309,6 +345,15 @@ All notable changes to Backtrack are documented here. This project adheres to
   The restored files are moved into place from a working copy on the same
   disk, which takes no extra room, but a large folder was refused on any disk
   with less than twice its size free.
+- Backups kept on this computer while the backup destination was away can now
+  be previewed, compared and restored from. Until now they appeared in the
+  list, but anything you tried to get out of them was asked of the
+  destination, which never had them: an error while it was away, and another
+  once it was back.
+- A preview that could not be fetched, for instance with the backup
+  destination unplugged, now says why and offers to try again. It used to
+  show an empty file, and went on showing it empty after the destination was
+  back. Empty previews left over from this are cleared when Backtrack starts.
 
 ## [0.1.0] - TBD
 

@@ -69,6 +69,30 @@ desktop to log in, and opens the keyring (`scripts/vm-keyring unlock`). If
 one of those does not happen, it stops and says which. A VM that is already
 up takes under a second.
 
+## The Ubuntu VM
+
+The deb is tried on Ubuntu 26.04 (S13-T4), in a VM made with no one at its
+screen:
+
+```
+BACKTRACK_VM_DIR=/mnt/tank/vms scripts/ubuntu-vm create
+```
+
+It starts from Ubuntu's 26.04 cloud image, and on its first boot cloud-init
+adds GNOME (`ubuntu-desktop-minimal`, the set the installer's minimal install
+has) and everything the section above asks for: SSH with your key, sudo
+without a password, automatic login, and a login keyring with an empty
+password, which gnome-keyring, Ubuntu's Secret Service, opens without asking.
+Your password at its screen is `backtrack dev`. It takes about fifteen
+minutes, and ends shut down with a snapshot named `fresh`, taken before any
+Backtrack was on it.
+
+It is for trying packages on: a check installs from the testing PPA, and
+`scripts/ubuntu-vm fresh` puts the VM back as it was made for the next one.
+`just vm-start "ubuntu2604 (GNOME)"` and the commands under **Using it** work
+on it as on the others. `just vm-push` works too, but its development units
+take the place of the package's, so put it back to `fresh` after.
+
 ## Every change after that
 
 `just vm-push <vm>`. No password, and it does only what the change needs:

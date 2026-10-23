@@ -1,7 +1,7 @@
 # Stage 3 — Daemon, D-Bus API, CLI
 
 ## Objective
-`backtrackd` runs as a systemd user service exposing `org.backtrack.Daemon1` on the
+`backtrackd` runs as a systemd user service exposing `tools.backtrack.Backtrack.Daemon1` on the
 session bus, with a job model and signals; `backtrack` CLI drives it. After this
 stage, `backtrack backup-now` triggers a real backup of the demo repo end to end.
 
@@ -13,7 +13,7 @@ is normative — implement exactly these methods/signals, names included).
 
 ### S03-T1 — Daemon skeleton
 Config load from `config.toml` (serde; documented defaults; unknown keys warn not
-fail). Single-instance via D-Bus name ownership (`org.backtrack.Daemon1`).
+fail). Single-instance via D-Bus name ownership (`tools.backtrack.Backtrack.Daemon1`).
 Clean shutdown on SIGTERM (finish or checkpoint current job). Own the single
 `IndexWriter`. `BACKTRACK_DEV=1` path separation from Stage 0 honored everywhere.
 **Accept:** two daemon starts → second exits 0 with "already running" log;
@@ -37,7 +37,7 @@ Resume, GetStatus, RestoreFiles, PreviewFile (returns pipe fd; daemon extracts v
 CompareFile, SearchFiles, RestoreEverything, Prune, Verify, Compact, CancelJob,
 PauseJob, SetConfig/GetConfig, SetupRepo, ImportRepo; signals BackupProgress,
 RestoreProgress, IndexingProgress, StatusChanged. Errors cross as named D-Bus
-errors mirroring the taxonomy (`org.backtrack.Error.PassphraseMissing` etc.).
+errors mirroring the taxonomy (`tools.backtrack.Backtrack.Error.PassphraseMissing` etc.).
 Methods that are premature (SearchFiles before Stage 8 UI, RestoreEverything
 before Stage 11 UX) still get functional implementations now — the core supports
 them; UIs come later.
@@ -47,7 +47,7 @@ signals then a StatusChanged(HEALTHY).
 
 ### S03-T4 — systemd + activation
 `packaging/systemd/backtrackd.service` (user unit, `Type=dbus`,
-`BusName=org.backtrack.Daemon1`) + D-Bus service activation file. `just
+`BusName=tools.backtrack.Backtrack.Daemon1`) + D-Bus service activation file. `just
 install-units` (dev-mode install to `~/.config/systemd/user/`). Wizard/GUI later
 rely on activation — the daemon must come up on first method call.
 **Accept:** with units installed, `busctl --user call ... GetStatus` cold-starts the

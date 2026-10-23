@@ -4,8 +4,8 @@
 //! The errors that cross the bus.
 //!
 //! Every failure a client can act on gets its own D-Bus error name under
-//! `org.backtrack.Error`, mirroring the engine taxonomy one-for-one. The name
-//! is the contract: a GUI matches on `org.backtrack.Error.PassphraseMissing` to
+//! `tools.backtrack.Backtrack.Error`, mirroring the engine taxonomy one-for-one. The name
+//! is the contract: a GUI matches on `tools.backtrack.Backtrack.Error.PassphraseMissing` to
 //! decide it should open the passphrase dialog, and matching on English message
 //! text would break the moment anything is translated.
 //!
@@ -19,9 +19,9 @@ use backtrack_core::index::IndexError;
 use crate::jobs::JobError;
 
 /// Errors as clients see them. The derive turns each variant into
-/// `org.backtrack.Error.<Variant>`.
+/// `tools.backtrack.Backtrack.Error.<Variant>`.
 #[derive(Debug, zbus::DBusError)]
-#[zbus(prefix = "org.backtrack.Error")]
+#[zbus(prefix = "tools.backtrack.Backtrack.Error")]
 #[allow(clippy::enum_variant_names)]
 pub enum DaemonError {
     /// zbus requires this variant; it carries anything that is genuinely a
@@ -35,6 +35,8 @@ pub enum DaemonError {
     PassphraseWrong(String),
     /// The destination refused our credentials (distinct from unreachable).
     AuthFailed(String),
+    /// The destination is there and refuses to be written to.
+    DestinationUnwritable(String),
     /// The destination cannot be reached right now.
     RepoUnreachable(String),
     /// The destination is out of space.
@@ -55,6 +57,8 @@ pub enum DaemonError {
     KeyForAnotherRepository(String),
     /// Something offered as a recovery key that is not one.
     NotARecoveryKey(String),
+    /// The keyring stayed locked when a passphrase was to be saved.
+    KeyringLocked(String),
 
     /// No job with that id.
     NoSuchJob(String),
@@ -101,6 +105,7 @@ impl From<EngineError> for DaemonError {
             EngineError::PassphraseMissing => DaemonError::PassphraseMissing(message),
             EngineError::PassphraseWrong => DaemonError::PassphraseWrong(message),
             EngineError::AuthFailed => DaemonError::AuthFailed(message),
+            EngineError::DestinationUnwritable => DaemonError::DestinationUnwritable(message),
             EngineError::RepoUnreachable => DaemonError::RepoUnreachable(message),
             EngineError::DestinationFull => DaemonError::DestinationFull(message),
             EngineError::LocalDiskFull => DaemonError::LocalDiskFull(message),
@@ -111,6 +116,7 @@ impl From<EngineError> for DaemonError {
             EngineError::Cancelled => DaemonError::Cancelled(message),
             EngineError::KeyForAnotherRepository => DaemonError::KeyForAnotherRepository(message),
             EngineError::NotARecoveryKey => DaemonError::NotARecoveryKey(message),
+            EngineError::KeyringLocked => DaemonError::KeyringLocked(message),
             EngineError::Local(_) => DaemonError::RestoreFailed(message),
         }
     }
@@ -153,6 +159,7 @@ mod tests {
             EngineError::PassphraseMissing,
             EngineError::PassphraseWrong,
             EngineError::AuthFailed,
+            EngineError::DestinationUnwritable,
             EngineError::DestinationFull,
             EngineError::LocalDiskFull,
             EngineError::RepoCorrupt,
@@ -168,6 +175,7 @@ mod tests {
             EngineError::Cancelled,
             EngineError::KeyForAnotherRepository,
             EngineError::NotARecoveryKey,
+            EngineError::KeyringLocked,
         ]
     }
 
@@ -177,7 +185,7 @@ mod tests {
         for e in every_engine_error() {
             let name = DaemonError::from(e.clone()).name().to_string();
             assert!(
-                name.starts_with("org.backtrack.Error."),
+                name.starts_with("tools.backtrack.Backtrack.Error."),
                 "{e:?} produced {name}"
             );
             names.push(name);
@@ -199,24 +207,27 @@ mod tests {
         let name = DaemonError::from(EngineError::PassphraseMissing)
             .name()
             .to_string();
-        assert_eq!(name, "org.backtrack.Error.PassphraseMissing");
+        assert_eq!(name, "tools.backtrack.Backtrack.Error.PassphraseMissing");
     }
 
     #[test]
     fn job_errors_map_onto_their_own_names() {
         let cases = [
-            (JobError::NotFound(1), "org.backtrack.Error.NoSuchJob"),
+            (
+                JobError::NotFound(1),
+                "tools.backtrack.Backtrack.Error.NoSuchJob",
+            ),
             (
                 JobError::NotPausable { kind: "backup" },
-                "org.backtrack.Error.NotPausable",
+                "tools.backtrack.Backtrack.Error.NotPausable",
             ),
             (
                 JobError::AlreadyFinished { id: 1 },
-                "org.backtrack.Error.JobFinished",
+                "tools.backtrack.Backtrack.Error.JobFinished",
             ),
             (
                 JobError::NotPaused { id: 1 },
-                "org.backtrack.Error.JobNotPaused",
+                "tools.backtrack.Backtrack.Error.JobNotPaused",
             ),
         ];
         for (error, expected) in cases {

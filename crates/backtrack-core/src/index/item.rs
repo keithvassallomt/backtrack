@@ -79,6 +79,16 @@ impl Repo {
             Repo::FsSnapshot => "fs-snapshot",
         }
     }
+
+    /// The repository a token read back out of `archives.repo` names.
+    pub fn from_token(token: &str) -> Option<Repo> {
+        match token {
+            "primary" => Some(Repo::Primary),
+            "spool" => Some(Repo::Spool),
+            "fs-snapshot" => Some(Repo::FsSnapshot),
+            _ => None,
+        }
+    }
 }
 
 /// Metadata for the archive being ingested. `seq` is assigned by the writer;

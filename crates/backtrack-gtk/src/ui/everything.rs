@@ -530,8 +530,9 @@ impl Progress {
     fn open_backtrack(self: &Rc<Self>) {
         let app = self.app.clone();
         let window = self.window.clone();
+        let daemon = self.daemon.clone();
         crate::ui::spawn(async move {
-            let target = crate::window::backed_up_target().await;
+            let target = crate::window::backed_up_target(Some(&daemon)).await;
             if !crate::window::refresh_all(&target) {
                 crate::window::Window::build(&app, &target).present();
             }

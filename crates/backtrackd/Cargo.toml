@@ -11,7 +11,7 @@ repository.workspace = true
 workspace = true
 
 [dependencies]
-backtrack-core.workspace = true
+backtrack-core = { workspace = true, features = ["glib"] }
 tokio.workspace = true
 tracing.workspace = true
 thiserror.workspace = true

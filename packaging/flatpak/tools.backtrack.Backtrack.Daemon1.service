@@ -1,0 +1,11 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# SPDX-FileCopyrightText: 2026 Keith Vassallo <keith@vassallo.cloud>
+#
+# The daemon's activation file inside the Flatpak (S14-T1). The packaged one
+# in packaging/dbus/ names a systemd unit; a sandbox has no systemd, so this
+# one runs the daemon under its own supervisor, which restarts it after a
+# failure as the unit would (S14-T7). Flatpak exports it only because the
+# name is under the application ID, and rewrites Exec to `flatpak run`.
+[D-BUS Service]
+Name=tools.backtrack.Backtrack.Daemon1
+Exec=/app/bin/backtrackd --supervise

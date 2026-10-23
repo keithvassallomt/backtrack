@@ -220,7 +220,7 @@ impl Restores {
                 *self.undoable.borrow_mut() = Some((job, name.clone()));
                 self.offer_undo(&preview, &name);
                 // The pane is showing a folder whose contents just changed.
-                self.state.set_folder(self.state.view().folder.clone());
+                self.state.disk_changed();
             }
             Err(error) => {
                 warn!(%error, job, "the restore did not finish");
@@ -315,7 +315,7 @@ impl Restores {
                     info!(job, "restore undone");
                     *this.undoable.borrow_mut() = None;
                     this.toast(&copy::put_back_toast(&name));
-                    this.state.set_folder(this.state.view().folder.clone());
+                    this.state.disk_changed();
                 }
                 Err(error) => {
                     warn!(%error, job, "the restore could not be undone");

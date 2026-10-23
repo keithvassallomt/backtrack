@@ -111,10 +111,12 @@ pub fn build(state: &Rc<AppState>) -> Rc<Sidebar> {
     let shared = Rc::clone(&groups);
     let this = Rc::clone(&sidebar);
     state.subscribe(move |view, change| match change {
-        Change::Archives => {
+        // Only the backups listed for the folder (Stage 15): a folder that
+        // changed once in a week is one row, not forty.
+        Change::Archives | Change::Listed => {
             let tz = glib::TimeZone::local();
             let now = glib::DateTime::now_utc().map(|d| d.to_unix()).unwrap_or(0);
-            let built = Rc::new(group::sidebar(&view.archives, now, &tz));
+            let built = Rc::new(group::sidebar(&view.listed, now, &tz));
             *shared.borrow_mut() = Rc::clone(&built);
             *this.groups.borrow_mut() = Rc::clone(&built);
             this.rebuild();

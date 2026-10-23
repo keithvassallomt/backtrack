@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // SPDX-FileCopyrightText: 2026 Keith Vassallo <keith@vassallo.cloud>
 
-//! `org.backtrack.Daemon1` — the interface every client talks to.
+//! `tools.backtrack.Backtrack.Daemon1` — the interface every client talks to.
 //!
 //! The method and signal set is normative: it comes from stack.md §2 and is
 //! pinned by an introspection snapshot test, so a rename is a deliberate act
@@ -38,9 +38,10 @@ use std::time::{Duration, SystemTime};
 use backtrack_core::config::Config;
 use backtrack_core::dbus::Reason;
 use backtrack_core::engine::{
-    ArchiveId, BackupEngine, BorgCli, CheckLevel, CreateSpec, HealthFailure, JobStream, PrunePolicy,
+    ArchiveId, BackupEngine, BorgCli, CheckLevel, CreateSpec, EngineError, HealthFailure,
+    JobStream, PrunePolicy,
 };
-use backtrack_core::index::{IndexReader, IndexWriter, Kind};
+use backtrack_core::index::{IndexReader, IndexWriter, Kind, Repo};
 use backtrack_core::paths;
 use backtrack_core::restore::{self, Decision, Decisions};
 use backtrack_core::roots::Roots;
@@ -119,6 +120,16 @@ pub struct Shared {
     /// fixed. See [`update_health`] for why only that clears it.
     latched: Mutex<Option<HealthFailure>>,
     destination_reachable: Mutex<bool>,
+    /// What Backtrack is doing, in one line, as last worked out: the tray's
+    /// first line, which the Flatpak's daemon also shows in GNOME's
+    /// Background Apps (S14-T10). A watch, so whoever shows it hears only of
+    /// a line that differs from the last one.
+    status_line: tokio::sync::watch::Sender<String>,
+    /// The backup under way and how far it has got, as its last
+    /// `BackupProgress` said: job, phase, bytes read, estimated total (0 for
+    /// none). For somebody who starts watching part way through, a window
+    /// opened or `backtrack status` asked (S06-T12); `None` between backups.
+    backup_progress: Mutex<Option<(u64, String, u64, u64)>>,
     /// Bookkeeping that has to survive a restart: the pause, the attempt clock,
     /// the compaction clock. See [`backtrack_core::state`].
     persisted: Mutex<RuntimeState>,
@@ -328,6 +339,8 @@ impl Shared {
             last_backup: Mutex::new(None),
             latched: Mutex::new(None),
             destination_reachable: Mutex::new(true),
+            status_line: tokio::sync::watch::channel(String::new()).0,
+            backup_progress: Mutex::new(None),
             persisted: Mutex::new(RuntimeState::default()),
             state_path,
             waker: Mutex::new(None),
@@ -387,7 +400,7 @@ impl Shared {
     /// Everything that can be refused before a job exists is refused here, so
     /// a client hears "that path is empty" as an error to its call rather than
     /// as a job that fails a moment later.
-    fn restore_preflight(
+    async fn restore_preflight(
         &self,
         archive: &str,
         paths: &[String],
@@ -399,7 +412,7 @@ impl Shared {
             ));
         }
         Ok(PendingRestore {
-            engine: self.engine()?,
+            engine: self.engine_for(archive).await?,
             archive: ArchiveId(archive.to_string()),
             paths: paths.to_vec(),
             dest: PathBuf::from(dest),
@@ -776,6 +789,57 @@ impl Shared {
     }
 
     /// A handle that makes the signal fan-out re-evaluate health.
+    /// `GetStatus` at `now`, without what local protection holds, which
+    /// takes the catalogue to count: everything else is a field read.
+    fn status_at(&self, now: SystemTime) -> Status {
+        let paused_until = self.pause.lock().unwrap().until(now);
+        // Reported from the same facts the scheduler decides on — a next-backup
+        // time the schedule would not honour is worse than none at all.
+        let schedule = self.schedule_input();
+        let next = if paused_until.is_some() || !schedule.configured {
+            None
+        } else {
+            next_due(schedule.interval, schedule.last_attempt, now)
+        };
+        let health = self.health();
+        Status {
+            state: health.state.as_str().to_string(),
+            last_backup: to_epoch(*self.last_backup.lock().unwrap()),
+            next_backup: to_epoch(next),
+            destination_reachable: self.destination_reachable(),
+            spool_bytes: 0,
+            offline_mode: String::new(),
+            local_snapshots: 0,
+            expirable_snapshots: 0,
+            active_job: self.active_job(),
+            paused_until: to_epoch(paused_until),
+            configured: self.config().is_configured(),
+            reason: health.reason_str().to_string(),
+            since: self.state_since(health, now),
+            recovery_job: self.recovery_job().unwrap_or(0),
+        }
+    }
+
+    /// Work the status line out again, and tell whoever shows it if it now
+    /// says something else.
+    pub fn update_status_line(&self) {
+        let now = SystemTime::now();
+        let epoch = to_epoch(Some(now)) as i64;
+        let line = backtrack_core::status_line::local_line(&self.status_at(now), epoch);
+        self.status_line.send_if_modified(|shown| {
+            if *shown == line {
+                return false;
+            }
+            *shown = line;
+            true
+        });
+    }
+
+    /// The status line as it changes, starting with what it says now.
+    pub fn status_line(&self) -> tokio::sync::watch::Receiver<String> {
+        self.status_line.subscribe()
+    }
+
     pub fn health_waker(&self) -> Arc<Notify> {
         Arc::clone(&self.health_changed)
     }
@@ -942,6 +1006,15 @@ impl Shared {
     /// restart is a lid closing.
     pub fn restore_persisted_state(&self) {
         self.adopt_state(RuntimeState::load_from(&self.state_path));
+    }
+
+    /// Drop the empty previews a failed extraction used to leave in the cache.
+    /// See [`PreviewCache::drop_empty`].
+    pub fn drop_empty_previews(&self) {
+        let dropped = self.preview.drop_empty();
+        if dropped > 0 {
+            info!(dropped, "removed empty previews from the cache");
+        }
     }
 
     /// Take on a previously-saved state. Split from the load so the rules can be
@@ -1738,6 +1811,27 @@ impl Shared {
         })
     }
 
+    /// The engine holding `archive`, for anything that reads its contents back:
+    /// the destination's for a backup made there, the spool's for a local
+    /// snapshot taken while it was away.
+    ///
+    /// Asking the destination for every archive is what made local snapshots
+    /// impossible to restore from: while the destination is away it cannot be
+    /// asked at all, and once it is back it has never heard of them. An
+    /// archive the catalogue does not know is asked of the destination, which
+    /// is where a name given on the command line will be.
+    async fn engine_for(&self, archive: &str) -> Result<Arc<dyn BackupEngine>> {
+        let repo = IndexReader::open(&self.index_path)?.repo_of(archive)?;
+        match repo {
+            Some(Repo::Spool) => self.spool_engine().await,
+            Some(Repo::FsSnapshot) => Err(DaemonError::RestoreFailed(format!(
+                "{archive} is a filesystem snapshot on this computer, and Backtrack \
+                 cannot read one back yet"
+            ))),
+            Some(Repo::Primary) | None => self.engine(),
+        }
+    }
+
     fn config(&self) -> Config {
         self.config.lock().unwrap().clone()
     }
@@ -2157,6 +2251,64 @@ impl Shared {
         }
     }
 
+    /// Wait, up to `grace`, for the passphrase store to be readable, before
+    /// the first work that needs the passphrase.
+    ///
+    /// At login a packaged daemon is started with the user's systemd, a moment
+    /// before the session has unlocked the keyring. A passphrase read in that
+    /// moment reads as missing, and would put "Backtrack needs your backup
+    /// passphrase again." on screen for a keyring that opens a second later.
+    /// A keyring that stays locked longer is left to [`Self::recheck_passphrase`].
+    pub async fn await_keyring(&self, grace: Duration) {
+        if self.config().storage.repository.is_none() {
+            return;
+        }
+        let started = tokio::time::Instant::now();
+        loop {
+            // One look, bounded: the Secret Service is often still being
+            // started at login, and its activation can take its time.
+            let ready = tokio::time::timeout(Duration::from_secs(5), self.secrets.ready())
+                .await
+                .unwrap_or(false);
+            let waited = started.elapsed();
+            if ready {
+                if waited >= Duration::from_secs(1) {
+                    info!(waited_ms = waited.as_millis() as u64, "the keyring opened");
+                }
+                return;
+            }
+            if waited >= grace {
+                warn!(
+                    waited_secs = waited.as_secs(),
+                    "the keyring is still locked; carrying on without waiting longer"
+                );
+                return;
+            }
+            tokio::time::sleep(KEYRING_LOOK_EVERY).await;
+        }
+    }
+
+    /// Clear a missing passphrase that turns out to be readable after all:
+    /// one that was a keyring still locked, opened since.
+    ///
+    /// Otherwise only a successful backup clears it, and the banner and the
+    /// stopped state would wait for the next scheduled one, up to an hour,
+    /// with the passphrase there all along. Reading asks the keyring nothing
+    /// while it is locked (S10-T9), so looking each minute costs nothing.
+    pub async fn recheck_passphrase(&self) {
+        if *self.latched.lock().unwrap() != Some(HealthFailure::PassphraseMissing) {
+            return;
+        }
+        let Some(repository) = self.config().storage.repository else {
+            return;
+        };
+        if self.secrets.get(&repository).await.is_ok() {
+            info!("the passphrase can be read again; backups carry on");
+            self.resolved(&[HealthFailure::PassphraseMissing]);
+            self.wake_scheduler();
+        }
+    }
+
     /// Record how a job failed, as the last word from its part of the daemon.
     fn record_error(&self, kind: JobKind, error: &backtrack_core::engine::EngineError) {
         let subsystem = subsystem(kind);
@@ -2182,6 +2334,25 @@ impl Shared {
     fn job_ended(&self, id: u64, kind: JobKind, state: &JobState) {
         update_health(self, kind, state);
         self.announce_backup(id, kind, state);
+        let mut progress = self.backup_progress.lock().unwrap();
+        if progress.as_ref().is_some_and(|(job, ..)| *job == id) {
+            *progress = None;
+        }
+    }
+
+    /// Remember how far backup `job` has got, for [`Self::backup_progress`].
+    fn note_backup_progress(&self, job: u64, phase: &str, current: u64, total: u64) {
+        *self.backup_progress.lock().unwrap() = Some((job, phase.to_string(), current, total));
+    }
+
+    /// The backup under way and how far it has got, or job 0 with nothing
+    /// under way: what the last `BackupProgress` said.
+    pub fn backup_progress(&self) -> (u64, String, u64, u64) {
+        self.backup_progress
+            .lock()
+            .unwrap()
+            .clone()
+            .unwrap_or((0, String::new(), 0, 0))
     }
 
     /// Say how a backup went, to somebody who wants to know.
@@ -2270,7 +2441,7 @@ impl Daemon1 {
     }
 }
 
-#[zbus::interface(name = "org.backtrack.Daemon1")]
+#[zbus::interface(name = "tools.backtrack.Backtrack.Daemon1")]
 impl Daemon1 {
     /// Start a backup now, whatever the schedule says.
     ///
@@ -2341,37 +2512,23 @@ impl Daemon1 {
         Ok(())
     }
 
+    /// The backup under way and how far it has got, as its last
+    /// `BackupProgress` said: job, phase, bytes read, estimated total (0 for
+    /// none yet). Job 0 when no backup is under way. For a window opened, or
+    /// `backtrack status` asked, part way through one (S06-T12).
+    async fn get_backup_progress(&self) -> (u64, String, u64, u64) {
+        self.shared.backup_progress()
+    }
+
     /// The overall state, and the handful of facts the UI shows beside it.
     async fn get_status(&self) -> Result<Status> {
-        let now = SystemTime::now();
-        let config = self.shared.config();
-        let last_backup = *self.shared.last_backup.lock().unwrap();
-        let paused_until = self.shared.pause.lock().unwrap().until(now);
-        // Reported from the same facts the scheduler decides on — a next-backup
-        // time the schedule would not honour is worse than none at all.
-        let schedule = self.shared.schedule_input();
-        let next = if paused_until.is_some() || !schedule.configured {
-            None
-        } else {
-            next_due(schedule.interval, schedule.last_attempt, now)
-        };
         let local = self.shared.local_protection().await;
-        let health = self.shared.health();
         Ok(Status {
-            state: health.state.as_str().to_string(),
-            last_backup: to_epoch(last_backup),
-            next_backup: to_epoch(next),
-            destination_reachable: self.shared.destination_reachable(),
             spool_bytes: local.bytes,
             offline_mode: local.mode,
             local_snapshots: local.snapshots,
             expirable_snapshots: local.expirable,
-            active_job: self.shared.active_job(),
-            paused_until: to_epoch(paused_until),
-            configured: config.is_configured(),
-            reason: health.reason_str().to_string(),
-            since: self.shared.state_since(health, now),
-            recovery_job: self.shared.recovery_job().unwrap_or(0),
+            ..self.shared.status_at(SystemTime::now())
         })
     }
 
@@ -2396,7 +2553,7 @@ impl Daemon1 {
         policy: &str,
     ) -> Result<u64> {
         let policy = RestorePolicy::parse(policy)?;
-        let prepared = self.shared.restore_preflight(archive, &paths, dest)?;
+        let prepared = self.shared.restore_preflight(archive, &paths, dest).await?;
         info!(archive, dest, policy = policy.as_str(), "restore requested");
 
         let decisions = Decisions::all(match policy {
@@ -2417,7 +2574,7 @@ impl Daemon1 {
     /// answer is read with `GetRestorePreview` using the same id, applied with
     /// `ExecuteRestore`, and thrown away with `DiscardRestore`.
     async fn prepare_restore(&self, archive: &str, paths: Vec<String>, dest: &str) -> Result<u64> {
-        let prepared = self.shared.restore_preflight(archive, &paths, dest)?;
+        let prepared = self.shared.restore_preflight(archive, &paths, dest).await?;
         info!(archive, dest, "working out a restore");
         Ok(self
             .shared
@@ -2502,7 +2659,7 @@ impl Daemon1 {
                 paths.len()
             )));
         }
-        let mut prepared = self.shared.restore_preflight(archive, &paths, dest)?;
+        let mut prepared = self.shared.restore_preflight(archive, &paths, dest).await?;
         prepared.into_dest = true;
 
         // Made here rather than left to the moves, so a destination that cannot
@@ -2619,7 +2776,7 @@ impl Daemon1 {
         let entry = cache.entry_path(archive, path);
 
         if !cache.contains(archive, path) {
-            let engine = self.shared.engine()?;
+            let engine = self.shared.engine_for(archive).await?;
             cache
                 .ensure_dir()
                 .map_err(|e| DaemonError::LocalDiskFull(e.to_string()))?;
@@ -2642,7 +2799,7 @@ impl Daemon1 {
             };
             if let Err(e) = finish.await {
                 let _ = tokio::fs::remove_file(&staging).await;
-                return Err(DaemonError::LocalDiskFull(e.to_string()));
+                return Err(extraction_error(e));
             }
             drop(file);
             tokio::fs::rename(&staging, &entry)
@@ -2694,7 +2851,7 @@ impl Daemon1 {
     /// Prepare the archived copy of `path` so it can be compared with the live
     /// one. The diff view itself is Stage 8; this is the extraction it needs.
     async fn compare_file(&self, archive: &str, path: &str) -> Result<u64> {
-        let engine = self.shared.engine()?;
+        let engine = self.shared.engine_for(archive).await?;
         let cache = self.shared.preview.clone();
         let archive = archive.to_string();
         let path = path.to_string();
@@ -3449,6 +3606,16 @@ impl Daemon1 {
     ) -> zbus::Result<()>;
 }
 
+/// What went wrong while an archived file was being copied out: Borg's own
+/// failure when it was Borg's, carried by the reader, and this computer's disk
+/// otherwise.
+fn extraction_error(error: std::io::Error) -> DaemonError {
+    match EngineError::from_io(&error) {
+        Some(engine) => engine.into(),
+        None => DaemonError::LocalDiskFull(error.to_string()),
+    }
+}
+
 /// Extract one file into the preview cache, replacing any partial attempt.
 async fn cache_extraction(
     engine: &dyn BackupEngine,
@@ -3470,9 +3637,10 @@ async fn cache_extraction(
         stderr: e.to_string(),
     };
     let mut file = tokio::fs::File::create(&staging).await.map_err(map_io)?;
-    tokio::io::copy(&mut reader, &mut file)
-        .await
-        .map_err(map_io)?;
+    if let Err(e) = tokio::io::copy(&mut reader, &mut file).await {
+        let _ = tokio::fs::remove_file(&staging).await;
+        return Err(EngineError::from_io(&e).unwrap_or_else(|| map_io(e)));
+    }
     file.sync_all().await.map_err(map_io)?;
     drop(file);
     tokio::fs::rename(&staging, &entry).await.map_err(map_io)?;
@@ -3484,6 +3652,13 @@ async fn cache_extraction(
 /// change it with no event at all to hang a look off: a pause running out,
 /// and a day passing without a backup.
 const REASSESS_EVERY: Duration = Duration::from_secs(60);
+
+/// How long a daemon started at login waits for the keyring to open before it
+/// reads the passphrase anyway; see [`Shared::await_keyring`].
+pub const KEYRING_GRACE: Duration = Duration::from_secs(30);
+
+/// How often the keyring is looked at while waiting for it.
+const KEYRING_LOOK_EVERY: Duration = Duration::from_secs(1);
 
 /// Turn the job registry's updates into D-Bus signals.
 ///
@@ -3500,6 +3675,7 @@ pub async fn fan_out_signals(shared: Arc<Shared>, emitter: SignalEmitter<'static
         .reassess(SystemTime::now())
         .unwrap_or_else(|| shared.health());
     announce(&emitter, first).await;
+    shared.update_status_line();
 
     loop {
         // Three sources, one destination. Jobs are the usual reason health
@@ -3518,13 +3694,19 @@ pub async fn fan_out_signals(shared: Arc<Shared>, emitter: SignalEmitter<'static
                 Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
             },
             _ = health_changed.notified() => None,
-            _ = tick.tick() => None,
+            _ = tick.tick() => {
+                shared.recheck_passphrase().await;
+                None
+            }
         };
 
+        // The minute's tick is also what moves "today" to "yesterday" in the
+        // status line at midnight.
         let Some(update) = update else {
             if let Some(changed) = shared.reassess(SystemTime::now()) {
                 announce(&emitter, changed).await;
             }
+            shared.update_status_line();
             continue;
         };
 
@@ -3541,6 +3723,7 @@ pub async fn fan_out_signals(shared: Arc<Shared>, emitter: SignalEmitter<'static
                     // Local protection is a backup as far as anyone watching is
                     // concerned, and reports itself as one.
                     JobKind::Backup | JobKind::Offline => {
+                        shared.note_backup_progress(id, &phase, current, total);
                         Daemon1::backup_progress(&emitter, id, &phase, current, total).await
                     }
                     JobKind::Restore | JobKind::RestoreEverything => {
@@ -3596,6 +3779,7 @@ pub async fn fan_out_signals(shared: Arc<Shared>, emitter: SignalEmitter<'static
                 if let Some(changed) = shared.reassess(SystemTime::now()) {
                     announce(&emitter, changed).await;
                 }
+                shared.update_status_line();
             }
         }
     }
@@ -3888,6 +4072,33 @@ mod tests {
             IndexWriter::open(&dir.join("index.db")).unwrap(),
         )));
         shared
+    }
+
+    #[test]
+    fn the_status_line_is_announced_only_when_it_says_something_else() {
+        // S14-T10: the portal hears of a line once, not on every reassessment.
+        let dir = tempfile::tempdir().unwrap();
+        let shared = configured(dir.path());
+        let mut line = shared.status_line();
+
+        shared.update_status_line();
+        assert!(line.has_changed().unwrap());
+        assert_eq!(*line.borrow_and_update(), "No backups yet");
+
+        shared.update_status_line();
+        assert!(
+            !line.has_changed().unwrap(),
+            "nothing changed, so nothing is sent"
+        );
+
+        shared.record_backup_success(JobKind::Backup);
+        shared.update_status_line();
+        assert!(line.has_changed().unwrap());
+        assert!(
+            line.borrow_and_update().starts_with("Last backup: today "),
+            "{}",
+            *line.borrow()
+        );
     }
 
     /// A recovery with folders left, as the record on disk says it.
@@ -4762,6 +4973,107 @@ mod tests {
             restarted.state_since(broken, now + Duration::from_secs(600)),
             since,
             "the state began before the restart, not at it"
+        );
+    }
+
+    /// A keyring that opens on the `opens_at`th look, holding `passphrase`.
+    struct Opening {
+        looks: std::sync::atomic::AtomicUsize,
+        opens_at: usize,
+    }
+
+    impl Opening {
+        fn new(opens_at: usize) -> Arc<Opening> {
+            Arc::new(Opening {
+                looks: std::sync::atomic::AtomicUsize::new(0),
+                opens_at,
+            })
+        }
+
+        fn looks(&self) -> usize {
+            self.looks.load(std::sync::atomic::Ordering::SeqCst)
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl SecretStore for Opening {
+        async fn get(&self, _: &str) -> backtrack_core::engine::Result<String> {
+            Err(backtrack_core::engine::EngineError::PassphraseMissing)
+        }
+        async fn set(&self, _: &str, _: &str) -> backtrack_core::engine::Result<()> {
+            Ok(())
+        }
+        async fn delete(&self, _: &str) -> backtrack_core::engine::Result<()> {
+            Ok(())
+        }
+        async fn ready(&self) -> bool {
+            self.looks.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1 >= self.opens_at
+        }
+    }
+
+    fn configured_with(dir: &std::path::Path, secrets: Arc<dyn SecretStore>) -> Arc<Shared> {
+        let mut config = Config::default();
+        config.storage.repository = Some(dir.join("repo").display().to_string());
+        Shared::in_dir(config, JobRegistry::new(), secrets, dir)
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_daemon_started_at_login_waits_for_the_keyring_to_open() {
+        let dir = tempfile::tempdir().unwrap();
+        let keyring = Opening::new(3);
+        let shared = configured_with(dir.path(), keyring.clone());
+        let started = tokio::time::Instant::now();
+        shared.await_keyring(KEYRING_GRACE).await;
+        assert_eq!(
+            keyring.looks(),
+            3,
+            "it looked until the keyring opened, and no more"
+        );
+        assert!(started.elapsed() < KEYRING_GRACE);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_keyring_that_stays_locked_is_not_waited_for_forever() {
+        let dir = tempfile::tempdir().unwrap();
+        let shared = configured_with(dir.path(), Opening::new(usize::MAX));
+        let started = tokio::time::Instant::now();
+        shared.await_keyring(KEYRING_GRACE).await;
+        let waited = started.elapsed();
+        assert!(waited >= KEYRING_GRACE, "gave up after {waited:?}");
+        assert!(
+            waited < KEYRING_GRACE + Duration::from_secs(2),
+            "waited {waited:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_passphrase_that_reads_again_is_no_longer_missing() {
+        let dir = tempfile::tempdir().unwrap();
+        let shared = configured(dir.path());
+        shared.record_blocking_failure(HealthFailure::PassphraseMissing);
+        shared.recheck_passphrase().await;
+        assert_eq!(
+            *shared.latched.lock().unwrap(),
+            Some(HealthFailure::PassphraseMissing),
+            "still nothing to read"
+        );
+
+        let repository = shared.config().storage.repository.unwrap();
+        shared
+            .secrets
+            .set(&repository, "correct horse")
+            .await
+            .unwrap();
+        shared.recheck_passphrase().await;
+        assert_eq!(*shared.latched.lock().unwrap(), None);
+
+        // A passphrase that reads but is wrong is a different failure, and
+        // reading it proves nothing about that one.
+        shared.record_blocking_failure(HealthFailure::PassphraseWrong);
+        shared.recheck_passphrase().await;
+        assert_eq!(
+            *shared.latched.lock().unwrap(),
+            Some(HealthFailure::PassphraseWrong)
         );
     }
 

@@ -1,0 +1,67 @@
+#!/usr/bin/make -f
+# SPDX-License-Identifier: GPL-3.0-or-later
+# SPDX-FileCopyrightText: 2026 Keith Vassallo <keith@vassallo.cloud>
+#
+# Backtrack for Ubuntu 26.04 and later (S13-T4). Built offline, from the
+# crates in the orig-vendor tarball (dpkg unpacks it into vendor/): Launchpad's
+# builders have no network.
+
+export CARGO_HOME = $(CURDIR)/debian/cargo-home
+
+%:
+	dh $@
+
+override_dh_auto_configure:
+	mkdir -p .cargo
+	printf '[source.crates-io]\nreplace-with = "vendored-sources"\n\n[source.vendored-sources]\ndirectory = "vendor"\n' > .cargo/config.toml
+
+# The three packages in one build, so their shared crates are compiled with
+# the same features (see `just install-units`).
+override_dh_auto_build:
+	cargo build --release --frozen --offline -p backtrackd -p backtrack-gtk -p backtrack-cli
+
+override_dh_auto_test:
+	desktop-file-validate packaging/desktop/tools.backtrack.Backtrack.desktop
+	appstreamcli validate --no-net packaging/tools.backtrack.Backtrack.metainfo.xml
+
+# The unit is installed but not enabled (no dh_installsystemduser, which
+# enables user units by default): the daemon enables its own when "Run in
+# background" is on.
+override_dh_auto_install:
+	install -Dm755 -t debian/backtrack/usr/bin \
+	    target/release/backtrackd target/release/backtrack-gtk \
+	    target/release/backtrack-tray target/release/backtrack
+	install -Dm644 -t debian/backtrack/usr/lib/systemd/user packaging/systemd/backtrackd.service
+	install -Dm644 -t debian/backtrack/usr/share/dbus-1/services \
+	    packaging/dbus/tools.backtrack.Backtrack.Daemon1.service \
+	    packaging/dbus/tools.backtrack.Backtrack.service
+	install -Dm644 -t debian/backtrack/usr/share/applications packaging/desktop/tools.backtrack.Backtrack.desktop
+	install -Dm644 -t debian/backtrack/usr/share/metainfo packaging/tools.backtrack.Backtrack.metainfo.xml
+	install -Dm644 -t debian/backtrack/usr/share/icons/hicolor/scalable/apps \
+	    packaging/icons/hicolor/scalable/apps/tools.backtrack.Backtrack.svg
+	install -Dm644 -t debian/backtrack/usr/share/icons/hicolor/symbolic/apps \
+	    packaging/icons/hicolor/symbolic/apps/tools.backtrack.Backtrack-symbolic.svg \
+	    packaging/icons/hicolor/symbolic/apps/tools.backtrack.Backtrack-tray-symbolic.svg
+	install -Dm644 -t debian/backtrack/etc/xdg/autostart packaging/autostart/backtrack-tray.desktop
+	install -Dm644 -t debian/backtrack-nautilus/usr/share/nautilus-python/extensions \
+	    integrations/nautilus/backtrack.py
+	install -Dm644 -t debian/backtrack-dolphin/usr/share/kio/servicemenus \
+	    integrations/dolphin/backtrack.desktop integrations/dolphin/backtrack-folder.desktop
+
+# dwz cannot read the debug information rustc writes.
+override_dh_dwz:
+
+# The release profile writes no debug information, so a -dbgsym package would
+# hold nothing. What lintian still says, and why it stands: no manual pages
+# (every binary answers --help), and an initial upload closing no bug, which
+# is the Debian archive's convention and not a PPA's.
+override_dh_strip:
+	dh_strip --no-automatic-dbgsym
+
+override_dh_auto_clean:
+	rm -rf target .cargo debian/cargo-home
+
+# dh_clean deletes *.orig files, as patch leftovers; every vendored crate keeps
+# its Cargo.toml.orig, and cargo checks each crate against its checksums.
+override_dh_clean:
+	dh_clean -XCargo.toml.orig
