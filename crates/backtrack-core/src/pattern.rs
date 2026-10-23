@@ -333,19 +333,36 @@ mod tests {
     }
 
     /// The list the wizard seeds, which is what almost every user will run.
+    /// Read from the configuration's own default, so the two cannot drift.
     fn defaults() -> ExcludeSet {
-        set(&[
-            "**/.cache",
-            "**/Cache",
-            "**/Caches",
-            "**/.local/share/Trash",
-            "**/node_modules",
-            "**/target/debug",
-            "**/*.iso",
-            "**/*.qcow2",
-            "**/*.vdi",
-            "**/*.vmdk",
-        ])
+        ExcludeSet::compile(&crate::config::Config::default().backup.exclude)
+    }
+
+    #[test]
+    fn the_nextcloud_clients_own_files_are_left_out() {
+        // As found in Keith's Documents, which differed in every backup.
+        let e = defaults();
+        for name in [
+            ".sync_e20590df140b.db",
+            ".sync_e20590df140b.db-shm",
+            ".sync_e20590df140b.db-wal",
+            ".nextcloudsync.log",
+            "._sync_0123456789ab.db",
+            ".owncloudsync.log",
+        ] {
+            assert!(e.excludes(&format!("home/k/Documents/{name}")), "{name}");
+        }
+        for name in [
+            "sync_notes.db",
+            "my.sync.db",
+            "nextcloudsync.log",
+            ".sync_notes.txt",
+        ] {
+            assert!(
+                !e.excludes(&format!("home/k/Documents/{name}")),
+                "{name} only looks like one"
+            );
+        }
     }
 
     #[test]

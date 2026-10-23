@@ -150,6 +150,14 @@ fn default_exclusions() -> Vec<String> {
         "**/*.qcow2",
         "**/*.vdi",
         "**/*.vmdk",
+        // The Nextcloud desktop client's state, rewritten inside every folder
+        // it syncs: left in, such a folder differs in every backup (S15-T8).
+        // Older Nextcloud releases and ownCloud use the `._sync_` and
+        // `.owncloudsync` names.
+        "**/.sync_*.db*",
+        "**/._sync_*.db*",
+        "**/.nextcloudsync.log",
+        "**/.owncloudsync.log",
     ]
     .into_iter()
     .map(String::from)

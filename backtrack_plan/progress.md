@@ -18,8 +18,8 @@ Nothing right now.
 > tasks: add them here + to the stage file, then `just provision-board-apply`.
 > See [../CLAUDE.md](../CLAUDE.md) for the full workflow.
 
-**Current stage:** 15 (planned)
-**Last updated:** 2026-10-20
+**Current stage:** 15 (complete)
+**Last updated:** 2026-10-23
 
 ## Stage 0 — Bootstrap ([stage file](stages/stage-00-bootstrap.md))
 - [x] S00-T1 Git repo, license, .gitignore, README skeleton
@@ -169,6 +169,7 @@ Nothing right now.
 - [x] S15-T5 Preview and restore from the offline spool
 - [x] S15-T6 A preview that could not be fetched is an error, not an empty file
 - [x] S15-T7 A switch to list every backup
+- [x] S15-T8 Nextcloud's sync files are left out by default
 
 ## Stage 16 — The Trash in the timeline ([stage file](stages/stage-16-trash-in-the-timeline.md))
 - [ ] S16-T1 Read the Trash

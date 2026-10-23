@@ -258,6 +258,16 @@ All notable changes to Backtrack are documented here. This project adheres to
 - Project bootstrap: Cargo workspace (core library plus daemon, GTK app, and CLI
   binaries), structured logging with JSONL rotation, developer task runner,
   versioning policy, and continuous integration.
+- The timeline now lists only the backups in which the folder you are viewing
+  is different. A folder that changed once in a week of hourly backups is one
+  entry rather than forty: the sidebar, the Older and Newer buttons, the strip
+  along the bottom and the calendar all skip the backups that hold nothing new
+  for it, and the line under the files says what it is counting. A backup that
+  is left out never hides anything you could restore, because everything in it
+  is also in the next one listed. On the strip, a day with backups but nothing
+  new says "nothing changed here", and a day without any says "no backups".
+- Show All Backups in the main menu (Ctrl+H) lists every backup again. It is
+  off to begin with, and Backtrack remembers which you chose.
 
 ### Changed
 - Backtrack now requires GNOME 50 or newer (GTK 4.22, libadwaita 1.9).
@@ -285,6 +295,15 @@ All notable changes to Backtrack are documented here. This project adheres to
   Afterwards, one that still holds versions of files the destination never
   got is marked "local snapshot", in yellow, and says when it will be
   removed; one holding nothing of its own is no longer marked at all.
+- A folder is marked "changed since then" when something inside it, at any
+  depth, is different or gone in the newest backup, so the marks lead down to
+  the file that changed. The mark used to follow the folder's own modification
+  time, which moves whenever a file is added and says nothing about changes
+  further down.
+- The suggested exclusions now leave out the Nextcloud and ownCloud desktop
+  clients' own sync databases and logs, which change inside every synced
+  folder at every backup. They are suggested to new setups; an existing setup
+  can add them in Preferences → Backup.
 
 ### Fixed
 - Pausing or resuming backups is announced to other programs straight away,

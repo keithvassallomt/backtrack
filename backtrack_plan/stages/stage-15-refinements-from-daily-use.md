@@ -220,6 +220,26 @@ listed, how stepping goes, and that nothing is landed elsewhere while it is
 on; on a VM, the switch shows all 30 demo backups in `home`, is still on after
 the window is closed and opened again, and off shows the 6 again.
 
+### S15-T8 — Nextcloud's sync files are left out by default
+Found 2026-10-23 on Keith's own backups: `Documents` differed in every
+backup, because the Nextcloud desktop client rewrites its sync database
+(`.sync_<id>.db`, with `-shm` and `-wal` beside it) and its log
+(`.nextcloudsync.log`) inside every folder it syncs. They are the client's
+state, not anyone's documents, and they keep Stage 15's listing from saying
+anything about such a folder.
+- The default exclusions (`config.rs`, `default_exclusions`) gain the
+  Nextcloud client's names, and those of older Nextcloud releases and of
+  ownCloud, which share the client: `._sync_<id>.db` and
+  `.owncloudsync.log`.
+- Preferences → Backup shows the four as one row, **Nextcloud sync files**,
+  as it shows the three VM disk formats as "VM images".
+- The defaults seed a new setup's `config.toml`; an existing one keeps its
+  own list, which Preferences → Backup edits.
+
+**Accept:** pattern tests: the names on Keith's machine are excluded, as are
+the older ones, and files that only resemble them are not; a default
+configuration lists them, read in Preferences as one row.
+
 ## Definition of Done
 All tasks done; the CHANGELOG's Unreleased section says what changed for the
 user; the timeline browser on the GNOME VM behaves as described on the demo

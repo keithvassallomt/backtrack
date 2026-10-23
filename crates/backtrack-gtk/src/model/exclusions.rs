@@ -5,7 +5,8 @@
 //!
 //! The configuration holds Borg patterns, and several of the defaults are one
 //! idea spelled several ways: caches are `.cache`, `Cache` and `Caches`, and a
-//! virtual machine's disk is a `.qcow2`, a `.vdi` or a `.vmdk`. The list shows
+//! virtual machine's disk is a `.qcow2`, a `.vdi` or a `.vmdk`, and the
+//! Nextcloud client's state is four names, its own and ownCloud's. The list shows
 //! the idea, as mockup 16 does ("Caches", "VM images"), and removing a row
 //! removes every pattern behind it. Anything else is shown as the pattern
 //! itself, minus the `**/` that means "anywhere", which is noise to anybody
@@ -16,6 +17,15 @@ const GROUPS: &[(&str, &[&str])] = &[
     ("Trash", &["**/.local/share/Trash"]),
     ("Caches", &["**/.cache", "**/Cache", "**/Caches"]),
     ("VM images", &["**/*.qcow2", "**/*.vdi", "**/*.vmdk"]),
+    (
+        "Nextcloud sync files",
+        &[
+            "**/.sync_*.db*",
+            "**/._sync_*.db*",
+            "**/.nextcloudsync.log",
+            "**/.owncloudsync.log",
+        ],
+    ),
 ];
 
 /// One row of the list.
@@ -120,7 +130,8 @@ mod tests {
                 "node_modules",
                 "target/debug",
                 "*.iso",
-                "VM images"
+                "VM images",
+                "Nextcloud sync files"
             ]
         );
     }
