@@ -901,12 +901,104 @@ async fn a_preview_that_could_not_be_fetched_is_not_kept_as_an_empty_file() {
     restore_the_destination(&shared);
     let back = preview().await;
 
+    // Twice in CI (2026-10-20), and never on a desktop or in a Fedora container
+    // run locally, the preview after the destination came back was refused as
+    // LockedByOther. What held the lock is recorded with the failure, and
+    // whether waiting clears it, so the next failure says what it was.
+    let diagnosis = if back.is_err() {
+        let repo = shared
+            .config()
+            .storage
+            .repository
+            .clone()
+            .unwrap_or_default();
+        let held = lock_report(&repo);
+        tokio::time::sleep(Duration::from_secs(3)).await;
+        let later = preview().await;
+        format!(
+            "\nlocks then: {held}\nborg processes: {}\nthree seconds later: {later:?}, locks {}",
+            borg_processes(),
+            lock_report(&repo)
+        )
+    } else {
+        String::new()
+    };
     assert_eq!(
         (away.is_err(), back.clone()),
         (true, Ok("original".to_string())),
         "an error while the destination is away, then the file once it is back; \
-         got {away:?} then {back:?}"
+         got {away:?} then {back:?}{diagnosis}"
     );
+}
+
+/// What Borg's lock files in `repo` say: the exclusive lock's holders, and the
+/// roster of shared and exclusive owners.
+fn lock_report(repo: &str) -> String {
+    let repo = std::path::Path::new(repo);
+    let exclusive = match std::fs::read_dir(repo.join("lock.exclusive")) {
+        Ok(entries) => entries
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .collect::<Vec<_>>()
+            .join(", "),
+        Err(_) => "none".to_string(),
+    };
+    let roster =
+        std::fs::read_to_string(repo.join("lock.roster")).unwrap_or_else(|_| "none".into());
+    format!("lock.exclusive [{exclusive}], lock.roster {roster}")
+}
+
+/// The Borg processes alive in this container, from /proc, which every
+/// container has where `ps` may not be.
+fn borg_processes() -> String {
+    let Ok(entries) = std::fs::read_dir("/proc") else {
+        return "unknown".to_string();
+    };
+    let found: Vec<String> = entries
+        .filter_map(|e| e.ok())
+        .filter(|e| {
+            e.file_name()
+                .to_string_lossy()
+                .chars()
+                .all(|c| c.is_ascii_digit())
+        })
+        .filter_map(|e| {
+            let raw = std::fs::read(e.path().join("cmdline")).ok()?;
+            let args: Vec<String> = raw
+                .split(|b| *b == 0)
+                .map(|a| String::from_utf8_lossy(a).into_owned())
+                .collect();
+            // Borg itself, or the Python interpreter running it.
+            let is_borg = args.iter().take(2).any(|a| {
+                std::path::Path::new(a)
+                    .file_name()
+                    .is_some_and(|n| n == "borg")
+            });
+            if !is_borg {
+                return None;
+            }
+            let cmdline = args.join(" ");
+            let stat = std::fs::read_to_string(e.path().join("stat")).unwrap_or_default();
+            let state = stat
+                .rsplit(')')
+                .next()
+                .unwrap_or("")
+                .split_whitespace()
+                .next()
+                .unwrap_or("?")
+                .to_string();
+            Some(format!(
+                "{} [{state}] {}",
+                e.file_name().to_string_lossy(),
+                cmdline.trim()
+            ))
+        })
+        .collect();
+    if found.is_empty() {
+        "none".to_string()
+    } else {
+        found.join("; ")
+    }
 }
 
 #[tokio::test]
