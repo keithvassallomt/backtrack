@@ -18,7 +18,7 @@ Nothing right now.
 > tasks: add them here + to the stage file, then `just provision-board-apply`.
 > See [../CLAUDE.md](../CLAUDE.md) for the full workflow.
 
-**Current stage:** 15 (complete)
+**Current stage:** 16 (in progress)
 **Last updated:** 2026-10-23
 
 ## Stage 0 — Bootstrap ([stage file](stages/stage-00-bootstrap.md))
@@ -172,7 +172,7 @@ Nothing right now.
 - [x] S15-T8 Nextcloud's sync files are left out by default
 
 ## Stage 16 — The Trash in the timeline ([stage file](stages/stage-16-trash-in-the-timeline.md))
-- [ ] S16-T1 Read the Trash
+- [x] S16-T1 Read the Trash
 - [ ] S16-T2 The daemon watches the Trash and serves it
 - [ ] S16-T3 Trash entries in the timeline
 - [ ] S16-T4 Restore from the Trash
