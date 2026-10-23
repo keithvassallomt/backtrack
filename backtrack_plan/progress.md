@@ -175,7 +175,7 @@ Nothing right now.
 - [x] S16-T1 Read the Trash
 - [x] S16-T2 The daemon watches the Trash and serves it
 - [x] S16-T3 Trash entries in the timeline
-- [/] S16-T4 Restore from the Trash
+- [x] S16-T4 Restore from the Trash
 - [ ] S16-T5 Search finds what is in the Trash
 
 ## Stage 17 — Snapper snapshots in the timeline ([stage file](stages/stage-17-snapper-snapshots.md))
