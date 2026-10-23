@@ -48,6 +48,9 @@ struct RowData {
     /// A folder that is not in the backup itself but leads down to folders
     /// that are (see `model::above`): it has no size or date to show.
     partly: bool,
+    /// For something in the Trash, the archive name its bytes are read
+    /// through (Stage 16).
+    trash: Option<String>,
 }
 
 /// The daemon's answers about a path being on the computer now. Three-valued,
@@ -186,10 +189,12 @@ pub fn build(
             // New backups, or fewer: the top folders are asked for again.
             watcher.roots.borrow_mut().clear();
         }
+        let at_entry = watcher.state.view().at_trash_entry();
         if matches!(
             change,
             Change::Folder | Change::Seq | Change::Archives | Change::Disk
-        ) {
+        ) || (change == Change::Trash && at_entry)
+        {
             watcher.reload();
         }
     });
@@ -210,6 +215,7 @@ pub fn build(
                     size: row.entry.size,
                     mtime: row.entry.mtime,
                     on_disk: row.on_disk,
+                    archive: row.trash.clone(),
                 }
             });
             selector.state.set_selected(selected);
@@ -255,6 +261,10 @@ impl Files {
             );
             return;
         };
+        if crate::model::trash::is_entry(seq) {
+            self.reload_entry(&view, seq);
+            return;
+        }
         let folder = view.folder.clone();
         let newest = view.newer().is_none();
         let wanted = self.generation.get() + 1;
@@ -343,7 +353,103 @@ impl Files {
                         partly,
                         "folder loaded"
                     );
-                    this.show(entries, on_disk, &leading)
+                    this.show(entries, on_disk, &leading, &HashMap::new())
+                }
+                Err(error) => {
+                    warn!(%error, folder, seq, "the folder could not be read");
+                    this.show_empty("This folder could not be read", &error);
+                }
+            }
+        });
+    }
+
+    /// Read the folder at a Trash entry (Stage 16): the backup before its gap
+    /// with what was moved to the Trash in the gap put back, or, inside a
+    /// folder that went to the Trash whole, the Trash's copy of it.
+    fn reload_entry(self: &Rc<Self>, view: &crate::state::View, seq: i64) {
+        use crate::model::trash;
+        let folder = view.folder.clone();
+        let archives = Rc::clone(&view.archives);
+        let items = Rc::clone(&view.trash);
+        let wanted = self.generation.get() + 1;
+        self.generation.set(wanted);
+        let this = Rc::clone(self);
+        crate::ui::spawn(async move {
+            let rows: Result<Vec<trash::Row>, String> = match trash::trashed_folder(
+                &folder, seq, &archives, &items,
+            )
+            .cloned()
+            {
+                Some(item) => {
+                    let proxy = this.daemon.borrow().clone();
+                    match proxy {
+                            None => Err(
+                                "Backtrack's background service reads the Trash, and it is not running."
+                                    .to_string(),
+                            ),
+                            Some(proxy) => proxy
+                                .list_trashed_folder(&item.archive, &folder)
+                                .await
+                                .map_err(|e| e.to_string())
+                                .map(|listed| {
+                                    listed
+                                        .into_iter()
+                                        .map(|(name, kind, size, mtime)| trash::Row {
+                                            entry: Entry {
+                                                path_id: 0,
+                                                name,
+                                                kind: Kind::from_token(&kind),
+                                                size,
+                                                mtime,
+                                                deleted_after: false,
+                                                changed_since: false,
+                                            },
+                                            trash: Some(item.archive.clone()),
+                                        })
+                                        .collect()
+                                }),
+                        }
+                }
+                None => {
+                    let base = match trash::base_of(seq).flatten() {
+                        Some(base) => {
+                            let asked = folder.clone();
+                            this.index
+                                .query(move |reader| reader.folder_at(&asked, base))
+                                .await
+                        }
+                        None => Ok(Vec::new()),
+                    };
+                    base.map(|base| trash::overlay(&folder, seq, &archives, &items, base))
+                }
+            };
+            if this.generation.get() != wanted {
+                return;
+            }
+            match rows {
+                Ok(rows) if rows.is_empty() => this.show_empty(
+                    "Nothing from the Trash here",
+                    "Nothing moved to the Trash at this time came from this folder.",
+                ),
+                Ok(rows) => {
+                    let trashed: HashMap<String, String> = rows
+                        .iter()
+                        .filter_map(|r| r.trash.clone().map(|a| (r.entry.name.clone(), a)))
+                        .collect();
+                    let entries: Vec<Entry> = rows.into_iter().map(|r| r.entry).collect();
+                    let on_disk = this.ask_the_disk(&entries, &folder).await;
+                    if this.generation.get() != wanted {
+                        return;
+                    }
+                    this.show_notice(None);
+                    debug!(
+                        folder,
+                        seq,
+                        entries = entries.len(),
+                        trashed = trashed.len(),
+                        "Trash entry loaded"
+                    );
+                    this.show(entries, on_disk, &[], &trashed);
                 }
                 Err(error) => {
                     warn!(%error, folder, seq, "the folder could not be read");
@@ -429,7 +535,13 @@ impl Files {
 
     /// Put `entries` on screen, keeping the selection if it survived the
     /// change. `leading` names the ones that lead down to backed-up folders.
-    fn show(self: &Rc<Self>, entries: Vec<Entry>, on_disk: Vec<u8>, leading: &[String]) {
+    fn show(
+        self: &Rc<Self>,
+        entries: Vec<Entry>,
+        on_disk: Vec<u8>,
+        leading: &[String],
+        trashed: &HashMap<String, String>,
+    ) {
         let previously = self.state.view().selected.map(|s| s.name);
 
         self.syncing.set(true);
@@ -461,6 +573,7 @@ impl Files {
                 } else {
                     crate::model::format::modified(entry.mtime, &tz)
                 },
+                trash: trashed.get(&entry.name).cloned(),
                 entry,
                 on_disk,
                 partly,
@@ -689,7 +802,14 @@ fn status_factory() -> SignalListItemFactory {
         label.remove_css_class("deleted");
         label.remove_css_class("changed");
         label.remove_css_class("partly");
-        if row.partly {
+        label.remove_css_class("in-trash");
+        label.set_tooltip_text(None);
+        if row.trash.is_some() {
+            label.set_text("in the Trash");
+            label.add_css_class("in-trash");
+            label.set_tooltip_text(Some(crate::model::group::IN_TRASH_TOOLTIP));
+            label.set_visible(true);
+        } else if row.partly {
             label.set_text(above::BADGE);
             label.add_css_class("partly");
             label.set_visible(true);

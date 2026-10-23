@@ -19,7 +19,7 @@ use gtk4::prelude::*;
 use gtk4::{gio, glib, Align, Box as GtkBox, Button, Label, Orientation};
 use libadwaita as adw;
 use libadwaita::prelude::*;
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 use crate::daemon::{Daemon1Proxy, JobFinishedStream};
 use crate::index::Index;
@@ -729,28 +729,25 @@ impl Window {
             } else {
                 ON_DISK_PRESENT
             },
+            archive: None,
         }));
     }
 
     /// Show the selected file's backed-up version beside the one on disk.
     fn open_compare(self: &Rc<Self>) {
         let view = self.state.view();
-        let (Some(selected), Some(archive)) = (view.selected.clone(), view.archive()) else {
+        // The Trash's copy, for something in it (Stage 16).
+        let (Some(selected), Some(archive)) = (view.selected.clone(), view.reading_archive())
+        else {
             return;
         };
         let restorer = Rc::clone(self);
-        ui::compare::present(
-            &self.window,
-            &self.daemon,
-            archive.name.clone(),
-            selected,
-            move || {
-                let driver = restorer.restores.borrow().clone();
-                if let Some(driver) = driver {
-                    driver.start();
-                }
-            },
-        );
+        ui::compare::present(&self.window, &self.daemon, archive, selected, move || {
+            let driver = restorer.restores.borrow().clone();
+            if let Some(driver) = driver {
+                driver.start();
+            }
+        });
     }
 
     /// Re-read the daemon's status and redraw the line at the bottom.
@@ -896,6 +893,33 @@ impl Window {
 
     /// Follow the daemon's health announcements, so the status line does not
     /// go stale while the window sits open.
+    /// Keep the state's copy of the Trash's listing current (Stage 16): asked
+    /// once, then again each time the daemon says it changed.
+    async fn follow_trash(self: &Rc<Self>, proxy: crate::daemon::Daemon1Proxy<'static>) {
+        use futures::StreamExt;
+        let changes = proxy.receive_trash_changed().await;
+        self.load_trash(&proxy).await;
+        let Ok(mut changes) = changes else {
+            warn!("changes to the Trash are not being followed");
+            return;
+        };
+        while StreamExt::next(&mut changes).await.is_some() {
+            self.load_trash(&proxy).await;
+        }
+    }
+
+    async fn load_trash(self: &Rc<Self>, proxy: &crate::daemon::Daemon1Proxy<'static>) {
+        match proxy.list_trashed().await {
+            Ok(items) => {
+                debug!(items = items.len(), "the Trash read");
+                self.state.set_trash(items);
+            }
+            // An older service has no ListTrashed; the timeline simply has
+            // no Trash entries then.
+            Err(error) => debug!(%error, "the Trash could not be listed"),
+        }
+    }
+
     async fn follow_status(self: &Rc<Self>, proxy: crate::daemon::Daemon1Proxy<'static>) {
         // Fully qualified: GTK's prelude brings its own `next` into scope for
         // every widget, and the two are indistinguishable at the call site.
@@ -1016,9 +1040,12 @@ impl Window {
     /// which it did not — the forty identical hourlies problem.
     fn step_to_change(self: &Rc<Self>, direction: Step) {
         let view = self.state.view();
-        let (Some(seq), Some(target), Some(name)) =
-            (view.seq, view.change_target(), view.change_target_name())
-        else {
+        // From a Trash entry, from the backup before its gap.
+        let (Some(seq), Some(target), Some(name)) = (
+            view.catalogue_seq().or(view.seq.map(|_| 0)),
+            view.change_target(),
+            view.change_target_name(),
+        ) else {
             return;
         };
 
@@ -1110,6 +1137,10 @@ impl Window {
             }
             let tz = glib::TimeZone::local();
             match (view.archive(), view.position()) {
+                (Some(archive), Some(_)) if view.at_trash_entry() => {
+                    this.position
+                        .set_text(&format::position_in_trash(archive.ts, &tz));
+                }
                 (Some(archive), Some((ordinal, total))) => {
                     this.position.set_text(&format::position(
                         archive.ts,
@@ -1301,6 +1332,9 @@ impl Window {
                         let progressing = Rc::clone(&following);
                         let progress_proxy = proxy.clone();
                         ui::spawn(async move { progressing.follow_progress(progress_proxy).await });
+                        let trashing = Rc::clone(&following);
+                        let trash_proxy = proxy.clone();
+                        ui::spawn(async move { trashing.follow_trash(trash_proxy).await });
                         ui::spawn(async move { following.follow_status(proxy).await });
                     }
                     let ticking = Rc::clone(&this);
@@ -1349,6 +1383,7 @@ impl Window {
             size: -1,
             mtime: 0,
             on_disk: 0,
+            archive: None,
         }));
     }
 

@@ -150,7 +150,13 @@ impl Restores {
     /// Whether there is anything to restore right now.
     pub fn can_restore(&self) -> bool {
         let view = self.state.view();
-        view.seq.is_some() && view.change_target().is_some() && self.daemon.borrow().is_some()
+        // Restoring from the Trash is S16-T4's.
+        let in_trash =
+            view.at_trash_entry() || view.selected.as_ref().is_some_and(|s| s.archive.is_some());
+        !in_trash
+            && view.seq.is_some()
+            && view.change_target().is_some()
+            && self.daemon.borrow().is_some()
     }
 
     async fn run(self: &Rc<Self>) {

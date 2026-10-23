@@ -36,6 +36,16 @@ pub trait Daemon1 {
     fn preview_file(&self, archive: &str, path: &str) -> zbus::Result<zbus::zvariant::OwnedFd>;
     fn search_files(&self, query: &str) -> zbus::Result<Vec<SearchResult>>;
 
+    /// What the desktop's Trash holds from the backed-up folders (Stage 16).
+    fn list_trashed(&self) -> zbus::Result<Vec<backtrack_core::dbus::TrashedItem>>;
+    /// What is directly inside a folder of a trashed item: name, kind, bytes,
+    /// modification time in epoch microseconds.
+    fn list_trashed_folder(
+        &self,
+        archive: &str,
+        path: &str,
+    ) -> zbus::Result<Vec<(String, String, i64, i64)>>;
+
     /// A readable descriptor onto the *live* copy of a catalogued path — the
     /// other half of `preview_file`, for the side of a comparison that says
     /// "today". Size and modification time come from the descriptor, so the
@@ -161,6 +171,10 @@ pub trait Daemon1 {
     /// A job ended. `outcome` is `completed`, `cancelled` or `failed`.
     #[zbus(signal)]
     fn job_finished(&self, job: u64, kind: &str, outcome: &str) -> zbus::Result<()>;
+
+    /// What `list_trashed` lists has changed.
+    #[zbus(signal)]
+    fn trash_changed(&self) -> zbus::Result<()>;
 }
 
 /// Connect to the daemon, honoring `BACKTRACK_DEV` for the bus name.

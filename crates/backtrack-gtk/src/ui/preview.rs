@@ -203,7 +203,9 @@ impl Preview {
             return;
         }
 
-        let Some(archive) = view.archive().map(|a| a.name.clone()) else {
+        // The Trash's copy for something in it, the backup before the gap
+        // for anything else at a Trash entry (Stage 16).
+        let Some(archive) = view.reading_archive() else {
             self.show_status("dialog-information-symbolic", "No backup selected", "");
             return;
         };

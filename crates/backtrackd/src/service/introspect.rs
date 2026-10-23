@@ -42,6 +42,7 @@ pub const METHODS: &[(&str, &str, &str)] = &[
     ("InspectDestination", "s", "s"),
     ("ListReplaced", "u", "a(sstxx)"),
     ("ListTrashed", "", "a(ssxsxxb)"),
+    ("ListTrashedFolder", "ss", "a(ssxx)"),
     ("LiveFile", "s", "h"),
     ("PathsOnDisk", "as", "ay"),
     ("Pause", "t", ""),

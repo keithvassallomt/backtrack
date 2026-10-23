@@ -19,7 +19,10 @@ use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
+use backtrack_core::dbus::TrashedItem;
 use backtrack_core::index::ArchiveSummary;
+
+use crate::model::trash;
 
 /// What just changed. A pane subscribes once and decides from this whether it
 /// has any work to do.
@@ -39,6 +42,9 @@ pub enum Change {
     /// What is on this computer changed under the folder being viewed (a
     /// restore, or its undo), so what the pane says about the disk is stale.
     Disk,
+    /// What the desktop's Trash holds changed, so a Trash entry being shown
+    /// may show something else (Stage 16).
+    Trash,
 }
 
 /// The entry the file pane has selected, if any.
@@ -57,6 +63,9 @@ pub struct Selected {
     /// unknown, 1 absent, 2 present. Comparing with today needs a today to
     /// compare against, and this is how the window knows there is one.
     pub on_disk: u8,
+    /// For something in the Trash, the archive name its bytes are read
+    /// through (`trash:<…>`); None for an entry of a backup's.
+    pub archive: Option<String>,
 }
 
 /// Which backups the catalogue said to list for a folder
@@ -86,6 +95,12 @@ pub struct View {
     pub generation: u64,
     /// Every backup is listed, whatever the listing says (Show All Backups).
     pub show_all: bool,
+    /// What the desktop's Trash holds from the backed-up folders, as the
+    /// daemon lists it (Stage 16).
+    pub trash: Rc<Vec<TrashedItem>>,
+    /// The Trash's entries listed for the folder being viewed, newest first
+    /// (see [`crate::model::trash`]). In [`Self::listed`] too.
+    pub trash_entries: Rc<Vec<ArchiveSummary>>,
     /// The backup being viewed. `None` before the first load, and when the
     /// index holds no backups at all.
     pub seq: Option<i64>,
@@ -95,10 +110,43 @@ pub struct View {
 }
 
 impl View {
-    /// The archive being viewed.
+    /// The backup, or the Trash entry, being viewed.
     pub fn archive(&self) -> Option<&ArchiveSummary> {
         let seq = self.seq?;
-        self.archives.iter().find(|a| a.seq == seq)
+        self.archives
+            .iter()
+            .chain(self.trash_entries.iter())
+            .find(|a| a.seq == seq)
+    }
+
+    /// The backup the catalogue is asked about for what is being viewed: the
+    /// backup itself, or, at a Trash entry, the backup before its gap (None
+    /// before the first backup).
+    pub fn catalogue_seq(&self) -> Option<i64> {
+        let seq = self.seq?;
+        match trash::base_of(seq) {
+            Some(base) => base,
+            None => Some(seq),
+        }
+    }
+
+    /// The archive the selected entry's bytes are read through: the Trash's,
+    /// for something in it, and otherwise the backup the catalogue is asked
+    /// about (see [`Self::catalogue_seq`]).
+    pub fn reading_archive(&self) -> Option<String> {
+        if let Some(archive) = self.selected.as_ref().and_then(|s| s.archive.clone()) {
+            return Some(archive);
+        }
+        let backup = self.catalogue_seq()?;
+        self.archives
+            .iter()
+            .find(|a| a.seq == backup)
+            .map(|a| a.name.clone())
+    }
+
+    /// Whether a Trash entry is being viewed rather than a backup.
+    pub fn at_trash_entry(&self) -> bool {
+        self.seq.is_some_and(trash::is_entry)
     }
 
     /// Position of the current backup among those listed, counting from the
@@ -113,7 +161,12 @@ impl View {
     /// Whether some backups are left out for this folder, which the position
     /// label has to say, or "3 of 7" reads as though there were only seven.
     pub fn is_filtered(&self) -> bool {
-        self.listed.len() < self.archives.len()
+        let backups = self
+            .listed
+            .iter()
+            .filter(|a| !trash::is_entry(a.seq))
+            .count();
+        backups < self.archives.len()
     }
 
     /// Whether [`Self::listed`] is the catalogue's answer for the folder being
@@ -130,7 +183,26 @@ impl View {
     /// of every file `seq` held in this folder (that is why `seq` was left
     /// out). Only once the list is this folder's: until then, the request is
     /// taken as it stands and settled when the list arrives.
+    ///
+    /// The nearest newer place may be a Trash entry: one for a gap after a
+    /// backup from `seq` on shows that backup's folder, which holds all `seq`
+    /// held here. A Trash entry that is gone, its Trash emptied, lands as the
+    /// backup before its gap would.
     fn landing(&self, seq: i64) -> i64 {
+        if trash::is_entry(seq) {
+            if self.trash_entries.iter().any(|e| e.seq == seq) {
+                return seq;
+            }
+            let base = trash::base_of(seq).flatten().or_else(|| {
+                // Before the first backup: the first backup is what follows.
+                self.archives
+                    .iter()
+                    .rev()
+                    .find(|a| a.catalogued)
+                    .map(|a| a.seq)
+            });
+            return base.map_or(seq, |base| self.landing(base));
+        }
         if self.show_all || !self.listing_is_current() {
             return seq;
         }
@@ -140,11 +212,24 @@ impl View {
         if listing.seqs.contains(&seq) {
             return seq;
         }
-        self.archives
+        let backups = self
+            .archives
             .iter()
             .filter(|a| a.catalogued && a.seq > seq && listing.seqs.contains(&a.seq))
-            .map(|a| a.seq)
+            .map(|a| (a.ts, a.seq));
+        let entries = self
+            .trash_entries
+            .iter()
+            .filter(|e| {
+                trash::base_of(e.seq)
+                    .flatten()
+                    .is_some_and(|base| base >= seq)
+            })
+            .map(|e| (e.ts, e.seq));
+        backups
+            .chain(entries)
             .min()
+            .map(|(_, seq)| seq)
             .or_else(|| {
                 self.archives
                     .iter()
@@ -152,6 +237,21 @@ impl View {
                     .map(|a| a.seq)
             })
             .unwrap_or(seq)
+    }
+
+    /// Work the Trash's entries for the folder out again, land on what is
+    /// listed, and list it: what every change of the folder, the backups,
+    /// their listing or the Trash comes down to.
+    fn settle(&mut self) {
+        self.trash_entries = Rc::new(trash::entries_for(
+            &self.folder,
+            &self.archives,
+            &self.trash,
+        ));
+        if let Some(seq) = self.seq {
+            self.seq = Some(self.landing(seq));
+        }
+        self.relist();
     }
 
     /// Take `seqs` as the listing for the folder being viewed, and land on
@@ -162,16 +262,13 @@ impl View {
             generation: view.generation,
             seqs,
         });
-        if let Some(seq) = view.seq {
-            view.seq = Some(view.landing(seq));
-        }
-        view.relist();
+        view.settle();
     }
 
-    /// Work [`Self::listed`] out again from the archives, the listing and the
-    /// backup being viewed.
+    /// Work [`Self::listed`] out again from the archives, the listing, the
+    /// Trash's entries and the backup being viewed.
     fn relist(&mut self) {
-        let listed: Vec<ArchiveSummary> = match &self.listing {
+        let mut listed: Vec<ArchiveSummary> = match &self.listing {
             _ if self.show_all => self.archives.as_ref().clone(),
             None => self.archives.as_ref().clone(),
             Some(listing) => self
@@ -183,12 +280,17 @@ impl View {
                 .cloned()
                 .collect(),
         };
+        // Among the backups by time, newest first. The sort is stable, and
+        // the backups are already in that order.
+        listed.extend(self.trash_entries.iter().cloned());
+        listed.sort_by_key(|a| std::cmp::Reverse(a.ts));
         self.listed = Rc::new(listed);
     }
 
-    /// The seqs listed, for telling whether a relist changed anything.
-    fn listed_seqs(&self) -> Vec<i64> {
-        self.listed.iter().map(|a| a.seq).collect()
+    /// What is listed and when, for telling whether a relist changed
+    /// anything: a Trash entry's time moves as things join its gap.
+    fn listed_seqs(&self) -> Vec<(i64, i64)> {
+        self.listed.iter().map(|a| (a.seq, a.ts)).collect()
     }
 
     /// The backup one step older, or `None` at the end of the history.
@@ -318,10 +420,7 @@ impl AppState {
                     seqs,
                 }
             });
-            if let Some(seq) = view.seq {
-                view.seq = Some(view.landing(seq));
-            }
-            view.relist();
+            view.settle();
         }
         self.announce(Change::Archives);
         if self.view.borrow().seq != seq_before {
@@ -355,13 +454,13 @@ impl AppState {
     }
 
     /// What [`Self::announce_moves`] compares against.
-    fn marks(&self) -> (Option<i64>, Vec<i64>) {
+    fn marks(&self) -> (Option<i64>, Vec<(i64, i64)>) {
         let view = self.view.borrow();
         (view.seq, view.listed_seqs())
     }
 
     /// Say what a listing changed: the list, and the backup it landed on.
-    fn announce_moves(&self, (seq_before, listed_before): (Option<i64>, Vec<i64>)) {
+    fn announce_moves(&self, (seq_before, listed_before): (Option<i64>, Vec<(i64, i64)>)) {
         let (seq_after, listed_after) = self.marks();
         if listed_after != listed_before {
             self.announce(Change::Listed);
@@ -382,11 +481,25 @@ impl AppState {
         {
             let mut view = self.view.borrow_mut();
             view.show_all = on;
-            if let Some(seq) = view.seq {
-                view.seq = Some(view.landing(seq));
-            }
-            view.relist();
+            view.settle();
         }
+        self.announce_moves(before);
+    }
+
+    /// What the desktop's Trash holds from the backed-up folders, as the
+    /// daemon lists it (Stage 16). Its entries join the timeline, and the one
+    /// being viewed may change or go.
+    pub fn set_trash(&self, items: Vec<TrashedItem>) {
+        if *self.view.borrow().trash == items {
+            return;
+        }
+        let before = self.marks();
+        {
+            let mut view = self.view.borrow_mut();
+            view.trash = Rc::new(items);
+            view.settle();
+        }
+        self.announce(Change::Trash);
         self.announce_moves(before);
     }
 
@@ -426,8 +539,11 @@ impl AppState {
             view.folder = folder;
             view.selected = None;
             // In place before anyone is told, so nobody asks for it again.
-            if let Some(seqs) = known {
-                View::adopt(&mut view, seqs);
+            match known {
+                Some(seqs) => View::adopt(&mut view, seqs),
+                // The Trash's entries are this folder's at once; its backups
+                // follow when the catalogue says.
+                None => view.settle(),
             }
         }
         self.announce(Change::Folder);
@@ -558,6 +674,7 @@ mod tests {
             size: 45_000,
             mtime: 0,
             on_disk: 0,
+            archive: None,
         }));
         assert_eq!(
             state.view().change_target(),
@@ -579,6 +696,7 @@ mod tests {
             size: 12,
             mtime: 0,
             on_disk: 0,
+            archive: None,
         }));
         state.set_folder("home/Documents");
         assert_eq!(state.view().selected, None);
@@ -615,6 +733,7 @@ mod tests {
             size: 10,
             mtime: 0,
             on_disk: 0,
+            archive: None,
         }));
         let seen = Rc::new(RefCell::new(Vec::new()));
         let changes = Rc::clone(&seen);
@@ -832,6 +951,122 @@ mod tests {
         state.set_folder("home/Docs/tax");
         state.set_listing("home/Docs/tax", state.view().generation, vec![9]);
         assert_eq!(state.view().listed.len(), 9);
+    }
+
+    /// Something moved to the Trash half an hour after backup `after`, from
+    /// `path`.
+    fn trashed_after(after: i64, path: &str, counts: bool) -> TrashedItem {
+        TrashedItem {
+            archive: format!("trash:/t/info/{}.trashinfo", crate::path::name(path)),
+            path: path.to_string(),
+            deleted_at: archive(after).ts + 1800,
+            kind: "file".to_string(),
+            size: 7,
+            mtime: 0,
+            counts,
+        }
+    }
+
+    fn listed(state: &AppState) -> Vec<i64> {
+        state.view().listed.iter().map(|a| a.seq).collect()
+    }
+
+    #[test]
+    fn a_trash_entry_takes_its_place_among_the_backups_by_time() {
+        let state = AppState::new("home/Docs".to_string());
+        state.set_catalogue(archives(&[3, 2, 1]), "home/Docs", vec![3, 1]);
+        state.set_trash(vec![trashed_after(1, "home/Docs/C", true)]);
+        let entry = trash::entry_seq(Some(1));
+        assert_eq!(listed(&state), [3, entry, 1]);
+        assert_eq!(state.view().older(), Some(entry), "stepping reaches it");
+        state.set_seq(entry);
+        let view = state.view();
+        assert!(view.at_trash_entry());
+        assert_eq!(
+            view.catalogue_seq(),
+            Some(1),
+            "its folder is the backup before it"
+        );
+        assert!(
+            view.is_filtered(),
+            "2 of the 3 backups are listed; the entry is not one"
+        );
+    }
+
+    #[test]
+    fn something_in_the_trash_with_nothing_new_makes_no_entry() {
+        let state = AppState::new("home/Docs".to_string());
+        state.set_catalogue(archives(&[3, 2, 1]), "home/Docs", vec![3, 1]);
+        state.set_trash(vec![trashed_after(1, "home/Docs/A", false)]);
+        assert_eq!(listed(&state), [3, 1]);
+    }
+
+    #[test]
+    fn a_backup_left_out_lands_on_a_nearer_trash_entry() {
+        // 2 is left out; the Trash entry after it is nearer than 3, and shows
+        // 2's folder with the Trash put back.
+        let state = AppState::new("home/Docs".to_string());
+        state.set_catalogue(archives(&[3, 2, 1]), "home/Docs", vec![3, 1]);
+        state.set_trash(vec![trashed_after(2, "home/Docs/C", true)]);
+        state.set_seq(2);
+        assert_eq!(state.view().seq, Some(trash::entry_seq(Some(2))));
+    }
+
+    #[test]
+    fn emptying_the_trash_lands_where_the_entrys_backup_would() {
+        let state = AppState::new("home/Docs".to_string());
+        state.set_catalogue(archives(&[3, 2, 1]), "home/Docs", vec![3, 1]);
+        state.set_trash(vec![trashed_after(2, "home/Docs/C", true)]);
+        state.set_seq(trash::entry_seq(Some(2)));
+        let seen = changes_seen(&state);
+        state.set_trash(Vec::new());
+        assert_eq!(state.view().seq, Some(3), "2 is left out, so on to 3");
+        assert_eq!(listed(&state), [3, 1]);
+        assert_eq!(*seen.borrow(), [Change::Trash, Change::Listed, Change::Seq]);
+    }
+
+    #[test]
+    fn trash_entries_follow_the_folder() {
+        let state = AppState::new("home/Docs".to_string());
+        state.set_catalogue(archives(&[3, 2, 1]), "home/Docs", vec![3, 2, 1]);
+        state.set_trash(vec![trashed_after(1, "home/Docs/C", true)]);
+        assert_eq!(state.view().trash_entries.len(), 1);
+        state.set_folder("home/Pictures");
+        assert!(
+            state.view().trash_entries.is_empty(),
+            "nothing went to the Trash from here"
+        );
+        state.set_folder("home");
+        assert_eq!(
+            state.view().trash_entries.len(),
+            1,
+            "from below here, it did"
+        );
+    }
+
+    #[test]
+    fn a_trashed_file_is_read_from_the_trash_and_the_rest_from_the_backup_before() {
+        let state = AppState::new("home/Docs".to_string());
+        state.set_catalogue(archives(&[3, 2, 1]), "home/Docs", vec![3, 1]);
+        let c = trashed_after(1, "home/Docs/C", true);
+        state.set_trash(vec![c.clone()]);
+        state.set_seq(trash::entry_seq(Some(1)));
+        let selected = |name: &str, archive: Option<String>| Selected {
+            path: format!("home/Docs/{name}"),
+            name: name.to_string(),
+            is_dir: false,
+            size: 1,
+            mtime: 0,
+            on_disk: 0,
+            archive,
+        };
+        state.set_selected(Some(selected("C", Some(c.archive.clone()))));
+        assert_eq!(state.view().reading_archive(), Some(c.archive));
+        state.set_selected(Some(selected("A", None)));
+        assert_eq!(
+            state.view().reading_archive(),
+            Some("snapshot-1".to_string())
+        );
     }
 
     #[test]

@@ -67,6 +67,13 @@ pub fn position(
     }
 }
 
+/// The position label at a Trash entry (Stage 16), which is no backup and
+/// has no place in their count: `"Tue 20 Oct 2026, 12:45 — in the Trash"`.
+pub fn position_in_trash(ts: i64, tz: &glib::TimeZone) -> String {
+    let when = at(ts, tz, "%a %e %b %Y, %H:%M");
+    format!("{when} — in the Trash")
+}
+
 /// What the position line says when the index holds no backups at all.
 pub const NO_BACKUPS: &str = "No backups yet";
 

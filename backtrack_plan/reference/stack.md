@@ -76,6 +76,7 @@ interface. The `1` is the API's major version: an incompatible change ships as
 | `SearchFiles(query) → results` | FTS5 cross-snapshot search over the index (grouped-by-file results incl. deleted files) |
 | `RestoreEverything(archive, policy) → job` | Guided disaster recovery: per-top-level-folder extract jobs, resumable |
 | `ListTrashed() → items` | What the desktop's Trash holds from the backed-up folders: archive name, original path, deletion time, kind, size, modification time, and whether it holds something no backup has (S16-T2) |
+| `ListTrashedFolder(archive, path) → entries` | What is directly inside a folder of a trashed item, for browsing into a folder moved to the Trash whole (S16-T3) |
 
 **Signals:** `BackupProgress(job, phase, current, total)`, `RestoreProgress(job, bytes, total)`,
 `IndexingProgress(archive, pct)`, `StatusChanged(state)`, `TrashChanged()` (what `ListTrashed`

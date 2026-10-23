@@ -67,10 +67,15 @@ pub enum Kept {
     /// On this computer, holding versions the destination never got, until
     /// it is removed at `until`.
     LocalSnapshot { until: i64 },
+    /// Not a backup at all: things in the desktop's Trash (Stage 16).
+    InTrash,
 }
 
 impl Kept {
     fn of(archive: &ArchiveSummary) -> Kept {
+        if archive.repo == super::trash::REPO {
+            return Kept::InTrash;
+        }
         if archive.repo == "primary" {
             return Kept::Normally;
         }
@@ -91,9 +96,18 @@ pub struct Badge {
 }
 
 /// The badge for how a backup is kept, or none.
+/// What hovering an "in the Trash" badge says, in the sidebar and the file
+/// pane alike.
+pub const IN_TRASH_TOOLTIP: &str = "Not a backup. This was moved to the Trash, and is kept only on this computer: emptying the Trash removes it, and Backtrack has no other copy of it.";
+
 pub fn badge(kept: Kept, tz: &glib::TimeZone) -> Option<Badge> {
     match kept {
         Kept::Normally => None,
+        Kept::InTrash => Some(Badge {
+            text: "in the Trash",
+            class: "in-trash",
+            tooltip: IN_TRASH_TOOLTIP.to_string(),
+        }),
         Kept::LocalOnly => Some(Badge {
             text: "local backup only",
             class: "local-only",

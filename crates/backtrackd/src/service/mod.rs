@@ -2967,6 +2967,30 @@ impl Daemon1 {
             .collect()
     }
 
+    /// What is directly inside the folder at `path` in a trashed item, by
+    /// name, for browsing into a folder that was moved to the Trash whole:
+    /// name, kind, bytes and modification time (epoch microseconds), as a
+    /// backup's folder is listed. `archive` is the item's, from `ListTrashed`.
+    async fn list_trashed_folder(
+        &self,
+        archive: &str,
+        path: &str,
+    ) -> Result<Vec<(String, String, i64, i64)>> {
+        let entry =
+            self.shared.trash.find(archive).ok_or_else(|| {
+                DaemonError::NotFound(format!("{path} is no longer in the Trash"))
+            })?;
+        let listed = backtrack_core::trash::list_folder(&entry.item, path).ok_or_else(|| {
+            DaemonError::NotFound(format!(
+                "{path} is not a folder of what was moved to the Trash"
+            ))
+        })?;
+        Ok(listed
+            .into_iter()
+            .map(|l| (l.name, l.kind.as_str().to_string(), l.size, l.mtime))
+            .collect())
+    }
+
     /// Filename search across every snapshot, including files that have since
     /// been deleted.
     ///

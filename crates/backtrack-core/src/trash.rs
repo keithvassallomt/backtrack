@@ -217,6 +217,44 @@ impl Trash {
     }
 }
 
+/// One entry directly inside a folder of a trashed item, as the window lists
+/// it: name, kind, bytes (0 for a folder), modification time in epoch
+/// microseconds.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Listed {
+    pub name: String,
+    pub kind: Kind,
+    pub size: i64,
+    pub mtime: i64,
+}
+
+/// What is directly inside the folder at archive-relative `path` in the
+/// Trash's copy of `item`, by name. None when `path` is not a folder of the
+/// item's (see [`copy_of`]).
+pub fn list_folder(item: &Item, path: &str) -> Option<Vec<Listed>> {
+    let folder = copy_of(item, path)?;
+    let mut listed: Vec<Listed> = std::fs::read_dir(&folder)
+        .ok()?
+        .flatten()
+        .filter_map(|entry| {
+            let meta = std::fs::symlink_metadata(entry.path()).ok()?;
+            let kind = walk::kind_of(&meta);
+            Some(Listed {
+                name: entry.file_name().to_string_lossy().into_owned(),
+                size: if kind == Kind::Dir {
+                    0
+                } else {
+                    meta.len() as i64
+                },
+                mtime: walk::mtime_micros(&meta),
+                kind,
+            })
+        })
+        .collect();
+    listed.sort_by(|a, b| a.name.cmp(&b.name));
+    Some(listed)
+}
+
 /// Every Trash that can hold something deleted from `sources`: the home Trash
 /// of `data_home`, and the Trashes at the top of each drive a source is on.
 pub fn trashes_for(data_home: &Path, sources: &[PathBuf]) -> Vec<Trash> {
@@ -615,6 +653,30 @@ mod tests {
         assert_eq!(copy_of(&item, "home/k/project2/x"), None, "a sibling");
         assert_eq!(copy_of(&item, "home/k/other"), None);
         assert_eq!(copy_of(&item, "home/k/project/../../.ssh/id_ed25519"), None);
+    }
+
+    #[test]
+    fn a_trashed_folder_is_listed_from_its_copy() {
+        let f = fixture();
+        let copy = f.put(
+            "project",
+            &info("/home/k/project", "2026-10-20T12:45:00"),
+            None,
+        );
+        std::fs::create_dir_all(copy.join("src")).unwrap();
+        std::fs::write(copy.join("README.md"), "hello").unwrap();
+        std::fs::write(copy.join("src/main.rs"), "fn main() {}").unwrap();
+        let item = &f.trash.items(&utc())[0];
+
+        let top = list_folder(item, "home/k/project").unwrap();
+        let names: Vec<(&str, Kind, i64)> = top
+            .iter()
+            .map(|l| (l.name.as_str(), l.kind, l.size))
+            .collect();
+        assert_eq!(names, [("README.md", Kind::File, 5), ("src", Kind::Dir, 0)]);
+        let inner = list_folder(item, "home/k/project/src").unwrap();
+        assert_eq!(inner.len(), 1);
+        assert_eq!(list_folder(item, "home/k/elsewhere"), None);
     }
 
     #[test]
