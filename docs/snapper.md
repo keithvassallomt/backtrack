@@ -99,6 +99,15 @@ anyone who wants to know what changes, or to do it by hand.
 sudo dnf install -y snapper
 ```
 
+### openSUSE
+
+openSUSE installs Snapper for its own snapshots of the system, so there is
+usually nothing to install. If it is not there:
+
+```sh
+sudo zypper --non-interactive install snapper
+```
+
 ### Arch Linux
 
 ```sh
@@ -173,7 +182,10 @@ sudo systemctl daemon-reload
 systemctl list-timers snapper-timeline.timer
 ```
 
-The last command shows the next snapshot due within five minutes.
+The last command shows the next snapshot due within five minutes. The
+schedule is shared by every Snapper configuration that takes timeline
+snapshots. openSUSE's own configuration for the system takes none, so only
+`/home` gains the extra snapshots.
 
 Snapper's cleanup keeps only the first snapshot of each hour, and removes
 the others once they are an hour old. That would throw the five-minute
@@ -240,19 +252,35 @@ sudo snapper -c home delete-config
 sudo rm -f /etc/systemd/system/snapper-timeline.timer.d/every-5-minutes.conf
 sudo rmdir --ignore-fail-on-non-empty /etc/systemd/system/snapper-timeline.timer.d
 sudo systemctl daemon-reload
-sudo systemctl disable --now snapper-timeline.timer snapper-cleanup.timer
 ```
 
 Stopping Snapper's background service first works around a fault in Snapper
 0.13: when its settings were changed since the service started, it writes the
 configuration back as it deletes it.
 
-Then remove Snapper itself.
+Then stop Snapper's timers, if you started them for this. On openSUSE, leave
+them on: they take the system's own snapshots too.
+
+```sh
+sudo systemctl disable --now snapper-timeline.timer snapper-cleanup.timer
+```
+
+Then remove Snapper itself, if you installed it for this.
 
 On Fedora:
 
 ```sh
 sudo dnf remove -y snapper
+```
+
+On openSUSE:
+
+Keep Snapper unless you installed it yourself for this guide, since openSUSE
+uses it for its snapshots of the system. Removing it also removes what it was
+installed with:
+
+```sh
+sudo zypper --non-interactive remove --clean-deps snapper
 ```
 
 On Arch Linux:

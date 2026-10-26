@@ -115,7 +115,7 @@ class GuideAndScript(unittest.TestCase):
                     self.assertIn(command, given)
 
     def test_the_guide_covers_each_distribution_checked_so_far(self):
-        self.assertEqual(documented(), ["fedora", "arch"])
+        self.assertEqual(documented(), ["fedora", "opensuse", "arch"])
 
     def test_a_distribution_the_script_does_not_know_is_refused(self):
         run = subprocess.run(
