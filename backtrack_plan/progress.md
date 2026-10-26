@@ -18,8 +18,8 @@ Nothing right now.
 > tasks: add them here + to the stage file, then `just provision-board-apply`.
 > See [../CLAUDE.md](../CLAUDE.md) for the full workflow.
 
-**Current stage:** 16 (in progress)
-**Last updated:** 2026-10-23
+**Current stage:** 16 (complete)
+**Last updated:** 2026-10-26
 
 ## Stage 0 — Bootstrap ([stage file](stages/stage-00-bootstrap.md))
 - [x] S00-T1 Git repo, license, .gitignore, README skeleton
