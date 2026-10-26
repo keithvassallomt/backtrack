@@ -11,7 +11,7 @@
 #   backtrack-snapper-setup --pause         the same, waiting for Enter at the end,
 #                                           for a terminal that closes when it ends
 #   backtrack-snapper-setup --print DISTRO  list the commands it runs on DISTRO
-#                                           (fedora, opensuse, arch, ubuntu),
+#                                           (fedora, opensuse, arch),
 #                                           setting up then undoing, from nothing
 #
 # Run it as yourself: it asks sudo for what needs the administrator. What it
@@ -96,11 +96,10 @@ detect() {
         fedora) distro=fedora ;;
         opensuse-tumbleweed | opensuse-leap | opensuse-slowroll) distro=opensuse ;;
         arch) distro=arch ;;
-        ubuntu) distro=ubuntu ;;
         *)
-            stop "This sets Snapper up on Fedora, openSUSE, Arch Linux and Ubuntu," \
-                "and this computer runs ${id:-something else}. docs/snapper.md says" \
-                "what to do by hand."
+            stop "This sets Snapper up on Fedora, openSUSE and Arch Linux, and this" \
+                "computer runs ${id:-something else}. docs/snapper.md says what to do" \
+                "by hand."
             ;;
     esac
 }
@@ -110,7 +109,6 @@ install_snapper() {
         fedora) step 'sudo dnf install -y snapper' ;;
         opensuse) step 'sudo zypper --non-interactive install snapper' ;;
         arch) step 'sudo pacman -S --needed --noconfirm snapper' ;;
-        ubuntu) step 'sudo apt-get install -y snapper' ;;
     esac
 }
 
@@ -119,7 +117,6 @@ remove_snapper() {
         fedora) step 'sudo dnf remove -y snapper' ;;
         opensuse) step 'sudo zypper --non-interactive remove --clean-deps snapper' ;;
         arch) step 'sudo pacman -Rns --noconfirm snapper' ;;
-        ubuntu) step 'sudo apt-get purge -y --autoremove snapper' ;;
     esac
 }
 
@@ -326,8 +323,8 @@ main() {
                 mode=print
                 distro=${2:-}
                 case $distro in
-                    fedora | opensuse | arch | ubuntu) ;;
-                    *) stop "--print takes fedora, opensuse, arch or ubuntu" ;;
+                    fedora | opensuse | arch) ;;
+                    *) stop "--print takes fedora, opensuse or arch" ;;
                 esac
                 set_up
                 undo

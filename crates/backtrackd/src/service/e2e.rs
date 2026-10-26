@@ -2999,6 +2999,13 @@ async fn snappers_snapshots_are_kept_in_the_catalogue_as_they_come_and_go() {
     )
     .await;
     let daemon = Daemon1::new(Arc::clone(&shared));
+    // Whether the script would set Snapper up is a fact about this computer,
+    // not about the test's subvolumes.
+    let can_set_up = backtrack_core::snapper::setup_applies(
+        &backtrack_core::host::os_release(),
+        backtrack_core::snapper::home_is_subvolume(),
+        &machine.sources(),
+    );
     assert_eq!(
         daemon.get_snapper().await,
         backtrack_core::dbus::SnapperInfo {
@@ -3006,6 +3013,7 @@ async fn snappers_snapshots_are_kept_in_the_catalogue_as_they_come_and_go() {
             folders: 1,
             snapshots: 2,
             unreadable: Vec::new(),
+            can_set_up,
         }
     );
 
@@ -3026,6 +3034,7 @@ async fn snappers_snapshots_are_kept_in_the_catalogue_as_they_come_and_go() {
                 folders: 0,
                 snapshots: 0,
                 unreadable: vec![folder.display().to_string()],
+                can_set_up,
             }
         );
     }

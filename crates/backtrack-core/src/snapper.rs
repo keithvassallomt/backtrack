@@ -99,6 +99,40 @@ pub fn copy_of(archive: &str) -> Option<(PathBuf, PathBuf)> {
     Some((folder.join("snapshot"), snapshots.parent()?.to_path_buf()))
 }
 
+/// The distributions `backtrack-snapper-setup` sets Snapper up on (S17-T6),
+/// by their `os-release` `ID`: those it was checked on. The script accepts the
+/// same, which `scripts/test_snapper_setup.py` checks.
+pub const SET_UP_ON: &[&str] = &[
+    "fedora",
+    "opensuse-tumbleweed",
+    "opensuse-leap",
+    "opensuse-slowroll",
+    "arch",
+];
+
+/// The subvolume the setup script has Snapper take snapshots of.
+pub const SET_UP_FOR: &str = "/home";
+
+/// Whether `/home` is a btrfs subvolume of its own, as the setup script needs.
+pub fn home_is_subvolume() -> bool {
+    let home = Path::new(SET_UP_FOR);
+    btrfs::is_btrfs(home) && btrfs::is_subvolume_root(home)
+}
+
+/// Whether the setup script would set Snapper up here, given the host's
+/// `os-release`: on a distribution it knows, with `/home` a subvolume of its
+/// own (`home_is_subvolume`) holding one of the backed-up `sources`. Where it
+/// would refuse, there is nothing to offer.
+pub fn setup_applies(os_release: &str, home_is_subvolume: bool, sources: &[PathBuf]) -> bool {
+    let id = os_release
+        .lines()
+        .find_map(|line| line.strip_prefix("ID="))
+        .map(|value| value.trim().trim_matches('"'));
+    id.is_some_and(|id| SET_UP_ON.contains(&id))
+        && home_is_subvolume
+        && sources.iter().any(|source| source.starts_with(SET_UP_FOR))
+}
+
 impl Snapper {
     /// The snapshots that could be read; none, when the folder could not be.
     pub fn snapshots(&self) -> &[Snapshot] {
@@ -391,6 +425,35 @@ mod tests {
         assert_eq!(
             archive_name(&snapshots[0]),
             format!("snapper:{}", f.folder().join("42").display())
+        );
+    }
+
+    #[test]
+    fn the_setup_applies_where_the_script_would_run() {
+        let documents = [PathBuf::from("/home/k/Documents")];
+        let fedora = "NAME=\"Fedora Linux\"\nID=fedora\nVERSION_ID=45\n";
+        assert!(setup_applies(fedora, true, &documents));
+        assert!(setup_applies(
+            "ID=\"opensuse-tumbleweed\"\nID_LIKE=\"opensuse suse\"\n",
+            true,
+            &documents
+        ));
+        assert!(setup_applies("ID=arch\n", true, &documents));
+        for refused in [
+            "ID=ubuntu\nID_LIKE=debian\n",
+            "ID=debian\n",
+            "ID=endeavouros\nID_LIKE=arch\n",
+            "",
+        ] {
+            assert!(!setup_applies(refused, true, &documents), "{refused:?}");
+        }
+        assert!(
+            !setup_applies(fedora, false, &documents),
+            "/home inside a larger subvolume, as Ubuntu's installer lays btrfs out"
+        );
+        assert!(
+            !setup_applies(fedora, true, &[PathBuf::from("/data/Photos")]),
+            "nothing backed up in /home"
         );
     }
 

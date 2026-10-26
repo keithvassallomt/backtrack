@@ -53,15 +53,17 @@ subvolume, and this guide applies. The folders you back up must be inside
 `/home`, as `Documents`, `Pictures` and the rest of your home folder are.
 
 Backtrack works this out too: Preferences → Storage → **Snapper** says
-"Snapper is not set up" when your backed-up folders are on btrfs.
+"Snapper is not set up", and offers to set it up, when your backed-up folders
+are in a `/home` that is a btrfs subvolume, on a distribution the setup script
+knows.
 
 If the first line says anything else (`ext2/ext3`, which is how ext4 shows,
 or `xfs`), your home folder is not on btrfs. This guide does not apply, and
 nothing here converts a filesystem: Backtrack works fully without Snapper.
 
 If the first line says `btrfs` and the second does not say `256`, your home
-folder is an ordinary folder inside a larger subvolume, as some installers lay
-it out. Snapper could take snapshots of that whole subvolume, your
+folder is an ordinary folder inside a larger subvolume, as Ubuntu's installer
+lays btrfs out. Snapper could take snapshots of that whole subvolume, your
 system included, but that is beyond this guide.
 
 ## Setting it up
@@ -76,8 +78,8 @@ run it yourself, from a terminal:
 backtrack-snapper-setup
 ```
 
-It works on Fedora, openSUSE, Arch Linux and Ubuntu. It checks that this guide
-applies to your computer, says what it is about to do, and asks you once.
+It works on Fedora, openSUSE and Arch Linux. It checks that this guide applies
+to your computer, says what it is about to do, and asks you once.
 Each command is shown as it runs, and `sudo` asks for your password for the
 ones that need the administrator.
 

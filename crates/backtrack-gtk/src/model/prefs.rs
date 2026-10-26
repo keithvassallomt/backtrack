@@ -392,12 +392,12 @@ pub enum SetUp {
     },
 }
 
-/// What **Set Up Snapper…** does, or None where it is not offered: off btrfs,
-/// and where Snapper's snapshots are already being read. Offered where
-/// Snapper is not set up, or its snapshots cannot be read, which the script
-/// sees to as well.
+/// What **Set Up Snapper…** does, or None where it is not offered: where the
+/// script would not run, and where Snapper's snapshots are already being
+/// read. Offered where Snapper is not set up, or its snapshots cannot be
+/// read, which the script sees to as well.
 pub fn snapper_setup(info: &SnapperInfo, packaged: &Packaged) -> Option<SetUp> {
-    let wanted = info.on_btrfs && (info.folders == 0 || !info.unreadable.is_empty());
+    let wanted = info.can_set_up && (info.folders == 0 || !info.unreadable.is_empty());
     if !wanted {
         return None;
     }
@@ -434,10 +434,17 @@ fn quoted(path: &Path) -> String {
 }
 
 /// What to say about Snapper, from what the daemon found. None where no
-/// backed-up folder is on btrfs, which Snapper needs: there is nothing to
-/// offer, and saying so would only be noise.
+/// backed-up folder is on btrfs, which Snapper needs, and where Snapper is
+/// not set up and the setup script would not run here (on a distribution it
+/// does not know, or with `/home` inside a larger subvolume, as Ubuntu's
+/// installer lays btrfs out): there is nothing to offer, and saying so would
+/// only be noise. Snapshots found, or found and not readable, are reported
+/// wherever they are.
 pub fn snapper_row(info: &SnapperInfo) -> Option<SnapperRow> {
     if !info.on_btrfs {
+        return None;
+    }
+    if info.folders == 0 && info.unreadable.is_empty() && !info.can_set_up {
         return None;
     }
     let reading = match info.snapshots {
@@ -711,13 +718,44 @@ mod tests {
         );
     }
 
+    /// What the daemon finds, on a computer where the setup script would run.
     fn snapper(folders: u32, snapshots: u32, unreadable: &[&str]) -> SnapperInfo {
         SnapperInfo {
             on_btrfs: true,
             folders,
             snapshots,
             unreadable: unreadable.iter().map(|s| s.to_string()).collect(),
+            can_set_up: true,
         }
+    }
+
+    /// The same, where it would not.
+    fn cannot_set_up(info: SnapperInfo) -> SnapperInfo {
+        SnapperInfo {
+            can_set_up: false,
+            ..info
+        }
+    }
+
+    #[test]
+    fn where_the_script_would_not_run_neither_it_nor_snapper_not_being_set_up_is_offered() {
+        let native = Packaged::Native { checkout: None };
+        let nothing = cannot_set_up(snapper(0, 0, &[]));
+        assert_eq!(snapper_row(&nothing), None);
+        assert_eq!(snapper_setup(&nothing, &native), None);
+
+        // What was found is still said, without the button.
+        let unreadable = cannot_set_up(snapper(0, 0, &["/data/.snapshots"]));
+        assert_eq!(
+            snapper_row(&unreadable).map(|r| r.title),
+            Some("Snapper's snapshots cannot be read".to_string())
+        );
+        assert_eq!(snapper_setup(&unreadable, &native), None);
+        let read = cannot_set_up(snapper(1, 3, &[]));
+        assert_eq!(
+            snapper_row(&read).map(|r| r.title),
+            Some("Reading 3 snapshots taken by Snapper".to_string())
+        );
     }
 
     #[test]

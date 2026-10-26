@@ -124,16 +124,21 @@ pub async fn watch(shared: Arc<Shared>) {
         let looked = tokio::task::spawn_blocking(move || {
             let found = snapper::find(&sources);
             let tops = subvolumes(&sources);
-            (found, tops)
+            let applies = snapper::setup_applies(
+                &backtrack_core::host::os_release(),
+                snapper::home_is_subvolume(),
+                &sources,
+            );
+            (found, tops, applies)
         })
         .await;
         match looked {
-            Ok((found, tops)) => {
+            Ok((found, tops, applies)) => {
                 if let Some(fd) = &inotify {
                     watch_snapper(fd, &tops, &found);
                 }
                 let wanted = shared.snapper.wanted(&found);
-                let now = summary(&found, &tops);
+                let now = summary(&found, &tops, applies);
                 let was =
                     std::mem::replace(&mut *shared.snapper.found.lock().unwrap(), now.clone());
                 if was != now {
@@ -170,10 +175,11 @@ pub async fn watch(shared: Arc<Shared>) {
 }
 
 /// What a look found, as `GetSnapper` gives it: `found` from the subvolumes
-/// at `tops`.
-fn summary(found: &[Snapper], tops: &[PathBuf]) -> SnapperInfo {
+/// at `tops`, and whether the setup script `applies` here.
+fn summary(found: &[Snapper], tops: &[PathBuf], applies: bool) -> SnapperInfo {
     let mut info = SnapperInfo {
         on_btrfs: !tops.is_empty(),
+        can_set_up: applies,
         ..SnapperInfo::default()
     };
     for at in found {
@@ -288,14 +294,19 @@ mod summary {
 
     #[test]
     fn a_look_is_summed_up_for_preferences() {
-        assert_eq!(summary(&[], &[]), SnapperInfo::default(), "not on btrfs");
         assert_eq!(
-            summary(&[], &[PathBuf::from("/home")]),
+            summary(&[], &[], false),
+            SnapperInfo::default(),
+            "not on btrfs"
+        );
+        assert_eq!(
+            summary(&[], &[PathBuf::from("/home")], true),
             SnapperInfo {
                 on_btrfs: true,
+                can_set_up: true,
                 ..SnapperInfo::default()
             },
-            "on btrfs, with no Snapper"
+            "on btrfs, with no Snapper, where the script would set it up"
         );
         assert_eq!(
             summary(
@@ -309,12 +320,14 @@ mod summary {
                     PathBuf::from("/data"),
                     PathBuf::from("/srv")
                 ],
+                false,
             ),
             SnapperInfo {
                 on_btrfs: true,
                 folders: 2,
                 snapshots: 3,
                 unreadable: vec!["/data/.snapshots".to_string()],
+                can_set_up: false,
             }
         );
     }

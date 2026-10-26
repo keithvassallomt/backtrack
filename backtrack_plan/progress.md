@@ -18,7 +18,7 @@ Nothing right now.
 > tasks: add them here + to the stage file, then `just provision-board-apply`.
 > See [../CLAUDE.md](../CLAUDE.md) for the full workflow.
 
-**Current stage:** 17
+**Current stage:** 17 (complete)
 **Last updated:** 2026-10-26
 
 ## Stage 0 — Bootstrap ([stage file](stages/stage-00-bootstrap.md))
@@ -186,8 +186,8 @@ Nothing right now.
 - [x] S17-T2 Catalogue Snapper's snapshots
 - [x] S17-T3 Preview, compare and restore from a snapshot
 - [x] S17-T4 Snapper's snapshots in the window
-- [/] S17-T5 A guide to Snapper
-- [/] S17-T6 A script that sets Snapper up, and undoes it
+- [x] S17-T5 A guide to Snapper
+- [x] S17-T6 A script that sets Snapper up, and undoes it
 - [x] S17-T7 Set Up Snapper from Preferences
 - [x] S17-T8 Reading a backup into the catalogue no longer slows with its size
 

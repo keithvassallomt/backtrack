@@ -23,7 +23,6 @@ DISTROS = {
     "fedora": "Fedora",
     "opensuse": "openSUSE",
     "arch": "Arch Linux",
-    "ubuntu": "Ubuntu",
 }
 
 # Commands the guide offers for looking, which the script has no need of.
@@ -118,13 +117,28 @@ class GuideAndScript(unittest.TestCase):
         self.assertEqual(documented(), ["fedora", "opensuse", "arch"])
 
     def test_a_distribution_the_script_does_not_know_is_refused(self):
-        run = subprocess.run(
-            ["bash", str(SCRIPT), "--print", "debian"],
-            capture_output=True,
-            text=True,
-        )
-        self.assertNotEqual(run.returncode, 0)
-        self.assertEqual(run.stdout, "")
+        for other in ["ubuntu", "debian"]:
+            run = subprocess.run(
+                ["bash", str(SCRIPT), "--print", other],
+                capture_output=True,
+                text=True,
+            )
+            self.assertNotEqual(run.returncode, 0, other)
+            self.assertEqual(run.stdout, "", other)
+
+    def test_the_window_offers_it_on_the_distributions_the_script_accepts(self):
+        # Preferences offers Set Up Snapper... only where the script would
+        # run (backtrack_core::snapper::SET_UP_ON), so the two lists of
+        # os-release IDs must agree.
+        rust = (ROOT / "crates" / "backtrack-core" / "src" / "snapper.rs").read_text()
+        listed = re.search(r"pub const SET_UP_ON: &\[&str\] = &\[(.*?)\];", rust, re.S)
+        offered = set(re.findall(r'"([^"]+)"', listed.group(1)))
+        script = SCRIPT.read_text()
+        detect = script[script.index("detect() {") : script.index("install_snapper() {")]
+        accepted = set()
+        for case in re.findall(r"^\s+([a-z|\- ]+)\) distro=", detect, re.M):
+            accepted |= {word.strip() for word in case.split("|")}
+        self.assertEqual(offered, accepted)
 
 
 if __name__ == "__main__":

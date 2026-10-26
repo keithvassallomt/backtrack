@@ -429,6 +429,10 @@ pub struct SnapperInfo {
     pub snapshots: u32,
     /// The `.snapshots` folders that exist and this user may not read.
     pub unreadable: Vec<String>,
+    /// Whether `backtrack-snapper-setup` would set Snapper up here: on a
+    /// distribution it knows, with `/home` a subvolume of its own holding a
+    /// backed-up folder (S17-T7).
+    pub can_set_up: bool,
 }
 
 /// What `GetHealth` answers with: the state, how it came about, and what the

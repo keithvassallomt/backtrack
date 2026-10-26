@@ -287,6 +287,26 @@ All notable changes to Backtrack are documented here. This project adheres to
   `backtrack search` says so too.
 - A page on what the Trash can and cannot bring back:
   [docs/trash.md](docs/trash.md).
+- Where your home folder is on btrfs and Snapper takes snapshots of it,
+  Backtrack shows those snapshots in the timeline among your backups, marked
+  "Snapper snapshot". Snapper goes on taking them on battery and while backups
+  are paused, and can take one every few minutes, so a file overwritten or
+  deleted between two backups can still be found. They can be browsed,
+  previewed, compared and restored from, with the backup destination away. A
+  Snapper snapshot is not a backup: it is on the same disk as your files, and
+  goes when Snapper removes it, which its badge says. Backtrack reads them,
+  and never takes or removes one.
+- Preferences → Storage says whether Snapper's snapshots are being read and
+  how many, or that they cannot be read and how to change that. On Fedora,
+  openSUSE and Arch Linux, with your home folder on btrfs, Set Up Snapper…
+  opens a terminal that sets Snapper up to take a snapshot every five
+  minutes, showing each step and asking for your password; from the Flatpak,
+  it copies the command to paste into a terminal instead. Run again, the same
+  command takes back exactly what it set up. It is also there to run
+  yourself, as `backtrack-snapper-setup`.
+- A guide to Snapper, saying what it is, whether it applies to your computer,
+  and every command the setup runs, for doing it by hand:
+  [docs/snapper.md](docs/snapper.md).
 
 ### Changed
 - Backtrack now requires GNOME 50 or newer (GTK 4.22, libadwaita 1.9).
@@ -327,6 +347,9 @@ All notable changes to Backtrack are documented here. This project adheres to
   again closes search.
 - Undoing a restore now also removes the folders it made, when they are still
   empty, rather than leaving them behind.
+- The snapshots Backtrack takes itself on btrfs, while the backup destination
+  is away, can now be previewed, compared and restored from. They could be
+  taken, but not read back.
 
 ### Fixed
 - Pausing or resuming backups is announced to other programs straight away,
@@ -385,6 +408,10 @@ All notable changes to Backtrack are documented here. This project adheres to
   this computer's disk being full, when the same file was asked for twice at
   once, as selecting a search result does. A problem on this computer is now
   called a full disk only when the disk is full.
+- Reading a finished backup into the catalogue slowed down as backups
+  accumulated, and with the square of the number of files: six and a half
+  seconds for 55,000 files after a week of hourly backups, and far longer for
+  more files. It now takes a fraction of a second.
 
 ## [0.1.0] - TBD
 

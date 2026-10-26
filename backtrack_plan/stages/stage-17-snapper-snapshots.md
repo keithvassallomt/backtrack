@@ -29,6 +29,12 @@ copying the command that runs it. Backtrack itself still never takes, changes
 or removes a snapshot. The guide (S17-T5) says what the script does, step by
 step, for anyone who wants to know, or to do it by hand.
 
+Ubuntu dropped with Keith, 2026-10-26: its installer puts `/home` inside one
+flat btrfs subvolume, with no `@home`, so Snapper cannot take snapshots of it
+alone, and the script supports Fedora, openSUSE and Arch Linux. It refuses
+anywhere else, and wherever `/home` is not a subvolume of its own, by looking
+at the filesystem rather than at the distribution's name.
+
 ## The rule
 **Where Snapper's snapshots are.** Snapper keeps a configuration's snapshots
 in a `.snapshots` folder at the top of the subvolume it covers, each as
@@ -141,8 +147,7 @@ hand.
 - Whether it applies: how to check that the backed-up folders are on btrfs and
   that `/home` is a subvolume, and what to do if not (this guide does not
   apply; nothing is converted).
-- Installing it on Fedora, openSUSE, Arch Linux and Ubuntu (where btrfs was
-  chosen at install time).
+- Installing it on Fedora, openSUSE and Arch Linux.
 - Creating a configuration for `/home`, giving the user access (`ALLOW_USERS`
   and `SYNC_ACL`), and turning on the timeline and cleanup timers.
 - Taking snapshots more often than hourly: the timer override, and the cleanup
@@ -165,8 +170,8 @@ snapshots behind (done 2026-10-26).
 `backtrack-snapper-setup`, installed by every package (the Flatpak's copy is
 for S17-T7 to hand over). Run by the person, as themselves, in a terminal:
 - Works out the distribution from `/etc/os-release`: Fedora, openSUSE
-  (Tumbleweed and Leap), Arch Linux or Ubuntu. On anything else it says so,
-  and stops.
+  (Tumbleweed and Leap) or Arch Linux. On anything else it says so, and
+  stops.
 - Checks that `/home` is a btrfs subvolume, and stops, saying why, if not.
 - Says what it is about to do, and asks once. Each command is shown as it is
   run; `sudo` asks for the password in the terminal.
@@ -182,8 +187,8 @@ for S17-T7 to hand over). Run by the person, as themselves, in a terminal:
   giving this user access to it if they have none, which is all its undo then
   takes back.
 
-**Accept:** on each supported distribution (Fedora, openSUSE and Ubuntu on
-fresh btrfs VMs; Arch Linux on Keith's laptop, by his decision, 2026-10-26),
+**Accept:** on each supported distribution (Fedora and openSUSE on fresh
+btrfs VMs; Arch Linux on Keith's laptop, by his decision, 2026-10-26),
 the script run from nothing ends with Backtrack showing Snapper's snapshots
 every five minutes, and run again, its undo leaves the system as it was found:
 no configuration, snapshots, timers or package it added, and anything it found
@@ -193,7 +198,9 @@ changing anything.
 
 ### S17-T7 — Set Up Snapper from Preferences
 - Preferences → Storage → Snapper offers **Set Up Snapper…** where Snapper is
-  not set up, or its snapshots cannot be read, beside **Read the Guide…**.
+  not set up, or its snapshots cannot be read, and the script would run here
+  (a distribution it knows, with `/home` a subvolume of its own). Where it
+  would not, Preferences says nothing of Snapper not being set up.
 - From a native package, it opens the desktop's terminal running the script
   (GLib's terminal lookup, which must find GNOME's Ptyxis and Console and
   KDE's Konsole). From the Flatpak, it puts the script where a terminal
