@@ -66,9 +66,9 @@ interface. The `1` is the API's major version: an incompatible change ships as
 | `Pause(until: timestamp)` / `Resume()` | Self-expiring pause (menu options map here) |
 | `GetStatus()` | State, last/next backup, destination reachability, spool usage |
 | `GetBackupProgress() → (job, phase, current, total)` | The backup under way, as its last `BackupProgress` said; job 0 when none (S06-T12) |
-| `RestoreFiles(archive, paths[], dest, policy) → job` | policy = ask / keep-both / replace / skip-identical. An archive named `trash:<.trashinfo>` restores that item from the Trash (S16-T4) |
+| `RestoreFiles(archive, paths[], dest, policy) → job` | policy = ask / keep-both / replace / skip-identical. An archive named `trash:<.trashinfo>` restores that item from the Trash (S16-T4). A snapshot on this computer is copied out of rather than extracted, leaving out what the backup leaves out, and restores with the destination away (S17-T3) |
 | `PrepareRestoreWithTrash(archive, trashed[], paths[], dest) → job` / `RestoreIntoWithTrash(…)` | As `PrepareRestore` and `RestoreInto`, with the named Trash items put back in place of what the backup has at their paths, as a Trash entry shows them; `archive` is empty when nothing comes from a backup. What comes from the Trash is moved out of it, and `UndoRestore` moves it back with its `.trashinfo` (S16-T4) |
-| `PreviewFile(archive, path) → fd` | Extracted content over a pipe fd; daemon caches by chunk hash. An archive named `trash:<.trashinfo>` reads the file from the Trash instead (S16-T2) |
+| `PreviewFile(archive, path) → fd` | Extracted content over a pipe fd; daemon caches by chunk hash. An archive named `trash:<.trashinfo>` reads the file from the Trash instead (S16-T2), and a snapshot on this computer (Snapper's, or the daemon's own btrfs snapshot) is read where it is, with nothing cached (S17-T3) |
 | `CompareFile(archive, path) → job` | Produces a diff artifact for the compare view |
 | `Prune()` / `Verify()` / `Compact()` | Maintenance (Preferences → Advanced) |
 | `CancelJob(id)` / `PauseJob(id)` | Cancel / pause any long-running job |

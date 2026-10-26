@@ -39,7 +39,7 @@ use backtrack_core::config::Config;
 use backtrack_core::dbus::Reason;
 use backtrack_core::engine::{
     ArchiveId, BackupEngine, BorgCli, CheckLevel, CreateSpec, EngineError, HealthFailure,
-    JobStream, PrunePolicy,
+    JobStream, PrunePolicy, SnapshotFolder,
 };
 use backtrack_core::index::{IndexReader, IndexWriter, Kind, Repo};
 use backtrack_core::paths;
@@ -1979,19 +1979,68 @@ impl Shared {
                 "{archive} is in the Trash, not in a backup"
             )));
         }
+        if let Some(folder) = self.snapshot_folder(archive)? {
+            return Ok(Arc::new(folder));
+        }
         let repo = IndexReader::open(&self.index_path)?.repo_of(archive)?;
         match repo {
             Some(Repo::Spool) => self.spool_engine().await,
-            Some(Repo::FsSnapshot) => Err(DaemonError::RestoreFailed(format!(
-                "{archive} is a filesystem snapshot on this computer, and Backtrack \
-                 cannot read one back yet"
-            ))),
-            Some(Repo::Snapper) => Err(DaemonError::RestoreFailed(format!(
-                "{archive} is one of Snapper's snapshots on this computer, and \
-                 Backtrack cannot read one back yet"
-            ))),
-            Some(Repo::Primary) | None => self.engine(),
+            _ => self.engine(),
         }
+    }
+
+    /// The snapshot `archive` names, read as a folder on this computer, when
+    /// it names one (S17-T3): one of Snapper's, or one of the daemon's own
+    /// btrfs snapshots. Only an archive the catalogue holds as one of these is
+    /// read, so a name made up by a client opens nothing.
+    fn snapshot_folder(&self, archive: &str) -> Result<Option<SnapshotFolder>> {
+        let repo = IndexReader::open(&self.index_path)?.repo_of(archive)?;
+        let (copy, subvolume) = match repo {
+            Some(Repo::Snapper) => backtrack_core::snapper::copy_of(archive).ok_or_else(|| {
+                DaemonError::NotFound(format!("{archive} is not one of Snapper's snapshots"))
+            })?,
+            Some(Repo::FsSnapshot) => {
+                // Taken of the subvolume holding the backed-up folders, as
+                // offline protection works it out, without its probe.
+                let subvolume = self
+                    .config()
+                    .backup
+                    .include
+                    .first()
+                    .and_then(|source| crate::snapshot::containing_subvolume(source))
+                    .ok_or_else(|| {
+                        DaemonError::NotFound(format!(
+                            "{archive} is a snapshot of folders that are no longer backed up"
+                        ))
+                    })?;
+                if archive.contains('/') {
+                    return Err(DaemonError::NotFound(format!(
+                        "no snapshot called {archive}"
+                    )));
+                }
+                (self.snapshots_dir.join(archive), subvolume.root)
+            }
+            _ => return Ok(None),
+        };
+        let config = self.config();
+        Ok(Some(SnapshotFolder::new(
+            copy,
+            subvolume,
+            backtrack_core::pattern::ExcludeSet::compile(&effective_excludes(&config)),
+            vec![self.spool_dir.clone(), self.snapshots_dir.clone()],
+        )))
+    }
+
+    /// The file at `path` in the snapshot `archive` names, for `PreviewFile`,
+    /// or None when `archive` names no snapshot on this computer.
+    fn snapshot_file(&self, archive: &str, path: &str) -> Result<Option<OwnedFd>> {
+        let Some(folder) = self.snapshot_folder(archive)? else {
+            return Ok(None);
+        };
+        let file = folder.open(path).map_err(|e| {
+            DaemonError::NotFound(format!("{path} could not be opened in {archive}: {e}"))
+        })?;
+        Ok(Some(OwnedFd::from(std::os::fd::OwnedFd::from(file))))
     }
 
     fn config(&self) -> Config {
@@ -3006,6 +3055,10 @@ impl Daemon1 {
         if backtrack_core::trash::info_of(archive).is_some() {
             return self.shared.trashed_file(archive, path);
         }
+        // Nor is a file in a snapshot on this computer.
+        if let Some(file) = self.shared.snapshot_file(archive, path)? {
+            return Ok(file);
+        }
         let cache = self.shared.preview.clone();
         let entry = cache.entry_path(archive, path);
 
@@ -3084,11 +3137,17 @@ impl Daemon1 {
     /// one. The diff view itself is Stage 8; this is the extraction it needs.
     async fn compare_file(&self, archive: &str, path: &str) -> Result<u64> {
         // The comparison reads its copy through PreviewFile, and a trashed
-        // file needs nothing extracted first: the job is done as it starts.
-        if backtrack_core::trash::info_of(archive).is_some() {
+        // file, or one in a snapshot on this computer, needs nothing extracted
+        // first: the job is done as it starts.
+        let on_this_computer = if backtrack_core::trash::info_of(archive).is_some() {
             self.shared.trash.find(archive).ok_or_else(|| {
                 DaemonError::NotFound(format!("{path} is no longer in the Trash"))
             })?;
+            true
+        } else {
+            self.shared.snapshot_file(archive, path)?.is_some()
+        };
+        if on_this_computer {
             let factory: JobFactory = Arc::new(|_job| {
                 Box::pin(async {
                     Ok(backtrack_core::engine::JobStream::from_events(vec![

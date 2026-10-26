@@ -83,6 +83,22 @@ pub fn archive_name(snapshot: &Snapshot) -> String {
     format!("{ARCHIVE_PREFIX}{}", folder.display())
 }
 
+/// For the archive name of one of Snapper's snapshots, its copy
+/// (`<.snapshots>/<N>/snapshot`) and the subvolume it is a snapshot of (the
+/// folder `.snapshots` is in). None for any other name.
+pub fn copy_of(archive: &str) -> Option<(PathBuf, PathBuf)> {
+    let folder = Path::new(archive.strip_prefix(ARCHIVE_PREFIX)?);
+    let number = folder.file_name()?.to_str()?;
+    if number.is_empty() || !number.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    let snapshots = folder.parent()?;
+    if snapshots.file_name()? != FOLDER {
+        return None;
+    }
+    Some((folder.join("snapshot"), snapshots.parent()?.to_path_buf()))
+}
+
 impl Snapper {
     /// The snapshots that could be read; none, when the folder could not be.
     pub fn snapshots(&self) -> &[Snapshot] {
@@ -376,6 +392,30 @@ mod tests {
             archive_name(&snapshots[0]),
             format!("snapper:{}", f.folder().join("42").display())
         );
+    }
+
+    #[test]
+    fn an_archive_name_gives_back_the_copy_and_its_subvolume() {
+        assert_eq!(
+            copy_of("snapper:/home/.snapshots/42"),
+            Some((
+                PathBuf::from("/home/.snapshots/42/snapshot"),
+                PathBuf::from("/home")
+            ))
+        );
+        assert_eq!(
+            copy_of("snapper:/.snapshots/7"),
+            Some((PathBuf::from("/.snapshots/7/snapshot"), PathBuf::from("/")))
+        );
+        for other in [
+            "bt-host-20261026T090000Z",
+            "trash:/home/k/.local/share/Trash/info/a.trashinfo",
+            "snapper:/home/.snapshots/42/../../etc",
+            "snapper:/home/elsewhere/42",
+            "snapper:/home/.snapshots/x",
+        ] {
+            assert_eq!(copy_of(other), None, "{other}");
+        }
     }
 
     #[test]

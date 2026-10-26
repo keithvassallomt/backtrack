@@ -2990,3 +2990,238 @@ async fn snappers_snapshots_are_kept_in_the_catalogue_as_they_come_and_go() {
     )
     .await;
 }
+
+/// A machine whose `/home` is a btrfs subvolume this user owns (see
+/// `crate::snapper::tests::Machine`), backed up by a daemon whose own files,
+/// and repository, are on the same filesystem, so that it can take its own
+/// snapshots there too. `sources` picks the backed-up folders.
+async fn on_btrfs(
+    name: &str,
+    sources: impl FnOnce(&crate::snapper::tests::Machine) -> Vec<std::path::PathBuf>,
+) -> Option<(crate::snapper::tests::Machine, Arc<Shared>)> {
+    let machine = crate::snapper::tests::Machine::new(name).await?;
+    let state = machine.state();
+    let repo = state.join("repo").display().to_string();
+    let secrets: Arc<dyn SecretStore> = Arc::new(FileSecretStore::new(state.join("s.json")));
+    secrets.set(&repo, PASS).await.unwrap();
+    let engine = BorgCli::new(repo.clone(), repo.clone(), Arc::clone(&secrets))
+        .await
+        .expect("borg is available");
+    engine
+        .init_repo(&RepoSpec {
+            path: repo.clone(),
+            encryption: Encryption::RepokeyBlake2,
+        })
+        .await
+        .expect("repo created");
+    let mut config = Config::default();
+    config.storage.repository = Some(repo);
+    config.backup.include = sources(&machine);
+    let shared = Shared::in_dir(config, JobRegistry::new(), secrets, &state);
+    shared.set_engine(Arc::new(engine));
+    shared.set_index(Arc::new(std::sync::Mutex::new(
+        backtrack_core::index::IndexWriter::open(&state.join("index.db")).unwrap(),
+    )));
+    std::fs::write(machine.documents().join("report.odt"), b"original").unwrap();
+    std::fs::write(machine.documents().join("old.txt"), b"an old note").unwrap();
+    Some((machine, shared))
+}
+
+/// What a snapshot on this computer gives back, through the interface the
+/// window uses: a preview of `file`, a comparison, then `file` and its folder
+/// restored over what is on disk, each looked at, carried out and undone. The
+/// snapshot holds `file` as `held` and the folder's `old.txt`; on disk,
+/// `file` has been overwritten and `old.txt` deleted.
+async fn restored_from_a_snapshot(
+    shared: &Arc<Shared>,
+    archive: &str,
+    folder: &std::path::Path,
+    held: &str,
+) {
+    use std::io::Read as _;
+    let file = folder.join("report.odt");
+    let old = folder.join("old.txt");
+    let member = |p: &std::path::Path| p.strip_prefix("/").unwrap().display().to_string();
+    let (_server, client) = connect(Arc::clone(shared)).await;
+    let call = |method: &'static str, body| {
+        let client = client.clone();
+        async move {
+            client
+                .call_method(None::<()>, PATH, Some(IFACE), method, &body)
+                .await
+                .unwrap_or_else(|e| panic!("{method}: {e}"))
+        }
+    };
+
+    let reply = client
+        .call_method(
+            None::<()>,
+            PATH,
+            Some(IFACE),
+            "PreviewFile",
+            &(archive, member(&file)),
+        )
+        .await
+        .expect("PreviewFile");
+    let fd: zbus::zvariant::OwnedFd = reply.body().deserialize().unwrap();
+    let mut previewed = String::new();
+    std::fs::File::from(std::os::fd::OwnedFd::from(fd))
+        .read_to_string(&mut previewed)
+        .unwrap();
+    assert_eq!(previewed, held, "the preview is the snapshot's copy");
+
+    let reply = client
+        .call_method(
+            None::<()>,
+            PATH,
+            Some(IFACE),
+            "CompareFile",
+            &(archive, member(&file)),
+        )
+        .await
+        .expect("CompareFile");
+    let job: u64 = reply.body().deserialize().unwrap();
+    assert!(
+        completed(&settle(shared, job).await),
+        "the comparison is ready"
+    );
+    assert!(
+        !shared.preview.entry_path(archive, &member(&file)).exists(),
+        "read where it is, not copied into the preview cache first"
+    );
+
+    for (asked, conflicts, only_in_backup) in [(member(&file), 1, 0), (member(folder), 1, 1)] {
+        let reply = call(
+            "PrepareRestore",
+            (archive.to_string(), vec![asked.clone()], "/".to_string()),
+        )
+        .await;
+        let job: u64 = reply.body().deserialize().unwrap();
+        let state = settle(shared, job).await;
+        assert!(completed(&state), "preparing {asked}: {state:?}");
+        let reply = client
+            .call_method(None::<()>, PATH, Some(IFACE), "GetRestorePreview", &(job,))
+            .await
+            .expect("GetRestorePreview");
+        let preview: backtrack_core::dbus::RestorePreview = reply.body().deserialize().unwrap();
+        assert_eq!(
+            (preview.conflicts, preview.only_in_backup),
+            (conflicts, only_in_backup),
+            "restoring {asked}: {preview:?}"
+        );
+
+        let reply = client
+            .call_method(
+                None::<()>,
+                PATH,
+                Some(IFACE),
+                "ExecuteRestore",
+                &(job, "replace", Vec::<(String, String)>::new()),
+            )
+            .await
+            .expect("ExecuteRestore");
+        let run: u64 = reply.body().deserialize().unwrap();
+        let state = settle(shared, run).await;
+        assert!(completed(&state), "restoring {asked}: {state:?}");
+        assert_eq!(
+            std::fs::read_to_string(&file).unwrap(),
+            held,
+            "restored {asked}"
+        );
+        assert_eq!(
+            old.exists(),
+            only_in_backup == 1,
+            "old.txt after restoring {asked}"
+        );
+
+        let reply = client
+            .call_method(None::<()>, PATH, Some(IFACE), "UndoRestore", &(job,))
+            .await
+            .expect("UndoRestore");
+        let undo: u64 = reply.body().deserialize().unwrap();
+        assert!(completed(&settle(shared, undo).await), "undoing {asked}");
+        assert_eq!(
+            std::fs::read_to_string(&file).unwrap(),
+            "overwritten by mistake",
+            "undone {asked}"
+        );
+        assert!(!old.exists(), "old.txt gone again after undoing {asked}");
+    }
+}
+
+#[tokio::test]
+async fn a_snapper_snapshot_is_previewed_compared_and_restored_from_with_the_destination_away() {
+    use crate::snapper::tests::snapshot_name;
+    let Some((machine, shared)) = on_btrfs("restore-snapper", |m| m.sources()).await else {
+        return;
+    };
+    let job = Daemon1::new(Arc::clone(&shared))
+        .backup_now()
+        .await
+        .expect("backup starts");
+    wait_for_job(&shared, job).await;
+
+    // An edit after the backup, which Snapper's next snapshot holds.
+    let report = machine.documents().join("report.odt");
+    std::fs::write(&report, b"the draft Snapper saw").unwrap();
+    let now = SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64;
+    machine.take(1, now).await;
+    let job = shared.catalogue_snapper().expect("a Snapper job");
+    wait_for_job(&shared, job).await;
+
+    // Lost on disk, with the destination away.
+    std::fs::write(&report, b"overwritten by mistake").unwrap();
+    std::fs::remove_file(machine.documents().join("old.txt")).unwrap();
+    cut_the_destination(&shared);
+    restored_from_a_snapshot(
+        &shared,
+        &snapshot_name(&machine, 1),
+        &machine.documents(),
+        "the draft Snapper saw",
+    )
+    .await;
+    restore_the_destination(&shared);
+}
+
+#[tokio::test]
+async fn the_daemons_own_snapshot_is_previewed_compared_and_restored_from() {
+    // Stage 5's btrfs snapshots, which could be taken but not read back.
+    let Some((machine, shared)) = on_btrfs("restore-own", |m| vec![m.documents()]).await else {
+        return;
+    };
+    let job = Daemon1::new(Arc::clone(&shared))
+        .backup_now()
+        .await
+        .expect("backup starts");
+    wait_for_job(&shared, job).await;
+
+    let report = machine.documents().join("report.odt");
+    std::fs::write(&report, b"edited while away").unwrap();
+    cut_the_destination(&shared);
+    let job = shared
+        .start_scheduled_backup()
+        .await
+        .expect("the tick is not an error")
+        .expect("an unreachable destination starts local protection instead");
+    wait_for_job(&shared, job).await;
+    let local = local_rows(&shared).await;
+    assert_eq!(
+        local.iter().map(|r| r.repo.as_str()).collect::<Vec<_>>(),
+        ["fs-snapshot"],
+        "protected by a snapshot of the subvolume: {local:?}"
+    );
+
+    std::fs::write(&report, b"overwritten by mistake").unwrap();
+    std::fs::remove_file(machine.documents().join("old.txt")).unwrap();
+    restored_from_a_snapshot(
+        &shared,
+        &local[0].name,
+        &machine.documents(),
+        "edited while away",
+    )
+    .await;
+    restore_the_destination(&shared);
+}

@@ -7,6 +7,7 @@
 
 mod borg;
 mod error;
+mod folder;
 mod job;
 mod spec;
 
@@ -21,6 +22,7 @@ use crate::index::{ArchiveMeta, BorgItem};
 
 pub use borg::{is_checkpoint, BorgCli};
 pub use error::{EngineError, HealthFailure, Result};
+pub use folder::SnapshotFolder;
 pub use job::{JobEvent, JobSink, JobStream, JobSummary, LogLevel};
 pub use spec::{
     ArchiveId, CheckLevel, Compression, CreateSpec, Encryption, Presence, PrunePolicy, RepoInfo,

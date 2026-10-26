@@ -81,6 +81,14 @@ impl Machine {
         vec![self.documents(), self.photos()]
     }
 
+    /// A folder for the daemon's own files, on the same filesystem, so that
+    /// its own snapshots of `/home` can be kept there (Stage 5).
+    pub fn state(&self) -> PathBuf {
+        let state = self.scratch.join("state");
+        std::fs::create_dir_all(&state).unwrap();
+        state
+    }
+
     /// Take snapshot `n` as Snapper does, dated `date` (epoch seconds).
     pub async fn take(&self, n: u64, date: i64) {
         self.take_pausing(n, date, std::time::Duration::ZERO).await;
@@ -148,13 +156,19 @@ impl Machine {
 
 impl Drop for Machine {
     fn drop(&mut self) {
-        let snapshots = self.home.join(".snapshots");
-        for entry in std::fs::read_dir(&snapshots)
+        // Read-only snapshots, Snapper's and the daemon's own, made writable
+        // to be removed.
+        let snappers = std::fs::read_dir(self.home.join(".snapshots"))
             .into_iter()
             .flatten()
             .flatten()
-        {
-            let snapshot = entry.path().join("snapshot");
+            .map(|entry| entry.path().join("snapshot"));
+        let own = std::fs::read_dir(self.scratch.join("state/snapshots"))
+            .into_iter()
+            .flatten()
+            .flatten()
+            .map(|entry| entry.path());
+        for snapshot in snappers.chain(own).collect::<Vec<_>>() {
             let _ = std::process::Command::new("btrfs")
                 .args(["property", "set"])
                 .arg(&snapshot)
