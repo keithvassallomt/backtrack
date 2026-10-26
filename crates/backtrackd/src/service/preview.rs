@@ -20,9 +20,13 @@
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::SystemTime;
 
 use tracing::{debug, warn};
+
+/// The extension of an extraction still being written.
+const PARTIAL: &str = "partial";
 
 /// The cache ceiling. Generous enough to hold a working set of photographs,
 /// small enough that it cannot quietly eat a small SSD.
@@ -83,6 +87,18 @@ impl PreviewCache {
         }
     }
 
+    /// A temporary name beside `entry` that no other extraction is using.
+    ///
+    /// Two previews of the same file at once each write their own, and
+    /// whichever finishes last is renamed into place over the other's, which
+    /// holds the same bytes. Sharing one name, the second's rename found
+    /// nothing to move (S16-T7).
+    pub fn partial_path(&self, entry: &Path) -> PathBuf {
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+        let n = NEXT.fetch_add(1, Ordering::Relaxed);
+        entry.with_extension(format!("{n}.{PARTIAL}"))
+    }
+
     /// Create the cache directory if it is not there yet.
     pub fn ensure_dir(&self) -> std::io::Result<()> {
         std::fs::create_dir_all(&self.dir)
@@ -124,18 +140,21 @@ impl PreviewCache {
         }
     }
 
-    /// Remove every empty entry, returning how many there were.
+    /// Remove every empty entry, and every extraction left unfinished,
+    /// returning how many there were. Only while nothing is extracting: at
+    /// the daemon's start.
     ///
     /// A failed extraction used to read as an empty file, and was kept here and
     /// served as though it were the file, for good (S15-T6). Run at every
     /// start rather than once: that clears what the defect left behind, and
     /// all it costs otherwise is extracting a genuinely empty file again the
-    /// next time it is looked at.
+    /// next time it is looked at. An unfinished one is a daemon stopped in the
+    /// middle of an extraction, under a name no later one will use.
     pub fn drop_empty(&self) -> usize {
         let Ok(entries) = self.scan() else { return 0 };
         entries
             .into_iter()
-            .filter(|entry| entry.size == 0)
+            .filter(|entry| entry.size == 0 || entry.path.extension().is_some_and(|e| e == PARTIAL))
             .filter(|entry| match std::fs::remove_file(&entry.path) {
                 Ok(()) => true,
                 Err(e) => {
@@ -299,6 +318,29 @@ mod tests {
         cache.evict_to_fit();
         assert!(cache.contains("a1", "one"));
         assert!(cache.contains("a1", "two"));
+    }
+
+    #[test]
+    fn every_extraction_has_a_temporary_name_of_its_own() {
+        let (_dir, cache) = cache(1024);
+        let entry = cache.entry_path("a1", "home/notes.txt");
+        let first = cache.partial_path(&entry);
+        let second = cache.partial_path(&entry);
+        assert_ne!(first, second);
+        assert_eq!(first.parent(), entry.parent());
+    }
+
+    #[test]
+    fn an_unfinished_extraction_is_cleared_at_start_and_a_finished_one_kept() {
+        let (_dir, cache) = cache(1024);
+        let entry = cache.entry_path("a1", "home/notes.txt");
+        std::fs::write(&entry, b"kept").unwrap();
+        let left = cache.partial_path(&entry);
+        std::fs::write(&left, b"half of it").unwrap();
+
+        assert_eq!(cache.drop_empty(), 1);
+        assert!(entry.exists());
+        assert!(!left.exists());
     }
 
     #[test]

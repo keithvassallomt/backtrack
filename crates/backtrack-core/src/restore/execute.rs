@@ -14,7 +14,12 @@
 //! moved into the stash first, and every move is written down, so the whole
 //! restore can be reversed afterwards by walking the log backwards. That log is
 //! what "Undo" is.
+//!
+//! Something restored out of the Trash is logged as a kind of move of its own,
+//! because Undo does not delete it: it goes back into the Trash, with its
+//! `.trashinfo` as it was.
 
+use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
@@ -22,7 +27,7 @@ use std::time::SystemTime;
 use tracing::{debug, warn};
 
 use super::classify::{Class, Kind};
-use super::plan::{Decision, Decisions, RestorePlan};
+use super::plan::{Decision, Decisions, FromTrash, RestorePlan};
 use super::{io_error, RestoreError, Result};
 
 /// One thing the restore did, in enough detail to undo it.
@@ -36,6 +41,33 @@ pub enum Move {
     KeptBoth { path: PathBuf, renamed: PathBuf },
     /// A directory was created to hold restored files.
     MadeDir { path: PathBuf },
+    /// Something was taken out of the Trash to `path`, from `copy` there.
+    /// What stood at `path` went as `displaced` says, if anything did.
+    FromTrash {
+        path: PathBuf,
+        copy: PathBuf,
+        displaced: Option<Displaced>,
+    },
+    /// Nothing but folders was left of `copy` in the Trash once the files had
+    /// gone, so the folders went too, and, for a whole trashed item, its
+    /// `.trashinfo`, which said `text`.
+    LeftTrash {
+        copy: PathBuf,
+        /// The folders that went, relative to `copy`, shallowest first. Empty
+        /// for a file.
+        folders: Vec<PathBuf>,
+        dir: bool,
+        info: Option<(PathBuf, String)>,
+    },
+}
+
+/// What happened to the file that stood where something from the Trash went.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Displaced {
+    /// Replaced: it is in the stash.
+    Stashed(PathBuf),
+    /// Kept Both: it was renamed aside.
+    Renamed(PathBuf),
 }
 
 /// Everything the restore did, in the order it did it.
@@ -49,7 +81,7 @@ impl MoveLog {
     pub fn restored(&self) -> usize {
         self.moves
             .iter()
-            .filter(|m| !matches!(m, Move::MadeDir { .. }))
+            .filter(|m| !matches!(m, Move::MadeDir { .. } | Move::LeftTrash { .. }))
             .count()
     }
 }
@@ -147,7 +179,82 @@ pub fn execute_watched(
             }
         }
     }
+    for trashed in &plan.trash {
+        match leave_trash(trashed) {
+            Ok(Some(left)) => {
+                done(&left);
+                report.log.moves.push(left);
+            }
+            Ok(None) => {}
+            Err(error) => {
+                warn!(copy = %trashed.copy.display(), %error, "the Trash could not be tidied after a restore");
+            }
+        }
+    }
     Ok(report)
+}
+
+/// Once everything has been taken out of `trashed`, take the folders left
+/// behind as well, and the `.trashinfo` of a whole item, so the Trash no
+/// longer lists it. Anything still in it, skipped or left alone, keeps it in
+/// the Trash as it is.
+fn leave_trash(trashed: &FromTrash) -> Result<Option<Move>> {
+    let copy = &trashed.copy;
+    let mut folders = Vec::new();
+    let dir = match std::fs::symlink_metadata(copy) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
+        Err(error) => return Err(io_error(copy, error)),
+        Ok(facts) if facts.is_dir() => {
+            if !only_folders(copy, Path::new(""), &mut folders)? {
+                return Ok(None);
+            }
+            // Deepest first, and each only if it is still empty.
+            for folder in folders.iter().rev() {
+                let path = copy.join(folder);
+                std::fs::remove_dir(&path).map_err(|e| io_error(&path, e))?;
+            }
+            std::fs::remove_dir(copy).map_err(|e| io_error(copy, e))?;
+            true
+        }
+        // Something is still there: Skip left it, or it was never restored.
+        Ok(_) => return Ok(None),
+    };
+    let info = match &trashed.info {
+        None => None,
+        Some(info) => {
+            let text = std::fs::read_to_string(info).map_err(|e| io_error(info, e))?;
+            std::fs::remove_file(info).map_err(|e| io_error(info, e))?;
+            Some((info.clone(), text))
+        }
+    };
+    Ok(Some(Move::LeftTrash {
+        copy: copy.clone(),
+        folders,
+        dir,
+        info,
+    }))
+}
+
+/// Whether `root` holds nothing but folders, collecting them, shallowest
+/// first, relative to it.
+fn only_folders(root: &Path, relative: &Path, folders: &mut Vec<PathBuf>) -> Result<bool> {
+    let here = root.join(relative);
+    let listing = std::fs::read_dir(&here).map_err(|e| io_error(&here, e))?;
+    for item in listing {
+        let item = item.map_err(|e| io_error(&here, e))?;
+        let child = relative.join(item.file_name());
+        let facts = item
+            .file_type()
+            .map_err(|e| io_error(root.join(&child), e))?;
+        if !facts.is_dir() {
+            return Ok(false);
+        }
+        folders.push(child.clone());
+        if !only_folders(root, &child, folders)? {
+            return Ok(false);
+        }
+    }
+    Ok(true)
 }
 
 /// Do one path, returning what was done, or `None` if there was nothing to do.
@@ -159,7 +266,8 @@ fn apply(
     stash_dir: &Path,
 ) -> Result<Option<Move>> {
     let target = super::safe_join(&plan.dest, relative)?;
-    let source = plan.staging.join(relative);
+    let source = plan.source_of(relative);
+    let from_trash = plan.from_trash(relative);
     let kind = entry.backup.map(|f| f.kind);
 
     // A directory in the backup is made, not moved: its contents arrive as
@@ -182,24 +290,33 @@ fn apply(
         (true, Decision::Replace) => {
             let kept = stash_dir.join(strip_root(&target));
             move_path(&target, &kept)?;
-            Some(Move::Replaced {
-                path: target.clone(),
-                stashed: kept,
-            })
+            Some(Displaced::Stashed(kept))
         }
         (true, Decision::KeepBoth) => {
             let aside = keep_both_name(&target, |candidate| candidate.exists());
             move_path(&target, &aside)?;
-            Some(Move::KeptBoth {
-                path: target.clone(),
-                renamed: aside,
-            })
+            Some(Displaced::Renamed(aside))
         }
         (true, Decision::Skip) => return Ok(None),
     };
 
     move_path(&source, &target)?;
-    Ok(Some(displaced.unwrap_or(Move::Added { path: target })))
+    Ok(Some(match (from_trash, displaced) {
+        (true, displaced) => Move::FromTrash {
+            path: target,
+            copy: source,
+            displaced,
+        },
+        (false, None) => Move::Added { path: target },
+        (false, Some(Displaced::Stashed(stashed))) => Move::Replaced {
+            path: target,
+            stashed,
+        },
+        (false, Some(Displaced::Renamed(renamed))) => Move::KeptBoth {
+            path: target,
+            renamed,
+        },
+    }))
 }
 
 /// Move the backup's copy of every path that needs a decision out of staging
@@ -218,7 +335,7 @@ pub fn set_aside(plan: &RestorePlan, aside: &Path) -> Report {
         if moved.iter().any(|done| entry.path.starts_with(done)) {
             continue;
         }
-        let source = plan.staging.join(&entry.path);
+        let source = plan.source_of(&entry.path);
         if std::fs::symlink_metadata(&source).is_err() {
             continue;
         }
@@ -240,25 +357,60 @@ pub fn set_aside(plan: &RestorePlan, aside: &Path) -> Report {
 /// Walked backwards because the moves are not independent: a Keep Both renamed
 /// a file aside before another took its name, and undoing them in the order
 /// they happened would put the first one back on top of the second.
+///
+/// Something that came out of the Trash goes back into it, never away: a
+/// trashed item's `.trashinfo` is written again before its files return, under
+/// a free name if something else has been given its own in the meantime, so
+/// the files follow it there.
 pub fn undo(log: &MoveLog) -> Report {
     let mut report = Report::default();
+    // A trashed item that went back under another name: where its copy was,
+    // and where it is now.
+    let mut renamed: BTreeMap<PathBuf, PathBuf> = BTreeMap::new();
     for done in log.moves.iter().rev() {
         let result = match done {
             Move::Added { path } => remove(path),
             Move::Replaced { path, stashed } => remove(path).and_then(|_| move_path(stashed, path)),
             Move::KeptBoth { path, renamed } => remove(path).and_then(|_| move_path(renamed, path)),
-            // Left alone: a directory that was created may since have had
-            // other things put in it, and removing it would take them too.
-            Move::MadeDir { .. } => Ok(()),
+            // Only if it is still empty: a directory that was created may
+            // since have had other things put in it.
+            Move::MadeDir { path } => {
+                let _ = std::fs::remove_dir(path);
+                Ok(())
+            }
+            Move::FromTrash {
+                path,
+                copy,
+                displaced,
+            } => back_to_trash(path, &moved(copy, &renamed)).and_then(|_| match displaced {
+                None => Ok(()),
+                Some(Displaced::Stashed(from) | Displaced::Renamed(from)) => move_path(from, path),
+            }),
+            Move::LeftTrash {
+                copy,
+                folders,
+                dir,
+                info,
+            } => into_trash(copy, folders, *dir, info.as_ref()).map(|now| {
+                if &now != copy {
+                    renamed.insert(copy.clone(), now);
+                }
+            }),
         };
         match result {
-            Ok(()) => report.restored += 1,
+            Ok(()) => {
+                if !matches!(done, Move::LeftTrash { .. }) {
+                    report.restored += 1;
+                }
+            }
             Err(error) => {
                 let path = match done {
                     Move::Added { path }
                     | Move::Replaced { path, .. }
                     | Move::KeptBoth { path, .. }
-                    | Move::MadeDir { path } => path.clone(),
+                    | Move::MadeDir { path }
+                    | Move::FromTrash { path, .. } => path.clone(),
+                    Move::LeftTrash { copy, .. } => copy.clone(),
                 };
                 warn!(path = %path.display(), %error, "a file could not be put back");
                 report.failures.push((path, error.to_string()));
@@ -266,6 +418,117 @@ pub fn undo(log: &MoveLog) -> Report {
         }
     }
     report
+}
+
+/// Where `copy` is now, if the item it is in went back to the Trash under
+/// another name.
+fn moved(copy: &Path, renamed: &BTreeMap<PathBuf, PathBuf>) -> PathBuf {
+    for (was, now) in renamed {
+        if let Ok(rest) = copy.strip_prefix(was) {
+            return if rest.as_os_str().is_empty() {
+                now.clone()
+            } else {
+                now.join(rest)
+            };
+        }
+    }
+    copy.to_path_buf()
+}
+
+/// Move `path` back to `copy` in the Trash, beside whatever has been put there
+/// since rather than over it.
+fn back_to_trash(path: &Path, copy: &Path) -> Result<()> {
+    let taken = |n: &u32| {
+        let candidate = copy.with_file_name(trash_name(copy.file_name().unwrap_or_default(), *n));
+        std::fs::symlink_metadata(candidate).is_ok()
+    };
+    let free = (1..1000).find(|n| !taken(n)).unwrap_or(1);
+    move_path(
+        path,
+        &copy.with_file_name(trash_name(copy.file_name().unwrap_or_default(), free)),
+    )
+}
+
+/// Make the place in the Trash that a trashed item's files go back to: its
+/// `.trashinfo` written again as it was, and the folders it had. Returns where
+/// its copy is, which is under another name if its own has been taken.
+fn into_trash(
+    copy: &Path,
+    folders: &[PathBuf],
+    dir: bool,
+    info: Option<&(PathBuf, String)>,
+) -> Result<PathBuf> {
+    let copy = match info {
+        None => copy.to_path_buf(),
+        Some((info, text)) => restore_info(copy, info, text)?,
+    };
+    if dir {
+        std::fs::create_dir_all(&copy).map_err(|e| io_error(&copy, e))?;
+        for folder in folders {
+            let path = copy.join(folder);
+            std::fs::create_dir_all(&path).map_err(|e| io_error(&path, e))?;
+        }
+    }
+    Ok(copy)
+}
+
+/// Write a `.trashinfo` back, under the name it had if nothing else holds that
+/// name now, and otherwise under the first free one, as the Trash
+/// specification has it: the `.trashinfo` is made first, and only if it did
+/// not exist, so that two programs cannot both take the same name.
+fn restore_info(copy: &Path, info: &Path, text: &str) -> Result<PathBuf> {
+    use std::io::Write;
+    let (Some(files), Some(infos), Some(name)) = (copy.parent(), info.parent(), copy.file_name())
+    else {
+        return Err(io_error(
+            copy,
+            std::io::Error::other("not a place in a Trash"),
+        ));
+    };
+    for n in 1..1000 {
+        let name = trash_name(name, n);
+        let copy = files.join(&name);
+        if std::fs::symlink_metadata(&copy).is_ok() {
+            continue;
+        }
+        let mut info_name = name.clone();
+        info_name.push(".trashinfo");
+        let info = infos.join(info_name);
+        std::fs::create_dir_all(infos).map_err(|e| io_error(infos, e))?;
+        let mut file = match std::fs::File::options()
+            .write(true)
+            .create_new(true)
+            .open(&info)
+        {
+            Ok(file) => file,
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(io_error(&info, error)),
+        };
+        file.write_all(text.as_bytes())
+            .and_then(|()| file.sync_all())
+            .map_err(|e| io_error(&info, e))?;
+        std::fs::create_dir_all(files).map_err(|e| io_error(files, e))?;
+        return Ok(copy);
+    }
+    Err(io_error(
+        copy,
+        std::io::Error::other("no free name is left in the Trash"),
+    ))
+}
+
+/// The `n`th name an item can take in the Trash: its own, then `name.2.ext`,
+/// `name.3.ext`, as GLib names a second item of the same name.
+fn trash_name(name: &std::ffi::OsStr, n: u32) -> OsString {
+    if n == 1 {
+        return name.to_os_string();
+    }
+    let text = name.to_string_lossy();
+    // The first dot after the first character: a hidden file's own dot does
+    // not begin an extension.
+    match text.char_indices().skip(1).find(|&(_, c)| c == '.') {
+        Some((dot, _)) => OsString::from(format!("{}.{n}{}", &text[..dot], &text[dot..])),
+        None => OsString::from(format!("{text}.{n}")),
+    }
 }
 
 /// What the file on disk is renamed to under Keep Both.
@@ -312,11 +575,23 @@ pub fn keep_both_name(path: &Path, taken: impl Fn(&Path) -> bool) -> PathBuf {
 /// stash beside it.
 fn check_space(plan: &RestorePlan, decisions: &Decisions, stash: &Path) -> Result<()> {
     let needed = plan.space_needed(decisions);
-    let dest = if super::same_filesystem(&plan.staging, &plan.dest) {
+    let staged = if super::same_filesystem(&plan.staging, &plan.dest) {
         0
     } else {
-        needed.dest
+        needed.dest - needed.from_trash
     };
+    // A Trash on another drive than the destination, as for Restore To onto
+    // another drive, is copied from like a staging directory there.
+    let trashed = if plan
+        .trash
+        .iter()
+        .all(|t| super::same_filesystem(&t.copy, &plan.dest))
+    {
+        0
+    } else {
+        needed.from_trash
+    };
+    let dest = staged + trashed;
     let stashed = if super::same_filesystem(&plan.dest, stash) {
         0
     } else {

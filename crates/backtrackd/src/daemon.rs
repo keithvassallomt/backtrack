@@ -215,6 +215,12 @@ pub async fn run() -> Result<Outcome, StartupError> {
         Arc::clone(&shared),
         emitter.to_owned(),
     ));
+    // The Trash, read and kept current, and its changes announced (Stage 16).
+    tokio::spawn(crate::trash::watch(Arc::clone(&shared)));
+    tokio::spawn(service::announce_trash(
+        Arc::clone(&shared),
+        emitter.to_owned(),
+    ));
 
     // Claiming the name is the readiness announcement, so every piece of state
     // that shapes an answer is already in place by here. systemd reports the

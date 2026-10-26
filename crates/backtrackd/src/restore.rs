@@ -23,7 +23,7 @@ use backtrack_core::dbus::{RestoreEntry, RestorePreview};
 use backtrack_core::engine::{
     ArchiveId, BackupEngine, EngineError, JobEvent, JobStream, JobSummary,
 };
-use backtrack_core::restore::{self, Class, Decisions, Kind, MoveLog, RestorePlan};
+use backtrack_core::restore::{self, Class, Decisions, FromTrash, Kind, MoveLog, RestorePlan};
 use tracing::{info, warn};
 
 use crate::jobs::JobId;
@@ -280,10 +280,16 @@ pub fn preview(plan: &RestorePlan) -> RestorePreview {
 
 /// Everything preparing a restore needs.
 pub struct PreparePlan {
-    pub engine: Arc<dyn BackupEngine>,
+    /// None when nothing is fetched from a backup.
+    pub engine: Option<Arc<dyn BackupEngine>>,
     pub archive: ArchiveId,
-    /// Archive-relative member paths to fetch.
+    /// Archive-relative member paths asked for.
     pub paths: Vec<String>,
+    /// The part of `paths` fetched from the backup: everything not entirely
+    /// in the Trash.
+    pub fetch: Vec<String>,
+    /// What comes out of the Trash, archive-relative.
+    pub trash: Vec<FromTrash>,
     pub dest: PathBuf,
     pub staging: PathBuf,
     pub restores: Arc<Restores>,
@@ -327,19 +333,51 @@ pub fn start_prepare(plan: PreparePlan) -> JobStream {
 /// because the staging tree is the thing being planned against: whatever borg
 /// actually produced is the truth, and asking it twice invites the two answers
 /// to differ.
-fn rooted_at_what_was_asked_for(staging: &Path, paths: &[String]) -> (PathBuf, Vec<PathBuf>) {
+///
+/// What comes out of the Trash is planned from where it lies, so it is
+/// re-rooted the same way: the trashed folder asked for, restored elsewhere,
+/// is the destination's contents, at the empty path.
+fn rooted_at_what_was_asked_for(
+    staging: &Path,
+    paths: &[String],
+    trash: &[FromTrash],
+) -> (PathBuf, Vec<PathBuf>, Vec<FromTrash>) {
     let Some(asked) = paths.first() else {
-        return (staging.to_path_buf(), Vec::new());
+        return (staging.to_path_buf(), Vec::new(), trash.to_vec());
     };
+    let asked = Path::new(asked);
     let extracted = staging.join(asked);
-    if extracted.is_dir() {
-        let inside = top_level(&extracted);
-        return (extracted, inside);
-    }
-    match (extracted.parent(), extracted.file_name()) {
-        (Some(parent), Some(name)) => (parent.to_path_buf(), vec![PathBuf::from(name)]),
-        _ => (staging.to_path_buf(), Vec::new()),
-    }
+    let trashed = trash.iter().find(|t| t.path == asked);
+    let is_dir = match trashed {
+        Some(t) => t.copy.is_dir(),
+        None => extracted.is_dir(),
+    };
+    let root = if is_dir { Some(asked) } else { asked.parent() };
+    let (Some(root), Some(name)) = (root, asked.file_name()) else {
+        return (staging.to_path_buf(), Vec::new(), trash.to_vec());
+    };
+    let trash: Vec<FromTrash> = trash
+        .iter()
+        .filter_map(|t| {
+            let path = t.path.strip_prefix(root).ok()?.to_path_buf();
+            Some(FromTrash { path, ..t.clone() })
+        })
+        .collect();
+    let inside = if is_dir {
+        let mut inside = top_level(&extracted);
+        for t in &trash {
+            match t.path.components().next() {
+                Some(first) => inside.push(PathBuf::from(first.as_os_str())),
+                None => inside.extend(top_level(&t.copy)),
+            }
+        }
+        inside.sort();
+        inside.dedup();
+        inside
+    } else {
+        vec![PathBuf::from(name)]
+    };
+    (staging.join(root), inside, trash)
 }
 
 /// The names directly inside a directory. What bounds the comparison when the
@@ -361,13 +399,17 @@ async fn prepare(
     empty_staging(&plan.staging).map_err(local)?;
 
     // ── Fetching ──
-    let stream = plan
-        .engine
-        .extract(&plan.archive, &plan.paths, &plan.staging)
-        .await?;
-    drive(stream, sink, PHASE_FETCHING).await?;
-    if sink.is_cancelled() {
-        return Err(EngineError::Cancelled);
+    //
+    // Only what the Trash does not hold, which may be nothing: what is in the
+    // Trash is on this computer already.
+    if let (Some(engine), false) = (&plan.engine, plan.fetch.is_empty()) {
+        let stream = engine
+            .extract(&plan.archive, &plan.fetch, &plan.staging)
+            .await?;
+        drive(stream, sink, PHASE_FETCHING).await?;
+        if sink.is_cancelled() {
+            return Err(EngineError::Cancelled);
+        }
     }
 
     // ── Comparing ──
@@ -385,23 +427,26 @@ async fn prepare(
     let dest = plan.dest.clone();
     // What was asked for bounds the comparison. Without it, restoring one file
     // would walk every sibling of every directory above it.
-    let (staging, asked_for) = if plan.into_dest {
-        rooted_at_what_was_asked_for(&plan.staging, &plan.paths)
+    let (staging, asked_for, trash) = if plan.into_dest {
+        rooted_at_what_was_asked_for(&plan.staging, &plan.paths, &plan.trash)
     } else {
         (
             plan.staging.clone(),
             plan.paths.iter().map(PathBuf::from).collect(),
+            plan.trash.clone(),
         )
     };
-    let computed =
-        tokio::task::spawn_blocking(move || restore::plan(&archive, &staging, &dest, &asked_for))
-            .await
-            .map_err(|e| EngineError::Local(e.to_string()))?
-            .map_err(|e| EngineError::Local(e.to_string()))?;
+    let computed = tokio::task::spawn_blocking(move || {
+        restore::plan_with_trash(&archive, &staging, &dest, &asked_for, trash)
+    })
+    .await
+    .map_err(|e| EngineError::Local(e.to_string()))?
+    .map_err(|e| EngineError::Local(e.to_string()))?;
 
     let counts = computed.counts();
     info!(
         archive = plan.archive.0,
+        from_trash = computed.trash.len(),
         identical = counts.identical,
         conflicts = counts.conflicts,
         adding = counts.only_in_backup,
@@ -596,7 +641,8 @@ mod tests {
         let member = "home/keith/Projects/website";
         extracted(root.path(), member, &["README.md", "css/main.css"]);
 
-        let (staging, asked_for) = rooted_at_what_was_asked_for(root.path(), &[member.to_string()]);
+        let (staging, asked_for, _) =
+            rooted_at_what_was_asked_for(root.path(), &[member.to_string()], &[]);
 
         assert_eq!(staging, root.path().join(member));
         let mut names: Vec<String> = asked_for
@@ -613,7 +659,8 @@ mod tests {
         extracted(root.path(), "home/keith/Documents", &["report.odt"]);
         let member = "home/keith/Documents/report.odt";
 
-        let (staging, asked_for) = rooted_at_what_was_asked_for(root.path(), &[member.to_string()]);
+        let (staging, asked_for, _) =
+            rooted_at_what_was_asked_for(root.path(), &[member.to_string()], &[]);
 
         assert_eq!(staging, root.path().join("home/keith/Documents"));
         assert_eq!(asked_for, [PathBuf::from("report.odt")]);

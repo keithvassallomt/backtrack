@@ -504,6 +504,7 @@ impl Progress {
             &folder,
             "",
             status.taken,
+            &crate::model::restore::Origin::backup(status.taken),
         )
         .await
         {

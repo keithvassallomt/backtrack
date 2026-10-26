@@ -31,7 +31,7 @@ mod preview;
 mod recovery_e2e;
 mod state;
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
 
@@ -237,6 +237,10 @@ pub struct Shared {
     catalogue_rebuilding: Mutex<bool>,
     /// The disaster recovery, if one is under way or waiting on its summary.
     recovery: Arc<crate::recovery::Recovery>,
+    /// The data home the home Trash is in: the host's, or a test's own.
+    data_home: PathBuf,
+    /// What is in the desktop's Trash from the backed-up folders (Stage 16).
+    pub trash: crate::trash::TrashState,
 }
 
 impl Shared {
@@ -264,6 +268,7 @@ impl Shared {
                 replaced_dir: paths::replaced_dir(),
                 recovery_manifest: paths::recovery_manifest(),
                 recovery_dir: paths::recovery_dir(),
+                data_home: paths::host_data_home(),
             },
         )
     }
@@ -295,6 +300,7 @@ impl Shared {
                 replaced_dir: dir.join("replaced"),
                 recovery_manifest: dir.join("dr-job.json"),
                 recovery_dir: dir.join("recovery"),
+                data_home: dir.join("share"),
             },
         )
     }
@@ -322,6 +328,7 @@ impl Shared {
             replaced_dir,
             recovery_manifest,
             recovery_dir,
+            data_home,
         } = layout;
         Arc::new(Shared {
             config: Mutex::new(config),
@@ -372,7 +379,36 @@ impl Shared {
                 recovery_manifest,
                 recovery_dir,
             )),
+            data_home,
+            trash: crate::trash::TrashState::default(),
         })
+    }
+
+    /// What a look at the Trash needs, taken in one go.
+    pub fn trash_scope(&self) -> crate::trash::Scope {
+        let config = self.config();
+        crate::trash::Scope {
+            data_home: self.data_home.clone(),
+            sources: config.backup.include.clone(),
+            excludes: backtrack_core::pattern::ExcludeSet::compile(&config.backup.exclude),
+            index: self.index_path.clone(),
+        }
+    }
+
+    /// A file in the Trash, for `PreviewFile`: the file at `path` in the
+    /// trashed item `archive` names. Only an item in the listing is read.
+    fn trashed_file(&self, archive: &str, path: &str) -> Result<OwnedFd> {
+        let entry = self
+            .trash
+            .find(archive)
+            .ok_or_else(|| DaemonError::NotFound(format!("{path} is no longer in the Trash")))?;
+        let file = backtrack_core::trash::copy_of(&entry.item, path).ok_or_else(|| {
+            DaemonError::NotFound(format!("{path} is not part of what was moved to the Trash"))
+        })?;
+        let opened = std::fs::File::open(&file).map_err(|e| {
+            DaemonError::NotFound(format!("{path} could not be opened in the Trash: {e}"))
+        })?;
+        Ok(OwnedFd::from(std::os::fd::OwnedFd::from(opened)))
     }
 
     /// Swap the destination probe. Used by the tests to script a sequence of
@@ -400,9 +436,17 @@ impl Shared {
     /// Everything that can be refused before a job exists is refused here, so
     /// a client hears "that path is empty" as an error to its call rather than
     /// as a job that fails a moment later.
+    ///
+    /// `trashed` names things in the Trash (archive names from `ListTrashed`)
+    /// to put back in place of whatever `archive` has at their paths, as a
+    /// Trash entry in the timeline shows them, and `archive` is empty when
+    /// nothing comes from a backup. An archive that is itself a trashed item's
+    /// name is that item. What the Trash holds whole is not fetched from the
+    /// backup at all, so restoring it does not need the destination.
     async fn restore_preflight(
         &self,
         archive: &str,
+        trashed: &[String],
         paths: &[String],
         dest: &str,
     ) -> Result<PendingRestore> {
@@ -411,10 +455,47 @@ impl Shared {
                 "restore needs at least one path".into(),
             ));
         }
+        let mut trashed = trashed.to_vec();
+        let archive = if backtrack_core::trash::info_of(archive).is_some() {
+            trashed.push(archive.to_string());
+            ""
+        } else {
+            archive
+        };
+        let mut items = Vec::new();
+        for name in &trashed {
+            // Only what is listed is ever moved, as only what is listed is
+            // ever read.
+            let entry = self.trash.find(name).ok_or_else(|| {
+                DaemonError::NotFound(format!("{name} is no longer in the Trash"))
+            })?;
+            items.push(entry.item);
+        }
+        let trash = from_trash(&items, paths);
+        let fetch: Vec<String> = match archive {
+            "" => Vec::new(),
+            _ => paths
+                .iter()
+                .filter(|p| !trash.iter().any(|t| Path::new(p).starts_with(&t.path)))
+                .cloned()
+                .collect(),
+        };
+        if fetch.is_empty() && trash.is_empty() {
+            return Err(DaemonError::InvalidArgument(
+                "there is nothing to restore: no backup was named, and nothing named is in the Trash"
+                    .into(),
+            ));
+        }
+        let engine = match fetch.is_empty() {
+            true => None,
+            false => Some(self.engine_for(archive).await?),
+        };
         Ok(PendingRestore {
-            engine: self.engine_for(archive).await?,
+            engine,
             archive: ArchiveId(archive.to_string()),
             paths: paths.to_vec(),
+            fetch,
+            trash,
             dest: PathBuf::from(dest),
             into_dest: false,
         })
@@ -436,9 +517,11 @@ impl Shared {
         let staging_root = self.staging_dir.clone();
         let factory: JobFactory = Arc::new(move |job| {
             let plan = crate::restore::PreparePlan {
-                engine: Arc::clone(&pending.engine),
+                engine: pending.engine.clone(),
                 archive: pending.archive.clone(),
                 paths: pending.paths.clone(),
+                fetch: pending.fetch.clone(),
+                trash: pending.trash.clone(),
                 dest: pending.dest.clone(),
                 into_dest: pending.into_dest,
                 staging: staging_root.join(job.to_string()),
@@ -802,21 +885,29 @@ impl Shared {
             next_due(schedule.interval, schedule.last_attempt, now)
         };
         let health = self.health();
+        // Each read in a statement of its own, so that no lock is held while
+        // another is taken (S16-T6).
+        let last_backup = *self.last_backup.lock().unwrap();
+        let destination_reachable = self.destination_reachable();
+        let active_job = self.active_job();
+        let configured = self.config().is_configured();
+        let since = self.state_since(health, now);
+        let recovery_job = self.recovery_job().unwrap_or(0);
         Status {
             state: health.state.as_str().to_string(),
-            last_backup: to_epoch(*self.last_backup.lock().unwrap()),
+            last_backup: to_epoch(last_backup),
             next_backup: to_epoch(next),
-            destination_reachable: self.destination_reachable(),
+            destination_reachable,
             spool_bytes: 0,
             offline_mode: String::new(),
             local_snapshots: 0,
             expirable_snapshots: 0,
-            active_job: self.active_job(),
+            active_job,
             paused_until: to_epoch(paused_until),
-            configured: self.config().is_configured(),
+            configured,
             reason: health.reason_str().to_string(),
-            since: self.state_since(health, now),
-            recovery_job: self.recovery_job().unwrap_or(0),
+            since,
+            recovery_job,
         }
     }
 
@@ -1013,7 +1104,10 @@ impl Shared {
     pub fn drop_empty_previews(&self) {
         let dropped = self.preview.drop_empty();
         if dropped > 0 {
-            info!(dropped, "removed empty previews from the cache");
+            info!(
+                dropped,
+                "removed empty and unfinished previews from the cache"
+            );
         }
     }
 
@@ -1063,12 +1157,17 @@ impl Shared {
     /// The facts the schedule is decided from, assembled fresh.
     pub fn schedule_input(&self) -> ScheduleInput {
         let config = self.config();
+        // Each read in a statement of its own: a guard made inside the
+        // literal below would be held until the whole of it was built, while
+        // the next field took its own lock (S16-T6).
+        let last_attempt = self.persisted.lock().unwrap().last_attempt;
+        let paused_until = self.pause.lock().unwrap().until(SystemTime::now());
+        let restoring = self.recovery.restoring();
+        let busy = self.busy();
         ScheduleInput {
             interval: schedule::interval_for(&config),
-            last_attempt: backtrack_core::state::from_epoch(
-                self.persisted.lock().unwrap().last_attempt,
-            ),
-            paused_until: self.pause.lock().unwrap().until(SystemTime::now()),
+            last_attempt: backtrack_core::state::from_epoch(last_attempt),
+            paused_until,
             // A destination with nothing chosen to put in it has no schedule.
             // That is the state an import leaves a new computer in until the
             // person decides what to back up there, and a backup of nothing
@@ -1080,10 +1179,8 @@ impl Shared {
             // once the restore has finished. The record on disk is what says
             // so, which keeps the schedule held across a restart, before the
             // recovery's job has even been registered again.
-            configured: config.is_configured()
-                && !config.backup.include.is_empty()
-                && !self.recovery.restoring(),
-            busy: self.busy(),
+            configured: config.is_configured() && !config.backup.include.is_empty() && !restoring,
+            busy,
             // Owned by the scheduler loop, which is the only thing that knows
             // whether it has already served a catch-up delay.
             catch_up_deferred: false,
@@ -1307,8 +1404,12 @@ impl Shared {
             .repository
             .ok_or_else(|| DaemonError::NotConfigured("no destination is configured".into()))?;
         let path = self.spool_dir.clone();
-        std::fs::create_dir_all(&path)
-            .map_err(|e| DaemonError::LocalDiskFull(format!("cannot create the spool: {e}")))?;
+        std::fs::create_dir_all(&path).map_err(|e| {
+            local_error(std::io::Error::new(
+                e.kind(),
+                format!("cannot create the spool: {e}"),
+            ))
+        })?;
 
         let engine =
             BorgCli::new(path.display().to_string(), repository, self.secrets.clone()).await?;
@@ -1821,6 +1922,11 @@ impl Shared {
     /// archive the catalogue does not know is asked of the destination, which
     /// is where a name given on the command line will be.
     async fn engine_for(&self, archive: &str) -> Result<Arc<dyn BackupEngine>> {
+        if backtrack_core::trash::info_of(archive).is_some() {
+            return Err(DaemonError::NotFound(format!(
+                "{archive} is in the Trash, not in a backup"
+            )));
+        }
         let repo = IndexReader::open(&self.index_path)?.repo_of(archive)?;
         match repo {
             Some(Repo::Spool) => self.spool_engine().await,
@@ -1842,6 +1948,8 @@ impl Shared {
         let dolphin_was = std::mem::replace(&mut *self.config.lock().unwrap(), config)
             .general
             .dolphin_integration;
+        // The backed-up folders, or what is excluded, may be different now.
+        self.trash.rescan.notify_one();
         self.publish_roots();
         self.apply_dolphin_switch(Some(dolphin_was));
         Ok(())
@@ -1928,7 +2036,14 @@ impl Shared {
         // The engine's own failure first: it is the one a job actually hit.
         // The disk and the spool are facts about this computer that the next
         // look may find already cleared.
-        let local_full = *self.local_disk_full.lock().unwrap() || *self.spool_held.lock().unwrap();
+        //
+        // Each lock is taken alone, in a statement of its own: a guard lives
+        // until its statement ends, and one held while another lock is taken
+        // is how two readers taking them in different orders deadlock
+        // (S16-T6).
+        let local_disk_full = *self.local_disk_full.lock().unwrap();
+        let spool_held = *self.spool_held.lock().unwrap();
+        let local_full = local_disk_full || spool_held;
         let blocking = self
             .latched
             .lock()
@@ -1937,24 +2052,30 @@ impl Shared {
         // Most pressing first: a disk filling up turns into a stopped backup,
         // the other two only ever into a slower timeline, and a rebuild in
         // progress explains any backups not yet browsable.
-        let attention = if *self.local_disk_low.lock().unwrap() || self.spool_over_limit() {
+        let local_disk_low = *self.local_disk_low.lock().unwrap();
+        let rebuilding = *self.catalogue_rebuilding.lock().unwrap();
+        let pending = *self.pending.lock().unwrap();
+        let attention = if local_disk_low || self.spool_over_limit() {
             Some(Reason::LocalDiskFull)
-        } else if *self.catalogue_rebuilding.lock().unwrap() {
+        } else if rebuilding {
             Some(Reason::CatalogueRebuilding)
-        } else if *self.pending.lock().unwrap() > 0 && !self.cataloguing() {
+        } else if pending > 0 && !self.cataloguing() {
             Some(Reason::NotYetBrowsable)
         } else {
             None
         };
+        let paused_until = self.pause.lock().unwrap().until(now);
+        let destination_reachable = *self.destination_reachable.lock().unwrap();
+        let offline_protection_active = self.offline_protection_active();
+        let last_success = *self.last_backup.lock().unwrap();
+        let protected_since = self.persisted.lock().unwrap().protected_since;
         HealthInputs {
             blocking,
-            paused_until: self.pause.lock().unwrap().until(now),
-            destination_reachable: *self.destination_reachable.lock().unwrap(),
-            offline_protection_active: self.offline_protection_active(),
-            last_success: *self.last_backup.lock().unwrap(),
-            protected_since: backtrack_core::state::from_epoch(
-                self.persisted.lock().unwrap().protected_since,
-            ),
+            paused_until,
+            destination_reachable,
+            offline_protection_active,
+            last_success,
+            protected_since: backtrack_core::state::from_epoch(protected_since),
             // What the schedule will actually do: a destination with nothing
             // chosen to back up has no schedule, and cannot be late.
             frequency: schedule.interval.filter(|_| schedule.configured),
@@ -2417,13 +2538,17 @@ struct Layout {
     replaced_dir: PathBuf,
     recovery_manifest: PathBuf,
     recovery_dir: PathBuf,
+    data_home: PathBuf,
 }
 
 /// A restore request that has passed its checks but has no job yet.
 struct PendingRestore {
-    engine: Arc<dyn BackupEngine>,
+    engine: Option<Arc<dyn BackupEngine>>,
     archive: ArchiveId,
     paths: Vec<String>,
+    /// See [`crate::restore::PreparePlan`].
+    fetch: Vec<String>,
+    trash: Vec<backtrack_core::restore::FromTrash>,
     dest: PathBuf,
     /// Whether what was asked for lands inside `dest` rather than at the
     /// absolute path it came from. See [`crate::restore::PreparePlan`].
@@ -2553,7 +2678,10 @@ impl Daemon1 {
         policy: &str,
     ) -> Result<u64> {
         let policy = RestorePolicy::parse(policy)?;
-        let prepared = self.shared.restore_preflight(archive, &paths, dest).await?;
+        let prepared = self
+            .shared
+            .restore_preflight(archive, &[], &paths, dest)
+            .await?;
         info!(archive, dest, policy = policy.as_str(), "restore requested");
 
         let decisions = Decisions::all(match policy {
@@ -2574,8 +2702,35 @@ impl Daemon1 {
     /// answer is read with `GetRestorePreview` using the same id, applied with
     /// `ExecuteRestore`, and thrown away with `DiscardRestore`.
     async fn prepare_restore(&self, archive: &str, paths: Vec<String>, dest: &str) -> Result<u64> {
-        let prepared = self.shared.restore_preflight(archive, &paths, dest).await?;
-        info!(archive, dest, "working out a restore");
+        self.prepare_restore_with_trash(archive, Vec::new(), paths, dest)
+            .await
+    }
+
+    /// As `PrepareRestore`, with each of `trashed` (archive names from
+    /// `ListTrashed`) put back in place of whatever `archive` has at its path,
+    /// as a Trash entry in the timeline shows them. `archive` is empty when
+    /// nothing comes from a backup.
+    ///
+    /// What is restored from the Trash is moved out of it, as the file
+    /// manager's own Restore does, and `UndoRestore` moves it back in with its
+    /// `.trashinfo` as it was.
+    async fn prepare_restore_with_trash(
+        &self,
+        archive: &str,
+        trashed: Vec<String>,
+        paths: Vec<String>,
+        dest: &str,
+    ) -> Result<u64> {
+        let prepared = self
+            .shared
+            .restore_preflight(archive, &trashed, &paths, dest)
+            .await?;
+        info!(
+            archive,
+            dest,
+            from_trash = prepared.trash.len(),
+            "working out a restore"
+        );
         Ok(self
             .shared
             .submit_restore(prepared, crate::restore::start_prepare))
@@ -2653,13 +2808,30 @@ impl Daemon1 {
     /// `dest`, and two folders' contents merged into one directory would be a
     /// different operation wearing this one's name.
     async fn restore_into(&self, archive: &str, paths: Vec<String>, dest: &str) -> Result<u64> {
+        self.restore_into_with_trash(archive, Vec::new(), paths, dest)
+            .await
+    }
+
+    /// As `RestoreInto`, with `trashed` as for `PrepareRestoreWithTrash`:
+    /// what comes from the Trash is moved out of it into `dest`, copied first
+    /// when `dest` is on another drive.
+    async fn restore_into_with_trash(
+        &self,
+        archive: &str,
+        trashed: Vec<String>,
+        paths: Vec<String>,
+        dest: &str,
+    ) -> Result<u64> {
         if paths.len() != 1 {
             return Err(DaemonError::InvalidArgument(format!(
                 "RestoreInto takes exactly one path; got {}",
                 paths.len()
             )));
         }
-        let mut prepared = self.shared.restore_preflight(archive, &paths, dest).await?;
+        let mut prepared = self
+            .shared
+            .restore_preflight(archive, &trashed, &paths, dest)
+            .await?;
         prepared.into_dest = true;
 
         // Made here rather than left to the moves, so a destination that cannot
@@ -2772,14 +2944,17 @@ impl Daemon1 {
     /// path is what lets a sandboxed GUI read a file it could not open itself,
     /// and it keeps the cache directory the daemon's business alone.
     async fn preview_file(&self, archive: &str, path: &str) -> Result<OwnedFd> {
+        // Something in the Trash is already a file on this computer: no
+        // extraction, and nothing to cache.
+        if backtrack_core::trash::info_of(archive).is_some() {
+            return self.shared.trashed_file(archive, path);
+        }
         let cache = self.shared.preview.clone();
         let entry = cache.entry_path(archive, path);
 
         if !cache.contains(archive, path) {
             let engine = self.shared.engine_for(archive).await?;
-            cache
-                .ensure_dir()
-                .map_err(|e| DaemonError::LocalDiskFull(e.to_string()))?;
+            cache.ensure_dir().map_err(local_error)?;
             let mut reader = engine
                 .extract_stdout(&ArchiveId(archive.to_string()), path)
                 .await?;
@@ -2787,10 +2962,10 @@ impl Daemon1 {
             // Extract to a temporary name and rename into place, so a cancelled
             // or failed extraction can never leave a truncated file looking like
             // a valid cache hit.
-            let staging = entry.with_extension("partial");
+            let staging = cache.partial_path(&entry);
             let mut file = tokio::fs::File::create(&staging)
                 .await
-                .map_err(|e| DaemonError::LocalDiskFull(e.to_string()))?;
+                .map_err(local_error)?;
             let copied = tokio::io::copy(&mut reader, &mut file).await;
             let finish = async {
                 copied?;
@@ -2804,7 +2979,7 @@ impl Daemon1 {
             drop(file);
             tokio::fs::rename(&staging, &entry)
                 .await
-                .map_err(|e| DaemonError::LocalDiskFull(e.to_string()))?;
+                .map_err(local_error)?;
             cache.evict_to_fit();
         }
 
@@ -2851,6 +3026,21 @@ impl Daemon1 {
     /// Prepare the archived copy of `path` so it can be compared with the live
     /// one. The diff view itself is Stage 8; this is the extraction it needs.
     async fn compare_file(&self, archive: &str, path: &str) -> Result<u64> {
+        // The comparison reads its copy through PreviewFile, and a trashed
+        // file needs nothing extracted first: the job is done as it starts.
+        if backtrack_core::trash::info_of(archive).is_some() {
+            self.shared.trash.find(archive).ok_or_else(|| {
+                DaemonError::NotFound(format!("{path} is no longer in the Trash"))
+            })?;
+            let factory: JobFactory = Arc::new(|_job| {
+                Box::pin(async {
+                    Ok(backtrack_core::engine::JobStream::from_events(vec![
+                        backtrack_core::engine::JobEvent::Finished(Ok(Default::default())),
+                    ]))
+                }) as BoxFuture<'_, _>
+            });
+            return Ok(self.shared.jobs.submit(JobKind::Restore, factory));
+        }
         let engine = self.shared.engine_for(archive).await?;
         let cache = self.shared.preview.clone();
         let archive = archive.to_string();
@@ -2890,6 +3080,43 @@ impl Daemon1 {
         Ok(answers.into_iter().map(on_disk::OnDisk::as_byte).collect())
     }
 
+    /// What is in the desktop's Trash from the backed-up folders, oldest
+    /// deletion first, each with whether it holds something no backup has
+    /// (Stage 16). Kept current by the daemon; `TrashChanged` says when it
+    /// changes.
+    async fn list_trashed(&self) -> Vec<backtrack_core::dbus::TrashedItem> {
+        self.shared
+            .trash
+            .entries()
+            .iter()
+            .map(crate::trash::Entry::published)
+            .collect()
+    }
+
+    /// What is directly inside the folder at `path` in a trashed item, by
+    /// name, for browsing into a folder that was moved to the Trash whole:
+    /// name, kind, bytes and modification time (epoch microseconds), as a
+    /// backup's folder is listed. `archive` is the item's, from `ListTrashed`.
+    async fn list_trashed_folder(
+        &self,
+        archive: &str,
+        path: &str,
+    ) -> Result<Vec<(String, String, i64, i64)>> {
+        let entry =
+            self.shared.trash.find(archive).ok_or_else(|| {
+                DaemonError::NotFound(format!("{path} is no longer in the Trash"))
+            })?;
+        let listed = backtrack_core::trash::list_folder(&entry.item, path).ok_or_else(|| {
+            DaemonError::NotFound(format!(
+                "{path} is not a folder of what was moved to the Trash"
+            ))
+        })?;
+        Ok(listed
+            .into_iter()
+            .map(|l| (l.name, l.kind.as_str().to_string(), l.size, l.mtime))
+            .collect())
+    }
+
     /// Filename search across every snapshot, including files that have since
     /// been deleted.
     ///
@@ -2918,35 +3145,97 @@ impl Daemon1 {
         // already puts what the newest backup has lost at the top.
         hits.truncate(SEARCH_LIMIT);
 
-        let paths: Vec<String> = hits.iter().map(|hit| hit.path.clone()).collect();
-        let presence = tokio::task::spawn_blocking(move || on_disk::resolve(&paths))
+        // What the Trash holds that no backup has (Stage 16), found by the
+        // catalogue's own rules: the newest of each path, beside what the
+        // catalogue found there, or as a result of its own when no backup has
+        // the path at all, most recently trashed first.
+        let trashed: Vec<_> = self
+            .shared
+            .trash
+            .entries()
+            .into_iter()
+            .filter(|entry| entry.counts)
+            .map(|entry| entry.published())
+            .collect();
+        let names: Vec<String> = trashed
+            .iter()
+            .map(|item| last_name(&item.path).to_string())
+            .collect();
+        let matched = backtrack_core::index::names_matching(trimmed, &names)?;
+        let mut in_trash: std::collections::BTreeMap<String, backtrack_core::dbus::TrashedItem> =
+            std::collections::BTreeMap::new();
+        for (item, _) in trashed.into_iter().zip(matched).filter(|(_, m)| *m) {
+            if in_trash
+                .get(&item.path)
+                .is_none_or(|kept| kept.deleted_at < item.deleted_at)
+            {
+                in_trash.insert(item.path.clone(), item);
+            }
+        }
+        let mut only_in_trash: Vec<_> = in_trash
+            .values()
+            .filter(|item| !hits.iter().any(|hit| hit.path == item.path))
+            .cloned()
+            .collect();
+        only_in_trash.sort_by_key(|item| std::cmp::Reverse(item.deleted_at));
+
+        let paths: Vec<String> = only_in_trash
+            .iter()
+            .map(|item| item.path.clone())
+            .chain(hits.iter().map(|hit| hit.path.clone()))
+            .collect();
+        let mut presence = tokio::task::spawn_blocking(move || on_disk::resolve(&paths))
             .await
             .map_err(|error| {
                 DaemonError::IndexUnavailable(format!("the folder listing task failed: {error}"))
             })?;
+        let hits_presence = presence.split_off(only_in_trash.len());
+
+        let found = only_in_trash
+            .into_iter()
+            .zip(presence)
+            .map(|(item, presence)| SearchResult {
+                name: last_name(&item.path).to_string(),
+                path: item.path,
+                kind: item.kind,
+                first_seq: 0,
+                last_seq: 0,
+                first_ts: 0,
+                last_ts: 0,
+                versions: 0,
+                size: item.size,
+                gone_from_disk: presence == on_disk::OnDisk::Absent,
+                trash: item.archive,
+                trashed_at: item.deleted_at,
+                trashed_size: item.size,
+            })
+            .chain(hits.into_iter().zip(hits_presence).map(|(hit, presence)| {
+                let trashed = in_trash.get(&hit.path);
+                SearchResult {
+                    path: hit.path,
+                    name: hit.name,
+                    kind: kind_name(hit.kind).to_string(),
+                    first_seq: hit.first_seq,
+                    last_seq: hit.last_seq,
+                    first_ts: hit.first_ts,
+                    last_ts: hit.last_ts,
+                    versions: hit.version_count.max(0) as u32,
+                    size: hit.size,
+                    gone_from_disk: presence == on_disk::OnDisk::Absent,
+                    trash: trashed.map(|t| t.archive.clone()).unwrap_or_default(),
+                    trashed_at: trashed.map_or(0, |t| t.deleted_at),
+                    trashed_size: trashed.map_or(0, |t| t.size),
+                }
+            }));
 
         // What a person searching has lost is what they are looking for, so it
         // goes first. A *stable* sort, which leaves the catalogue's own
         // ranking — most recent existence, then relevance — intact inside each
         // group.
-        let mut ranked: Vec<_> = hits.into_iter().zip(presence).collect();
-        ranked.sort_by_key(|(_, presence)| *presence != on_disk::OnDisk::Absent);
-
-        Ok(ranked
-            .into_iter()
-            .map(|(hit, presence)| SearchResult {
-                path: hit.path,
-                name: hit.name,
-                kind: kind_name(hit.kind).to_string(),
-                first_seq: hit.first_seq,
-                last_seq: hit.last_seq,
-                first_ts: hit.first_ts,
-                last_ts: hit.last_ts,
-                versions: hit.version_count.max(0) as u32,
-                size: hit.size,
-                gone_from_disk: presence == on_disk::OnDisk::Absent,
-            })
-            .collect())
+        let mut ranked: Vec<SearchResult> = found.collect();
+        ranked.sort_by_key(|result| !result.gone_from_disk);
+        ranked.truncate(SEARCH_LIMIT);
+        Ok(ranked)
     }
 
     /// Guided disaster recovery: bring back everything in `archive` into this
@@ -3468,7 +3757,7 @@ impl Daemon1 {
         let shared = Arc::clone(&self.shared);
         tokio::task::spawn_blocking(move || shared.local_storage())
             .await
-            .map_err(|e| DaemonError::LocalDiskFull(e.to_string()))
+            .map_err(|e| DaemonError::LocalFailed(e.to_string()))
     }
 
     /// Remove the copies extracted for previews. Returns the bytes freed.
@@ -3476,7 +3765,7 @@ impl Daemon1 {
         let cache = self.shared.preview.clone();
         let freed = tokio::task::spawn_blocking(move || cache.clear())
             .await
-            .map_err(|e| DaemonError::LocalDiskFull(e.to_string()))?;
+            .map_err(|e| DaemonError::LocalFailed(e.to_string()))?;
         info!(bytes = freed, "the preview cache was cleared");
         Ok(freed)
     }
@@ -3580,6 +3869,10 @@ impl Daemon1 {
 
     /// The overall health state changed. `reason` is what it is about, as a
     /// `Reason` token, and empty when healthy.
+    /// What `ListTrashed` lists has changed.
+    #[zbus(signal)]
+    pub async fn trash_changed(emitter: &SignalEmitter<'_>) -> zbus::Result<()>;
+
     #[zbus(signal)]
     pub async fn status_changed(
         emitter: &SignalEmitter<'_>,
@@ -3606,13 +3899,62 @@ impl Daemon1 {
     ) -> zbus::Result<()>;
 }
 
+/// What a restore of `paths` takes from the trashed `items`, archive-relative:
+/// each item at or below a path asked for, whole, and for a path asked for
+/// inside a trashed folder, that part of it.
+fn from_trash(
+    items: &[backtrack_core::trash::Item],
+    paths: &[String],
+) -> Vec<backtrack_core::restore::FromTrash> {
+    use backtrack_core::restore::FromTrash;
+    let mut taken: Vec<FromTrash> = Vec::new();
+    for item in items {
+        let original = backtrack_core::walk::archive_path(&item.original);
+        for asked in paths {
+            let found = if Path::new(&original).starts_with(asked) {
+                Some(FromTrash {
+                    path: PathBuf::from(&original),
+                    copy: item.copy.clone(),
+                    info: Some(item.info.clone()),
+                })
+            } else if Path::new(asked).starts_with(&original) {
+                backtrack_core::trash::copy_of(item, asked).map(|copy| FromTrash {
+                    path: PathBuf::from(asked),
+                    copy,
+                    info: None,
+                })
+            } else {
+                None
+            };
+            if let Some(found) = found {
+                if !taken.contains(&found) {
+                    taken.push(found);
+                }
+            }
+        }
+    }
+    taken
+}
+
 /// What went wrong while an archived file was being copied out: Borg's own
 /// failure when it was Borg's, carried by the reader, and this computer's disk
 /// otherwise.
 fn extraction_error(error: std::io::Error) -> DaemonError {
     match EngineError::from_io(&error) {
         Some(engine) => engine.into(),
-        None => DaemonError::LocalDiskFull(error.to_string()),
+        None => local_error(error),
+    }
+}
+
+/// What went wrong on this computer's own disk: a full one reported as full,
+/// and anything else as what it is (S16-T7).
+fn local_error(error: std::io::Error) -> DaemonError {
+    use std::io::ErrorKind;
+    match error.kind() {
+        ErrorKind::StorageFull | ErrorKind::QuotaExceeded => {
+            DaemonError::LocalDiskFull(error.to_string())
+        }
+        _ => DaemonError::LocalFailed(error.to_string()),
     }
 }
 
@@ -3631,10 +3973,12 @@ async fn cache_extraction(
     let mut reader = engine
         .extract_stdout(&ArchiveId(archive.to_string()), path)
         .await?;
-    let staging = entry.with_extension("partial");
-    let map_io = |e: std::io::Error| backtrack_core::engine::EngineError::BorgFailed {
-        code: -1,
-        stderr: e.to_string(),
+    let staging = cache.partial_path(&entry);
+    // This computer's side, not Borg's: a full disk said as one, anything
+    // else as what it is.
+    let map_io = |e: std::io::Error| match local_error(e) {
+        DaemonError::LocalDiskFull(_) => EngineError::LocalDiskFull,
+        other => EngineError::Local(other.to_string()),
     };
     let mut file = tokio::fs::File::create(&staging).await.map_err(map_io)?;
     if let Err(e) = tokio::io::copy(&mut reader, &mut file).await {
@@ -3665,6 +4009,16 @@ const KEYRING_LOOK_EVERY: Duration = Duration::from_secs(1);
 /// Runs for the daemon's lifetime. `StatusChanged` is emitted only when the
 /// computed state actually differs from the last one announced — a signal per
 /// job event would make "the state changed" meaningless.
+/// Say `TrashChanged` each time the daemon's listing of the Trash changes.
+pub async fn announce_trash(shared: Arc<Shared>, emitter: SignalEmitter<'static>) {
+    loop {
+        shared.trash.changed.notified().await;
+        if let Err(error) = Daemon1::trash_changed(&emitter).await {
+            debug!(%error, "TrashChanged could not be sent");
+        }
+    }
+}
+
 pub async fn fan_out_signals(shared: Arc<Shared>, emitter: SignalEmitter<'static>) {
     let mut updates = shared.jobs.subscribe();
     let health_changed = shared.health_waker();
@@ -3767,6 +4121,9 @@ pub async fn fan_out_signals(shared: Arc<Shared>, emitter: SignalEmitter<'static
                     // declined to queue while busy can be reconsidered now
                     // rather than at the next tick.
                     shared.wake_scheduler();
+                    // A backup or a prune can change which trashed items hold
+                    // something no backup has.
+                    shared.trash.rescan.notify_one();
                 }
                 // Announced once the catalogue says what the job did, local
                 // snapshots marked as caught up included: a window reloads
@@ -3940,6 +4297,11 @@ fn percentage(current: u64, total: u64) -> u32 {
     ((current.min(total) * 100) / total) as u32
 }
 
+/// The last part of an archive-relative path: a file's name.
+fn last_name(path: &str) -> &str {
+    path.rsplit('/').next().unwrap_or(path)
+}
+
 fn kind_name(kind: Kind) -> &'static str {
     match kind {
         Kind::File => "file",
@@ -4072,6 +4434,94 @@ mod tests {
             IndexWriter::open(&dir.join("index.db")).unwrap(),
         )));
         shared
+    }
+
+    #[tokio::test]
+    async fn two_previews_of_the_same_file_at_once_both_get_it() {
+        // S16-T7: selecting a search result asks for its preview twice in a
+        // moment. Both extracted into one temporary file, and the second found
+        // nothing left to rename into place.
+        use std::io::Read as _;
+        let dir = tempfile::tempdir().unwrap();
+        let shared = configured(dir.path());
+        let contents: Vec<u8> = (0..4096u32).map(|i| (i % 251) as u8).collect();
+        shared.set_engine(Arc::new(MockEngine::default().with_file(contents.clone())));
+        let daemon = Daemon1::new(Arc::clone(&shared));
+
+        let (first, second) = tokio::join!(
+            daemon.preview_file("a1", "home/notes.txt"),
+            daemon.preview_file("a1", "home/notes.txt"),
+        );
+
+        for preview in [first, second] {
+            let mut read = Vec::new();
+            std::fs::File::from(std::os::fd::OwnedFd::from(preview.expect("a preview")))
+                .read_to_end(&mut read)
+                .unwrap();
+            assert_eq!(read, contents);
+        }
+    }
+
+    #[test]
+    fn only_a_full_disk_is_called_a_full_disk() {
+        use std::io::{Error, ErrorKind};
+        assert!(matches!(
+            local_error(Error::from(ErrorKind::StorageFull)),
+            DaemonError::LocalDiskFull(_)
+        ));
+        assert!(matches!(
+            local_error(Error::from(ErrorKind::QuotaExceeded)),
+            DaemonError::LocalDiskFull(_)
+        ));
+        for other in [
+            ErrorKind::NotFound,
+            ErrorKind::PermissionDenied,
+            ErrorKind::Other,
+        ] {
+            assert!(
+                matches!(local_error(Error::from(other)), DaemonError::LocalFailed(_)),
+                "{other:?}"
+            );
+        }
+        assert!(matches!(
+            extraction_error(Error::from(ErrorKind::NotFound)),
+            DaemonError::LocalFailed(_)
+        ));
+    }
+
+    #[test]
+    fn reading_the_schedule_the_health_and_the_status_at_once_never_deadlocks() {
+        // S16-T6: a job's end has the window ask for the status, which reads
+        // the schedule, while the daemon reassesses its health. Each used to
+        // hold one lock while taking another, in opposite orders, until every
+        // worker thread was waiting and the daemon stopped answering.
+        let dir = tempfile::tempdir().unwrap();
+        let shared = configured(dir.path());
+        let (done, finished) = std::sync::mpsc::channel();
+        let readers: Vec<_> = (0..3)
+            .map(|which| {
+                let shared = Arc::clone(&shared);
+                let done = done.clone();
+                std::thread::spawn(move || {
+                    for _ in 0..20_000 {
+                        match which {
+                            0 => drop(shared.schedule_input()),
+                            1 => drop(shared.health_inputs(SystemTime::now())),
+                            _ => drop(shared.status_at(SystemTime::now())),
+                        }
+                    }
+                    let _ = done.send(which);
+                })
+            })
+            .collect();
+        for _ in 0..3 {
+            finished
+                .recv_timeout(Duration::from_secs(30))
+                .expect("the readers deadlocked");
+        }
+        for reader in readers {
+            reader.join().unwrap();
+        }
     }
 
     #[test]

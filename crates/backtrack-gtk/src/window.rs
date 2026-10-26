@@ -19,7 +19,7 @@ use gtk4::prelude::*;
 use gtk4::{gio, glib, Align, Box as GtkBox, Button, Label, Orientation};
 use libadwaita as adw;
 use libadwaita::prelude::*;
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 use crate::daemon::{Daemon1Proxy, JobFinishedStream};
 use crate::index::Index;
@@ -82,6 +82,9 @@ pub struct Window {
     restore_button: Button,
     restore_to_button: Button,
     compare_button: Button,
+    /// Opens search, and shows pressed while it is open, so it is also the
+    /// way out (S16-T8).
+    search_button: gtk4::ToggleButton,
     /// The header's title: the breadcrumb, or the search box.
     title_slot: gtk4::Stack,
     /// The window's body: the timeline, or the search results.
@@ -157,6 +160,7 @@ impl Window {
             restore_button: Button::builder().build(),
             restore_to_button: Button::builder().build(),
             compare_button: Button::builder().build(),
+            search_button: gtk4::ToggleButton::new(),
             title_slot: gtk4::Stack::new(),
             content_slot: gtk4::Stack::new(),
             search: RefCell::new(None),
@@ -227,11 +231,25 @@ impl Window {
 
         header.pack_end(&ui::menu::button());
 
-        let search = Button::from_icon_name("system-search-symbolic");
-        search.set_tooltip_text(Some("Search every backup"));
-        search.update_property(&[gtk4::accessible::Property::Label("Search every backup")]);
-        search.set_action_name(Some("win.search"));
-        header.pack_end(&search);
+        // A toggle, as in GNOME's own applications: pressed while searching,
+        // and clicked again to leave. Kept in step with search however it was
+        // opened or closed, Ctrl+F and Escape included.
+        let search = &self.search_button;
+        search.set_icon_name("system-search-symbolic");
+        search.set_tooltip_text(Some(SEARCH_OPEN));
+        search.update_property(&[gtk4::accessible::Property::Label(SEARCH_OPEN)]);
+        let searcher = Rc::clone(self);
+        search.connect_toggled(move |button| {
+            let open = searcher
+                .search
+                .borrow()
+                .as_ref()
+                .is_some_and(|pane| pane.is_open());
+            if button.is_active() != open {
+                let _ = button.activate_action("win.search", None);
+            }
+        });
+        header.pack_end(search);
 
         header
     }
@@ -698,7 +716,8 @@ impl Window {
     }
 
     /// Leave search and show a result where it lived, at the last backup that
-    /// had it.
+    /// had it, or at its Trash entry when the Trash holds its newest copy
+    /// (Stage 16). Restore Latest restores whatever this selects.
     ///
     /// The last backup rather than the newest: a file deleted three backups
     /// ago is not in the newest one, and landing somebody on a folder that
@@ -706,51 +725,54 @@ impl Window {
     /// action exists to avoid.
     fn go_to_hit(self: &Rc<Self>, hit: &backtrack_core::dbus::SearchResult) {
         let folder = crate::path::parent(&hit.path).unwrap_or_default();
+        let (seq, trash) = crate::model::search::place(hit, &self.state.view().archives);
         info!(
             path = hit.path,
-            seq = hit.last_seq,
+            seq,
+            in_trash = trash.is_some(),
             "opening a search result"
         );
+        let (size, when) = match trash {
+            Some(_) => (hit.trashed_size, hit.trashed_at),
+            None => (hit.size, hit.last_ts),
+        };
         // The folder first: a backup asked for is landed against the folder's
         // list (Stage 15), and the last folder's could move it to a backup
         // that no longer holds the file.
         self.state.set_folder(folder);
-        self.state.set_seq(hit.last_seq);
+        self.state.set_seq(seq);
         self.state.set_selected(Some(crate::state::Selected {
             path: hit.path.clone(),
             name: hit.name.clone(),
             is_dir: hit.kind == "dir",
-            size: hit.size,
+            size,
             // The catalogue's time for the newest version; the pane replaces
             // this with the entry's own once the folder has loaded.
-            mtime: hit.last_ts.saturating_mul(1_000_000),
+            mtime: when.saturating_mul(1_000_000),
             on_disk: if hit.gone_from_disk {
                 ON_DISK_ABSENT
             } else {
                 ON_DISK_PRESENT
             },
+            archive: trash,
         }));
     }
 
     /// Show the selected file's backed-up version beside the one on disk.
     fn open_compare(self: &Rc<Self>) {
         let view = self.state.view();
-        let (Some(selected), Some(archive)) = (view.selected.clone(), view.archive()) else {
+        // The Trash's copy, for something in it (Stage 16).
+        let (Some(selected), Some(archive)) = (view.selected.clone(), view.reading_archive())
+        else {
             return;
         };
         let restorer = Rc::clone(self);
-        ui::compare::present(
-            &self.window,
-            &self.daemon,
-            archive.name.clone(),
-            selected,
-            move || {
-                let driver = restorer.restores.borrow().clone();
-                if let Some(driver) = driver {
-                    driver.start();
-                }
-            },
-        );
+        ui::compare::present(&self.window, &self.daemon, archive, selected, move || {
+            let driver = restorer.restores.borrow().clone();
+            if let Some(driver) = driver {
+                driver.start();
+            }
+        });
     }
 
     /// Re-read the daemon's status and redraw the line at the bottom.
@@ -896,6 +918,33 @@ impl Window {
 
     /// Follow the daemon's health announcements, so the status line does not
     /// go stale while the window sits open.
+    /// Keep the state's copy of the Trash's listing current (Stage 16): asked
+    /// once, then again each time the daemon says it changed.
+    async fn follow_trash(self: &Rc<Self>, proxy: crate::daemon::Daemon1Proxy<'static>) {
+        use futures::StreamExt;
+        let changes = proxy.receive_trash_changed().await;
+        self.load_trash(&proxy).await;
+        let Ok(mut changes) = changes else {
+            warn!("changes to the Trash are not being followed");
+            return;
+        };
+        while StreamExt::next(&mut changes).await.is_some() {
+            self.load_trash(&proxy).await;
+        }
+    }
+
+    async fn load_trash(self: &Rc<Self>, proxy: &crate::daemon::Daemon1Proxy<'static>) {
+        match proxy.list_trashed().await {
+            Ok(items) => {
+                debug!(items = items.len(), "the Trash read");
+                self.state.set_trash(items);
+            }
+            // An older service has no ListTrashed; the timeline simply has
+            // no Trash entries then.
+            Err(error) => debug!(%error, "the Trash could not be listed"),
+        }
+    }
+
     async fn follow_status(self: &Rc<Self>, proxy: crate::daemon::Daemon1Proxy<'static>) {
         // Fully qualified: GTK's prelude brings its own `next` into scope for
         // every widget, and the two are indistinguishable at the call site.
@@ -1016,9 +1065,12 @@ impl Window {
     /// which it did not — the forty identical hourlies problem.
     fn step_to_change(self: &Rc<Self>, direction: Step) {
         let view = self.state.view();
-        let (Some(seq), Some(target), Some(name)) =
-            (view.seq, view.change_target(), view.change_target_name())
-        else {
+        // From a Trash entry, from the backup before its gap.
+        let (Some(seq), Some(target), Some(name)) = (
+            view.catalogue_seq().or(view.seq.map(|_| 0)),
+            view.change_target(),
+            view.change_target_name(),
+        ) else {
             return;
         };
 
@@ -1062,7 +1114,11 @@ impl Window {
         *self.restores.borrow_mut() = Some(Rc::clone(&restores));
         let this = Rc::clone(self);
         self.state.subscribe(move |_, change| {
-            if matches!(change, Change::Selection | Change::Seq | Change::Archives) {
+            // What a Trash entry restores from changes with the Trash.
+            if matches!(
+                change,
+                Change::Selection | Change::Seq | Change::Archives | Change::Trash
+            ) {
                 this.refresh_restore_action();
             }
         });
@@ -1093,6 +1149,11 @@ impl Window {
             let page = if open { "search" } else { "browse" };
             swapper.title_slot.set_visible_child_name(page);
             swapper.content_slot.set_visible_child_name(page);
+            let button = &swapper.search_button;
+            button.set_active(open);
+            let label = if open { SEARCH_CLOSE } else { SEARCH_OPEN };
+            button.set_tooltip_text(Some(label));
+            button.update_property(&[gtk4::accessible::Property::Label(label)]);
         });
         *self.search.borrow_mut() = Some(search);
 
@@ -1110,6 +1171,10 @@ impl Window {
             }
             let tz = glib::TimeZone::local();
             match (view.archive(), view.position()) {
+                (Some(archive), Some(_)) if view.at_trash_entry() => {
+                    this.position
+                        .set_text(&format::position_in_trash(archive.ts, &tz));
+                }
                 (Some(archive), Some((ordinal, total))) => {
                     this.position.set_text(&format::position(
                         archive.ts,
@@ -1301,6 +1366,9 @@ impl Window {
                         let progressing = Rc::clone(&following);
                         let progress_proxy = proxy.clone();
                         ui::spawn(async move { progressing.follow_progress(progress_proxy).await });
+                        let trashing = Rc::clone(&following);
+                        let trash_proxy = proxy.clone();
+                        ui::spawn(async move { trashing.follow_trash(trash_proxy).await });
                         ui::spawn(async move { following.follow_status(proxy).await });
                     }
                     let ticking = Rc::clone(&this);
@@ -1349,6 +1417,7 @@ impl Window {
             size: -1,
             mtime: 0,
             on_disk: 0,
+            archive: None,
         }));
     }
 
@@ -1518,6 +1587,10 @@ const STATUS_TICK_SECONDS: u32 = 30;
 
 /// What the window says when something needs the daemon and there isn't one.
 const NO_SERVICE: &str = "The Backtrack service is not running, so this cannot be done from here";
+
+/// What the search button says it does, closed and open.
+const SEARCH_OPEN: &str = "Search every backup";
+const SEARCH_CLOSE: &str = "Close search";
 
 /// Strip the D-Bus error-name prefix, which is addressed to programs.
 fn clean(message: &str) -> String {

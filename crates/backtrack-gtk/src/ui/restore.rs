@@ -85,7 +85,8 @@ impl Restores {
     /// The other way out of a restore, and the one that costs nothing: the
     /// files arrive in a directory made for them, so nothing already on the
     /// machine is touched and there is nothing to decide. No conflict dialog,
-    /// no summary, no Undo needed.
+    /// no summary, no Undo needed. What comes from the Trash is moved out of
+    /// it, as the file manager moves what is dragged out of the Trash.
     pub fn start_elsewhere(self: &Rc<Self>) {
         if self.busy.get() {
             return;
@@ -100,9 +101,10 @@ impl Restores {
 
     async fn run_elsewhere(self: &Rc<Self>) {
         let view = self.state.view();
-        let (Some(proxy), Some((archive, taken)), Some(target)) = (
+        let (Some(proxy), Some(taken), Some(restoring), Some(target)) = (
             self.daemon.borrow().clone(),
-            view.archive().map(|a| (a.name.clone(), a.ts)),
+            view.archive().map(|a| a.ts),
+            view.restoring(),
             view.change_target(),
         ) else {
             self.toast("Backtrack cannot restore without its background service");
@@ -129,11 +131,22 @@ impl Restores {
         let name = path::name(&target).to_string();
         let folder = copy::restored_folder_name(&name, taken, &glib::TimeZone::local());
         let dest = chosen.join(&folder).to_string_lossy().to_string();
-        info!(target, archive, dest, "restoring into a folder of its own");
+        info!(
+            target,
+            archive = restoring.archive,
+            from_trash = restoring.trashed.len(),
+            dest,
+            "restoring into a folder of its own"
+        );
 
         let waiting = self.preparing(&name);
         let done = run_job(&proxy, |p| {
-            p.restore_into(&archive, std::slice::from_ref(&target), &dest)
+            p.restore_into_with_trash(
+                &restoring.archive,
+                &restoring.trashed,
+                std::slice::from_ref(&target),
+                &dest,
+            )
         })
         .await;
         waiting.close();
@@ -149,15 +162,15 @@ impl Restores {
 
     /// Whether there is anything to restore right now.
     pub fn can_restore(&self) -> bool {
-        let view = self.state.view();
-        view.seq.is_some() && view.change_target().is_some() && self.daemon.borrow().is_some()
+        self.state.view().restoring().is_some() && self.daemon.borrow().is_some()
     }
 
     async fn run(self: &Rc<Self>) {
         let view = self.state.view();
-        let (Some(proxy), Some(archive), Some(target)) = (
+        let (Some(proxy), Some(taken), Some(restoring), Some(target)) = (
             self.daemon.borrow().clone(),
-            view.archive().map(|a| (a.name.clone(), a.ts)),
+            view.archive().map(|a| a.ts),
+            view.restoring(),
             view.change_target(),
         ) else {
             warn!(
@@ -169,9 +182,13 @@ impl Restores {
             self.toast("Backtrack cannot restore without its background service");
             return;
         };
-        let (archive, taken) = archive;
         let name = path::name(&target).to_string();
-        info!(target, archive, "restoring");
+        info!(
+            target,
+            archive = restoring.archive,
+            from_trash = restoring.trashed.len(),
+            "restoring"
+        );
         // A restore of the selected file is about that file; with nothing
         // selected it is about the folder being viewed.
         let single_file = view.selected.as_ref().is_some_and(|s| !s.is_dir);
@@ -179,7 +196,12 @@ impl Restores {
         // ── Work it out ──
         let waiting = self.preparing(&name);
         let prepared = run_job(&proxy, |p| {
-            p.prepare_restore(&archive, std::slice::from_ref(&target), IN_PLACE)
+            p.prepare_restore_with_trash(
+                &restoring.archive,
+                &restoring.trashed,
+                std::slice::from_ref(&target),
+                IN_PLACE,
+            )
         })
         .await;
         waiting.close();
@@ -205,7 +227,14 @@ impl Restores {
 
         // ── Ask, if there is anything to ask ──
         let Some((blanket, decisions)) = self
-            .decide(&preview, &name, &target, taken, single_file)
+            .decide(
+                &preview,
+                &name,
+                &target,
+                taken,
+                &restoring.origin,
+                single_file,
+            )
             .await
         else {
             info!(job, "restore cancelled before anything was touched");
@@ -239,6 +268,7 @@ impl Restores {
         name: &str,
         target: &str,
         taken: i64,
+        origin: &copy::Origin,
         single_file: bool,
     ) -> Option<(String, Vec<(String, String)>)> {
         // What was asked for is not in this backup. Said plainly and first,
@@ -270,14 +300,14 @@ impl Restores {
             let folder = path::parent(target)
                 .map(|p| path::name(&p).to_string())
                 .unwrap_or_default();
-            return match conflict::ask(&self.window, entry, name, &folder).await {
+            return match conflict::ask(&self.window, entry, name, &folder, origin).await {
                 conflict::Answer::Cancel => None,
                 conflict::Answer::KeepBoth => Some(("keep-both".to_string(), Vec::new())),
                 conflict::Answer::Replace => Some(("replace".to_string(), Vec::new())),
             };
         }
 
-        match summary::ask(&self.window, preview, name, target, taken).await {
+        match summary::ask(&self.window, preview, name, target, taken, origin).await {
             summary::Answer::Cancel => None,
             summary::Answer::KeepBoth => Some(("keep-both".to_string(), Vec::new())),
             // A review list answers every path by name, so the blanket has

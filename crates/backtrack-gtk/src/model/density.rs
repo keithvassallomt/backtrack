@@ -86,11 +86,16 @@ pub fn density_of(
     tz: &glib::TimeZone,
 ) -> Density {
     let mut days: Vec<i64> = all.iter().map(|a| local_day(a.ts, tz)).collect();
-    if days.is_empty() {
+    // A Trash entry can come after the newest backup (Stage 16), and is drawn
+    // on the axis like any other place.
+    let reach = listed.iter().map(|a| local_day(a.ts, tz));
+    let (Some(first), Some(last)) = (
+        days.iter().copied().chain(reach.clone()).min(),
+        days.iter().copied().chain(reach).max(),
+    ) else {
         return Density::default();
-    }
+    };
     days.sort_unstable();
-    let (first, last) = (days[0], days[days.len() - 1]);
 
     // A history is bounded by how long the user has had the machine, so this
     // vector is days-of-history long: thousands at the very most.

@@ -429,6 +429,9 @@ impl Recovery {
                 error: String::new(),
             };
         };
+        // Read before `live` is taken, so that no lock is held while another
+        // is (S16-T6).
+        let job = self.job().unwrap_or(0);
         let live = self.live.lock().unwrap();
         let state = match (manifest.stage, job_state) {
             (Stage::Review, _) => "review",
@@ -471,7 +474,7 @@ impl Recovery {
         };
         RecoveryStatus {
             state: state.into(),
-            job: self.job().unwrap_or(0),
+            job,
             archive: manifest.archive.clone(),
             taken: manifest.taken,
             done,
@@ -1166,8 +1169,12 @@ impl AddedLog {
             Move::Added { path } => ('F', path),
             Move::MadeDir { path } => ('D', path),
             // A recovery answers every clash with "leave it alone", so it
-            // never replaces or renames anything.
-            Move::Replaced { .. } | Move::KeptBoth { .. } => return,
+            // never replaces or renames anything, and it restores from
+            // backups alone.
+            Move::Replaced { .. }
+            | Move::KeptBoth { .. }
+            | Move::FromTrash { .. }
+            | Move::LeftTrash { .. } => return,
         };
         let (size, mtime) = std::fs::symlink_metadata(path)
             .map(|f| (f.len(), f.mtime() * 1_000_000 + f.mtime_nsec() / 1_000))

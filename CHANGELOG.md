@@ -268,6 +268,25 @@ All notable changes to Backtrack are documented here. This project adheres to
   new says "nothing changed here", and a day without any says "no backups".
 - Show All Backups in the main menu (Ctrl+H) lists every backup again. It is
   off to begin with, and Backtrack remembers which you chose.
+- What you move to the Trash from a backed-up folder now appears in the
+  timeline while it is still in the Trash, at the time you deleted it. A file
+  made after one backup and deleted before the next was in no backup at all,
+  and now it can still be got back; so can a version the backups have since
+  thinned out. The entry shows the folder as it was, with what went to the
+  Trash back in its place and marked "in the Trash". It is not a backup, and
+  it goes when the Trash is emptied, which its badge says.
+- Restoring something from a Trash entry takes it out of the Trash, as the
+  file manager's own Restore does, and Undo puts it back there with the time
+  it was deleted, so its entry comes back where it was. A folder restored
+  from a Trash entry brings back what the backup has and what went to the
+  Trash in one summary. Nothing in the Trash needs the backup destination, so
+  this works with it unplugged.
+- Search finds what is in the Trash. A result says that it is in the Trash
+  and when it was moved there; View in Timeline goes to its entry, and
+  Restore Latest Version restores the Trash's copy when it is the newest one.
+  `backtrack search` says so too.
+- A page on what the Trash can and cannot bring back:
+  [docs/trash.md](docs/trash.md).
 
 ### Changed
 - Backtrack now requires GNOME 50 or newer (GTK 4.22, libadwaita 1.9).
@@ -304,6 +323,10 @@ All notable changes to Backtrack are documented here. This project adheres to
   clients' own sync databases and logs, which change inside every synced
   folder at every backup. They are suggested to new setups; an existing setup
   can add them in Preferences → Backup.
+- The search button stays pressed while search is open, and clicking it
+  again closes search.
+- Undoing a restore now also removes the folders it made, when they are still
+  empty, rather than leaving them behind.
 
 ### Fixed
 - Pausing or resuming backups is announced to other programs straight away,
@@ -354,6 +377,14 @@ All notable changes to Backtrack are documented here. This project adheres to
   destination unplugged, now says why and offers to try again. It used to
   show an empty file, and went on showing it empty after the destination was
   back. Empty previews left over from this are cleared when Backtrack starts.
+- The background service could stop responding as a job finished, and stay
+  that way until it was restarted: two of its checks, set off by the same
+  moment, each waited for the other. Until then the window, the tray and the
+  schedule could get nothing from it, backups included.
+- Previewing a file could fail with "No such file or directory", reported as
+  this computer's disk being full, when the same file was asked for twice at
+  once, as selecting a search result does. A problem on this computer is now
+  called a full disk only when the disk is full.
 
 ## [0.1.0] - TBD
 

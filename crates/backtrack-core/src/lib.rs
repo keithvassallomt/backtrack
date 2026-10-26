@@ -29,6 +29,8 @@ pub mod servicemenu;
 pub mod state;
 #[cfg(feature = "glib")]
 pub mod status_line;
+#[cfg(feature = "glib")]
+pub mod trash;
 pub mod walk;
 
 /// The crate version, sourced from the workspace package version at build time.

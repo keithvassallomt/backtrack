@@ -1001,6 +1001,347 @@ fn borg_processes() -> String {
     }
 }
 
+/// Wait up to `within` for a `member` signal on `messages`.
+async fn heard(messages: &mut zbus::MessageStream, member: &str, within: Duration) -> bool {
+    let deadline = tokio::time::Instant::now() + within;
+    loop {
+        let left = deadline.saturating_duration_since(tokio::time::Instant::now());
+        let Ok(Some(Ok(message))) = tokio::time::timeout(left, messages.next()).await else {
+            return false;
+        };
+        if message.message_type() == zbus::message::Type::Signal
+            && message
+                .header()
+                .member()
+                .is_some_and(|m| m.as_str() == member)
+        {
+            return true;
+        }
+    }
+}
+
+/// S16-T2's acceptance: things moved to the Trash the way the specification
+/// lays it out are listed within a second, with where they came from and
+/// when, can be previewed, and are gone from the list once the Trash is
+/// emptied.
+#[tokio::test]
+async fn the_trash_is_watched_listed_and_read() {
+    use std::io::Read as _;
+    let fixture = small_fixture().await;
+    let shared = Arc::clone(&fixture.shared);
+    let src = source(&shared);
+    let job = Daemon1::new(Arc::clone(&shared))
+        .backup_now()
+        .await
+        .expect("backup starts");
+    wait_for_job(&shared, job).await;
+
+    // A desktop that has used its Trash before.
+    let trash = fixture._dir.path().join("share/Trash");
+    std::fs::create_dir_all(trash.join("info")).unwrap();
+    std::fs::create_dir_all(trash.join("files")).unwrap();
+
+    let (server, client) = connect(Arc::clone(&shared)).await;
+    let emitter = SignalEmitter::new(&server, PATH).unwrap();
+    tokio::spawn(crate::service::announce_trash(
+        Arc::clone(&shared),
+        emitter.to_owned(),
+    ));
+    let mut messages = zbus::MessageStream::from(client.clone());
+    tokio::spawn(crate::trash::watch(Arc::clone(&shared)));
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    // Trashed as GNOME does it: the .trashinfo written, then the item moved.
+    let deleted_at = SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64;
+    let date = backtrack_core::trash::format_deletion_date(deleted_at).unwrap();
+    let new = src.join("docs/written after the backup.txt");
+    std::fs::write(&new, b"not in any backup").unwrap();
+    for (from, name) in [
+        (new.clone(), "written after the backup.txt"),
+        (src.join("docs/a.txt"), "a.txt"),
+    ] {
+        let encoded = from.display().to_string().replace(' ', "%20");
+        std::fs::write(
+            trash.join(format!("info/{name}.trashinfo")),
+            format!("[Trash Info]\nPath={encoded}\nDeletionDate={date}\n"),
+        )
+        .unwrap();
+        std::fs::rename(&from, trash.join("files").join(name)).unwrap();
+    }
+
+    assert!(
+        heard(&mut messages, "TrashChanged", Duration::from_secs(1)).await,
+        "TrashChanged within a second of the items going into the Trash"
+    );
+    let reply = client
+        .call_method(None::<()>, PATH, Some(IFACE), "ListTrashed", &())
+        .await
+        .expect("ListTrashed");
+    let listed: Vec<backtrack_core::dbus::TrashedItem> = reply.body().deserialize().unwrap();
+    let as_listed = |path: &std::path::Path| path.strip_prefix("/").unwrap().display().to_string();
+    let find = |path: &std::path::Path| {
+        listed
+            .iter()
+            .find(|i| i.path == as_listed(path))
+            .unwrap_or_else(|| panic!("{} not listed: {listed:?}", path.display()))
+            .clone()
+    };
+    assert_eq!(listed.len(), 2, "{listed:?}");
+    let written = find(&new);
+    assert_eq!(written.deleted_at, deleted_at);
+    assert_eq!(written.kind, "file");
+    assert!(written.counts, "no backup has it");
+    assert!(
+        !find(&src.join("docs/a.txt")).counts,
+        "the backup holds it exactly as it was trashed"
+    );
+
+    let reply = client
+        .call_method(
+            None::<()>,
+            PATH,
+            Some(IFACE),
+            "PreviewFile",
+            &(written.archive.as_str(), written.path.as_str()),
+        )
+        .await
+        .expect("PreviewFile of a trashed file");
+    let fd: zbus::zvariant::OwnedFd = reply.body().deserialize().expect("a descriptor");
+    let mut contents = String::new();
+    std::fs::File::from(std::os::fd::OwnedFd::from(fd))
+        .read_to_string(&mut contents)
+        .unwrap();
+    assert_eq!(contents, "not in any backup");
+
+    // Emptied, as the file manager empties it.
+    std::fs::remove_dir_all(trash.join("files")).unwrap();
+    std::fs::remove_dir_all(trash.join("info")).unwrap();
+    std::fs::create_dir_all(trash.join("info")).unwrap();
+    std::fs::create_dir_all(trash.join("files")).unwrap();
+    assert!(
+        heard(&mut messages, "TrashChanged", Duration::from_secs(1)).await,
+        "TrashChanged within a second of the Trash being emptied"
+    );
+    let reply = client
+        .call_method(None::<()>, PATH, Some(IFACE), "ListTrashed", &())
+        .await
+        .expect("ListTrashed");
+    let listed: Vec<backtrack_core::dbus::TrashedItem> = reply.body().deserialize().unwrap();
+    assert!(listed.is_empty(), "{listed:?}");
+}
+
+/// What the daemon lists from the Trash, once it lists `count` items.
+async fn trash_listing(
+    shared: &Arc<Shared>,
+    count: usize,
+) -> Vec<backtrack_core::dbus::TrashedItem> {
+    for _ in 0..50 {
+        let entries = shared.trash.entries();
+        if entries.len() == count {
+            return entries.iter().map(crate::trash::Entry::published).collect();
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    panic!(
+        "the Trash never listed {count}: {:?}",
+        shared.trash.entries()
+    );
+}
+
+/// S16-T4 through the interface: a folder restored from a Trash entry takes
+/// what the backup has and what the Trash has in one restore, moving the
+/// Trash's out of it, and Undo puts each back where it came from. Then the
+/// trashed file alone, with the destination away, which a restore from the
+/// Trash never needs.
+#[tokio::test]
+async fn a_restore_from_a_trash_entry_moves_out_of_the_trash_and_undo_moves_back() {
+    let fixture = small_fixture().await;
+    let shared = Arc::clone(&fixture.shared);
+    let src = source(&shared);
+    let daemon = Daemon1::new(Arc::clone(&shared));
+    let job = daemon.backup_now().await.expect("backup starts");
+    wait_for_job(&shared, job).await;
+    let archive = newest_archive(&shared).await;
+
+    // a.txt deleted for good since the backup; a letter written, and trashed.
+    std::fs::remove_file(src.join("docs/a.txt")).unwrap();
+    let trash = fixture._dir.path().join("share/Trash");
+    std::fs::create_dir_all(trash.join("info")).unwrap();
+    std::fs::create_dir_all(trash.join("files")).unwrap();
+    let letter = src.join("docs/letter to Ana.txt");
+    let copy = trash.join("files/letter to Ana.txt");
+    let info = trash.join("info/letter to Ana.txt.trashinfo");
+    std::fs::write(&letter, b"Dear Ana,").unwrap();
+    let now = SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64;
+    let text = format!(
+        "[Trash Info]\nPath={}\nDeletionDate={}\n",
+        letter.display().to_string().replace(' ', "%20"),
+        backtrack_core::trash::format_deletion_date(now).unwrap()
+    );
+    std::fs::write(&info, &text).unwrap();
+    std::fs::rename(&letter, &copy).unwrap();
+    tokio::spawn(crate::trash::watch(Arc::clone(&shared)));
+    let trashed = trash_listing(&shared, 1).await.remove(0).archive;
+    let relative = |path: &std::path::Path| path.strip_prefix("/").unwrap().display().to_string();
+
+    // ── The folder, from its entry ──
+    let job = daemon
+        .prepare_restore_with_trash(
+            &archive,
+            vec![trashed.clone()],
+            vec![relative(&src.join("docs"))],
+            "/",
+        )
+        .await
+        .expect("PrepareRestoreWithTrash accepted");
+    wait_for_job(&shared, job).await;
+    let preview = daemon.get_restore_preview(job).await.expect("a preview");
+    assert_eq!(
+        preview.only_in_backup, 2,
+        "a.txt from the backup and the letter from the Trash: {preview:?}"
+    );
+    let run = daemon
+        .execute_restore(job, "skip", Vec::new())
+        .await
+        .expect("ExecuteRestore accepted");
+    wait_for_job(&shared, run).await;
+
+    assert_eq!(
+        std::fs::read_to_string(src.join("docs/a.txt")).unwrap(),
+        "original"
+    );
+    assert_eq!(std::fs::read_to_string(&letter).unwrap(), "Dear Ana,");
+    assert!(!copy.exists(), "moved out of the Trash");
+    assert!(!info.exists(), "and no longer listed there");
+    trash_listing(&shared, 0).await;
+
+    // ── Undo ──
+    let undo = daemon
+        .undo_restore(job)
+        .await
+        .expect("UndoRestore accepted");
+    wait_for_job(&shared, undo).await;
+
+    assert!(
+        !src.join("docs/a.txt").exists(),
+        "deleted for good, as it was"
+    );
+    assert!(!letter.exists());
+    assert_eq!(std::fs::read_to_string(&copy).unwrap(), "Dear Ana,");
+    assert_eq!(
+        std::fs::read_to_string(&info).unwrap(),
+        text,
+        "its .trashinfo as it was, so its entry comes back where it was"
+    );
+    let back = trash_listing(&shared, 1).await.remove(0);
+    assert_eq!(back.archive, trashed);
+    assert_eq!(back.deleted_at, now);
+
+    // ── The letter alone, with the destination away ──
+    cut_the_destination(&shared);
+    let job = daemon
+        .prepare_restore_with_trash("", vec![trashed], vec![relative(&letter)], "/")
+        .await
+        .expect("a restore from the Trash alone needs no destination");
+    wait_for_job(&shared, job).await;
+    let run = daemon
+        .execute_restore(job, "skip", Vec::new())
+        .await
+        .expect("ExecuteRestore accepted");
+    wait_for_job(&shared, run).await;
+    restore_the_destination(&shared);
+
+    assert_eq!(std::fs::read_to_string(&letter).unwrap(), "Dear Ana,");
+    assert!(!copy.exists());
+    assert!(!info.exists());
+}
+
+/// S16-T5 through the interface: search finds what the Trash holds that no
+/// backup has, beside what the catalogue found for the same path or as a
+/// result of its own, and leaves alone what the backups already have.
+#[tokio::test]
+async fn search_finds_what_is_in_the_trash() {
+    let fixture = small_fixture().await;
+    let shared = Arc::clone(&fixture.shared);
+    let src = source(&shared);
+    let daemon = Daemon1::new(Arc::clone(&shared));
+    let job = daemon.backup_now().await.expect("backup starts");
+    wait_for_job(&shared, job).await;
+
+    // Written after the backup; edited after it; untouched since it. All three
+    // moved to the Trash.
+    let trash = fixture._dir.path().join("share/Trash");
+    std::fs::create_dir_all(trash.join("info")).unwrap();
+    std::fs::create_dir_all(trash.join("files")).unwrap();
+    std::fs::write(src.join("docs/letter to Ana.txt"), b"Dear Ana,").unwrap();
+    std::fs::write(src.join("docs/a.txt"), b"edited since").unwrap();
+    let now = SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64;
+    let date = backtrack_core::trash::format_deletion_date(now).unwrap();
+    for name in ["letter to Ana.txt", "a.txt", "b.txt"] {
+        let from = src.join("docs").join(name);
+        std::fs::write(
+            trash.join(format!("info/{name}.trashinfo")),
+            format!(
+                "[Trash Info]\nPath={}\nDeletionDate={date}\n",
+                from.display().to_string().replace(' ', "%20")
+            ),
+        )
+        .unwrap();
+        std::fs::rename(&from, trash.join("files").join(name)).unwrap();
+    }
+    tokio::spawn(crate::trash::watch(Arc::clone(&shared)));
+    trash_listing(&shared, 3).await;
+    let relative = |name: &str| {
+        src.join("docs")
+            .join(name)
+            .strip_prefix("/")
+            .unwrap()
+            .display()
+            .to_string()
+    };
+
+    let found = daemon.search_files("Ana").await.expect("a search");
+    assert_eq!(found.len(), 1, "{found:?}");
+    let letter = &found[0];
+    assert_eq!(letter.path, relative("letter to Ana.txt"));
+    assert_eq!(letter.versions, 0, "no backup has it");
+    assert!(letter.trash.starts_with("trash:"), "{letter:?}");
+    assert_eq!(letter.trashed_at, now);
+    assert_eq!(letter.trashed_size, 9);
+    assert!(letter.gone_from_disk);
+
+    let found = daemon.search_files("a.txt").await.expect("a search");
+    let edited = found
+        .iter()
+        .find(|r| r.path == relative("a.txt"))
+        .unwrap_or_else(|| panic!("{found:?}"));
+    assert_eq!(edited.versions, 1, "the backup's version, found as before");
+    assert!(
+        !edited.trash.is_empty(),
+        "and the Trash's newer one beside it"
+    );
+    assert_eq!(edited.trashed_size, "edited since".len() as i64);
+
+    let found = daemon.search_files("b.txt").await.expect("a search");
+    let untouched = found
+        .iter()
+        .find(|r| r.path == relative("b.txt"))
+        .unwrap_or_else(|| panic!("{found:?}"));
+    assert!(
+        untouched.trash.is_empty(),
+        "the backup has it exactly as it was trashed: {untouched:?}"
+    );
+}
+
 #[tokio::test]
 async fn status_reports_what_is_held_on_this_computer() {
     // S05-T5's acceptance: the offline block has to carry real numbers during

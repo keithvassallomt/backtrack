@@ -211,6 +211,34 @@ fn fts_match_query(input: &str) -> Option<String> {
     })
 }
 
+/// Which of `names` a search for `query` matches, by the same rules as
+/// [`IndexReader::search`]: SQLite's own full-text matching, on a table of
+/// these names alone, so that something searched for outside the catalogue
+/// (the Trash, Stage 16) is found exactly as it would be inside it.
+pub fn names_matching(query: &str, names: &[String]) -> Result<Vec<bool>> {
+    let mut found = vec![false; names.len()];
+    let Some(match_query) = fts_match_query(query) else {
+        return Ok(found);
+    };
+    if names.is_empty() {
+        return Ok(found);
+    }
+    let conn = Connection::open_in_memory()?;
+    conn.execute_batch("CREATE VIRTUAL TABLE names USING fts5(name);")?;
+    let mut insert = conn.prepare("INSERT INTO names (rowid, name) VALUES (?1, ?2)")?;
+    for (row, name) in names.iter().enumerate() {
+        insert.execute(params![row as i64, name])?;
+    }
+    let mut matching = conn.prepare("SELECT rowid FROM names WHERE names MATCH ?1")?;
+    let rows = matching.query_map(params![match_query], |r| r.get::<_, i64>(0))?;
+    for row in rows {
+        if let Some(slot) = found.get_mut(row? as usize) {
+            *slot = true;
+        }
+    }
+    Ok(found)
+}
+
 impl IndexReader {
     /// Open an existing, already-migrated index for reading. The connection is
     /// put into `query_only` mode so a reader can never mutate the catalogue.
@@ -1724,6 +1752,33 @@ mod tests {
         let hits = r.search("note*").unwrap();
         let paths: Vec<&str> = hits.iter().map(|h| h.path.as_str()).collect();
         assert_eq!(paths, vec!["home/notes.txt"]);
+    }
+
+    #[test]
+    fn names_outside_the_catalogue_match_as_they_would_inside_it() {
+        let (_t, r) = charlie_open();
+        let names: Vec<String> = ["contract.pdf", "container.txt", "letter to Ana.txt"]
+            .map(String::from)
+            .to_vec();
+        for query in ["contract", "cont*", "Ana", "to ana", "letter*", "zzz"] {
+            let inside: Vec<bool> = names
+                .iter()
+                .take(2)
+                .map(|n| r.search(query).unwrap().iter().any(|h| &h.name == n))
+                .collect();
+            let outside = names_matching(query, &names).unwrap();
+            assert_eq!(
+                outside[..2],
+                inside[..],
+                "{query}: as the catalogue matches"
+            );
+        }
+        assert_eq!(
+            names_matching("to ana", &names).unwrap(),
+            [false, false, true],
+            "words in order, whatever their case"
+        );
+        assert_eq!(names_matching("", &names).unwrap(), [false, false, false]);
     }
 
     #[test]

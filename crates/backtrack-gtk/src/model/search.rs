@@ -14,10 +14,10 @@
 //! they have already forgotten.
 
 use backtrack_core::dbus::SearchResult;
-use backtrack_core::index::Kind;
+use backtrack_core::index::{ArchiveSummary, Kind};
 use gtk4::glib;
 
-use crate::model::format;
+use crate::model::{format, trash};
 
 /// One result, as the card draws it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -32,6 +32,30 @@ pub struct Card {
     pub lifespan: String,
     /// Whether to show the "no longer on your disk" tag.
     pub gone: bool,
+    /// Whether the newest copy is the Trash's, which the card says instead.
+    pub in_trash: bool,
+}
+
+/// Whether the newest copy of what a result found is the Trash's (Stage 16):
+/// the Trash holds one no backup has, and no backup holding the path was
+/// taken after it went there. Restore Latest restores that copy, and View in
+/// Timeline shows it at its Trash entry.
+pub fn newest_in_trash(hit: &SearchResult) -> bool {
+    !hit.trash.is_empty() && (hit.versions == 0 || hit.trashed_at >= hit.last_ts)
+}
+
+/// Where View in Timeline, and Restore Latest, take a result: the Trash entry
+/// holding its newest copy, read through the Trash; and otherwise the last
+/// backup that had it. `archives` newest first.
+pub fn place(hit: &SearchResult, archives: &[ArchiveSummary]) -> (i64, Option<String>) {
+    if newest_in_trash(hit) {
+        (
+            trash::entry_at(archives, hit.trashed_at),
+            Some(hit.trash.clone()),
+        )
+    } else {
+        (hit.last_seq, None)
+    }
 }
 
 /// Turn what the daemon answered into what the window draws.
@@ -50,6 +74,7 @@ fn card(hit: &SearchResult, home: Option<&str>, now: i64, tz: &glib::TimeZone) -
         breadcrumb: breadcrumb(&hit.path, home),
         lifespan: lifespan(hit, kind, now, tz),
         gone: hit.gone_from_disk,
+        in_trash: newest_in_trash(hit),
         path: hit.path.clone(),
         name: hit.name.clone(),
         kind,
@@ -98,11 +123,35 @@ pub fn breadcrumb(path: &str, home: Option<&str>) -> String {
 /// reading "no longer on your disk" is the card contradicting itself in two
 /// adjacent lines. For those, the range ends on the last backup that held it,
 /// which is the honest answer and the one the person is looking for.
+///
+/// Something in the Trash ends its range when it went there, and says so. What
+/// no backup has at all says only that, since its first day is not known.
 fn lifespan(hit: &SearchResult, kind: Kind, now: i64, tz: &glib::TimeZone) -> String {
+    // A folder has no size worth reporting: Borg records the directory entry,
+    // not what is inside it, so the number would be a few kilobytes of
+    // metadata presented as though it were the contents.
+    let size = |bytes: i64| match kind {
+        Kind::Dir => "folder".to_string(),
+        _ => format::size(bytes, kind),
+    };
+    if !hit.trash.is_empty() && hit.versions == 0 {
+        return format!(
+            "Moved to the Trash {} · in no backup · {}",
+            format::at(hit.trashed_at, tz, "%-d %b at %H:%M"),
+            size(hit.trashed_size)
+        );
+    }
+    let in_trash = newest_in_trash(hit);
+    let last_ts = if in_trash {
+        hit.trashed_at
+    } else {
+        hit.last_ts
+    };
+
     let day = |ts: i64| format::at(ts, tz, "%-d %b");
-    let ends_today = !hit.gone_from_disk && same_day(hit.last_ts, now, tz);
+    let ends_today = !hit.gone_from_disk && !in_trash && same_day(hit.last_ts, now, tz);
     let first = day(hit.first_ts);
-    let last = day(hit.last_ts);
+    let last = day(last_ts);
 
     // A file that came and went inside one day has no range to give, and
     // "22 Sep – 22 Sep" is a way of saying one date twice.
@@ -116,20 +165,20 @@ fn lifespan(hit: &SearchResult, kind: Kind, now: i64, tz: &glib::TimeZone) -> St
         format!("{first} – {last}")
     };
     let mut parts = vec![format!("Existed: {range}")];
+    if in_trash {
+        parts.push(format!(
+            "moved to the Trash at {}",
+            format::at(hit.trashed_at, tz, "%H:%M")
+        ));
+    } else if !hit.trash.is_empty() {
+        parts.push("an older copy in the Trash".to_string());
+    }
 
     parts.push(match hit.versions {
         1 => "1 version".to_string(),
         n => format!("{n} versions"),
     });
-
-    // A folder has no size worth reporting: Borg records the directory entry,
-    // not what is inside it, so the number would be a few kilobytes of
-    // metadata presented as though it were the contents.
-    if kind != Kind::Dir {
-        parts.push(format::size(hit.size, kind));
-    } else {
-        parts.push("folder".to_string());
-    }
+    parts.push(size(if in_trash { hit.trashed_size } else { hit.size }));
 
     parts.join(" · ")
 }
@@ -207,7 +256,104 @@ mod tests {
             versions: 8,
             size: 214 * 1000,
             gone_from_disk: true,
+            trash: String::new(),
+            trashed_at: 0,
+            trashed_size: 0,
         }
+    }
+
+    /// `hit()`, moved to the Trash at 12:45 on 3 July after being edited, so
+    /// the Trash's copy is one no backup has.
+    fn trashed() -> SearchResult {
+        SearchResult {
+            trash: "trash:/home/keith/.local/share/Trash/info/contract-final.pdf.trashinfo"
+                .to_string(),
+            trashed_at: JUL_01 + 2 * 86_400 + 45 * 60,
+            trashed_size: 300 * 1000,
+            ..hit()
+        }
+    }
+
+    #[test]
+    fn something_in_the_trash_says_so_and_since_when() {
+        let card = card(&trashed(), HOME, JUL_01 + 86_400 * 5, &tz());
+        assert_eq!(
+            card.lifespan,
+            "Existed: 26 Jun – 3 Jul · moved to the Trash at 12:45 · 8 versions · 300.0\u{a0}kB",
+        );
+        assert!(card.in_trash);
+    }
+
+    #[test]
+    fn what_no_backup_has_says_only_when_it_went_to_the_trash() {
+        let letter = SearchResult {
+            first_seq: 0,
+            last_seq: 0,
+            first_ts: 0,
+            last_ts: 0,
+            versions: 0,
+            trashed_size: 9,
+            ..trashed()
+        };
+        let card = card(&letter, HOME, JUL_01 + 86_400 * 5, &tz());
+        assert_eq!(
+            card.lifespan,
+            "Moved to the Trash 3 Jul at 12:45 · in no backup · 9 bytes"
+        );
+        assert!(card.in_trash);
+        assert!(newest_in_trash(&letter));
+    }
+
+    /// Backups at 12:00 on 1 July (seq 8) and on 4 July (seq 9), newest first.
+    fn first_and_fourth() -> Vec<ArchiveSummary> {
+        [(9, JUL_01 + 3 * 86_400), (8, JUL_01)]
+            .map(|(seq, ts)| ArchiveSummary {
+                seq,
+                borg_id: None,
+                name: format!("a{seq}"),
+                ts,
+                repo: "primary".to_string(),
+                catalogued: true,
+                caught_up: None,
+                holds_intermediate: false,
+            })
+            .to_vec()
+    }
+
+    #[test]
+    fn restore_latest_takes_the_trashs_copy_when_no_backup_is_newer() {
+        let hit = trashed();
+        assert!(newest_in_trash(&hit));
+        assert_eq!(
+            place(&hit, &first_and_fourth()),
+            (trash::entry_seq(Some(8)), Some(hit.trash.clone())),
+            "the entry after the backup of 1 July, read through the Trash"
+        );
+    }
+
+    #[test]
+    fn restore_latest_takes_a_backup_taken_after_the_trashs_copy() {
+        // The file was made again and backed up on 4 July, after the old one
+        // went to the Trash.
+        let hit = SearchResult {
+            last_seq: 9,
+            last_ts: JUL_01 + 3 * 86_400,
+            ..trashed()
+        };
+        assert!(!newest_in_trash(&hit));
+        assert_eq!(place(&hit, &first_and_fourth()), (9, None));
+        let card = card(&hit, HOME, JUL_01 + 86_400 * 5, &tz());
+        assert!(!card.in_trash);
+        assert!(
+            card.lifespan.contains("· an older copy in the Trash ·"),
+            "{}",
+            card.lifespan
+        );
+    }
+
+    #[test]
+    fn a_backed_up_file_goes_to_the_last_backup_that_had_it() {
+        assert_eq!(place(&hit(), &first_and_fourth()), (8, None));
     }
 
     #[test]

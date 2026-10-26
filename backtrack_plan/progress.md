@@ -18,8 +18,8 @@ Nothing right now.
 > tasks: add them here + to the stage file, then `just provision-board-apply`.
 > See [../CLAUDE.md](../CLAUDE.md) for the full workflow.
 
-**Current stage:** 15 (complete)
-**Last updated:** 2026-10-23
+**Current stage:** 16 (complete)
+**Last updated:** 2026-10-26
 
 ## Stage 0 — Bootstrap ([stage file](stages/stage-00-bootstrap.md))
 - [x] S00-T1 Git repo, license, .gitignore, README skeleton
@@ -172,11 +172,14 @@ Nothing right now.
 - [x] S15-T8 Nextcloud's sync files are left out by default
 
 ## Stage 16 — The Trash in the timeline ([stage file](stages/stage-16-trash-in-the-timeline.md))
-- [ ] S16-T1 Read the Trash
-- [ ] S16-T2 The daemon watches the Trash and serves it
-- [ ] S16-T3 Trash entries in the timeline
-- [ ] S16-T4 Restore from the Trash
-- [ ] S16-T5 Search finds what is in the Trash
+- [x] S16-T1 Read the Trash
+- [x] S16-T2 The daemon watches the Trash and serves it
+- [x] S16-T3 Trash entries in the timeline
+- [x] S16-T4 Restore from the Trash
+- [x] S16-T5 Search finds what is in the Trash
+- [x] S16-T6 The daemon cannot deadlock on its own locks
+- [x] S16-T7 Two previews of the same file at once both succeed
+- [x] S16-T8 Search can be closed from its button
 
 ## Stage 17 — Snapper snapshots in the timeline ([stage file](stages/stage-17-snapper-snapshots.md))
 - [ ] S17-T1 Find Snapper's snapshots

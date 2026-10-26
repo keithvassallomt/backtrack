@@ -267,6 +267,39 @@ pub struct SearchResult {
     /// be an hour old, and the hour since is exactly when the thing a person
     /// is searching for went missing.
     pub gone_from_disk: bool,
+    /// When the Trash holds a version of this path that no backup has (Stage
+    /// 16), the archive name that copy is read and restored through
+    /// (`trash:<…>`); empty when it holds none. A path no backup has at all
+    /// has no versions, and its sequence numbers and times are 0.
+    pub trash: String,
+    /// When that copy was moved to the Trash, seconds since the epoch; 0 when
+    /// there is none.
+    pub trashed_at: i64,
+    /// That copy's size in bytes.
+    pub trashed_size: i64,
+}
+
+/// Something in the desktop's Trash that came from a backed-up folder, as
+/// `ListTrashed` reports it (Stage 16).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+pub struct TrashedItem {
+    /// The archive name its files are read through (`PreviewFile`,
+    /// `CompareFile`): `trash:` and its `.trashinfo`.
+    pub archive: String,
+    /// Where it was, archive-relative.
+    pub path: String,
+    /// When it was moved to the Trash, seconds since the epoch.
+    pub deleted_at: i64,
+    /// "file", "dir", "symlink", or "other".
+    pub kind: String,
+    /// Bytes, for a file; 0 for a folder.
+    pub size: i64,
+    /// Its modification time, microseconds since the epoch, as the catalogue
+    /// keeps them.
+    pub mtime: i64,
+    /// It holds something no backup has, which is what gives it a place in
+    /// the timeline.
+    pub counts: bool,
 }
 
 /// One path a restore needs an answer about, as `GetRestorePreview` reports it.

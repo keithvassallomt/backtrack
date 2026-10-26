@@ -21,6 +21,7 @@ mod schedule;
 mod service;
 mod snapshot;
 mod supervise;
+mod trash;
 // Exists only to assert that the packaged units and the code agree.
 #[cfg(test)]
 mod units;

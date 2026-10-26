@@ -43,9 +43,18 @@ pub struct MockEngine {
     /// Fails `prune`, so retention failing can be told apart from backing up
     /// failing.
     prune_error: Option<EngineError>,
+    /// What `extract_stdout` streams; empty when not set.
+    file: Option<Vec<u8>>,
 }
 
 impl MockEngine {
+    /// The file `extract_stdout` streams, a few bytes at a time with a pause
+    /// between, so that two extractions of it at once overlap.
+    pub fn with_file(mut self, contents: impl Into<Vec<u8>>) -> Self {
+        self.file = Some(contents.into());
+        self
+    }
+
     pub fn with_create_events(mut self, events: Vec<JobEvent>) -> Self {
         self.create_events = events;
         self
@@ -192,7 +201,20 @@ impl BackupEngine for MockEngine {
         _path: &str,
     ) -> Result<Pin<Box<dyn AsyncRead + Send>>> {
         self.check_fail()?;
-        Ok(Box::pin(tokio::io::empty()))
+        let Some(contents) = self.file.clone() else {
+            return Ok(Box::pin(tokio::io::empty()));
+        };
+        let (mut writer, reader) = tokio::io::duplex(64);
+        tokio::spawn(async move {
+            use tokio::io::AsyncWriteExt;
+            for chunk in contents.chunks(64) {
+                if writer.write_all(chunk).await.is_err() {
+                    return;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+            }
+        });
+        Ok(Box::pin(reader))
     }
     async fn prune(&self, _policy: &PrunePolicy) -> Result<JobStream> {
         if let Some(err) = self.prune_error.clone() {

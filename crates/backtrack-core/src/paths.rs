@@ -117,8 +117,8 @@ pub fn systemd_user_dir() -> PathBuf {
 }
 
 /// The user's data folder on the host, where the file managers look for
-/// per-user extensions: `$XDG_DATA_HOME`, else `~/.local/share`. The host's,
-/// inside a Flatpak (S14-T4).
+/// per-user extensions and the desktop keeps the home Trash: `$XDG_DATA_HOME`,
+/// else `~/.local/share`. The host's, inside a Flatpak (S14-T4, Stage 16).
 pub fn host_data_home() -> PathBuf {
     data_home_from(
         host_var("XDG_DATA_HOME").as_deref(),

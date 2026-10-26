@@ -49,10 +49,15 @@ pub async fn ask(
     entry: &RestoreEntry,
     name: &str,
     folder: &str,
+    origin: &copy::Origin,
 ) -> Answer {
     let dialog = adw::AlertDialog::new(
         Some(&copy::conflict_title(name)),
-        Some(&copy::conflict_body(folder, entry.disk_newer)),
+        Some(&copy::conflict_body(
+            folder,
+            entry.disk_newer,
+            origin.comes_from_trash(&entry.path),
+        )),
     );
 
     // Wide enough that the two dates sit on one line each and the three
@@ -64,7 +69,7 @@ pub async fn ask(
     dialog.set_content_width(CONTENT_WIDTH);
     crate::ui::prefer_wide_responses(&dialog);
 
-    let comparison = comparison(entry, name);
+    let comparison = comparison(entry, name, origin);
     // `content-width` is a natural width, and a dialog whose content asks for
     // less than that keeps its own counsel. The content has to want the room.
     comparison.set_size_request(CONTENT_WIDTH - 40, -1);
@@ -88,7 +93,7 @@ pub async fn ask(
 }
 
 /// The two-row comparison box: what is on disk, and what is in the backup.
-fn comparison(entry: &RestoreEntry, name: &str) -> GtkBox {
+fn comparison(entry: &RestoreEntry, name: &str, origin: &copy::Origin) -> GtkBox {
     let tz = glib::TimeZone::local();
     let (disk, backup) = copy::version_lines(entry, &tz);
 
@@ -103,7 +108,7 @@ fn comparison(entry: &RestoreEntry, name: &str) -> GtkBox {
     ));
     rows.append(&version_row(
         "document-open-recent-symbolic",
-        "Backup version",
+        copy::incoming(origin, &entry.path),
         &backup,
         !entry.disk_newer,
     ));

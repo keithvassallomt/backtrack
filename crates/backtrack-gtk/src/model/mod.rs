@@ -32,6 +32,7 @@ pub mod prefs;
 pub mod restore;
 pub mod search;
 pub mod status;
+pub mod trash;
 pub mod wizard;
 
 use gtk4::glib;

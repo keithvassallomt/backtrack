@@ -36,6 +36,16 @@ pub trait Daemon1 {
     fn preview_file(&self, archive: &str, path: &str) -> zbus::Result<zbus::zvariant::OwnedFd>;
     fn search_files(&self, query: &str) -> zbus::Result<Vec<SearchResult>>;
 
+    /// What the desktop's Trash holds from the backed-up folders (Stage 16).
+    fn list_trashed(&self) -> zbus::Result<Vec<backtrack_core::dbus::TrashedItem>>;
+    /// What is directly inside a folder of a trashed item: name, kind, bytes,
+    /// modification time in epoch microseconds.
+    fn list_trashed_folder(
+        &self,
+        archive: &str,
+        path: &str,
+    ) -> zbus::Result<Vec<(String, String, i64, i64)>>;
+
     /// A readable descriptor onto the *live* copy of a catalogued path — the
     /// other half of `preview_file`, for the side of a comparison that says
     /// "today". Size and modification time come from the descriptor, so the
@@ -54,6 +64,16 @@ pub trait Daemon1 {
     /// of it. Returns the job doing the working out; everything after this is
     /// addressed with the same id.
     fn prepare_restore(&self, archive: &str, paths: &[String], dest: &str) -> zbus::Result<u64>;
+    /// As `prepare_restore`, with each of `trashed` put back in place of what
+    /// `archive` has at its path, as a Trash entry shows them. `archive` is
+    /// empty when nothing comes from a backup.
+    fn prepare_restore_with_trash(
+        &self,
+        archive: &str,
+        trashed: &[String],
+        paths: &[String],
+        dest: &str,
+    ) -> zbus::Result<u64>;
     /// What the restore prepared under `job` would do.
     fn get_restore_preview(&self, job: u64) -> zbus::Result<RestorePreview>;
     /// Carry it out: `blanket` answers every conflict, `decisions` overrides
@@ -68,6 +88,14 @@ pub trait Daemon1 {
     /// arise, so there is nothing to ask and no preview to read: the job id
     /// this returns is the whole of it.
     fn restore_into(&self, archive: &str, paths: &[String], dest: &str) -> zbus::Result<u64>;
+    /// As `restore_into`, with `trashed` as for `prepare_restore_with_trash`.
+    fn restore_into_with_trash(
+        &self,
+        archive: &str,
+        trashed: &[String],
+        paths: &[String],
+        dest: &str,
+    ) -> zbus::Result<u64>;
     /// Put back everything that restore moved.
     fn undo_restore(&self, job: u64) -> zbus::Result<u64>;
     /// Throw away a prepared restore and the copy it extracted.
@@ -161,6 +189,10 @@ pub trait Daemon1 {
     /// A job ended. `outcome` is `completed`, `cancelled` or `failed`.
     #[zbus(signal)]
     fn job_finished(&self, job: u64, kind: &str, outcome: &str) -> zbus::Result<()>;
+
+    /// What `list_trashed` lists has changed.
+    #[zbus(signal)]
+    fn trash_changed(&self) -> zbus::Result<()>;
 }
 
 /// Connect to the daemon, honoring `BACKTRACK_DEV` for the bus name.

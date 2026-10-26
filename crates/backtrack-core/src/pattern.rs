@@ -46,14 +46,14 @@
 use std::path::Path;
 
 /// A compiled set of exclusion patterns.
-#[derive(Debug, Default)]
+#[derive(Debug, Clone, Default)]
 pub struct ExcludeSet {
     patterns: Vec<Pattern>,
     /// Patterns this build cannot evaluate, kept so the caller can name them.
     unsupported: Vec<String>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 enum Pattern {
     /// Wildcards cross `/` (Borg's default style).
     Fnmatch(Vec<Token>),
@@ -65,7 +65,7 @@ enum Pattern {
     PathFull(String),
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum Token {
     Literal(char),
     /// `?`
@@ -80,7 +80,7 @@ enum Token {
     },
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum ClassItem {
     Char(char),
     Range(char, char),

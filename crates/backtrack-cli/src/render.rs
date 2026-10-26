@@ -213,6 +213,9 @@ pub fn search_json(hits: &[SearchResult]) -> serde_json::Value {
                     "last_seq": hit.last_seq,
                     "first_seen": hit.first_ts,
                     "last_seen": hit.last_ts,
+                    "trash": hit.trash,
+                    "trashed_at": hit.trashed_at,
+                    "trashed_size": hit.trashed_size,
                 })
             })
             .collect(),
@@ -230,17 +233,26 @@ pub fn search_human(hits: &[SearchResult]) -> String {
         hits.len(),
         if hits.len() == 1 { "" } else { "es" }
     );
+    let when = |ts: i64| {
+        from_epoch(ts.max(0) as u64)
+            .map(format_time)
+            .unwrap_or_else(|| "unknown".into())
+    };
     for hit in hits {
         let marker = if hit.gone_from_disk { "×" } else { " " };
-        out.push_str(&format!(
-            "{marker} {}\n    {} version{}, last seen {}\n",
-            hit.path,
-            hit.versions,
-            if hit.versions == 1 { "" } else { "s" },
-            from_epoch(hit.last_ts.max(0) as u64)
-                .map(format_time)
-                .unwrap_or_else(|| "unknown".into()),
-        ));
+        let history = match hit.versions {
+            0 => "in no backup".to_string(),
+            n => format!(
+                "{n} version{}, last seen {}",
+                if n == 1 { "" } else { "s" },
+                when(hit.last_ts)
+            ),
+        };
+        let trash = match hit.trash.as_str() {
+            "" => String::new(),
+            _ => format!("; in the Trash since {}", when(hit.trashed_at)),
+        };
+        out.push_str(&format!("{marker} {}\n    {history}{trash}\n", hit.path));
     }
     out.push_str("\n× = deleted; still restorable from an older snapshot.\n");
     out
@@ -593,6 +605,9 @@ mod tests {
                 versions: 2,
                 size: 4_096,
                 gone_from_disk: false,
+                trash: String::new(),
+                trashed_at: 0,
+                trashed_size: 0,
             },
             SearchResult {
                 path: "home/k/gone.txt".into(),
@@ -605,12 +620,44 @@ mod tests {
                 versions: 1,
                 size: 2_048,
                 gone_from_disk: true,
+                trash: String::new(),
+                trashed_at: 0,
+                trashed_size: 0,
             },
         ];
         let text = search_human(&hits);
         assert!(text.contains("× home/k/gone.txt"), "got: {text}");
         assert!(text.contains("  home/k/kept.txt"), "got: {text}");
         assert!(text.contains("still restorable"));
+        assert!(!text.contains("Trash"), "got: {text}");
+    }
+
+    #[test]
+    fn search_says_what_is_in_the_trash_and_since_when() {
+        let letter = SearchResult {
+            path: "home/k/letter.txt".into(),
+            name: "letter.txt".into(),
+            kind: "file".into(),
+            first_seq: 0,
+            last_seq: 0,
+            first_ts: 0,
+            last_ts: 0,
+            versions: 0,
+            size: 9,
+            gone_from_disk: true,
+            trash: "trash:/home/k/.local/share/Trash/info/letter.txt.trashinfo".into(),
+            trashed_at: 1_700_000_000,
+            trashed_size: 9,
+        };
+        let text = search_human(std::slice::from_ref(&letter));
+        assert!(
+            text.contains(&format!(
+                "in no backup; in the Trash since {}",
+                format_time(from_epoch(1_700_000_000).unwrap())
+            )),
+            "got: {text}"
+        );
+        assert_eq!(search_json(&[letter])[0]["trashed_at"], 1_700_000_000);
     }
 
     #[test]

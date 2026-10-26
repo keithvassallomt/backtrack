@@ -29,7 +29,8 @@
 /* A backup the destination does not have yet is the one place a snapshot
  * carries risk, so it is red. Once the destination has caught up, what is
  * left here is only the in-between versions, and it is yellow. */
-.badge.local-only {
+.badge.local-only,
+.badge.in-trash {
     background-color: alpha(@error_color, 0.15);
     color: @error_color;
 }
