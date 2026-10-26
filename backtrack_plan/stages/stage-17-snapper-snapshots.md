@@ -174,7 +174,7 @@ for S17-T7 to hand over). Run by the person, as themselves, in a terminal:
   gives this user access (`ALLOW_USERS`, `SYNC_ACL`); starts the timeline and
   cleanup timers; takes a snapshot every five minutes, keeping a day of them;
   keeps a week of daily snapshots and nothing older; takes a first snapshot,
-  and says what the snapshots hold so far.
+  and lists it.
 - Records what it changed, and what it found already there (Snapper
   installed, timers on, openSUSE's own configuration for the system). Run
   again, it offers to undo exactly what it changed, and leaves what it found.
@@ -208,6 +208,19 @@ for each kind of package; on the GNOME VM and the Plasma VM, the button opens
 the terminal running the script, and Preferences shows Snapper's snapshots
 when it ends; in the Flatpak on the GNOME VM, the copied command, pasted into
 a terminal, does the same.
+
+### S17-T8 — Reading a backup into the catalogue no longer slows with its size
+*(defect, found while checking S17-T6 on Keith's laptop)* An ingest looks up,
+for every file in the listing, the version ending at the archive before it.
+Since the `versions_last_seq` index (S15), SQLite has looked that up through
+it rather than through the file's path: nearly every file in the newest backup
+ends there, so each lookup read all of them. Reading Keith's 55,000 files into
+his catalogue took 6.5 seconds, for a backup and for a Snapper snapshot alike,
+and it grows with the square of the number of files. The lookup is by path.
+
+**Accept:** a test that both lookups an ingest makes go by path, shown to fail
+on the query as it was; reading Keith's backed-up folders into a copy of his
+catalogue takes a fraction of a second (6.5 s before).
 
 ## Definition of Done
 All tasks done; the CHANGELOG's Unreleased section says what changed for the

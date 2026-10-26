@@ -114,6 +114,22 @@ struct ArchiveRow {
     repo: String,
 }
 
+/// The version of a path that ends at an archive: the one before an archive
+/// being ingested, which an unchanged file's interval reaches over it from.
+///
+/// Looked up by path. The `+` keeps SQLite from looking it up through
+/// `versions_last_seq` instead, which it prefers with no statistics to go
+/// on: every file in the newest backup ends there, so each lookup read all of
+/// them, and reading in a backup of 55,000 files took six seconds where it
+/// takes a fraction of one, growing with the square of the number of files.
+const NEIGHBOUR: &str = "SELECT rowid, kind, size, mtime, chunk_hash, last_seq
+     FROM versions WHERE path_id = ?1 AND +last_seq = ?2";
+
+/// The version of a path that starts at an archive: the one after an archive
+/// being ingested, for an interval to reach back over it.
+const SUCCESSOR: &str = "SELECT rowid, kind, size, mtime, chunk_hash, last_seq
+     FROM versions WHERE path_id = ?1 AND first_seq = ?2";
+
 /// What a listing being ingested says about the files it does not mention.
 #[derive(Clone, Copy)]
 enum Listing<'a> {
@@ -447,14 +463,8 @@ impl IndexWriter {
         };
         {
             let mut resolver = PathResolver::new(&tx)?;
-            let mut neighbour = tx.prepare(
-                "SELECT rowid, kind, size, mtime, chunk_hash, last_seq
-                 FROM versions WHERE path_id = ?1 AND last_seq = ?2",
-            )?;
-            let mut successor = tx.prepare(
-                "SELECT rowid, kind, size, mtime, chunk_hash, last_seq
-                 FROM versions WHERE path_id = ?1 AND first_seq = ?2",
-            )?;
+            let mut neighbour = tx.prepare(NEIGHBOUR)?;
+            let mut successor = tx.prepare(SUCCESSOR)?;
             let mut set_first =
                 tx.prepare("UPDATE versions SET first_seq = ?2 WHERE rowid = ?1")?;
             let mut set_last = tx.prepare("UPDATE versions SET last_seq = ?2 WHERE rowid = ?1")?;
@@ -2116,6 +2126,36 @@ mod catalogue_tests {
         );
         assert_eq!(spans(&w, "a"), [(1, 2)]);
         assert_eq!(spans(&w, "b"), [(1, 2)]);
+    }
+
+    #[test]
+    fn a_neighbour_is_looked_up_by_its_path() {
+        // As a real catalogue is: most files in the newest backup unchanged
+        // since one before it, so that the most common last_seq is shared by
+        // nearly every version. Asked through `versions_last_seq`, each
+        // lookup read every one of them.
+        let mut w = IndexWriter::open_in_memory().unwrap();
+        let files: Vec<BorgItem> = (0..500).map(|i| file(&format!("home/k/f{i}"), 1)).collect();
+        for n in 0..3 {
+            w.ingest_archive(
+                &at(&format!("bt-{n}"), 1000 * n),
+                Repo::Primary,
+                files.clone().into_iter(),
+            )
+            .unwrap();
+        }
+        for (name, sql) in [("neighbour", NEIGHBOUR), ("successor", SUCCESSOR)] {
+            let plan: String = w
+                .conn()
+                .query_row(&format!("EXPLAIN QUERY PLAN {sql}"), params![1, 3], |r| {
+                    r.get(3)
+                })
+                .unwrap();
+            assert!(
+                plan.contains("versions_path_seq (path_id=?"),
+                "the {name} is looked up by path: {plan}"
+            );
+        }
     }
 
     #[test]
