@@ -2903,3 +2903,90 @@ async fn beside_an_unencrypted_destination_the_safety_net_is_what_checks_the_pas
     assert!(completed(&settle(&shared, job).await));
     assert_eq!(shared.secrets.get(&repo).await.unwrap(), PASS);
 }
+
+#[tokio::test]
+async fn snappers_snapshots_are_kept_in_the_catalogue_as_they_come_and_go() {
+    use crate::snapper::tests::{snapshot_name, Machine, HOUR, NINE};
+
+    let Some(machine) = Machine::new("watched").await else {
+        return;
+    };
+    std::fs::write(machine.documents().join("report.odt"), b"draft").unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let mut config = Config::default();
+    config.backup.include = machine.sources();
+    let secrets: Arc<dyn SecretStore> = Arc::new(FileSecretStore::new(dir.path().join("s.json")));
+    let shared = Shared::in_dir(config, JobRegistry::new(), secrets, dir.path());
+    let index = dir.path().join("index.db");
+    shared.set_index(Arc::new(std::sync::Mutex::new(
+        backtrack_core::index::IndexWriter::open(&index).unwrap(),
+    )));
+    let (server, _client) = connect(Arc::clone(&shared)).await;
+    let emitter = SignalEmitter::new(&server, PATH).unwrap();
+    tokio::spawn(fan_out_signals(Arc::clone(&shared), emitter.to_owned()));
+
+    // Snapper's snapshots, read in once all of them are catalogued.
+    let snappers = || -> Option<Vec<String>> {
+        let archives = backtrack_core::index::IndexReader::open(&index)
+            .ok()?
+            .archives_overview()
+            .ok()?;
+        if archives.iter().any(|a| !a.catalogued) {
+            return None;
+        }
+        let mut names: Vec<String> = archives
+            .into_iter()
+            .filter(|a| a.repo == "snapper")
+            .map(|a| a.name)
+            .collect();
+        names.reverse();
+        Some(names)
+    };
+    let until = |want: Vec<String>, what: &str| {
+        let what = what.to_string();
+        let snappers = &snappers;
+        async move {
+            for _ in 0..150 {
+                if snappers().as_ref() == Some(&want) {
+                    return;
+                }
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+            panic!("{what}: the catalogue holds {:?}", snappers());
+        }
+    };
+
+    // Two there before the daemon starts: a backlog, a job each.
+    machine.take(1, NINE).await;
+    machine.take(2, NINE + HOUR).await;
+    tokio::spawn(crate::snapper::watch(Arc::clone(&shared)));
+    until(
+        vec![snapshot_name(&machine, 1), snapshot_name(&machine, 2)],
+        "the two found at startup",
+    )
+    .await;
+
+    // One taken while the daemon runs, heard by the watch on `.snapshots`, and
+    // filled in after the first look has found its folder empty: heard by the
+    // watch on the folder.
+    machine
+        .take_pausing(3, NINE + 2 * HOUR, Duration::from_millis(2_500))
+        .await;
+    until(
+        vec![
+            snapshot_name(&machine, 1),
+            snapshot_name(&machine, 2),
+            snapshot_name(&machine, 3),
+        ],
+        "the one taken since",
+    )
+    .await;
+
+    // One Snapper's cleanup removes.
+    machine.remove(1).await;
+    until(
+        vec![snapshot_name(&machine, 2), snapshot_name(&machine, 3)],
+        "after the oldest was removed",
+    )
+    .await;
+}

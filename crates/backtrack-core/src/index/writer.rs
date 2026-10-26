@@ -114,6 +114,84 @@ struct ArchiveRow {
     repo: String,
 }
 
+/// What a listing being ingested says about the files it does not mention.
+#[derive(Clone, Copy)]
+enum Listing<'a> {
+    /// Nothing: it is everything there was, and what it leaves out was gone.
+    Full,
+    /// That they had not changed: it is only what had (the spool).
+    Delta,
+    /// Gone, inside these folders; nothing at all, outside them.
+    Scoped(&'a [String]),
+}
+
+/// Carry every version outside `scope` across `seq`, for a listing that says
+/// nothing about them (see [`IndexWriter::ingest_scoped`]). Returns how many
+/// intervals were rejoined or extended.
+fn carry_outside(tx: &Transaction, seq: i64, scope: &[String]) -> Result<usize> {
+    // Every path at or below a folder in scope. A folder the catalogue has
+    // never held has nothing below it, and adds nothing.
+    tx.execute_batch("CREATE TEMP TABLE scoped(path_id INTEGER PRIMARY KEY)")?;
+    {
+        let mut lookup = tx.prepare("SELECT id FROM paths WHERE parent_id = ?1 AND name = ?2")?;
+        let mut below = tx.prepare(
+            "WITH RECURSIVE under(id) AS (
+                 SELECT ?1
+                 UNION ALL
+                 SELECT p.id FROM paths p JOIN under u ON p.parent_id = u.id
+             )
+             INSERT OR IGNORE INTO temp.scoped(path_id) SELECT id FROM under",
+        )?;
+        'folders: for folder in scope {
+            let mut id = 0i64;
+            for name in folder.split('/').filter(|n| !n.is_empty()) {
+                match lookup
+                    .query_row(params![id, name], |r| r.get::<_, i64>(0))
+                    .optional()?
+                {
+                    Some(child) => id = child,
+                    None => continue 'folders,
+                }
+            }
+            if id != 0 {
+                below.execute([id])?;
+            }
+        }
+    }
+    // The interval each side of `seq`, where the content is the same: they
+    // are one, split when the archive was slotted in between them.
+    tx.execute(
+        "CREATE TEMP TABLE rejoined AS
+           SELECT l.rowid AS left_id, r.rowid AS right_id, r.last_seq AS last_seq
+           FROM versions l JOIN versions r
+             ON r.path_id = l.path_id AND r.first_seq = ?1 + 1
+           WHERE l.last_seq = ?1 - 1
+             AND l.path_id NOT IN (SELECT path_id FROM temp.scoped)
+             AND l.kind = r.kind AND l.size IS r.size AND l.mtime IS r.mtime
+             AND l.chunk_hash IS r.chunk_hash",
+        params![seq],
+    )?;
+    let mut carried = tx.execute(
+        "UPDATE versions
+         SET last_seq = (SELECT last_seq FROM temp.rejoined WHERE left_id = versions.rowid)
+         WHERE rowid IN (SELECT left_id FROM temp.rejoined)",
+        [],
+    )?;
+    tx.execute(
+        "DELETE FROM versions WHERE rowid IN (SELECT right_id FROM temp.rejoined)",
+        [],
+    )?;
+    // The rest reach over `seq`: what the listing does not speak for is taken
+    // to have stood as it did before.
+    carried += tx.execute(
+        "UPDATE versions SET last_seq = ?1
+         WHERE last_seq = ?1 - 1 AND path_id NOT IN (SELECT path_id FROM temp.scoped)",
+        params![seq],
+    )?;
+    tx.execute_batch("DROP TABLE temp.rejoined; DROP TABLE temp.scoped;")?;
+    Ok(carried)
+}
+
 /// Split every version interval that spans `seq` into the parts either side of
 /// it, so nothing claims to know what an uncatalogued archive contained.
 ///
@@ -294,7 +372,7 @@ impl IndexWriter {
         seq: i64,
         items: impl Iterator<Item = std::result::Result<BorgItem, ListingIncomplete>>,
     ) -> Result<IngestStats> {
-        self.ingest_inner(seq, items, false)
+        self.ingest_inner(seq, items, Listing::Full)
     }
 
     /// Ingest a **delta** listing: an archive that holds only what changed since
@@ -329,15 +407,36 @@ impl IndexWriter {
         seq: i64,
         items: impl Iterator<Item = std::result::Result<BorgItem, ListingIncomplete>>,
     ) -> Result<IngestStats> {
-        self.ingest_inner(seq, items, true)
+        self.ingest_inner(seq, items, Listing::Delta)
+    }
+
+    /// Ingest a listing that is whole for some folders and says nothing about
+    /// the rest: a Snapper snapshot (Stage 17), which copies one subvolume,
+    /// when some backed-up folders are in another.
+    ///
+    /// Inside `scope` (archive-relative paths of the folders it covers, each
+    /// with everything below it) this is an ordinary full listing, so a file
+    /// deleted there is recorded as gone. Everything outside is carried across
+    /// `seq` as it stood on either side: an interval that ended at `seq - 1`
+    /// rejoins the one starting at `seq + 1` when the content is the same, and
+    /// otherwise reaches over `seq`. Read as a full listing, it would show
+    /// every file in the other folders as deleted at that snapshot.
+    pub fn ingest_scoped(
+        &mut self,
+        seq: i64,
+        items: impl Iterator<Item = BorgItem>,
+        scope: &[String],
+    ) -> Result<IngestStats> {
+        self.ingest_inner(seq, items.map(Ok), Listing::Scoped(scope))
     }
 
     fn ingest_inner(
         &mut self,
         seq: i64,
         items: impl Iterator<Item = std::result::Result<BorgItem, ListingIncomplete>>,
-        delta: bool,
+        listing: Listing,
     ) -> Result<IngestStats> {
+        let delta = matches!(listing, Listing::Delta);
         let tx = self.conn.transaction()?;
         if delta {
             tx.execute_batch("CREATE TEMP TABLE mentioned(path_id INTEGER PRIMARY KEY)")?;
@@ -444,6 +543,9 @@ impl IndexWriter {
                 params![seq],
             )?;
             tx.execute_batch("DROP TABLE temp.mentioned")?;
+        }
+        if let Listing::Scoped(scope) = listing {
+            stats.extended += carry_outside(&tx, seq, scope)?;
         }
         tx.execute(
             "UPDATE archives SET status = NULL WHERE seq = ?1",
@@ -595,14 +697,49 @@ impl IndexWriter {
     ///
     /// This is also what makes cataloguing resumable across a restart: the work
     /// still outstanding is a query, not something held in memory.
+    ///
+    /// Snapper's snapshots are left out. They are read from the snapshot rather
+    /// than through Borg, by a job of their own that never leaves one pending
+    /// (see [`Self::pending_in`]), so nothing here could catalogue one, and one
+    /// left by a daemon stopped mid-way is not a backup waiting to be browsable.
     pub fn pending_archives(&self) -> Result<Vec<(i64, String)>> {
-        let mut stmt = self
-            .conn
-            .prepare("SELECT seq, name FROM archives WHERE status IS NOT NULL ORDER BY seq DESC")?;
+        let mut stmt = self.conn.prepare(
+            "SELECT seq, name FROM archives
+             WHERE status IS NOT NULL AND repo != 'snapper' ORDER BY seq DESC",
+        )?;
         let rows = stmt
             .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
             .collect::<std::result::Result<_, _>>()?;
         Ok(rows)
+    }
+
+    /// The names of `repo`'s archives not catalogued yet, newest first.
+    pub fn pending_in(&self, repo: Repo) -> Result<Vec<String>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT name FROM archives
+             WHERE status IS NOT NULL AND repo = ?1 ORDER BY seq DESC",
+        )?;
+        let rows = stmt
+            .query_map([repo.as_str()], |r| r.get(0))?
+            .collect::<std::result::Result<_, _>>()?;
+        Ok(rows)
+    }
+
+    /// Where `repo`'s archive `name` is in the catalogue now.
+    ///
+    /// A seq is a position, and inserting an archive in the middle moves every
+    /// one after it, so a seq is good only for as long as this writer is held.
+    /// Something that lets go of it between finding an archive and writing to
+    /// it looks the archive up again by name.
+    pub fn seq_of(&self, repo: Repo, name: &str) -> Result<Option<i64>> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT seq FROM archives WHERE repo = ?1 AND name = ?2",
+                params![repo.as_str(), name],
+                |r| r.get(0),
+            )
+            .optional()?)
     }
 
     /// Archives belonging to `repo`, oldest first.
@@ -1837,5 +1974,174 @@ mod catalogue_tests {
         w.ingest_pending(seq, vec![flat("x", 1)].into_iter())
             .unwrap();
         assert_eq!(dump_status(&w), vec![None]);
+    }
+
+    /// A file at `path` (slashes allowed), its size standing for its content.
+    fn file(path: &str, size: i64) -> BorgItem {
+        BorgItem {
+            path: path.to_string(),
+            kind: Kind::File,
+            size,
+            mtime: 100,
+            mode: 0o644,
+            chunk_hash: None,
+        }
+    }
+
+    fn at(name: &str, ts: i64) -> ArchiveMeta {
+        ArchiveMeta {
+            borg_id: None,
+            name: name.to_string(),
+            ts,
+        }
+    }
+
+    /// A Snapper snapshot taken at `ts`, holding `items` and speaking for the
+    /// folders in `scope`, slotted in by time and catalogued as the daemon does.
+    fn snapper(w: &mut IndexWriter, ts: i64, items: Vec<BorgItem>, scope: &[&str]) -> IngestStats {
+        let name = format!("snapper:/home/.snapshots/{ts}");
+        w.sync_archives(Repo::Snapper, &[at(&name, ts)]).unwrap();
+        assert_eq!(
+            w.pending_in(Repo::Snapper).unwrap(),
+            std::slice::from_ref(&name)
+        );
+        let seq = w.seq_of(Repo::Snapper, &name).unwrap().unwrap();
+        let scope: Vec<String> = scope.iter().map(|s| s.to_string()).collect();
+        w.ingest_scoped(seq, items.into_iter(), &scope).unwrap()
+    }
+
+    /// Two backups, at 1000 and 3000, of a folder Snapper covers (`in`) and
+    /// one it does not (`out`).
+    fn two_backups(out_second: i64) -> IndexWriter {
+        let mut w = IndexWriter::open_in_memory().unwrap();
+        w.ingest_archive(
+            &at("bt-1", 1000),
+            Repo::Primary,
+            vec![file("in/a", 1), file("out/b", 1)].into_iter(),
+        )
+        .unwrap();
+        w.ingest_archive(
+            &at("bt-2", 3000),
+            Repo::Primary,
+            vec![file("in/a", 1), file("out/b", out_second)].into_iter(),
+        )
+        .unwrap();
+        w
+    }
+
+    #[test]
+    fn a_scoped_listing_leaves_the_folders_it_does_not_cover_as_they_were() {
+        let mut w = two_backups(1);
+        snapper(&mut w, 2000, vec![file("in/a", 1)], &["in"]);
+        assert_eq!(
+            dump_archives(&w)[1],
+            (2, "snapper:/home/.snapshots/2000".into(), 2000)
+        );
+        assert_eq!(spans(&w, "a"), [(1, 3)]);
+        assert_eq!(
+            spans(&w, "b"),
+            [(1, 3)],
+            "a file in a folder the snapshot does not copy is not deleted at it"
+        );
+    }
+
+    #[test]
+    fn a_full_listing_in_its_place_would_delete_them() {
+        // What the scoped ingest is for, shown by doing without it.
+        let mut w = two_backups(1);
+        w.sync_archives(Repo::Snapper, &[at("snapper:/home/.snapshots/2000", 2000)])
+            .unwrap();
+        w.ingest_pending(2, vec![file("in/a", 1)].into_iter())
+            .unwrap();
+        assert_eq!(spans(&w, "b"), [(1, 1), (3, 3)]);
+    }
+
+    #[test]
+    fn inside_the_folders_it_covers_a_scoped_listing_records_a_deletion() {
+        let mut w = two_backups(1);
+        snapper(&mut w, 2000, vec![], &["in"]);
+        assert_eq!(spans(&w, "a"), [(1, 1), (3, 3)], "gone at the snapshot");
+        assert_eq!(spans(&w, "b"), [(1, 3)]);
+    }
+
+    #[test]
+    fn a_file_outside_that_changed_across_the_snapshot_keeps_its_older_version_over_it() {
+        let mut w = two_backups(2);
+        snapper(&mut w, 2000, vec![file("in/a", 1)], &["in"]);
+        assert_eq!(spans(&w, "b"), [(1, 2), (3, 3)]);
+    }
+
+    #[test]
+    fn a_scoped_snapshot_after_the_last_backup_carries_the_rest_to_the_end() {
+        let mut w = two_backups(1);
+        snapper(&mut w, 4000, vec![file("in/a", 2)], &["in"]);
+        assert_eq!(spans(&w, "a"), [(1, 2), (3, 3)]);
+        assert_eq!(spans(&w, "b"), [(1, 3)]);
+        // The next backup carries on from it as from any other archive.
+        w.ingest_archive(
+            &at("bt-3", 5000),
+            Repo::Primary,
+            vec![file("in/a", 2), file("out/b", 1)].into_iter(),
+        )
+        .unwrap();
+        assert_eq!(spans(&w, "a"), [(1, 2), (3, 4)]);
+        assert_eq!(spans(&w, "b"), [(1, 4)]);
+    }
+
+    #[test]
+    fn a_scope_over_everything_is_an_ordinary_full_listing() {
+        let mut w = two_backups(1);
+        snapper(&mut w, 2000, vec![file("in/a", 1)], &["in", "out"]);
+        assert_eq!(spans(&w, "b"), [(1, 1), (3, 3)], "covered, and not there");
+    }
+
+    #[test]
+    fn a_folder_the_catalogue_has_never_held_scopes_nothing() {
+        let mut w = two_backups(1);
+        snapper(&mut w, 2000, vec![], &["elsewhere/new"]);
+        assert_eq!(spans(&w, "a"), [(1, 3)]);
+        assert_eq!(spans(&w, "b"), [(1, 3)]);
+    }
+
+    #[test]
+    fn a_snapper_snapshot_removed_leaves_the_intervals_rejoined() {
+        let mut w = two_backups(1);
+        snapper(&mut w, 2000, vec![], &["in"]);
+        assert_eq!(spans(&w, "a"), [(1, 1), (3, 3)]);
+        // Snapper's cleanup took it: the catalogue is as if it had never been.
+        w.sync_archives(Repo::Snapper, &[]).unwrap();
+        assert_eq!(
+            dump_archives(&w),
+            [(1, "bt-1".into(), 1000), (2, "bt-2".into(), 3000)]
+        );
+        assert_eq!(spans(&w, "a"), [(1, 2)]);
+        assert_eq!(spans(&w, "b"), [(1, 2)]);
+    }
+
+    #[test]
+    fn a_pending_snapper_snapshot_is_not_a_backup_waiting_to_be_browsable() {
+        let mut w = two_backups(1);
+        w.sync_archives(Repo::Snapper, &[at("snapper:/home/.snapshots/9", 2000)])
+            .unwrap();
+        assert_eq!(w.pending_archives().unwrap(), []);
+        assert_eq!(
+            w.pending_in(Repo::Snapper).unwrap(),
+            ["snapper:/home/.snapshots/9"]
+        );
+        assert_eq!(
+            w.seq_of(Repo::Snapper, "snapper:/home/.snapshots/9")
+                .unwrap(),
+            Some(2)
+        );
+        assert_eq!(
+            w.seq_of(Repo::Primary, "bt-2").unwrap(),
+            Some(3),
+            "moved up by it"
+        );
+        assert_eq!(
+            w.seq_of(Repo::Primary, "snapper:/home/.snapshots/9")
+                .unwrap(),
+            None
+        );
     }
 }

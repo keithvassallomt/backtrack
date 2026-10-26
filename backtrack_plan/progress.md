@@ -183,7 +183,7 @@ Nothing right now.
 
 ## Stage 17 — Snapper snapshots in the timeline ([stage file](stages/stage-17-snapper-snapshots.md))
 - [x] S17-T1 Find Snapper's snapshots
-- [ ] S17-T2 Catalogue Snapper's snapshots
+- [x] S17-T2 Catalogue Snapper's snapshots
 - [ ] S17-T3 Preview, compare and restore from a snapshot
 - [ ] S17-T4 Snapper's snapshots in the window
 - [ ] S17-T5 A guide to Snapper

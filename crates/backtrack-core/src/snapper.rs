@@ -73,6 +73,26 @@ pub enum Type {
     Post,
 }
 
+/// How an archive name names one of Snapper's snapshots: `snapper:` and its
+/// folder, `<.snapshots>/<N>`, which no other snapshot on the machine shares.
+pub const ARCHIVE_PREFIX: &str = "snapper:";
+
+/// The archive name `snapshot` is catalogued under.
+pub fn archive_name(snapshot: &Snapshot) -> String {
+    let folder = snapshot.path.parent().unwrap_or(&snapshot.path);
+    format!("{ARCHIVE_PREFIX}{}", folder.display())
+}
+
+impl Snapper {
+    /// The snapshots that could be read; none, when the folder could not be.
+    pub fn snapshots(&self) -> &[Snapshot] {
+        match &self.found {
+            Found::Snapshots(snapshots) => snapshots,
+            Found::Unreadable => &[],
+        }
+    }
+}
+
 /// Snapper's snapshots of each subvolume holding one of `sources`, in the
 /// order of the sources and each subvolume once. A source not on btrfs, or in
 /// a subvolume with no `.snapshots` folder, gives nothing.
@@ -348,6 +368,17 @@ mod tests {
     }
 
     #[test]
+    fn a_snapshot_is_named_by_its_folder() {
+        let f = fixture();
+        f.put("42", &numbered(TIMELINE, 42));
+        let snapshots = f.snapshots();
+        assert_eq!(
+            archive_name(&snapshots[0]),
+            format!("snapper:{}", f.folder().join("42").display())
+        );
+    }
+
+    #[test]
     fn the_date_is_read_as_utc_which_snapper_writes_whatever_the_zone() {
         // SINGLE was taken by `snapper --no-dbus` run with TZ=Asia/Tokyo, nine
         // hours ahead, at 08:49:39 UTC, and says 08:49:39.
@@ -515,9 +546,17 @@ mod tests {
             eprintln!("skipping: {} is not on btrfs", base.display());
             return;
         }
+        // Removed however the test ends, an assertion failing included.
+        struct Scratch(PathBuf);
+        impl Drop for Scratch {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
         let scratch = base.join(format!("backtrack-snapper-test-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&scratch);
         std::fs::create_dir_all(&scratch).unwrap();
+        let _cleanup = Scratch(scratch.clone());
         let subvolume = |at: &Path| {
             std::process::Command::new("btrfs")
                 .args(["subvolume", "create"])
@@ -529,7 +568,6 @@ mod tests {
         let home = scratch.join("home");
         if !subvolume(&home) {
             eprintln!("skipping: cannot create a subvolume here");
-            let _ = std::fs::remove_dir_all(&scratch);
             return;
         }
         let documents = home.join("keith/Documents");
@@ -548,9 +586,6 @@ mod tests {
         std::fs::create_dir_all(folder.join("1/snapshot")).unwrap();
         std::fs::write(folder.join("1/info.xml"), SINGLE).unwrap();
         let found = find(&sources);
-        let _ = std::fs::remove_dir(&projects);
-        let _ = std::fs::remove_dir_all(&home);
-        let _ = std::fs::remove_dir_all(&scratch);
 
         assert_eq!(found.len(), 1, "one subvolume, found once: {found:?}");
         assert_eq!(found[0].subvolume, home);

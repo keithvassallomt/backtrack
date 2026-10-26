@@ -132,6 +132,29 @@ mod tests {
     }
 
     #[test]
+    fn a_snapper_job_runs_alone() {
+        // It moves backups about in the catalogue, under any job holding one's
+        // place there: a catalogue job reading a backup in, or a backup that
+        // has recorded its archive and is reading its listing.
+        let snapper = JobKind::Snapper.access();
+        for other in [
+            JobKind::Index,
+            JobKind::Backup,
+            JobKind::Offline,
+            JobKind::Restore,
+        ] {
+            assert!(
+                !RepoGuard::from_running([other.access()]).admits(snapper),
+                "not beside {other:?}"
+            );
+            assert!(
+                !RepoGuard::from_running([snapper]).admits(other.access()),
+                "{other:?} waits for it"
+            );
+        }
+    }
+
+    #[test]
     fn maintenance_jobs_exclude_each_other() {
         for holder in [JobKind::Prune, JobKind::Compact, JobKind::Check] {
             let guard = RepoGuard::from_running([holder.access()]);

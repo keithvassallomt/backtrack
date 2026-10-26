@@ -76,7 +76,9 @@ impl Kept {
         if archive.repo == super::trash::REPO {
             return Kept::InTrash;
         }
-        if archive.repo == "primary" {
+        // One of Snapper's is not a local backup waiting for the destination:
+        // nothing will ever copy it there.
+        if archive.repo == "primary" || archive.repo == "snapper" {
             return Kept::Normally;
         }
         match (archive.caught_up, archive.removed_at()) {
@@ -380,6 +382,12 @@ mod tests {
             ],
             "a caught-up snapshot holding nothing of its own is not badged"
         );
+    }
+
+    #[test]
+    fn a_snapper_snapshot_is_not_a_local_backup_waiting_for_the_destination() {
+        let groups = sidebar(&[local(1, "snapper", None, false)], NOW, &utc());
+        assert_eq!(groups[0].rows[0].kept, Kept::Normally);
     }
 
     #[test]

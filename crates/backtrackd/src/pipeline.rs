@@ -939,6 +939,196 @@ pub async fn expire_snapshots(
     Ok(())
 }
 
+/// Everything a Snapper job needs (Stage 17).
+pub struct SnapperPlan {
+    pub index: Arc<Mutex<IndexWriter>>,
+    /// The backed-up folders.
+    pub sources: Vec<std::path::PathBuf>,
+    /// What a backup leaves out, so that a snapshot holds the same.
+    pub excludes: Vec<String>,
+    /// Backtrack's own folders, never walked.
+    pub never: Vec<std::path::PathBuf>,
+    /// Snapshots that could not be catalogued: left out, and added to.
+    pub failed: Arc<Mutex<std::collections::HashSet<String>>>,
+}
+
+/// Bring the catalogue into line with Snapper: the snapshots it has removed
+/// leave, as a pruned backup does; new ones are slotted in among the backups
+/// by time; and the newest not catalogued yet is walked and read in.
+///
+/// One snapshot a job, because a job of this kind runs alone (see
+/// [`crate::jobs::JobKind::Snapper`]): a backlog, such as the first look at a
+/// machine that has had Snapper for a while, is a run of jobs with room for a
+/// backup between any two, rather than one job holding backups up for its
+/// whole length. The daemon looks again when each one ends. Walking and
+/// reading in a snapshot of 55,000 files takes under a second (a home folder
+/// on a laptop, 2026-10-26).
+pub fn start_snapper(plan: SnapperPlan) -> JobStream {
+    let (sink, stream) = JobStream::channel(EVENT_BUFFER);
+    tokio::spawn(async move {
+        let outcome = run_snapper(&plan).await;
+        sink.send(JobEvent::Finished(outcome)).await;
+    });
+    stream
+}
+
+async fn run_snapper(plan: &SnapperPlan) -> Result<JobSummary, EngineError> {
+    use backtrack_core::snapper::{self, Snapper};
+
+    let sources = plan.sources.clone();
+    let found = tokio::task::spawn_blocking(move || snapper::find(&sources))
+        .await
+        .map_err(joined)?;
+    let failed = plan.failed.lock().unwrap().clone();
+    let entries: Vec<ArchiveMeta> = found
+        .iter()
+        .flat_map(Snapper::snapshots)
+        .map(|snapshot| ArchiveMeta {
+            borg_id: None,
+            name: snapper::archive_name(snapshot),
+            ts: snapshot.date,
+        })
+        .filter(|meta| !failed.contains(&meta.name))
+        .collect();
+    let index = Arc::clone(&plan.index);
+    let (report, pending) = tokio::task::spawn_blocking(move || {
+        let mut index = index.lock().unwrap();
+        let report = index.sync_archives(Repo::Snapper, &entries)?;
+        Ok((report, index.pending_in(Repo::Snapper)?))
+    })
+    .await
+    .map_err(joined)?
+    .map_err(indexing)?;
+    if report.removed > 0 {
+        info!(
+            removed = report.removed,
+            "snapshots Snapper has removed left the catalogue"
+        );
+    }
+
+    // Newest first, as for a backfill: it is the one somebody is likeliest to
+    // look at.
+    let Some(name) = pending.into_iter().next() else {
+        return Ok(JobSummary::default());
+    };
+    let Some((at, snapshot)) = found.iter().find_map(|at| {
+        at.snapshots()
+            .iter()
+            .find(|s| snapper::archive_name(s) == name)
+            .map(|s| (at, s))
+    }) else {
+        // The sync has just made the catalogue match what was found.
+        return Ok(JobSummary::default());
+    };
+    let walking = SnapperWalk {
+        subvolume: at.subvolume.clone(),
+        snapshot: snapshot.path.clone(),
+        sources: plan.sources.clone(),
+        excludes: plan.excludes.clone(),
+        never: plan.never.clone(),
+    };
+    let started = std::time::Instant::now();
+    let (walked, scope) = tokio::task::spawn_blocking(move || walking.walk())
+        .await
+        .map_err(joined)?;
+    let files = walked.items.len();
+    info!(
+        snapshot = %name,
+        files,
+        unreadable = walked.unreadable,
+        seconds = started.elapsed().as_secs_f64(),
+        "a Snapper snapshot was walked"
+    );
+
+    let index = Arc::clone(&plan.index);
+    let reading = name.clone();
+    let ingest = tokio::task::spawn_blocking(move || {
+        let mut index = index.lock().unwrap();
+        // Looked up again under the writer: see `IndexWriter::seq_of`.
+        match index.seq_of(Repo::Snapper, &reading)? {
+            Some(seq) => index
+                .ingest_scoped(seq, walked.items.into_iter(), &scope)
+                .map(Some),
+            None => Ok(None),
+        }
+    })
+    .await
+    .map_err(joined)?;
+    match ingest {
+        Ok(_) => {
+            debug!(snapshot = %name, files, "a Snapper snapshot was catalogued");
+            Ok(JobSummary::default())
+        }
+        Err(e) => {
+            // Left out from now on, so that it is not tried again after every
+            // job, and taken out of the catalogue rather than left showing as
+            // still being catalogued.
+            warn!(snapshot = %name, "a Snapper snapshot could not be catalogued: {e}");
+            plan.failed.lock().unwrap().insert(name.clone());
+            let index = Arc::clone(&plan.index);
+            let _ = tokio::task::spawn_blocking(move || {
+                let mut index = index.lock().unwrap();
+                if let Ok(Some(seq)) = index.seq_of(Repo::Snapper, &name) {
+                    let _ = index.remove_archives(&[seq]);
+                }
+            })
+            .await;
+            Err(indexing(e))
+        }
+    }
+}
+
+/// One of Snapper's snapshots, to be walked as the subvolume it copies.
+struct SnapperWalk {
+    subvolume: std::path::PathBuf,
+    snapshot: std::path::PathBuf,
+    sources: Vec<std::path::PathBuf>,
+    excludes: Vec<String>,
+    never: Vec<std::path::PathBuf>,
+}
+
+impl SnapperWalk {
+    /// The snapshot's copy of each backed-up folder in its subvolume, walked as
+    /// those folders, as Stage 5's own snapshots are; and those folders, as
+    /// the catalogue's paths, which are all the listing speaks for. A folder in
+    /// another subvolume, or not there now, is in no Snapper snapshot of this
+    /// one. Blocking.
+    fn walk(self) -> (backtrack_core::walk::Walked, Vec<String>) {
+        let covered: Vec<(&std::path::PathBuf, std::path::PathBuf)> = self
+            .sources
+            .iter()
+            .filter_map(|source| {
+                let at = backtrack_core::btrfs::containing_subvolume(source)?;
+                (at.root == self.subvolume).then_some((source, at.prefix))
+            })
+            .collect();
+        let spec = backtrack_core::walk::WalkSpec {
+            sources: covered
+                .iter()
+                .map(|(_, prefix)| {
+                    if prefix.as_os_str().is_empty() {
+                        self.snapshot.clone()
+                    } else {
+                        self.snapshot.join(prefix)
+                    }
+                })
+                .collect(),
+            excludes: backtrack_core::pattern::ExcludeSet::compile(&self.excludes),
+            one_file_system: true,
+            never: self.never.clone(),
+            include_dirs: true,
+        };
+        let scope = covered
+            .iter()
+            .map(|(source, _)| backtrack_core::walk::archive_path(source))
+            .collect();
+        (
+            backtrack_core::walk::walk_as(&spec, &self.snapshot, &self.subvolume),
+            scope,
+        )
+    }
+}
+
 /// The size of a backup's sources, measured on a thread of its own while the
 /// backup reads them, so that its progress has a total. Dropping it stops a
 /// walk that has not finished: once the archive is written there is nothing

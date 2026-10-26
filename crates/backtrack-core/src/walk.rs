@@ -174,16 +174,45 @@ fn visit(
     found: &mut dyn FnMut(String, &std::fs::Metadata) -> ControlFlow<()>,
 ) -> ControlFlow<()> {
     for source in &spec.sources {
-        let root_device = match std::fs::symlink_metadata(source) {
-            Ok(meta) => device_of(&meta),
+        let root = match std::fs::symlink_metadata(source) {
+            Ok(meta) => meta,
             Err(_) => {
                 *unreadable += 1;
                 continue;
             }
         };
-        walk_from(source, root_device, spec, as_if, unreadable, found)?;
+        if spec.include_dirs {
+            // A full listing holds what it was given, as Borg's does: Borg
+            // records each source, though not the folders above it. Without
+            // it, the catalogue has no row for a backed-up folder at this
+            // archive, and its parent lists nothing.
+            let real = real_path(source, as_if);
+            let relative = archive_path(&real);
+            // A source at `/` is the catalogue's own root, which has no row.
+            if !relative.is_empty()
+                && !spec.never.iter().any(|skip| is_within(&real, skip))
+                && !spec.excludes.excludes(&relative)
+            {
+                found(relative, &root)?;
+            }
+            if !root.is_dir() {
+                continue;
+            }
+        }
+        walk_from(source, device_of(&root), spec, as_if, unreadable, found)?;
     }
     ControlFlow::Continue(())
+}
+
+/// Where `path` is as far as the rules and the catalogue go: itself, unless
+/// the tree is being walked as another (see [`walk_as`]).
+fn real_path(path: &Path, as_if: Option<(&Path, &Path)>) -> PathBuf {
+    match as_if.map(|(from, to)| (path.strip_prefix(from), to)) {
+        // Joined, an empty rest would add a trailing slash.
+        Some((Ok(rest), to)) if rest.as_os_str().is_empty() => to.to_path_buf(),
+        Some((Ok(rest), to)) => to.join(rest),
+        _ => path.to_path_buf(),
+    }
 }
 
 /// Depth-first, iteratively. Recursion would put the directory tree's depth on
@@ -212,12 +241,8 @@ fn walk_from(
                 continue;
             };
             let path = entry.path();
-            // Where the rules apply and the item is reported: here, unless the
-            // tree is being walked as another (see `walk_as`).
-            let real = match as_if.map(|(from, to)| (path.strip_prefix(from), to)) {
-                Some((Ok(rest), to)) => to.join(rest),
-                _ => path.clone(),
-            };
+            // Where the rules apply and the item is reported.
+            let real = real_path(&path, as_if);
             if spec.never.iter().any(|skip| is_within(&real, skip)) {
                 continue;
             }
@@ -520,6 +545,70 @@ mod tests {
             .map(|item| item.path)
             .collect();
         assert_eq!(paths, vec!["home/k/f".to_string()]);
+    }
+
+    #[test]
+    fn a_full_listing_holds_each_source_itself_as_borg_does() {
+        let dir = tempfile::tempdir().unwrap();
+        let docs = dir.path().join("docs");
+        std::fs::create_dir_all(&docs).unwrap();
+        std::fs::write(docs.join("a.txt"), "a").unwrap();
+        let single = dir.path().join("notes.txt");
+        std::fs::write(&single, "n").unwrap();
+        let mut spec = spec(&docs, &[]);
+        spec.sources.push(single.clone());
+        spec.include_dirs = true;
+        let walked = walk(&spec);
+        let found: Vec<(String, Kind)> = walked
+            .items
+            .iter()
+            .map(|i| (i.path.clone(), i.kind))
+            .collect();
+        assert_eq!(
+            found,
+            [
+                (archive_path(&docs), Kind::Dir),
+                (archive_path(&docs.join("a.txt")), Kind::File),
+                (archive_path(&single), Kind::File),
+            ]
+        );
+        assert_eq!(
+            walked.unreadable, 0,
+            "a file given as a source is not a folder that could not be read"
+        );
+
+        // A delta, for the spool, still holds only what is below a source.
+        spec.include_dirs = false;
+        spec.sources.pop();
+        let paths: Vec<String> = walk(&spec).items.into_iter().map(|i| i.path).collect();
+        assert_eq!(paths, [archive_path(&docs.join("a.txt"))]);
+    }
+
+    #[test]
+    fn a_source_that_is_the_whole_snapshot_is_reported_at_the_subvolume() {
+        let dir = tempfile::tempdir().unwrap();
+        let snapshot = dir.path().join("snapshot");
+        std::fs::create_dir_all(snapshot.join("k")).unwrap();
+        let subvolume = dir.path().join("home");
+        let mut spec = spec(&snapshot, &[]);
+        spec.include_dirs = true;
+        let paths: Vec<String> = walk_as(&spec, &snapshot, &subvolume)
+            .items
+            .into_iter()
+            .map(|i| i.path)
+            .collect();
+        assert_eq!(
+            paths,
+            [archive_path(&subvolume), archive_path(&subvolume.join("k"))],
+            "with no trailing slash"
+        );
+        // At `/`, the catalogue's own root, which has no row of its own.
+        let paths: Vec<String> = walk_as(&spec, &snapshot, Path::new("/"))
+            .items
+            .into_iter()
+            .map(|i| i.path)
+            .collect();
+        assert_eq!(paths, ["k"]);
     }
 
     #[test]

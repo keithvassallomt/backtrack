@@ -1046,7 +1046,7 @@ impl Window {
         };
         while let Some(signal) = StreamExt::next(&mut finished).await {
             let Ok(args) = signal.args() else { continue };
-            if matches!(args.kind, "backup" | "offline" | "index") {
+            if matches!(args.kind, "backup" | "offline" | "index" | "snapper") {
                 self.load_archives();
             }
         }

@@ -241,6 +241,8 @@ pub struct Shared {
     data_home: PathBuf,
     /// What is in the desktop's Trash from the backed-up folders (Stage 16).
     pub trash: crate::trash::TrashState,
+    /// Snapper's snapshots of the backed-up folders (Stage 17).
+    pub snapper: crate::snapper::SnapperState,
 }
 
 impl Shared {
@@ -381,7 +383,49 @@ impl Shared {
             )),
             data_home,
             trash: crate::trash::TrashState::default(),
+            snapper: crate::snapper::SnapperState::default(),
         })
+    }
+
+    /// The backed-up folders, whose subvolumes Snapper's snapshots are read
+    /// from.
+    pub fn snapper_sources(&self) -> Vec<PathBuf> {
+        self.config().backup.include
+    }
+
+    /// The catalogue's file, for reading it without the writer.
+    pub fn index_path(&self) -> PathBuf {
+        self.index_path.clone()
+    }
+
+    /// Queue a job to bring Snapper's snapshots into the catalogue, unless one
+    /// is already waiting to start, which will see whatever there is by then.
+    pub fn catalogue_snapper(&self) -> Option<u64> {
+        let waiting = self
+            .jobs
+            .list()
+            .iter()
+            .any(|job| job.kind == JobKind::Snapper && job.state == JobState::Queued);
+        if waiting {
+            return None;
+        }
+        let config = self.config();
+        let plan = pipeline::SnapperPlan {
+            index: self.index().ok()?,
+            sources: config.backup.include.clone(),
+            excludes: effective_excludes(&config),
+            never: vec![self.spool_dir.clone(), self.snapshots_dir.clone()],
+            failed: Arc::clone(&self.snapper.failed),
+        };
+        let plan = Arc::new(Mutex::new(Some(plan)));
+        let factory: JobFactory = Arc::new(move |_job| {
+            let plan = plan.lock().unwrap().take();
+            Box::pin(async move {
+                let plan = plan.ok_or(backtrack_core::engine::EngineError::Cancelled)?;
+                Ok(pipeline::start_snapper(plan))
+            }) as BoxFuture<'_, _>
+        });
+        Some(self.jobs.submit(JobKind::Snapper, factory))
     }
 
     /// What a look at the Trash needs, taken in one go.
@@ -1866,9 +1910,17 @@ impl Shared {
     /// announce itself as never having been backed up. The index already knows;
     /// it is the record that outlives the process.
     pub fn seed_last_backup(&self) {
+        // Snapper takes its snapshots whether or not anything was backed up,
+        // so the newest of those says nothing about when a backup last ran.
         let newest = IndexReader::open(&self.index_path)
             .and_then(|reader| reader.archives_overview())
-            .map(|archives| archives.iter().map(|a| a.ts).max())
+            .map(|archives| {
+                archives
+                    .iter()
+                    .filter(|a| a.repo != Repo::Snapper.as_str())
+                    .map(|a| a.ts)
+                    .max()
+            })
             .unwrap_or(None);
         if let Some(ts) = newest.filter(|ts| *ts > 0) {
             let when = std::time::UNIX_EPOCH + Duration::from_secs(ts as u64);
@@ -1934,6 +1986,10 @@ impl Shared {
                 "{archive} is a filesystem snapshot on this computer, and Backtrack \
                  cannot read one back yet"
             ))),
+            Some(Repo::Snapper) => Err(DaemonError::RestoreFailed(format!(
+                "{archive} is one of Snapper's snapshots on this computer, and \
+                 Backtrack cannot read one back yet"
+            ))),
             Some(Repo::Primary) | None => self.engine(),
         }
     }
@@ -1950,6 +2006,7 @@ impl Shared {
             .dolphin_integration;
         // The backed-up folders, or what is excluded, may be different now.
         self.trash.rescan.notify_one();
+        self.snapper.rescan.notify_one();
         self.publish_roots();
         self.apply_dolphin_switch(Some(dolphin_was));
         Ok(())
@@ -2103,7 +2160,7 @@ impl Shared {
             !job.state.is_terminal()
                 && matches!(
                     job.kind,
-                    JobKind::Backup | JobKind::Offline | JobKind::Index
+                    JobKind::Backup | JobKind::Offline | JobKind::Index | JobKind::Snapper
                 )
         })
     }
@@ -4088,8 +4145,9 @@ pub async fn fan_out_signals(shared: Arc<Shared>, emitter: SignalEmitter<'static
                         Daemon1::indexing_progress(&emitter, &phase, pct).await
                     }
                     // Maintenance has no progress signal in the interface; the
-                    // job's state changes carry it instead.
-                    JobKind::Prune | JobKind::Compact | JobKind::Check => Ok(()),
+                    // job's state changes carry it instead. Nor has Snapper's:
+                    // each job catalogues one snapshot, and its end says so.
+                    JobKind::Prune | JobKind::Compact | JobKind::Check | JobKind::Snapper => Ok(()),
                 };
             }
             JobUpdate::State { id, kind, state } => {
@@ -4124,6 +4182,10 @@ pub async fn fan_out_signals(shared: Arc<Shared>, emitter: SignalEmitter<'static
                     // A backup or a prune can change which trashed items hold
                     // something no backup has.
                     shared.trash.rescan.notify_one();
+                    // Snapper's snapshots are looked at again after every job:
+                    // a backlog is catalogued one job at a time, and a change a
+                    // watch missed is caught at the next backup.
+                    shared.snapper.rescan.notify_one();
                 }
                 // Announced once the catalogue says what the job did, local
                 // snapshots marked as caught up included: a window reloads
@@ -4232,6 +4294,7 @@ fn subsystem(kind: JobKind) -> &'static str {
         JobKind::Check => "check",
         JobKind::Prune | JobKind::Compact => "maintenance",
         JobKind::Restore | JobKind::RestoreEverything => "restore",
+        JobKind::Snapper => "snapper",
     }
 }
 
@@ -4460,6 +4523,37 @@ mod tests {
                 .unwrap();
             assert_eq!(read, contents);
         }
+    }
+
+    #[test]
+    fn the_last_backup_is_not_the_last_of_snappers_snapshots() {
+        // Snapper goes on taking snapshots when nothing is being backed up. A
+        // restarted daemon that took the newest of those as its last backup
+        // would call a machine protected that has not been for days.
+        let dir = tempfile::tempdir().unwrap();
+        let shared = configured(dir.path());
+        {
+            let index = shared.index().unwrap();
+            let mut index = index.lock().unwrap();
+            for (name, ts, repo) in [
+                ("bt-1", 1_000, Repo::Primary),
+                ("snapper:/home/.snapshots/9", 9_000, Repo::Snapper),
+            ] {
+                let meta = backtrack_core::index::ArchiveMeta {
+                    borg_id: None,
+                    name: name.into(),
+                    ts,
+                };
+                index
+                    .ingest_archive(&meta, repo, std::iter::empty())
+                    .unwrap();
+            }
+        }
+        shared.seed_last_backup();
+        assert_eq!(
+            *shared.last_backup.lock().unwrap(),
+            Some(std::time::UNIX_EPOCH + Duration::from_secs(1_000))
+        );
     }
 
     #[test]

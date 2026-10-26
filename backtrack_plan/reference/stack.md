@@ -105,7 +105,8 @@ config.toml   # source of truth; GUI edits via D-Bus SetConfig
 
 ```sql
 archives(seq INTEGER PRIMARY KEY, borg_id TEXT, name TEXT, ts INTEGER,
-         repo TEXT CHECK(repo IN ('primary','spool','fs-snapshot')), status TEXT);
+         repo TEXT CHECK(repo IN ('primary','spool','fs-snapshot','snapper')),
+         status TEXT, expirable_at INTEGER);
 paths(id INTEGER PRIMARY KEY, parent_id INTEGER, name TEXT);        -- deduped tree
 versions(path_id INTEGER, first_seq INTEGER, last_seq INTEGER,
          size INTEGER, mtime INTEGER, mode INTEGER, kind TEXT, chunk_hash TEXT);
@@ -116,7 +117,13 @@ meta(key TEXT PRIMARY KEY, value);       -- schema_version, last_network_archive
 Timeline query: `WHERE parent_id=? AND first_seq<=?1 AND last_seq>=?1` — indexed, instant,
 works offline. Expected size ≈ 50–150 MB at 500k files × 100 archives. Spool and
 filesystem-snapshot archives share these tables (distinguished by `repo`), which makes
-the "on this computer" badge and unified restores trivial.
+the "on this computer" badge and unified restores trivial. So do Snapper's snapshots
+(`repo='snapper'`, named `snapper:<.snapshots>/<N>`, Stage 17), which the daemon reads
+and never takes or removes: each is walked as the subvolume it copies, slotted in among
+the backups by time, and speaks only for the backed-up folders in that subvolume, so the
+rest are carried across it (`IndexWriter::ingest_scoped`). Cataloguing one is a job of
+its own kind (`snapper`), one snapshot a job, run alone: slotting an archive in moves
+every archive after it.
 
 **Ingest:** after each `borg create`, stream `borg list --json-lines` for the new archive
 into one transaction, diffing against the previous archive's rows in SQL to open/close
