@@ -2921,9 +2921,14 @@ async fn snappers_snapshots_are_kept_in_the_catalogue_as_they_come_and_go() {
     shared.set_index(Arc::new(std::sync::Mutex::new(
         backtrack_core::index::IndexWriter::open(&index).unwrap(),
     )));
-    let (server, _client) = connect(Arc::clone(&shared)).await;
+    let (server, client) = connect(Arc::clone(&shared)).await;
     let emitter = SignalEmitter::new(&server, PATH).unwrap();
     tokio::spawn(fan_out_signals(Arc::clone(&shared), emitter.to_owned()));
+    tokio::spawn(crate::service::announce_snapper(
+        Arc::clone(&shared),
+        emitter.to_owned(),
+    ));
+    let mut messages = zbus::MessageStream::from(client.clone());
 
     // Snapper's snapshots, read in once all of them are catalogued.
     let snappers = || -> Option<Vec<String>> {
@@ -2965,6 +2970,10 @@ async fn snappers_snapshots_are_kept_in_the_catalogue_as_they_come_and_go() {
         "the two found at startup",
     )
     .await;
+    assert!(
+        heard(&mut messages, "SnapperChanged", Duration::from_secs(5)).await,
+        "SnapperChanged once what is found of Snapper has changed"
+    );
 
     // One taken while the daemon runs, heard by the watch on `.snapshots`, and
     // filled in after the first look has found its folder empty: heard by the

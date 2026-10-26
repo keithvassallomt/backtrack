@@ -41,6 +41,8 @@ const SETTLE: Duration = Duration::from_secs(1);
 pub struct SnapperState {
     /// What the last look found, for `GetSnapper`.
     found: Mutex<SnapperInfo>,
+    /// Tripped when that changes, which is what `SnapperChanged` says.
+    pub changed: Notify,
     /// Snapshots that could not be catalogued. Left out until the daemon
     /// starts again, so that one that always fails is not tried after every
     /// job.
@@ -131,7 +133,12 @@ pub async fn watch(shared: Arc<Shared>) {
                     watch_snapper(fd, &tops, &found);
                 }
                 let wanted = shared.snapper.wanted(&found);
-                *shared.snapper.found.lock().unwrap() = summary(&found, &tops);
+                let now = summary(&found, &tops);
+                let was =
+                    std::mem::replace(&mut *shared.snapper.found.lock().unwrap(), now.clone());
+                if was != now {
+                    shared.snapper.changed.notify_one();
+                }
                 let checking = wanted.clone();
                 let stale = tokio::task::spawn_blocking(move || differs(&index, &checking))
                     .await

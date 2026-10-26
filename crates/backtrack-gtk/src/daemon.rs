@@ -195,6 +195,9 @@ pub trait Daemon1 {
     /// What `list_trashed` lists has changed.
     #[zbus(signal)]
     fn trash_changed(&self) -> zbus::Result<()>;
+
+    #[zbus(signal)]
+    fn snapper_changed(&self) -> zbus::Result<()>;
 }
 
 /// Connect to the daemon, honoring `BACKTRACK_DEV` for the bus name.

@@ -82,7 +82,8 @@ interface. The `1` is the API's major version: an incompatible change ships as
 
 **Signals:** `BackupProgress(job, phase, current, total)`, `RestoreProgress(job, bytes, total)`,
 `IndexingProgress(archive, pct)`, `StatusChanged(state)`, `TrashChanged()` (what `ListTrashed`
-lists has changed). Long operations return a job ID;
+lists has changed), `SnapperChanged()` (what `GetSnapper` answers has changed, S17-T7).
+Long operations return a job ID;
 signals carry it. Restore progress is computed from the index's byte totals, not Borg's
 percent (unreliable on partial extracts — see research).
 

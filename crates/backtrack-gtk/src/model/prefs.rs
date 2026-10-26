@@ -365,6 +365,74 @@ pub struct SnapperRow {
     pub guide: Option<String>,
 }
 
+/// The setup script's name, as every native package installs it (S17-T6).
+pub const SNAPPER_SCRIPT: &str = "backtrack-snapper-setup";
+
+/// Where this Backtrack comes from, as far as running the setup script goes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Packaged {
+    /// Installed on the system, or a development build, whose copy of the
+    /// script is in the checkout.
+    Native { checkout: Option<PathBuf> },
+    /// The Flatpak, whose data folder a terminal outside its sandbox reaches.
+    Flatpak { data_dir: PathBuf },
+}
+
+/// How **Set Up Snapper…** runs the setup script (S17-T7).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SetUp {
+    /// In the desktop's terminal, as this command line.
+    Terminal(String),
+    /// Pasted into a terminal by the person. `script`, when given, is where
+    /// the script is to be put first: the Flatpak's copy is inside its
+    /// sandbox, where no terminal outside it can run it.
+    Paste {
+        command: String,
+        script: Option<PathBuf>,
+    },
+}
+
+/// What **Set Up Snapper…** does, or None where it is not offered: off btrfs,
+/// and where Snapper's snapshots are already being read. Offered where
+/// Snapper is not set up, or its snapshots cannot be read, which the script
+/// sees to as well.
+pub fn snapper_setup(info: &SnapperInfo, packaged: &Packaged) -> Option<SetUp> {
+    let wanted = info.on_btrfs && (info.folders == 0 || !info.unreadable.is_empty());
+    if !wanted {
+        return None;
+    }
+    Some(match packaged {
+        Packaged::Native { checkout } => {
+            let program = match checkout {
+                Some(script) => quoted(script),
+                None => SNAPPER_SCRIPT.to_string(),
+            };
+            // A terminal opened for one command closes when it ends, before
+            // anyone could read what it said.
+            SetUp::Terminal(format!("{program} --pause"))
+        }
+        Packaged::Flatpak { data_dir } => {
+            let script = data_dir.join(SNAPPER_SCRIPT);
+            SetUp::Paste {
+                command: format!("bash {}", quoted(&script)),
+                script: Some(script),
+            }
+        }
+    })
+}
+
+/// When no terminal could be opened: the same command, to paste into one.
+pub fn snapper_setup_by_hand(terminal: &str) -> SetUp {
+    SetUp::Paste {
+        command: terminal.trim_end_matches(" --pause").to_string(),
+        script: None,
+    }
+}
+
+fn quoted(path: &Path) -> String {
+    glib::shell_quote(path).to_string_lossy().into_owned()
+}
+
 /// What to say about Snapper, from what the daemon found. None where no
 /// backed-up folder is on btrfs, which Snapper needs: there is nothing to
 /// offer, and saying so would only be noise.
@@ -699,6 +767,76 @@ mod tests {
         assert_eq!(
             snapper_row(&snapper(1, 0, &[])).unwrap().title,
             "Snapper is set up, and has taken no snapshots yet"
+        );
+    }
+
+    #[test]
+    fn set_up_snapper_is_offered_where_there_is_something_to_set_up() {
+        let native = Packaged::Native { checkout: None };
+        assert_eq!(
+            snapper_setup(&SnapperInfo::default(), &native),
+            None,
+            "off btrfs"
+        );
+        assert_eq!(
+            snapper_setup(&snapper(1, 24, &[]), &native),
+            None,
+            "being read already"
+        );
+        for info in [snapper(0, 0, &[]), snapper(0, 0, &["/home/.snapshots"])] {
+            assert_eq!(
+                snapper_setup(&info, &native),
+                Some(SetUp::Terminal("backtrack-snapper-setup --pause".into())),
+                "{info:?}"
+            );
+        }
+        assert!(
+            snapper_setup(&snapper(1, 5, &["/data/.snapshots"]), &native).is_some(),
+            "some read, some not"
+        );
+    }
+
+    #[test]
+    fn a_development_build_runs_the_checkouts_script() {
+        let checkout = Packaged::Native {
+            checkout: Some(PathBuf::from(
+                "/home/k/Code/back track/packaging/snapper/backtrack-snapper-setup",
+            )),
+        };
+        assert_eq!(
+            snapper_setup(&snapper(0, 0, &[]), &checkout),
+            Some(SetUp::Terminal(
+                "'/home/k/Code/back track/packaging/snapper/backtrack-snapper-setup' --pause"
+                    .into()
+            ))
+        );
+    }
+
+    #[test]
+    fn the_flatpak_hands_over_the_script_and_a_command_to_paste() {
+        let flatpak = Packaged::Flatpak {
+            data_dir: PathBuf::from("/home/k/.var/app/tools.backtrack.Backtrack/data/backtrack"),
+        };
+        let script = PathBuf::from(
+            "/home/k/.var/app/tools.backtrack.Backtrack/data/backtrack/backtrack-snapper-setup",
+        );
+        assert_eq!(
+            snapper_setup(&snapper(0, 0, &[]), &flatpak),
+            Some(SetUp::Paste {
+                command: format!("bash '{}'", script.display()),
+                script: Some(script),
+            })
+        );
+    }
+
+    #[test]
+    fn with_no_terminal_to_open_the_command_is_given_to_paste() {
+        assert_eq!(
+            snapper_setup_by_hand("backtrack-snapper-setup --pause"),
+            SetUp::Paste {
+                command: "backtrack-snapper-setup".into(),
+                script: None
+            }
         );
     }
 

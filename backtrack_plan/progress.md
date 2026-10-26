@@ -188,7 +188,7 @@ Nothing right now.
 - [x] S17-T4 Snapper's snapshots in the window
 - [/] S17-T5 A guide to Snapper
 - [/] S17-T6 A script that sets Snapper up, and undoes it
-- [ ] S17-T7 Set Up Snapper from Preferences
+- [/] S17-T7 Set Up Snapper from Preferences
 - [x] S17-T8 Reading a backup into the catalogue no longer slows with its size
 
 ## Stage 18 — The full-screen time view ([stage file](stages/stage-18-full-screen-time-view.md))

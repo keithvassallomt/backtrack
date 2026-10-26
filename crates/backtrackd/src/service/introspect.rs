@@ -80,6 +80,7 @@ pub const SIGNALS: &[(&str, &str)] = &[
     ("IndexingProgress", "su"),
     ("JobFinished", "tss"),
     ("RestoreProgress", "ttt"),
+    ("SnapperChanged", ""),
     ("StatusChanged", "ss"),
     ("TrashChanged", ""),
 ];

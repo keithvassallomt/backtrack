@@ -8,6 +8,8 @@
 #
 #   backtrack-snapper-setup                 set up, or offer to undo a setup
 #   backtrack-snapper-setup --yes           the same, without asking first
+#   backtrack-snapper-setup --pause         the same, waiting for Enter at the end,
+#                                           for a terminal that closes when it ends
 #   backtrack-snapper-setup --print DISTRO  list the commands it runs on DISTRO
 #                                           (fedora, opensuse, arch, ubuntu),
 #                                           setting up then undoing, from nothing
@@ -23,6 +25,7 @@ readonly RECORD=$RECORD_DIR/snapper-setup
 
 mode=run
 yes=no
+pause=no
 distro=""
 
 say() { printf '%s\n' "$*"; }
@@ -309,23 +312,34 @@ undo() {
     fi
 }
 
+# For a terminal Preferences opened, which closes as soon as this ends: what
+# it said stays on screen until the person has read it.
+wait_to_close() {
+    say ""
+    read -r -p "Press Enter to close this window. " _ </dev/tty || true
+}
+
 main() {
-    case ${1:-} in
-        --print)
-            mode=print
-            distro=${2:-}
-            case $distro in
-                fedora | opensuse | arch | ubuntu) ;;
-                *) stop "--print takes fedora, opensuse, arch or ubuntu" ;;
-            esac
-            set_up
-            undo
-            return
-            ;;
-        --yes) yes=yes ;;
-        "") ;;
-        *) sed -n '9,12p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2 ;;
-    esac
+    while (($#)); do
+        case $1 in
+            --print)
+                mode=print
+                distro=${2:-}
+                case $distro in
+                    fedora | opensuse | arch | ubuntu) ;;
+                    *) stop "--print takes fedora, opensuse, arch or ubuntu" ;;
+                esac
+                set_up
+                undo
+                return
+                ;;
+            --yes) yes=yes ;;
+            --pause) pause=yes ;;
+            *) sed -n '9,15p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2 ;;
+        esac
+        shift
+    done
+    [[ $pause == yes ]] && trap wait_to_close EXIT
 
     if [[ -e /.flatpak-info ]]; then
         stop "This runs on your system, not inside Backtrack's Flatpak: paste the command" \

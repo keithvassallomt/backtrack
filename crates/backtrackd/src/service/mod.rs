@@ -3995,6 +3995,10 @@ impl Daemon1 {
     #[zbus(signal)]
     pub async fn trash_changed(emitter: &SignalEmitter<'_>) -> zbus::Result<()>;
 
+    /// What `GetSnapper` answers has changed.
+    #[zbus(signal)]
+    pub async fn snapper_changed(emitter: &SignalEmitter<'_>) -> zbus::Result<()>;
+
     #[zbus(signal)]
     pub async fn status_changed(
         emitter: &SignalEmitter<'_>,
@@ -4132,6 +4136,16 @@ const KEYRING_LOOK_EVERY: Duration = Duration::from_secs(1);
 /// computed state actually differs from the last one announced — a signal per
 /// job event would make "the state changed" meaningless.
 /// Say `TrashChanged` each time the daemon's listing of the Trash changes.
+/// Say when what the daemon finds of Snapper changes, for as long as it runs.
+pub async fn announce_snapper(shared: Arc<Shared>, emitter: SignalEmitter<'static>) {
+    loop {
+        shared.snapper.changed.notified().await;
+        if let Err(error) = Daemon1::snapper_changed(&emitter).await {
+            debug!(%error, "SnapperChanged could not be sent");
+        }
+    }
+}
+
 pub async fn announce_trash(shared: Arc<Shared>, emitter: SignalEmitter<'static>) {
     loop {
         shared.trash.changed.notified().await;
