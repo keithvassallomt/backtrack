@@ -1165,18 +1165,23 @@ impl Prefs {
         group.set_visible(false);
         let row = adw::ActionRow::builder().use_markup(false).build();
         row.add_prefix(&gtk4::Image::from_icon_name("camera-photo-symbolic"));
-        let guide = Button::with_label("Read the Guide…");
-        guide.set_valign(Align::Center);
         let set_up = Button::with_label("Set Up Snapper…");
         set_up.set_valign(Align::Center);
         set_up.add_css_class("suggested-action");
-        row.add_suffix(&guide);
         row.add_suffix(&set_up);
         group.add(&row);
+        // A row of its own, as a link: beside the button, it left the line
+        // under the title a narrow column.
+        let guide = adw::ActionRow::builder()
+            .title("Read the Guide to Snapper")
+            .activatable(true)
+            .build();
+        guide.add_suffix(&gtk4::Image::from_icon_name("adw-external-link-symbolic"));
+        group.add(&guide);
         let address: Rc<RefCell<Option<String>>> = Rc::default();
         let opening = Rc::clone(&address);
         let owner = self.window.clone();
-        guide.connect_clicked(move |_| {
+        guide.connect_activated(move |_| {
             let Some(address) = opening.borrow().clone() else {
                 return;
             };
