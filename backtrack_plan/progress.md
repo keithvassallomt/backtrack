@@ -187,6 +187,8 @@ Nothing right now.
 - [x] S17-T3 Preview, compare and restore from a snapshot
 - [x] S17-T4 Snapper's snapshots in the window
 - [/] S17-T5 A guide to Snapper
+- [ ] S17-T6 A script that sets Snapper up, and undoes it
+- [ ] S17-T7 Set Up Snapper from Preferences
 
 ## Stage 18 — The full-screen time view ([stage file](stages/stage-18-full-screen-time-view.md))
 - [ ] S18-T1 Mockups of the full-screen view, to choose a design
