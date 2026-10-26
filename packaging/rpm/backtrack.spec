@@ -86,7 +86,8 @@ cargo build --release --frozen --offline -p backtrackd -p backtrack-gtk -p backt
 %install
 install -Dm755 -t %{buildroot}%{_bindir} \
     target/release/backtrackd target/release/backtrack-gtk \
-    target/release/backtrack-tray target/release/backtrack
+    target/release/backtrack-tray target/release/backtrack \
+    packaging/snapper/backtrack-snapper-setup
 install -Dm644 -t %{buildroot}%{_userunitdir} packaging/systemd/backtrackd.service
 install -Dm644 -t %{buildroot}%{_datadir}/dbus-1/services \
     packaging/dbus/tools.backtrack.Backtrack.Daemon1.service \
@@ -124,6 +125,7 @@ appstreamcli validate --no-net %{buildroot}%{_metainfodir}/tools.backtrack.Backt
 %{_bindir}/backtrack-gtk
 %{_bindir}/backtrack-tray
 %{_bindir}/backtrack
+%{_bindir}/backtrack-snapper-setup
 %{_userunitdir}/backtrackd.service
 %{_datadir}/dbus-1/services/tools.backtrack.Backtrack.Daemon1.service
 %{_datadir}/dbus-1/services/tools.backtrack.Backtrack.service

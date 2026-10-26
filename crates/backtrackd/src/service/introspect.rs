@@ -36,6 +36,7 @@ pub const METHODS: &[(&str, &str, &str)] = &[
     ("GetLocalStorage", "", "(ttttt)"),
     ("GetRecovery", "", "(stsxttxsa(sts)tts)"),
     ("GetRestorePreview", "t", "(ssuuuuuua(ssbtxtxss)a(ss)as)"),
+    ("GetSnapper", "", "(buuasb)"),
     ("GetStatus", "", "(sttbtsuuttbstt)"),
     ("GetStorageInfo", "", "(stttt)"),
     ("ImportRepo", "ss", ""),
@@ -79,6 +80,7 @@ pub const SIGNALS: &[(&str, &str)] = &[
     ("IndexingProgress", "su"),
     ("JobFinished", "tss"),
     ("RestoreProgress", "ttt"),
+    ("SnapperChanged", ""),
     ("StatusChanged", "ss"),
     ("TrashChanged", ""),
 ];

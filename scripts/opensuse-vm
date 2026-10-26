@@ -1,0 +1,128 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-3.0-or-later
+# SPDX-FileCopyrightText: 2026 Keith Vassallo <keith@vassallo.cloud>
+#
+# The openSUSE development VM, made with no one at its screen: Tumbleweed's
+# Minimal-VM image for KVM, with no desktop, for checks that run in a terminal
+# (S17-T6's Snapper setup, where openSUSE is the distribution that has Snapper
+# from the start). Its first boot is set up by combustion, openSUSE's own way
+# of configuring an image: a small disk labelled "combustion" holding a script,
+# which adds you with your SSH key and sudo without a password, and skips the
+# JeOS Firstboot wizard that would otherwise wait at the screen. It ends shut
+# down, with a snapshot named "fresh" taken before anything else is on it.
+#
+#   scripts/opensuse-vm create   make it; a few minutes, mostly the download
+#   scripts/opensuse-vm fresh    put it back as it was made
+#
+# The disks go in BACKTRACK_VM_DIR (default /var/lib/libvirt/images), which
+# must be writable by you.
+set -euo pipefail
+
+name="opensuse-tw"
+dir="${BACKTRACK_VM_DIR:-/var/lib/libvirt/images}"
+image="https://download.opensuse.org/tumbleweed/appliances/openSUSE-Tumbleweed-Minimal-VM.x86_64-kvm-and-xen.qcow2"
+base="${dir}/opensuse-tw-base.qcow2"
+disk="${dir}/opensuse-tw.qcow2"
+config="${dir}/opensuse-tw-combustion.img"
+virsh=(virsh --connect qemu:///system)
+
+create() {
+    if "${virsh[@]}" dominfo "$name" >/dev/null 2>&1; then
+        echo "$name exists already; 'scripts/opensuse-vm fresh' puts it back as it was made." >&2
+        exit 1
+    fi
+    key="$(cat ~/.ssh/id_ed25519.pub 2>/dev/null || cat ~/.ssh/id_*.pub | head -n 1)"
+    if [[ ! -f "$base" ]]; then
+        echo "== Downloading openSUSE Tumbleweed's Minimal-VM image"
+        curl -fL -o "${base}.part" "$image"
+        want="$(curl -fsSL "${image}.sha256" | awk '{print $1}')"
+        echo "${want}  ${base}.part" | sha256sum --check --quiet
+        mv "${base}.part" "$base"
+    fi
+    qemu-img convert -O qcow2 "$base" "$disk"
+    qemu-img resize -q "$disk" 40G
+
+    seed="$(mktemp -d)"
+    trap 'rm -rf "$seed"' EXIT
+    mkdir -p "${seed}/combustion"
+    cat > "${seed}/combustion/script" <<EOF
+#!/bin/bash
+# combustion: network
+set -euxo pipefail
+# The home subvolume, so that the home folder is made on it.
+mountpoint -q /home || mount /home
+useradd -m -s /bin/bash ${USER}
+install -d -m 700 -o ${USER} -g users /home/${USER}/.ssh
+echo '${key}' > /home/${USER}/.ssh/authorized_keys
+chown ${USER}:users /home/${USER}/.ssh/authorized_keys
+chmod 600 /home/${USER}/.ssh/authorized_keys
+# The minimal image has no sudo, which a desktop install of openSUSE has.
+zypper --non-interactive install sudo
+install -d -m 750 /etc/sudoers.d
+echo '${USER} ALL=(ALL) NOPASSWD: ALL' > /etc/sudoers.d/90-dev
+chmod 440 /etc/sudoers.d/90-dev
+systemctl enable sshd
+# For libvirt to find its address; not worth failing the first boot over.
+zypper --non-interactive install qemu-guest-agent || true
+systemctl enable qemu-guest-agent || true
+# Configured already: the wizard has nothing to ask.
+rm -f /var/lib/YaST2/reconfig_system
+EOF
+    rm -f "$config"
+    mkfs.ext4 -q -L combustion -d "$seed" "$config" 16M
+
+    echo "== Creating $name; combustion sets it up on its first boot"
+    virt-install --connect qemu:///system --name "$name" --osinfo opensusetumbleweed \
+        --memory 4096 --vcpus 4 \
+        --disk "path=${disk},format=qcow2,bus=virtio" \
+        --disk "path=${config},format=raw,bus=virtio,readonly=on" --import \
+        --network network=default,model=virtio \
+        --graphics vnc,listen=127.0.0.1 --video virtio \
+        --noautoconsole
+    # Up once, for combustion to run, then down for the snapshot. Reached
+    # over SSH as the user it adds, which is what says it worked.
+    local ip="" up=no
+    for _ in $(seq 1 60); do
+        ip="$("${virsh[@]}" domifaddr "$name" | awk '$3 == "ipv4" { split($4, a, "/"); print a[1]; exit }')"
+        if [[ -n "$ip" ]] && ssh -o BatchMode=yes -o ConnectTimeout=3 -o LogLevel=ERROR \
+            -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+            "${USER}@${ip}" sudo -n true 2>/dev/null; then
+            up=yes
+            break
+        fi
+        sleep 5
+    done
+    if [[ $up == no ]]; then
+        echo "$name did not come up to be reached over SSH: its first boot failed." >&2
+        echo "Look at its screen: virsh -c qemu:///system screenshot $name /tmp/$name.png" >&2
+        exit 1
+    fi
+    "${virsh[@]}" shutdown "$name" >/dev/null
+    for _ in $(seq 1 60); do
+        [[ "$("${virsh[@]}" domstate "$name")" == "shut off" ]] && break
+        sleep 2
+    done
+    if [[ "$("${virsh[@]}" domstate "$name")" != "shut off" ]]; then
+        echo "$name did not shut down, so no snapshot was taken." >&2
+        exit 1
+    fi
+    "${virsh[@]}" detach-disk "$name" "$config" --config >/dev/null
+    rm -f "$config"
+    "${virsh[@]}" snapshot-create-as "$name" fresh "Tumbleweed's Minimal-VM image, before anything else"
+    echo "Made $name, shut down, with its 'fresh' snapshot. Start it with: virsh -c qemu:///system start $name"
+}
+
+fresh() {
+    "${virsh[@]}" destroy "$name" >/dev/null 2>&1 || true
+    "${virsh[@]}" snapshot-revert "$name" fresh
+    echo "$name is back as it was made, and shut down."
+}
+
+case "${1:-}" in
+create) create ;;
+fresh) fresh ;;
+*)
+    sed -n '/^# The openSUSE/,/^set -euo/p' "$0" | sed '$d; s/^# \{0,1\}//'
+    exit 2
+    ;;
+esac

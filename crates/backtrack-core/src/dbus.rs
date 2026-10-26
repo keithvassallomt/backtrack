@@ -416,6 +416,25 @@ pub struct LocalStorage {
     pub cache: u64,
 }
 
+/// What `GetSnapper` answers with: what the daemon found of Snapper's
+/// snapshots of the backed-up folders (Stage 17), for Preferences to say.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
+pub struct SnapperInfo {
+    /// Whether any backed-up folder is on btrfs, where Snapper can take
+    /// snapshots. Where none is, there is nothing to say about Snapper.
+    pub on_btrfs: bool,
+    /// How many `.snapshots` folders could be read, and how many snapshots
+    /// were found in them.
+    pub folders: u32,
+    pub snapshots: u32,
+    /// The `.snapshots` folders that exist and this user may not read.
+    pub unreadable: Vec<String>,
+    /// Whether `backtrack-snapper-setup` would set Snapper up here: on a
+    /// distribution it knows, with `/home` a subvolume of its own holding a
+    /// backed-up folder (S17-T7).
+    pub can_set_up: bool,
+}
+
 /// What `GetHealth` answers with: the state, how it came about, and what the
 /// person has been told about it. The detail behind a banner, and what
 /// `backtrack doctor` puts in a bug report.

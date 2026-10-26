@@ -37,6 +37,9 @@ just check    # fmt, clippy, and tests — the full quality gate
 
 ## Documentation
 
+For people using Backtrack: [getting things back from the Trash](docs/trash.md),
+and [snapshots between backups, with Snapper](docs/snapper.md), on btrfs.
+
 The full implementation plan, architecture, and design docs live in
 [`backtrack_plan/`](backtrack_plan/README.md). Start with the
 [product brief](backtrack_plan/reference/brief.md) and the

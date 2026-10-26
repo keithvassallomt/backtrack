@@ -112,8 +112,8 @@ check-integrations:
         ruff=()
     fi
     if (( ${#ruff[@]} > 0 )); then
-        "${ruff[@]}" check integrations scripts/release.py scripts/release_notes.py scripts/test_release.py scripts/test_release_notes.py
-        "${ruff[@]}" format --check integrations scripts/release.py scripts/release_notes.py scripts/test_release.py scripts/test_release_notes.py
+        "${ruff[@]}" check integrations scripts/release.py scripts/release_notes.py scripts/test_release.py scripts/test_release_notes.py scripts/test_snapper_setup.py
+        "${ruff[@]}" format --check integrations scripts/release.py scripts/release_notes.py scripts/test_release.py scripts/test_release_notes.py scripts/test_snapper_setup.py
     elif [[ -n "${CI:-}" ]]; then
         echo "ruff not found, and CI must lint the extensions." >&2
         exit 1
@@ -122,6 +122,15 @@ check-integrations:
     fi
     python3 -m unittest discover --start-directory integrations/nautilus
     python3 -m unittest discover --start-directory scripts --pattern 'test_*.py'
+    # The Snapper setup script (S17-T6), which runs as the person with sudo.
+    if command -v shellcheck >/dev/null 2>&1; then
+        shellcheck packaging/snapper/backtrack-snapper-setup
+    elif [[ -n "${CI:-}" ]]; then
+        echo "shellcheck not found, and CI must lint the Snapper setup script." >&2
+        exit 1
+    else
+        echo "shellcheck not found; skipping the Snapper setup script's lint." >&2
+    fi
     if command -v desktop-file-validate >/dev/null 2>&1; then
         desktop-file-validate integrations/dolphin/*.desktop packaging/*/*.desktop
     elif [[ -n "${CI:-}" ]]; then

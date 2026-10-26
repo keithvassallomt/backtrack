@@ -19,7 +19,7 @@ use std::path::PathBuf;
 use std::rc::Rc;
 
 use backtrack_core::config::{self, Config};
-use backtrack_core::dbus::{Status, StorageInfo};
+use backtrack_core::dbus::{SnapperInfo, Status, StorageInfo};
 use futures::StreamExt;
 use gtk4::prelude::*;
 use gtk4::{gio, glib, Align, Box as GtkBox, Button, Label, Orientation};
@@ -44,6 +44,7 @@ thread_local! {
 type Show = Box<dyn Fn(&Config)>;
 type ShowStatus = Box<dyn Fn(&Status)>;
 type ShowStorage = Box<dyn Fn(Result<&StorageInfo, &str>)>;
+type ShowSnapper = Box<dyn Fn(&SnapperInfo)>;
 
 struct Prefs {
     app: adw::Application,
@@ -60,6 +61,7 @@ struct Prefs {
     shows: RefCell<Vec<Show>>,
     status_shows: RefCell<Vec<ShowStatus>>,
     storage_shows: RefCell<Vec<ShowStorage>>,
+    snapper_shows: RefCell<Vec<ShowSnapper>>,
     bound: RefCell<Vec<Setting>>,
 }
 
@@ -97,6 +99,96 @@ async fn read_config(daemon: &Daemon1Proxy<'static>) -> Result<Config, String> {
     Config::parse(&text).map(|(config, _)| config)
 }
 
+/// Where this Backtrack comes from, for running the Snapper setup script.
+fn packaged() -> model::Packaged {
+    if backtrack_core::host::in_flatpak() {
+        return model::Packaged::Flatpak {
+            data_dir: backtrack_core::paths::data_dir(),
+        };
+    }
+    // A development build runs the script in its own checkout, which is the
+    // one it was built from.
+    let checkout = std::env::var_os("BACKTRACK_DEV")
+        .map(|_| {
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../packaging/snapper")
+                .join(model::SNAPPER_SCRIPT)
+        })
+        .and_then(|script| script.canonicalize().ok());
+    model::Packaged::Native { checkout }
+}
+
+/// The Flatpak's copy of the setup script, inside its sandbox.
+const FLATPAK_SCRIPT: &str = "/app/share/backtrack/backtrack-snapper-setup";
+
+impl Prefs {
+    /// Run the Snapper setup script, as `how` says: in the desktop's terminal, or
+    /// by handing the person the command to paste into one.
+    fn set_up_snapper(self: &Rc<Self>, how: model::SetUp) {
+        let window = &self.window;
+        match how {
+            model::SetUp::Terminal(command) => {
+                let opened = gio::AppInfo::create_from_commandline(
+                    &command,
+                    Some("Set Up Snapper"),
+                    gio::AppInfoCreateFlags::NEEDS_TERMINAL,
+                )
+                .and_then(|app| {
+                    let context = gtk4::prelude::WidgetExt::display(window).app_launch_context();
+                    app.launch(&[], Some(&context))
+                });
+                match opened {
+                    Ok(()) => info!(command, "the Snapper setup opened in a terminal"),
+                    Err(error) => {
+                        warn!(%error, "no terminal could be opened for the Snapper setup");
+                        self.set_up_snapper(model::snapper_setup_by_hand(&command));
+                    }
+                }
+            }
+            model::SetUp::Paste { command, script } => {
+                if let Some(script) = script {
+                    if let Err(error) = hand_over(&script) {
+                        warn!(%error, script = %script.display(), "the Snapper setup script could not be handed over");
+                        self.toast("The setup script could not be prepared");
+                        return;
+                    }
+                }
+                gtk4::prelude::WidgetExt::clipboard(window).set_text(&command);
+                let dialog = adw::AlertDialog::builder()
+                    .heading("Paste the Command Into a Terminal")
+                    .body(
+                        "The command that sets Snapper up is copied. Open a terminal, paste it, \
+                     and press Enter. It shows each step before it runs it, and asks for your \
+                     password when it needs the administrator.",
+                    )
+                    .close_response("close")
+                    .build();
+                let shown = Label::builder()
+                    .label(&command)
+                    .selectable(true)
+                    .wrap(true)
+                    .wrap_mode(gtk4::pango::WrapMode::Char)
+                    .css_classes(["monospace"])
+                    .build();
+                dialog.set_extra_child(Some(&shown));
+                dialog.add_response("close", "Close");
+                dialog.present(Some(window));
+            }
+        }
+    }
+}
+
+/// Put the Flatpak's copy of the setup script at `script`, where a terminal
+/// outside the sandbox can run it.
+fn hand_over(script: &std::path::Path) -> std::io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    if let Some(folder) = script.parent() {
+        std::fs::create_dir_all(folder)?;
+    }
+    std::fs::copy(FLATPAK_SCRIPT, script)?;
+    std::fs::set_permissions(script, std::fs::Permissions::from_mode(0o755))
+}
+
 fn build(
     app: adw::Application,
     parent: adw::ApplicationWindow,
@@ -126,6 +218,7 @@ fn build(
         shows: RefCell::new(Vec::new()),
         status_shows: RefCell::new(Vec::new()),
         storage_shows: RefCell::new(Vec::new()),
+        snapper_shows: RefCell::new(Vec::new()),
         bound: RefCell::new(Vec::new()),
     });
 
@@ -241,6 +334,22 @@ fn build(
     crate::ui::spawn(async move {
         first.refresh_status().await;
         first.refresh_storage().await;
+        first.refresh_snapper().await;
+    });
+    // What the daemon finds of Snapper changes as the setup script runs, and
+    // Preferences says so while it is open, without being opened again.
+    let listening = Rc::downgrade(&prefs);
+    let daemon = prefs.daemon.clone();
+    crate::ui::spawn(async move {
+        let Ok(mut changes) = daemon.receive_snapper_changed().await else {
+            return;
+        };
+        while StreamExt::next(&mut changes).await.is_some() {
+            let Some(prefs) = listening.upgrade() else {
+                return;
+            };
+            prefs.refresh_snapper().await;
+        }
     });
     info!("preferences opened");
     window
@@ -324,6 +433,10 @@ impl Prefs {
         self.storage_shows.borrow_mut().push(Box::new(show));
     }
 
+    fn show_snapper(&self, show: impl Fn(&SnapperInfo) + 'static) {
+        self.snapper_shows.borrow_mut().push(Box::new(show));
+    }
+
     /// Read the configuration again and put it on screen.
     async fn reload(&self) {
         match read_config(&self.daemon).await {
@@ -338,6 +451,20 @@ impl Prefs {
             Err(message) => warn!(message, "the settings could not be read again"),
         }
         self.refresh_status().await;
+        self.refresh_snapper().await;
+    }
+
+    /// What the daemon found of Snapper's snapshots. A daemon from before
+    /// Stage 17 has no answer, and the group stays hidden.
+    async fn refresh_snapper(&self) {
+        match self.daemon.get_snapper().await {
+            Ok(info) => {
+                for show in self.snapper_shows.borrow().iter() {
+                    show(&info);
+                }
+            }
+            Err(error) => warn!(%error, "what was found of Snapper could not be read"),
+        }
     }
 
     async fn refresh_status(&self) {
@@ -981,6 +1108,8 @@ impl Prefs {
         destination.add(&last);
         page.add(&destination);
 
+        page.add(&self.snapper_group());
+
         let retention = Self::group("Retention");
         let config = self.config.borrow().clone();
         let automatic = schedule::automatic_row(config.storage.retention.automatic);
@@ -1026,6 +1155,69 @@ impl Prefs {
         offline.add(&usage);
         page.add(&offline);
         page
+    }
+
+    /// Snapper's snapshots (Stage 17): whether they are read, how many, and
+    /// the guide where there is something to do. Hidden until the daemon has
+    /// answered, and where no backed-up folder is on btrfs.
+    fn snapper_group(self: &Rc<Self>) -> adw::PreferencesGroup {
+        let group = Self::group("Snapper");
+        group.set_visible(false);
+        let row = adw::ActionRow::builder().use_markup(false).build();
+        row.add_prefix(&gtk4::Image::from_icon_name("camera-photo-symbolic"));
+        let set_up = Button::with_label("Set Up Snapper…");
+        set_up.set_valign(Align::Center);
+        set_up.add_css_class("suggested-action");
+        row.add_suffix(&set_up);
+        group.add(&row);
+        // A row of its own, as a link: beside the button, it left the line
+        // under the title a narrow column.
+        let guide = adw::ActionRow::builder()
+            .title("Read the Guide to Snapper")
+            .activatable(true)
+            .build();
+        guide.add_suffix(&gtk4::Image::from_icon_name("adw-external-link-symbolic"));
+        group.add(&guide);
+        let address: Rc<RefCell<Option<String>>> = Rc::default();
+        let opening = Rc::clone(&address);
+        let owner = self.window.clone();
+        guide.connect_activated(move |_| {
+            let Some(address) = opening.borrow().clone() else {
+                return;
+            };
+            gtk4::UriLauncher::new(&address).launch(
+                Some(&owner),
+                gio::Cancellable::NONE,
+                |result: Result<(), glib::Error>| {
+                    if let Err(error) = result {
+                        warn!(%error, "the guide to Snapper could not be opened");
+                    }
+                },
+            );
+        });
+        let setting_up: Rc<RefCell<Option<model::SetUp>>> = Rc::default();
+        let running = Rc::clone(&setting_up);
+        let this = Rc::clone(self);
+        set_up.connect_clicked(move |_| {
+            if let Some(how) = running.borrow().clone() {
+                this.set_up_snapper(how);
+            }
+        });
+        let shown = group.clone();
+        let packaged = packaged();
+        self.show_snapper(move |info| {
+            let said = model::snapper_row(info);
+            shown.set_visible(said.is_some());
+            let Some(said) = said else { return };
+            row.set_title(&said.title);
+            row.set_subtitle(&said.subtitle);
+            guide.set_visible(said.guide.is_some());
+            *address.borrow_mut() = said.guide;
+            let how = model::snapper_setup(info, &packaged);
+            set_up.set_visible(how.is_some());
+            *setting_up.borrow_mut() = how;
+        });
+        group
     }
 
     /// The local snapshot limit: a fixed menu of sizes, with a value set by

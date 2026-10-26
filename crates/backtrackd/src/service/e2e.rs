@@ -2903,3 +2903,374 @@ async fn beside_an_unencrypted_destination_the_safety_net_is_what_checks_the_pas
     assert!(completed(&settle(&shared, job).await));
     assert_eq!(shared.secrets.get(&repo).await.unwrap(), PASS);
 }
+
+#[tokio::test]
+async fn snappers_snapshots_are_kept_in_the_catalogue_as_they_come_and_go() {
+    use crate::snapper::tests::{snapshot_name, Machine, HOUR, NINE};
+
+    let Some(machine) = Machine::new("watched").await else {
+        return;
+    };
+    std::fs::write(machine.documents().join("report.odt"), b"draft").unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let mut config = Config::default();
+    config.backup.include = machine.sources();
+    let secrets: Arc<dyn SecretStore> = Arc::new(FileSecretStore::new(dir.path().join("s.json")));
+    let shared = Shared::in_dir(config, JobRegistry::new(), secrets, dir.path());
+    let index = dir.path().join("index.db");
+    shared.set_index(Arc::new(std::sync::Mutex::new(
+        backtrack_core::index::IndexWriter::open(&index).unwrap(),
+    )));
+    let (server, client) = connect(Arc::clone(&shared)).await;
+    let emitter = SignalEmitter::new(&server, PATH).unwrap();
+    tokio::spawn(fan_out_signals(Arc::clone(&shared), emitter.to_owned()));
+    tokio::spawn(crate::service::announce_snapper(
+        Arc::clone(&shared),
+        emitter.to_owned(),
+    ));
+    let mut messages = zbus::MessageStream::from(client.clone());
+
+    // Snapper's snapshots, read in once all of them are catalogued.
+    let snappers = || -> Option<Vec<String>> {
+        let archives = backtrack_core::index::IndexReader::open(&index)
+            .ok()?
+            .archives_overview()
+            .ok()?;
+        if archives.iter().any(|a| !a.catalogued) {
+            return None;
+        }
+        let mut names: Vec<String> = archives
+            .into_iter()
+            .filter(|a| a.repo == "snapper")
+            .map(|a| a.name)
+            .collect();
+        names.reverse();
+        Some(names)
+    };
+    let until = |want: Vec<String>, what: &str| {
+        let what = what.to_string();
+        let snappers = &snappers;
+        async move {
+            for _ in 0..150 {
+                if snappers().as_ref() == Some(&want) {
+                    return;
+                }
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+            panic!("{what}: the catalogue holds {:?}", snappers());
+        }
+    };
+
+    // Two there before the daemon starts: a backlog, a job each.
+    machine.take(1, NINE).await;
+    machine.take(2, NINE + HOUR).await;
+    tokio::spawn(crate::snapper::watch(Arc::clone(&shared)));
+    until(
+        vec![snapshot_name(&machine, 1), snapshot_name(&machine, 2)],
+        "the two found at startup",
+    )
+    .await;
+    assert!(
+        heard(&mut messages, "SnapperChanged", Duration::from_secs(5)).await,
+        "SnapperChanged once what is found of Snapper has changed"
+    );
+
+    // One taken while the daemon runs, heard by the watch on `.snapshots`, and
+    // filled in after the first look has found its folder empty: heard by the
+    // watch on the folder.
+    machine
+        .take_pausing(3, NINE + 2 * HOUR, Duration::from_millis(2_500))
+        .await;
+    until(
+        vec![
+            snapshot_name(&machine, 1),
+            snapshot_name(&machine, 2),
+            snapshot_name(&machine, 3),
+        ],
+        "the one taken since",
+    )
+    .await;
+
+    // One Snapper's cleanup removes.
+    machine.remove(1).await;
+    until(
+        vec![snapshot_name(&machine, 2), snapshot_name(&machine, 3)],
+        "after the oldest was removed",
+    )
+    .await;
+    let daemon = Daemon1::new(Arc::clone(&shared));
+    // Whether the script would set Snapper up is a fact about this computer,
+    // not about the test's subvolumes.
+    let can_set_up = backtrack_core::snapper::setup_applies(
+        &backtrack_core::host::os_release(),
+        backtrack_core::snapper::home_is_subvolume(),
+        &machine.sources(),
+    );
+    assert_eq!(
+        daemon.get_snapper().await,
+        backtrack_core::dbus::SnapperInfo {
+            on_btrfs: true,
+            folders: 1,
+            snapshots: 2,
+            unreadable: Vec::new(),
+            can_set_up,
+        }
+    );
+
+    // Closed to this user, as `.snapshots` is until Snapper's configuration
+    // names them: heard by the watch on the subvolume's top, said by
+    // `GetSnapper`, and its snapshots out of the catalogue.
+    if !rustix::process::geteuid().is_root() {
+        use std::os::unix::fs::PermissionsExt;
+        let folder = machine.home.join(".snapshots");
+        std::fs::set_permissions(&folder, std::fs::Permissions::from_mode(0o000)).unwrap();
+        until(Vec::new(), "once .snapshots could not be read").await;
+        let info = daemon.get_snapper().await;
+        std::fs::set_permissions(&folder, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert_eq!(
+            info,
+            backtrack_core::dbus::SnapperInfo {
+                on_btrfs: true,
+                folders: 0,
+                snapshots: 0,
+                unreadable: vec![folder.display().to_string()],
+                can_set_up,
+            }
+        );
+    }
+}
+
+/// A machine whose `/home` is a btrfs subvolume this user owns (see
+/// `crate::snapper::tests::Machine`), backed up by a daemon whose own files,
+/// and repository, are on the same filesystem, so that it can take its own
+/// snapshots there too. `sources` picks the backed-up folders.
+async fn on_btrfs(
+    name: &str,
+    sources: impl FnOnce(&crate::snapper::tests::Machine) -> Vec<std::path::PathBuf>,
+) -> Option<(crate::snapper::tests::Machine, Arc<Shared>)> {
+    let machine = crate::snapper::tests::Machine::new(name).await?;
+    let state = machine.state();
+    let repo = state.join("repo").display().to_string();
+    let secrets: Arc<dyn SecretStore> = Arc::new(FileSecretStore::new(state.join("s.json")));
+    secrets.set(&repo, PASS).await.unwrap();
+    let engine = BorgCli::new(repo.clone(), repo.clone(), Arc::clone(&secrets))
+        .await
+        .expect("borg is available");
+    engine
+        .init_repo(&RepoSpec {
+            path: repo.clone(),
+            encryption: Encryption::RepokeyBlake2,
+        })
+        .await
+        .expect("repo created");
+    let mut config = Config::default();
+    config.storage.repository = Some(repo);
+    config.backup.include = sources(&machine);
+    let shared = Shared::in_dir(config, JobRegistry::new(), secrets, &state);
+    shared.set_engine(Arc::new(engine));
+    shared.set_index(Arc::new(std::sync::Mutex::new(
+        backtrack_core::index::IndexWriter::open(&state.join("index.db")).unwrap(),
+    )));
+    std::fs::write(machine.documents().join("report.odt"), b"original").unwrap();
+    std::fs::write(machine.documents().join("old.txt"), b"an old note").unwrap();
+    Some((machine, shared))
+}
+
+/// What a snapshot on this computer gives back, through the interface the
+/// window uses: a preview of `file`, a comparison, then `file` and its folder
+/// restored over what is on disk, each looked at, carried out and undone. The
+/// snapshot holds `file` as `held` and the folder's `old.txt`; on disk,
+/// `file` has been overwritten and `old.txt` deleted.
+async fn restored_from_a_snapshot(
+    shared: &Arc<Shared>,
+    archive: &str,
+    folder: &std::path::Path,
+    held: &str,
+) {
+    use std::io::Read as _;
+    let file = folder.join("report.odt");
+    let old = folder.join("old.txt");
+    let member = |p: &std::path::Path| p.strip_prefix("/").unwrap().display().to_string();
+    let (_server, client) = connect(Arc::clone(shared)).await;
+    let call = |method: &'static str, body| {
+        let client = client.clone();
+        async move {
+            client
+                .call_method(None::<()>, PATH, Some(IFACE), method, &body)
+                .await
+                .unwrap_or_else(|e| panic!("{method}: {e}"))
+        }
+    };
+
+    let reply = client
+        .call_method(
+            None::<()>,
+            PATH,
+            Some(IFACE),
+            "PreviewFile",
+            &(archive, member(&file)),
+        )
+        .await
+        .expect("PreviewFile");
+    let fd: zbus::zvariant::OwnedFd = reply.body().deserialize().unwrap();
+    let mut previewed = String::new();
+    std::fs::File::from(std::os::fd::OwnedFd::from(fd))
+        .read_to_string(&mut previewed)
+        .unwrap();
+    assert_eq!(previewed, held, "the preview is the snapshot's copy");
+
+    let reply = client
+        .call_method(
+            None::<()>,
+            PATH,
+            Some(IFACE),
+            "CompareFile",
+            &(archive, member(&file)),
+        )
+        .await
+        .expect("CompareFile");
+    let job: u64 = reply.body().deserialize().unwrap();
+    assert!(
+        completed(&settle(shared, job).await),
+        "the comparison is ready"
+    );
+    assert!(
+        !shared.preview.entry_path(archive, &member(&file)).exists(),
+        "read where it is, not copied into the preview cache first"
+    );
+
+    for (asked, conflicts, only_in_backup) in [(member(&file), 1, 0), (member(folder), 1, 1)] {
+        let reply = call(
+            "PrepareRestore",
+            (archive.to_string(), vec![asked.clone()], "/".to_string()),
+        )
+        .await;
+        let job: u64 = reply.body().deserialize().unwrap();
+        let state = settle(shared, job).await;
+        assert!(completed(&state), "preparing {asked}: {state:?}");
+        let reply = client
+            .call_method(None::<()>, PATH, Some(IFACE), "GetRestorePreview", &(job,))
+            .await
+            .expect("GetRestorePreview");
+        let preview: backtrack_core::dbus::RestorePreview = reply.body().deserialize().unwrap();
+        assert_eq!(
+            (preview.conflicts, preview.only_in_backup),
+            (conflicts, only_in_backup),
+            "restoring {asked}: {preview:?}"
+        );
+
+        let reply = client
+            .call_method(
+                None::<()>,
+                PATH,
+                Some(IFACE),
+                "ExecuteRestore",
+                &(job, "replace", Vec::<(String, String)>::new()),
+            )
+            .await
+            .expect("ExecuteRestore");
+        let run: u64 = reply.body().deserialize().unwrap();
+        let state = settle(shared, run).await;
+        assert!(completed(&state), "restoring {asked}: {state:?}");
+        assert_eq!(
+            std::fs::read_to_string(&file).unwrap(),
+            held,
+            "restored {asked}"
+        );
+        assert_eq!(
+            old.exists(),
+            only_in_backup == 1,
+            "old.txt after restoring {asked}"
+        );
+
+        let reply = client
+            .call_method(None::<()>, PATH, Some(IFACE), "UndoRestore", &(job,))
+            .await
+            .expect("UndoRestore");
+        let undo: u64 = reply.body().deserialize().unwrap();
+        assert!(completed(&settle(shared, undo).await), "undoing {asked}");
+        assert_eq!(
+            std::fs::read_to_string(&file).unwrap(),
+            "overwritten by mistake",
+            "undone {asked}"
+        );
+        assert!(!old.exists(), "old.txt gone again after undoing {asked}");
+    }
+}
+
+#[tokio::test]
+async fn a_snapper_snapshot_is_previewed_compared_and_restored_from_with_the_destination_away() {
+    use crate::snapper::tests::snapshot_name;
+    let Some((machine, shared)) = on_btrfs("restore-snapper", |m| m.sources()).await else {
+        return;
+    };
+    let job = Daemon1::new(Arc::clone(&shared))
+        .backup_now()
+        .await
+        .expect("backup starts");
+    wait_for_job(&shared, job).await;
+
+    // An edit after the backup, which Snapper's next snapshot holds.
+    let report = machine.documents().join("report.odt");
+    std::fs::write(&report, b"the draft Snapper saw").unwrap();
+    let now = SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64;
+    machine.take(1, now).await;
+    let job = shared.catalogue_snapper().expect("a Snapper job");
+    wait_for_job(&shared, job).await;
+
+    // Lost on disk, with the destination away.
+    std::fs::write(&report, b"overwritten by mistake").unwrap();
+    std::fs::remove_file(machine.documents().join("old.txt")).unwrap();
+    cut_the_destination(&shared);
+    restored_from_a_snapshot(
+        &shared,
+        &snapshot_name(&machine, 1),
+        &machine.documents(),
+        "the draft Snapper saw",
+    )
+    .await;
+    restore_the_destination(&shared);
+}
+
+#[tokio::test]
+async fn the_daemons_own_snapshot_is_previewed_compared_and_restored_from() {
+    // Stage 5's btrfs snapshots, which could be taken but not read back.
+    let Some((machine, shared)) = on_btrfs("restore-own", |m| vec![m.documents()]).await else {
+        return;
+    };
+    let job = Daemon1::new(Arc::clone(&shared))
+        .backup_now()
+        .await
+        .expect("backup starts");
+    wait_for_job(&shared, job).await;
+
+    let report = machine.documents().join("report.odt");
+    std::fs::write(&report, b"edited while away").unwrap();
+    cut_the_destination(&shared);
+    let job = shared
+        .start_scheduled_backup()
+        .await
+        .expect("the tick is not an error")
+        .expect("an unreachable destination starts local protection instead");
+    wait_for_job(&shared, job).await;
+    let local = local_rows(&shared).await;
+    assert_eq!(
+        local.iter().map(|r| r.repo.as_str()).collect::<Vec<_>>(),
+        ["fs-snapshot"],
+        "protected by a snapshot of the subvolume: {local:?}"
+    );
+
+    std::fs::write(&report, b"overwritten by mistake").unwrap();
+    std::fs::remove_file(machine.documents().join("old.txt")).unwrap();
+    restored_from_a_snapshot(
+        &shared,
+        &local[0].name,
+        &machine.documents(),
+        "edited while away",
+    )
+    .await;
+    restore_the_destination(&shared);
+}

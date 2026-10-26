@@ -46,6 +46,8 @@ pub enum JobKind {
     Prune,
     Compact,
     Check,
+    /// Bringing Snapper's snapshots into the catalogue (Stage 17).
+    Snapper,
 }
 
 impl JobKind {
@@ -59,6 +61,7 @@ impl JobKind {
         JobKind::Prune,
         JobKind::Compact,
         JobKind::Check,
+        JobKind::Snapper,
     ];
 
     /// How this kind uses the repository, which decides what may run beside it.
@@ -75,6 +78,13 @@ impl JobKind {
             | JobKind::Prune
             | JobKind::Compact
             | JobKind::Check => RepoAccess::Exclusive,
+            // It never opens the repository. It slots snapshots in among the
+            // backups, though, which moves every backup after them, and a job
+            // that holds a backup's place in the catalogue while it reads the
+            // backup's listing would then write it into the wrong one. Run
+            // alone, nothing can be holding a place. Each job catalogues one
+            // snapshot, so a backup waits seconds behind it, not a backlog.
+            JobKind::Snapper => RepoAccess::Exclusive,
             JobKind::Restore | JobKind::RestoreEverything | JobKind::Index => RepoAccess::Shared,
         }
     }
@@ -106,6 +116,7 @@ impl JobKind {
             JobKind::Prune => "prune",
             JobKind::Compact => "compact",
             JobKind::Check => "check",
+            JobKind::Snapper => "snapper",
         }
     }
 }

@@ -14,7 +14,7 @@
 use std::path::{Path, PathBuf};
 
 use backtrack_core::config::{Compression, Config, Notifications};
-use backtrack_core::dbus::{Status, StorageInfo};
+use backtrack_core::dbus::{SnapperInfo, Status, StorageInfo};
 use gtk4::glib;
 
 use super::format;
@@ -344,6 +344,151 @@ pub fn install_page() -> String {
     )
 }
 
+/// The guide to Snapper (Stage 17), at `section` if one is named.
+pub fn snapper_guide(section: Option<&str>) -> String {
+    let page = format!("{}/blob/main/docs/snapper.md", env!("CARGO_PKG_REPOSITORY"));
+    match section {
+        Some(section) => format!("{page}#{section}"),
+        None => page,
+    }
+}
+
+/// The section of the guide on letting Backtrack read Snapper's snapshots.
+pub const SNAPPER_ACCESS: &str = "giving-backtrack-access";
+
+/// What Preferences → Storage says about Snapper's snapshots.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SnapperRow {
+    pub title: String,
+    pub subtitle: String,
+    /// The guide, or the part of it, worth reading from here.
+    pub guide: Option<String>,
+}
+
+/// The setup script's name, as every native package installs it (S17-T6).
+pub const SNAPPER_SCRIPT: &str = "backtrack-snapper-setup";
+
+/// Where this Backtrack comes from, as far as running the setup script goes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Packaged {
+    /// Installed on the system, or a development build, whose copy of the
+    /// script is in the checkout.
+    Native { checkout: Option<PathBuf> },
+    /// The Flatpak, whose data folder a terminal outside its sandbox reaches.
+    Flatpak { data_dir: PathBuf },
+}
+
+/// How **Set Up Snapper…** runs the setup script (S17-T7).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SetUp {
+    /// In the desktop's terminal, as this command line.
+    Terminal(String),
+    /// Pasted into a terminal by the person. `script`, when given, is where
+    /// the script is to be put first: the Flatpak's copy is inside its
+    /// sandbox, where no terminal outside it can run it.
+    Paste {
+        command: String,
+        script: Option<PathBuf>,
+    },
+}
+
+/// What **Set Up Snapper…** does, or None where it is not offered: where the
+/// script would not run, and where Snapper's snapshots are already being
+/// read. Offered where Snapper is not set up, or its snapshots cannot be
+/// read, which the script sees to as well.
+pub fn snapper_setup(info: &SnapperInfo, packaged: &Packaged) -> Option<SetUp> {
+    let wanted = info.can_set_up && (info.folders == 0 || !info.unreadable.is_empty());
+    if !wanted {
+        return None;
+    }
+    Some(match packaged {
+        Packaged::Native { checkout } => {
+            let program = match checkout {
+                Some(script) => quoted(script),
+                None => SNAPPER_SCRIPT.to_string(),
+            };
+            // A terminal opened for one command closes when it ends, before
+            // anyone could read what it said.
+            SetUp::Terminal(format!("{program} --pause"))
+        }
+        Packaged::Flatpak { data_dir } => {
+            let script = data_dir.join(SNAPPER_SCRIPT);
+            SetUp::Paste {
+                command: format!("bash {}", quoted(&script)),
+                script: Some(script),
+            }
+        }
+    })
+}
+
+/// When no terminal could be opened: the same command, to paste into one.
+pub fn snapper_setup_by_hand(terminal: &str) -> SetUp {
+    SetUp::Paste {
+        command: terminal.trim_end_matches(" --pause").to_string(),
+        script: None,
+    }
+}
+
+fn quoted(path: &Path) -> String {
+    glib::shell_quote(path).to_string_lossy().into_owned()
+}
+
+/// What to say about Snapper, from what the daemon found. None where no
+/// backed-up folder is on btrfs, which Snapper needs, and where Snapper is
+/// not set up and the setup script would not run here (on a distribution it
+/// does not know, or with `/home` inside a larger subvolume, as Ubuntu's
+/// installer lays btrfs out): there is nothing to offer, and saying so would
+/// only be noise. Snapshots found, or found and not readable, are reported
+/// wherever they are.
+pub fn snapper_row(info: &SnapperInfo) -> Option<SnapperRow> {
+    if !info.on_btrfs {
+        return None;
+    }
+    if info.folders == 0 && info.unreadable.is_empty() && !info.can_set_up {
+        return None;
+    }
+    let reading = match info.snapshots {
+        1 => "Reading 1 snapshot taken by Snapper".to_string(),
+        n => format!("Reading {n} snapshots taken by Snapper"),
+    };
+    if !info.unreadable.is_empty() {
+        let folders = info.unreadable.join(", ");
+        let also = if info.folders > 0 {
+            format!(" {reading}, elsewhere.")
+        } else {
+            String::new()
+        };
+        return Some(SnapperRow {
+            title: "Snapper's snapshots cannot be read".to_string(),
+            subtitle: format!(
+                "Snapper keeps them in {folders}, which only the administrator can \
+                 read until Snapper is told to let you.{also}"
+            ),
+            guide: Some(snapper_guide(Some(SNAPPER_ACCESS))),
+        });
+    }
+    if info.folders > 0 {
+        return Some(SnapperRow {
+            title: if info.snapshots == 0 {
+                "Snapper is set up, and has taken no snapshots yet".to_string()
+            } else {
+                reading
+            },
+            subtitle: "They are shown in the timeline among your backups. They are kept on \
+                       this computer's own disk until Snapper removes them, and are not backups."
+                .to_string(),
+            guide: None,
+        });
+    }
+    Some(SnapperRow {
+        title: "Snapper is not set up".to_string(),
+        subtitle: "Your backed-up folders are on btrfs, where Snapper can take a snapshot \
+                   every few minutes, and Backtrack can show them in the timeline."
+            .to_string(),
+        guide: Some(snapper_guide(None)),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -571,6 +716,178 @@ mod tests {
                 .any(|line| line == format!("## {}", capitalised(&anchor))),
             "docs/file-manager-integration.md has no heading for #{anchor}"
         );
+    }
+
+    /// What the daemon finds, on a computer where the setup script would run.
+    fn snapper(folders: u32, snapshots: u32, unreadable: &[&str]) -> SnapperInfo {
+        SnapperInfo {
+            on_btrfs: true,
+            folders,
+            snapshots,
+            unreadable: unreadable.iter().map(|s| s.to_string()).collect(),
+            can_set_up: true,
+        }
+    }
+
+    /// The same, where it would not.
+    fn cannot_set_up(info: SnapperInfo) -> SnapperInfo {
+        SnapperInfo {
+            can_set_up: false,
+            ..info
+        }
+    }
+
+    #[test]
+    fn where_the_script_would_not_run_neither_it_nor_snapper_not_being_set_up_is_offered() {
+        let native = Packaged::Native { checkout: None };
+        let nothing = cannot_set_up(snapper(0, 0, &[]));
+        assert_eq!(snapper_row(&nothing), None);
+        assert_eq!(snapper_setup(&nothing, &native), None);
+
+        // What was found is still said, without the button.
+        let unreadable = cannot_set_up(snapper(0, 0, &["/data/.snapshots"]));
+        assert_eq!(
+            snapper_row(&unreadable).map(|r| r.title),
+            Some("Snapper's snapshots cannot be read".to_string())
+        );
+        assert_eq!(snapper_setup(&unreadable, &native), None);
+        let read = cannot_set_up(snapper(1, 3, &[]));
+        assert_eq!(
+            snapper_row(&read).map(|r| r.title),
+            Some("Reading 3 snapshots taken by Snapper".to_string())
+        );
+    }
+
+    #[test]
+    fn with_no_folder_on_btrfs_there_is_nothing_to_say_about_snapper() {
+        assert_eq!(snapper_row(&SnapperInfo::default()), None);
+    }
+
+    #[test]
+    fn on_btrfs_with_no_snapper_the_guide_is_offered() {
+        let row = snapper_row(&snapper(0, 0, &[])).unwrap();
+        assert_eq!(row.title, "Snapper is not set up");
+        assert_eq!(row.guide, Some(snapper_guide(None)));
+    }
+
+    #[test]
+    fn snapshots_that_cannot_be_read_are_named_with_the_way_to_read_them() {
+        let row = snapper_row(&snapper(0, 0, &["/home/.snapshots"])).unwrap();
+        assert_eq!(row.title, "Snapper's snapshots cannot be read");
+        assert!(
+            row.subtitle.contains("/home/.snapshots"),
+            "{}",
+            row.subtitle
+        );
+        assert!(!row.subtitle.contains("Reading"), "{}", row.subtitle);
+        assert_eq!(row.guide, Some(snapper_guide(Some(SNAPPER_ACCESS))));
+
+        let mixed = snapper_row(&snapper(1, 5, &["/data/.snapshots"])).unwrap();
+        assert!(
+            mixed
+                .subtitle
+                .ends_with("Reading 5 snapshots taken by Snapper, elsewhere."),
+            "{}",
+            mixed.subtitle
+        );
+    }
+
+    #[test]
+    fn snapshots_being_read_are_counted() {
+        let row = snapper_row(&snapper(1, 24, &[])).unwrap();
+        assert_eq!(row.title, "Reading 24 snapshots taken by Snapper");
+        assert!(row.subtitle.contains("are not backups"), "{}", row.subtitle);
+        assert_eq!(row.guide, None);
+        assert_eq!(
+            snapper_row(&snapper(1, 1, &[])).unwrap().title,
+            "Reading 1 snapshot taken by Snapper"
+        );
+        assert_eq!(
+            snapper_row(&snapper(1, 0, &[])).unwrap().title,
+            "Snapper is set up, and has taken no snapshots yet"
+        );
+    }
+
+    #[test]
+    fn set_up_snapper_is_offered_where_there_is_something_to_set_up() {
+        let native = Packaged::Native { checkout: None };
+        assert_eq!(
+            snapper_setup(&SnapperInfo::default(), &native),
+            None,
+            "off btrfs"
+        );
+        assert_eq!(
+            snapper_setup(&snapper(1, 24, &[]), &native),
+            None,
+            "being read already"
+        );
+        for info in [snapper(0, 0, &[]), snapper(0, 0, &["/home/.snapshots"])] {
+            assert_eq!(
+                snapper_setup(&info, &native),
+                Some(SetUp::Terminal("backtrack-snapper-setup --pause".into())),
+                "{info:?}"
+            );
+        }
+        assert!(
+            snapper_setup(&snapper(1, 5, &["/data/.snapshots"]), &native).is_some(),
+            "some read, some not"
+        );
+    }
+
+    #[test]
+    fn a_development_build_runs_the_checkouts_script() {
+        let checkout = Packaged::Native {
+            checkout: Some(PathBuf::from(
+                "/home/k/Code/back track/packaging/snapper/backtrack-snapper-setup",
+            )),
+        };
+        assert_eq!(
+            snapper_setup(&snapper(0, 0, &[]), &checkout),
+            Some(SetUp::Terminal(
+                "'/home/k/Code/back track/packaging/snapper/backtrack-snapper-setup' --pause"
+                    .into()
+            ))
+        );
+    }
+
+    #[test]
+    fn the_flatpak_hands_over_the_script_and_a_command_to_paste() {
+        let flatpak = Packaged::Flatpak {
+            data_dir: PathBuf::from("/home/k/.var/app/tools.backtrack.Backtrack/data/backtrack"),
+        };
+        let script = PathBuf::from(
+            "/home/k/.var/app/tools.backtrack.Backtrack/data/backtrack/backtrack-snapper-setup",
+        );
+        assert_eq!(
+            snapper_setup(&snapper(0, 0, &[]), &flatpak),
+            Some(SetUp::Paste {
+                command: format!("bash '{}'", script.display()),
+                script: Some(script),
+            })
+        );
+    }
+
+    #[test]
+    fn with_no_terminal_to_open_the_command_is_given_to_paste() {
+        assert_eq!(
+            snapper_setup_by_hand("backtrack-snapper-setup --pause"),
+            SetUp::Paste {
+                command: "backtrack-snapper-setup".into(),
+                script: None
+            }
+        );
+    }
+
+    #[test]
+    fn the_access_section_is_a_section_of_the_snapper_guide() {
+        let doc = include_str!("../../../../docs/snapper.md");
+        let anchor = snapper_guide(Some(SNAPPER_ACCESS));
+        let anchor = anchor.rsplit_once('#').unwrap().1;
+        assert!(
+            doc.lines().any(|line| line == "## Giving Backtrack access"),
+            "docs/snapper.md has no heading for #{anchor}"
+        );
+        assert_eq!(anchor, "giving-backtrack-access");
     }
 
     fn capitalised(word: &str) -> String {

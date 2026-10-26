@@ -14,7 +14,7 @@ use super::{IndexError, Result};
 
 /// The schema version this build of the crate expects. Bump when appending a
 /// migration.
-pub const SCHEMA_VERSION: i64 = 3;
+pub const SCHEMA_VERSION: i64 = 4;
 
 /// Ordered list of migrations. Index `i` migrates the database *to* version
 /// `i + 1`. The runner applies only those beyond the current version.
@@ -81,6 +81,25 @@ const MIGRATIONS: &[&str] = &[
     -- that reads every version in the catalogue, once per local snapshot.
     CREATE INDEX versions_last_seq ON versions(last_seq);
     "#,
+    // ── v4 ── Snapper's snapshots as a kind of archive (Stage 17).
+    r#"
+    -- A CHECK cannot be altered, so the table is made again with the new value
+    -- allowed and everything else as it was, and its rows copied across.
+    CREATE TABLE archives_v4(
+        seq          INTEGER PRIMARY KEY,
+        borg_id      TEXT,
+        name         TEXT,
+        ts           INTEGER,
+        repo         TEXT NOT NULL
+                     CHECK(repo IN ('primary','spool','fs-snapshot','snapper')),
+        status       TEXT,
+        expirable_at INTEGER
+    );
+    INSERT INTO archives_v4(seq, borg_id, name, ts, repo, status, expirable_at)
+      SELECT seq, borg_id, name, ts, repo, status, expirable_at FROM archives;
+    DROP TABLE archives;
+    ALTER TABLE archives_v4 RENAME TO archives;
+    "#,
 ];
 
 /// Read the current schema version, treating a database with no `meta` table
@@ -135,5 +154,112 @@ pub(super) fn integrity_check(conn: &Connection) -> Result<()> {
         Ok(msg) if msg == "ok" => Ok(()),
         Ok(msg) => Err(IndexError::Corrupt(msg)),
         Err(e) => Err(IndexError::Corrupt(e.to_string())),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A database as a build at `version` left it.
+    fn at_version(version: usize) -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        for sql in &MIGRATIONS[..version] {
+            conn.execute_batch(sql).unwrap();
+        }
+        conn.execute(
+            "INSERT INTO meta(key, value) VALUES('schema_version', ?1)",
+            [version.to_string()],
+        )
+        .unwrap();
+        conn
+    }
+
+    /// An archive row, every column.
+    type Row = (
+        i64,
+        Option<String>,
+        String,
+        i64,
+        String,
+        Option<String>,
+        Option<i64>,
+    );
+
+    fn columns(conn: &Connection) -> Vec<(String, String, bool, bool)> {
+        let mut stmt = conn.prepare("PRAGMA table_info(archives)").unwrap();
+        stmt.query_map([], |r| Ok((r.get(1)?, r.get(2)?, r.get(3)?, r.get(5)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap()
+    }
+
+    #[test]
+    fn v4_keeps_every_archive_and_allows_snappers() {
+        let mut conn = at_version(3);
+        conn.execute_batch(
+            "INSERT INTO archives(seq, borg_id, name, ts, repo, status, expirable_at) VALUES
+               (1, 'ab12', 'bt-host-1', 1000, 'primary', NULL, NULL),
+               (2, NULL, 'bt-local-2', 2000, 'spool', NULL, 5000),
+               (3, NULL, 'bt-local-3', 3000, 'fs-snapshot', 'pending', NULL);
+             INSERT INTO versions(path_id, first_seq, last_seq, size, mtime, mode, kind)
+               VALUES (1, 1, 3, 5, 10, 420, 'file');",
+        )
+        .unwrap();
+        let rows = |conn: &Connection| -> Vec<Row> {
+            let mut stmt = conn
+                .prepare("SELECT seq, borg_id, name, ts, repo, status, expirable_at FROM archives ORDER BY seq")
+                .unwrap();
+            stmt.query_map([], |r| {
+                Ok((
+                    r.get(0)?,
+                    r.get(1)?,
+                    r.get(2)?,
+                    r.get(3)?,
+                    r.get(4)?,
+                    r.get(5)?,
+                    r.get(6)?,
+                ))
+            })
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap()
+        };
+        let before = rows(&conn);
+
+        migrate(&mut conn).unwrap();
+
+        assert_eq!(current_version(&conn).unwrap(), 4);
+        assert_eq!(rows(&conn), before, "every archive as it was");
+        let versions: i64 = conn
+            .query_row("SELECT COUNT(*) FROM versions", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(versions, 1, "the versions are not touched");
+        conn.execute(
+            "INSERT INTO archives(seq, name, ts, repo) VALUES (4, 'snapper:/home/.snapshots/7', 4000, 'snapper')",
+            [],
+        )
+        .expect("a Snapper snapshot is a kind of archive now");
+        assert!(
+            conn.execute(
+                "INSERT INTO archives(seq, name, ts, repo) VALUES (5, 'x', 5000, 'elsewhere')",
+                [],
+            )
+            .is_err(),
+            "and any other kind is still refused"
+        );
+        assert_eq!(
+            columns(&conn),
+            columns(&at_version(3)),
+            "every column as it was, with its type, NOT NULL and key"
+        );
+        let leftover: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE name = 'archives_v4'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(leftover, 0);
     }
 }

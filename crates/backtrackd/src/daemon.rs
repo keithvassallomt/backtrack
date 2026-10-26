@@ -221,6 +221,13 @@ pub async fn run() -> Result<Outcome, StartupError> {
         Arc::clone(&shared),
         emitter.to_owned(),
     ));
+    // Snapper's snapshots, kept in the catalogue, and what is found of them
+    // announced (Stage 17).
+    tokio::spawn(crate::snapper::watch(Arc::clone(&shared)));
+    tokio::spawn(service::announce_snapper(
+        Arc::clone(&shared),
+        emitter.to_owned(),
+    ));
 
     // Claiming the name is the readiness announcement, so every piece of state
     // that shapes an answer is already in place by here. systemd reports the

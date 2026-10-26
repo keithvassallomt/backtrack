@@ -11,6 +11,7 @@
 //! The index (Stage 1) is the first real subsystem; the Borg adapter, spool,
 //! and restore engine arrive in later stages.
 
+pub mod btrfs;
 pub mod config;
 pub mod dbus;
 pub mod destination;
@@ -26,6 +27,7 @@ pub mod restore;
 pub mod roots;
 pub mod secret;
 pub mod servicemenu;
+pub mod snapper;
 pub mod state;
 #[cfg(feature = "glib")]
 pub mod status_line;

@@ -1,0 +1,361 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-3.0-or-later
+# SPDX-FileCopyrightText: 2026 Keith Vassallo <keith@vassallo.cloud>
+#
+# Have Snapper take a snapshot of /home every five minutes, for Backtrack to
+# show in its timeline among the backups, and run again, undo exactly that.
+# docs/snapper.md says what each step does, and gives the same commands.
+#
+#   backtrack-snapper-setup                 set up, or offer to undo a setup
+#   backtrack-snapper-setup --yes           the same, without asking first
+#   backtrack-snapper-setup --pause         the same, waiting for Enter at the end,
+#                                           for a terminal that closes when it ends
+#   backtrack-snapper-setup --print DISTRO  list the commands it runs on DISTRO
+#                                           (fedora, opensuse, arch),
+#                                           setting up then undoing, from nothing
+#
+# Run it as yourself: it asks sudo for what needs the administrator. What it
+# changed, and what it found already there, is kept in /var/lib/backtrack/
+# snapper-setup, so that an undo takes back only its own changes.
+set -euo pipefail
+
+readonly SUBVOLUME=/home
+readonly RECORD_DIR=/var/lib/backtrack
+readonly RECORD=$RECORD_DIR/snapper-setup
+
+mode=run
+yes=no
+pause=no
+distro=""
+
+say() { printf '%s\n' "$*"; }
+
+# One command, shown as docs/snapper.md gives it, then run. Each is a fixed
+# string, so what is shown is exactly what runs.
+step() {
+    if [[ $mode == print ]]; then
+        say "$1"
+        return
+    fi
+    say "+ $1"
+    eval "$1"
+}
+
+stop() {
+    say "" "$*" >&2
+    exit 1
+}
+
+# What a question is answered with: yes or no, from the terminal.
+ask() {
+    [[ $yes == yes ]] && return 0
+    local answer
+    read -r -p "$1 [y/N] " answer </dev/tty || return 1
+    [[ $answer == [yY]* ]]
+}
+
+# The record, added to as each change is made, so that a run cut short can
+# still be undone. Readable by anyone, so that it is found before sudo is asked
+# for anything.
+recorded() {
+    [[ $mode == run && -f $RECORD ]] && grep -qx "$1" "$RECORD"
+}
+record() {
+    [[ $mode == run ]] || return 0
+    sudo install -d -m 755 "$RECORD_DIR"
+    printf '%s\n' "$1" | sudo tee -a "$RECORD" >/dev/null
+    sudo chmod 644 "$RECORD"
+}
+
+# The value recorded under KEY=, or nothing.
+was() {
+    grep -m1 "^$1=" "$RECORD" 2>/dev/null | cut -d= -f2- || true
+}
+
+# What is already there. Printing assumes a system that has none of it.
+have_snapper() { [[ $mode == run ]] && command -v snapper >/dev/null; }
+timer_enabled() { [[ $mode == run ]] && systemctl is-enabled --quiet "$1" 2>/dev/null; }
+
+# Snapper's configurations, as "name,subvolume" lines.
+configs() {
+    have_snapper || return 0
+    sudo snapper --csvout list-configs --columns config,subvolume | tail -n +2
+}
+
+# The configuration covering /home, if there is one.
+home_config() {
+    configs | awk -F, -v want="$SUBVOLUME" '$2 == want { print $1; exit }'
+}
+
+# The distribution, from /etc/os-release: one of those this was checked on.
+detect() {
+    local id=""
+    # shellcheck disable=SC1091
+    id=$(. /etc/os-release && printf '%s' "${ID:-}")
+    case $id in
+        fedora) distro=fedora ;;
+        opensuse-tumbleweed | opensuse-leap | opensuse-slowroll) distro=opensuse ;;
+        arch) distro=arch ;;
+        *)
+            stop "This sets Snapper up on Fedora, openSUSE and Arch Linux, and this" \
+                "computer runs ${id:-something else}. docs/snapper.md says what to do" \
+                "by hand."
+            ;;
+    esac
+}
+
+install_snapper() {
+    case $distro in
+        fedora) step 'sudo dnf install -y snapper' ;;
+        opensuse) step 'sudo zypper --non-interactive install snapper' ;;
+        arch) step 'sudo pacman -S --needed --noconfirm snapper' ;;
+    esac
+}
+
+remove_snapper() {
+    case $distro in
+        fedora) step 'sudo dnf remove -y snapper' ;;
+        opensuse) step 'sudo zypper --non-interactive remove --clean-deps snapper' ;;
+        arch) step 'sudo pacman -Rns --noconfirm snapper' ;;
+    esac
+}
+
+# Whether /home is a btrfs subvolume, which Snapper needs.
+check_home() {
+    [[ $mode == run ]] || return 0
+    if [[ $(stat -f -c %T "$SUBVOLUME") != btrfs ]]; then
+        stop "$SUBVOLUME is not on btrfs, which Snapper needs. Nothing was changed," \
+            "and Backtrack works fully without it."
+    fi
+    if [[ $(stat -c %i "$SUBVOLUME") != 256 ]]; then
+        stop "$SUBVOLUME is on btrfs, but is a folder inside a larger subvolume, not one" \
+            "of its own, so Snapper cannot take snapshots of it alone. Nothing was changed."
+    fi
+}
+
+set_up() {
+    local config=home snapper_was=no timeline_was=no cleanup_was=no existing=""
+    have_snapper && snapper_was=yes
+    timer_enabled snapper-timeline.timer && timeline_was=yes
+    timer_enabled snapper-cleanup.timer && cleanup_was=yes
+    existing=$(home_config)
+
+    if [[ -n $existing ]]; then
+        give_access_only "$existing"
+        return
+    fi
+
+    if [[ $mode == run ]]; then
+        say "This sets Snapper up to take snapshots of $SUBVOLUME for Backtrack:"
+        [[ $snapper_was == no ]] && say "  - install Snapper"
+        say "  - make a Snapper configuration for $SUBVOLUME, named \"$config\""
+        say "  - let you ($USER) read its snapshots"
+        say "  - take a snapshot every five minutes, and keep a day of them"
+        say "  - keep a week of daily snapshots, and nothing older"
+        say "  - take a first snapshot now"
+        say ""
+        say "Each command is shown before it runs, and sudo asks for your password."
+        say "Run this again to undo it."
+        say ""
+        ask "Go ahead?" || stop "Nothing was changed."
+        record "SET_UP_AT=$(date --iso-8601=seconds)"
+        record "SET_UP_FOR=$USER"
+    fi
+
+    if [[ $snapper_was == no ]]; then
+        install_snapper
+        record "INSTALLED_SNAPPER"
+    fi
+    step 'sudo snapper -c home create-config /home'
+    record "MADE_CONFIG=$config"
+    [[ $timeline_was == no ]] && record "ENABLED_TIMELINE"
+    [[ $cleanup_was == no ]] && record "ENABLED_CLEANUP"
+    step 'sudo systemctl enable --now snapper-timeline.timer snapper-cleanup.timer'
+    # Shown as written, and expanded only as it runs.
+    # shellcheck disable=SC2016
+    step 'sudo snapper -c home set-config ALLOW_USERS="$USER" SYNC_ACL=yes'
+
+    step 'sudo mkdir -p /etc/systemd/system/snapper-timeline.timer.d'
+    record "MADE_DROPIN"
+    step "printf '[Timer]\\nOnCalendar=\\nOnCalendar=*:0/5\\n' | sudo tee /etc/systemd/system/snapper-timeline.timer.d/every-5-minutes.conf"
+    step 'sudo systemctl daemon-reload'
+    step 'sudo snapper -c home set-config TIMELINE_MIN_AGE=86400'
+    step 'sudo snapper -c home set-config TIMELINE_LIMIT_DAILY=7 TIMELINE_LIMIT_MONTHLY=0 TIMELINE_LIMIT_YEARLY=0'
+    step 'snapper -c home create --description "My first snapshot"'
+    step 'snapper -c home list'
+
+    if [[ $mode == run ]]; then
+        say ""
+        say "Done. Snapper takes a snapshot of $SUBVOLUME every five minutes, and Backtrack"
+        say "shows them in its timeline, badged \"Snapper snapshot\". Run this again to undo it."
+    fi
+}
+
+# A setting of Snapper's configuration $1.
+setting() {
+    sudo snapper --csvout -c "$1" get-config | awk -F, -v key="$2" '$1 == key { print $2 }'
+}
+
+# A configuration for /home made by someone else: it is left as it is, apart
+# from letting this user read it, if they cannot already.
+give_access_only() {
+    local config=$1 allowed sync
+    allowed=$(setting "$config" ALLOW_USERS)
+    sync=$(setting "$config" SYNC_ACL)
+    if [[ " $allowed " == *" $USER "* && $sync == yes ]]; then
+        say "Snapper already takes snapshots of $SUBVOLUME (its configuration \"$config\"),"
+        say "and you can read them, so Backtrack shows them. Nothing to do."
+        return
+    fi
+    say "Snapper already takes snapshots of $SUBVOLUME, in a configuration named"
+    say "\"$config\" that this did not make. It is left as it is, apart from letting"
+    say "you ($USER) read its snapshots, so that Backtrack can show them."
+    say "Run this again to take that back."
+    say ""
+    ask "Go ahead?" || stop "Nothing was changed."
+    record "SET_UP_AT=$(date --iso-8601=seconds)"
+    record "SET_UP_FOR=$USER"
+    record "GAVE_ACCESS=$config"
+    record "ALLOW_USERS_WAS=$allowed"
+    record "SYNC_ACL_WAS=$sync"
+    local users
+    users=$(printf '%s %s' "$allowed" "$USER" | xargs)
+    step "sudo snapper -c $config set-config ALLOW_USERS=\"$users\" SYNC_ACL=yes"
+    say ""
+    say "Done. Backtrack shows Snapper's snapshots of $SUBVOLUME in its timeline."
+}
+
+undo() {
+    if [[ $mode == run ]]; then
+        say "Snapper was set up for Backtrack by this script, on $(was SET_UP_AT)."
+        say "Undoing it:"
+        if recorded "MADE_CONFIG=home"; then
+            say "  - removes every snapshot Snapper has taken of $SUBVOLUME, and its configuration"
+        fi
+        if [[ -n $(was GAVE_ACCESS) ]]; then
+            say "  - takes away your access to Snapper's snapshots of $SUBVOLUME"
+        fi
+        recorded MADE_DROPIN && say "  - puts Snapper's schedule back to one snapshot an hour"
+        if recorded ENABLED_TIMELINE || recorded ENABLED_CLEANUP; then
+            say "  - stops the timers it started"
+        fi
+        recorded INSTALLED_SNAPPER && say "  - removes Snapper"
+        say "Your files, and your backups, are not touched."
+        say ""
+        ask "Undo it?" || stop "Nothing was changed."
+    fi
+
+    # Each step looks first, so that an undo cut short can be run again.
+    if recorded "MADE_CONFIG=home" || [[ $mode == print ]]; then
+        if [[ $mode == print || $(home_config) == home ]]; then
+            # Stopped first: Snapper 0.13's service writes a configuration
+            # whose settings it changed back to disk as it deletes it.
+            step 'sudo systemctl stop snapperd.service'
+            step 'sudo snapper -c home delete-config'
+        fi
+        if [[ $mode == run ]] && sudo test -e /etc/snapper/configs/home; then
+            step 'sudo rm /etc/snapper/configs/home'
+        fi
+    elif [[ -n $(was GAVE_ACCESS) ]]; then
+        local config before sync
+        config=$(was GAVE_ACCESS)
+        before=$(was ALLOW_USERS_WAS)
+        sync=$(was SYNC_ACL_WAS)
+        if [[ -n $(configs | awk -F, -v want="$config" '$1 == want') ]]; then
+            # Still synchronised while the user leaves the list, so that
+            # their permission to read the snapshots goes with them.
+            step "sudo snapper -c $config set-config ALLOW_USERS=\"$before\""
+            [[ $sync == yes ]] || step "sudo snapper -c $config set-config SYNC_ACL=$sync"
+        fi
+    fi
+
+    if recorded MADE_DROPIN || [[ $mode == print ]]; then
+        if [[ $mode == print || -e /etc/systemd/system/snapper-timeline.timer.d/every-5-minutes.conf ]]; then
+            step 'sudo rm -f /etc/systemd/system/snapper-timeline.timer.d/every-5-minutes.conf'
+        fi
+        if [[ $mode == print || -d /etc/systemd/system/snapper-timeline.timer.d ]]; then
+            step 'sudo rmdir --ignore-fail-on-non-empty /etc/systemd/system/snapper-timeline.timer.d'
+        fi
+        step 'sudo systemctl daemon-reload'
+    fi
+    local timeline=no cleanup=no
+    if [[ $mode == print ]]; then
+        timeline=yes cleanup=yes
+    else
+        recorded ENABLED_TIMELINE && timer_enabled snapper-timeline.timer && timeline=yes
+        recorded ENABLED_CLEANUP && timer_enabled snapper-cleanup.timer && cleanup=yes
+    fi
+    if [[ $timeline == yes && $cleanup == yes ]]; then
+        step 'sudo systemctl disable --now snapper-timeline.timer snapper-cleanup.timer'
+    elif [[ $timeline == yes ]]; then
+        step 'sudo systemctl disable --now snapper-timeline.timer'
+    elif [[ $cleanup == yes ]]; then
+        step 'sudo systemctl disable --now snapper-cleanup.timer'
+    fi
+
+    if recorded INSTALLED_SNAPPER || [[ $mode == print ]]; then
+        if [[ $mode == run && -n $(configs) ]]; then
+            say "Snapper has other configurations now, so it is left installed."
+        elif [[ $mode == print ]] || have_snapper; then
+            remove_snapper
+        fi
+    fi
+
+    if [[ $mode == run ]]; then
+        sudo rm -f "$RECORD"
+        sudo rmdir --ignore-fail-on-non-empty "$RECORD_DIR"
+        say ""
+        say "Undone. Backtrack's timeline no longer shows Snapper's snapshots."
+    fi
+}
+
+# For a terminal Preferences opened, which closes as soon as this ends: what
+# it said stays on screen until the person has read it.
+wait_to_close() {
+    say ""
+    read -r -p "Press Enter to close this window. " _ </dev/tty || true
+}
+
+main() {
+    while (($#)); do
+        case $1 in
+            --print)
+                mode=print
+                distro=${2:-}
+                case $distro in
+                    fedora | opensuse | arch) ;;
+                    *) stop "--print takes fedora, opensuse or arch" ;;
+                esac
+                set_up
+                undo
+                return
+                ;;
+            --yes) yes=yes ;;
+            --pause) pause=yes ;;
+            *) sed -n '9,15p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2 ;;
+        esac
+        shift
+    done
+    [[ $pause == yes ]] && trap wait_to_close EXIT
+
+    if [[ -e /.flatpak-info ]]; then
+        stop "This runs on your system, not inside Backtrack's Flatpak: paste the command" \
+            "Backtrack copied into a terminal."
+    fi
+    if [[ $(id -u) == 0 ]]; then
+        stop "Run this as yourself, not as root: it lets your own user read Snapper's" \
+            "snapshots, and asks sudo for the rest."
+    fi
+    command -v sudo >/dev/null || stop "This needs sudo, which is not installed."
+    detect
+    trap 'say "" "A step failed, so this stopped. What it changed so far is recorded:" \
+        "run it again to undo that." >&2' ERR
+    if [[ -f $RECORD ]]; then
+        undo
+        return
+    fi
+    check_home
+    set_up
+}
+
+main "$@"

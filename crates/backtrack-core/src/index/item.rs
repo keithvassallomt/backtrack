@@ -68,6 +68,9 @@ pub enum Repo {
     Primary,
     Spool,
     FsSnapshot,
+    /// Snapper's own btrfs snapshots, which Backtrack reads and never takes
+    /// or removes (Stage 17).
+    Snapper,
 }
 
 impl Repo {
@@ -77,6 +80,7 @@ impl Repo {
             Repo::Primary => "primary",
             Repo::Spool => "spool",
             Repo::FsSnapshot => "fs-snapshot",
+            Repo::Snapper => "snapper",
         }
     }
 
@@ -86,6 +90,7 @@ impl Repo {
             "primary" => Some(Repo::Primary),
             "spool" => Some(Repo::Spool),
             "fs-snapshot" => Some(Repo::FsSnapshot),
+            "snapper" => Some(Repo::Snapper),
             _ => None,
         }
     }

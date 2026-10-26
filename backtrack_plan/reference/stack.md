@@ -66,9 +66,9 @@ interface. The `1` is the API's major version: an incompatible change ships as
 | `Pause(until: timestamp)` / `Resume()` | Self-expiring pause (menu options map here) |
 | `GetStatus()` | State, last/next backup, destination reachability, spool usage |
 | `GetBackupProgress() → (job, phase, current, total)` | The backup under way, as its last `BackupProgress` said; job 0 when none (S06-T12) |
-| `RestoreFiles(archive, paths[], dest, policy) → job` | policy = ask / keep-both / replace / skip-identical. An archive named `trash:<.trashinfo>` restores that item from the Trash (S16-T4) |
+| `RestoreFiles(archive, paths[], dest, policy) → job` | policy = ask / keep-both / replace / skip-identical. An archive named `trash:<.trashinfo>` restores that item from the Trash (S16-T4). A snapshot on this computer is copied out of rather than extracted, leaving out what the backup leaves out, and restores with the destination away (S17-T3) |
 | `PrepareRestoreWithTrash(archive, trashed[], paths[], dest) → job` / `RestoreIntoWithTrash(…)` | As `PrepareRestore` and `RestoreInto`, with the named Trash items put back in place of what the backup has at their paths, as a Trash entry shows them; `archive` is empty when nothing comes from a backup. What comes from the Trash is moved out of it, and `UndoRestore` moves it back with its `.trashinfo` (S16-T4) |
-| `PreviewFile(archive, path) → fd` | Extracted content over a pipe fd; daemon caches by chunk hash. An archive named `trash:<.trashinfo>` reads the file from the Trash instead (S16-T2) |
+| `PreviewFile(archive, path) → fd` | Extracted content over a pipe fd; daemon caches by chunk hash. An archive named `trash:<.trashinfo>` reads the file from the Trash instead (S16-T2), and a snapshot on this computer (Snapper's, or the daemon's own btrfs snapshot) is read where it is, with nothing cached (S17-T3) |
 | `CompareFile(archive, path) → job` | Produces a diff artifact for the compare view |
 | `Prune()` / `Verify()` / `Compact()` | Maintenance (Preferences → Advanced) |
 | `CancelJob(id)` / `PauseJob(id)` | Cancel / pause any long-running job |
@@ -76,12 +76,14 @@ interface. The `1` is the API's major version: an incompatible change ships as
 | `SetupRepo(...)` / `ImportRepo(path)` | Wizard operations (create vs adopt existing repo) |
 | `SearchFiles(query) → results` | FTS5 cross-snapshot search over the index (grouped-by-file results incl. deleted files). What the Trash holds that no backup has is matched by the same rules: a result carries the Trash copy's archive name, deletion time and size, and a path no backup has is a result with no versions (S16-T5) |
 | `RestoreEverything(archive, policy) → job` | Guided disaster recovery: per-top-level-folder extract jobs, resumable |
+| `GetSnapper() → info` | What the daemon found of Snapper's snapshots of the backed-up folders: whether any is on btrfs, how many `.snapshots` folders and snapshots it reads, and the `.snapshots` folders it may not read (S17-T4) |
 | `ListTrashed() → items` | What the desktop's Trash holds from the backed-up folders: archive name, original path, deletion time, kind, size, modification time, and whether it holds something no backup has (S16-T2) |
 | `ListTrashedFolder(archive, path) → entries` | What is directly inside a folder of a trashed item, for browsing into a folder moved to the Trash whole (S16-T3) |
 
 **Signals:** `BackupProgress(job, phase, current, total)`, `RestoreProgress(job, bytes, total)`,
 `IndexingProgress(archive, pct)`, `StatusChanged(state)`, `TrashChanged()` (what `ListTrashed`
-lists has changed). Long operations return a job ID;
+lists has changed), `SnapperChanged()` (what `GetSnapper` answers has changed, S17-T7).
+Long operations return a job ID;
 signals carry it. Restore progress is computed from the index's byte totals, not Borg's
 percent (unreliable on partial extracts — see research).
 
@@ -105,7 +107,8 @@ config.toml   # source of truth; GUI edits via D-Bus SetConfig
 
 ```sql
 archives(seq INTEGER PRIMARY KEY, borg_id TEXT, name TEXT, ts INTEGER,
-         repo TEXT CHECK(repo IN ('primary','spool','fs-snapshot')), status TEXT);
+         repo TEXT CHECK(repo IN ('primary','spool','fs-snapshot','snapper')),
+         status TEXT, expirable_at INTEGER);
 paths(id INTEGER PRIMARY KEY, parent_id INTEGER, name TEXT);        -- deduped tree
 versions(path_id INTEGER, first_seq INTEGER, last_seq INTEGER,
          size INTEGER, mtime INTEGER, mode INTEGER, kind TEXT, chunk_hash TEXT);
@@ -116,7 +119,13 @@ meta(key TEXT PRIMARY KEY, value);       -- schema_version, last_network_archive
 Timeline query: `WHERE parent_id=? AND first_seq<=?1 AND last_seq>=?1` — indexed, instant,
 works offline. Expected size ≈ 50–150 MB at 500k files × 100 archives. Spool and
 filesystem-snapshot archives share these tables (distinguished by `repo`), which makes
-the "on this computer" badge and unified restores trivial.
+the "on this computer" badge and unified restores trivial. So do Snapper's snapshots
+(`repo='snapper'`, named `snapper:<.snapshots>/<N>`, Stage 17), which the daemon reads
+and never takes or removes: each is walked as the subvolume it copies, slotted in among
+the backups by time, and speaks only for the backed-up folders in that subvolume, so the
+rest are carried across it (`IndexWriter::ingest_scoped`). Cataloguing one is a job of
+its own kind (`snapper`), one snapshot a job, run alone: slotting an archive in moves
+every archive after it.
 
 **Ingest:** after each `borg create`, stream `borg list --json-lines` for the new archive
 into one transaction, diffing against the previous archive's rows in SQL to open/close
