@@ -39,84 +39,16 @@
 //! all — hourly snapshots that nothing can expire would fill the user's disk
 //! and there would be no way out of it from inside the application.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::time::Duration;
 
 use tracing::{debug, warn};
 
-/// `BTRFS_SUPER_MAGIC`, from `linux/magic.h`.
-const BTRFS_MAGIC: rustix::fs::FsWord = 0x9123_683e;
-
-/// The inode number every btrfs subvolume root has. This is the documented way
-/// to find a subvolume boundary without privileges or an ioctl — and this
-/// codebase denies `unsafe`, so an ioctl is not on the table.
-const SUBVOLUME_ROOT_INO: u64 = 256;
+pub use backtrack_core::btrfs::{containing_subvolume, is_btrfs, Subvolume};
 
 /// How long a snapshot may take to be created or removed before we give up and
 /// treat btrfs as unavailable. A wedged `btrfs` process must not hold a backup.
 const COMMAND_TIMEOUT: Duration = Duration::from_secs(30);
-
-/// A subvolume, and where a path of interest sits inside it.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Subvolume {
-    /// The subvolume's mount-visible root.
-    pub root: PathBuf,
-    /// The path of interest, relative to that root. Empty when the path *is*
-    /// the subvolume root.
-    ///
-    /// This is what makes a snapshot usable: the snapshot reproduces the
-    /// subvolume, so a file that lived at `<root>/<prefix>/x` is found in the
-    /// snapshot at `<snapshot>/<prefix>/x`, and has to be recorded in the
-    /// catalogue under its original name rather than the snapshot's.
-    pub prefix: PathBuf,
-}
-
-/// Whether `path` is on a btrfs filesystem.
-pub fn is_btrfs(path: &Path) -> bool {
-    rustix::fs::statfs(path).is_ok_and(|stat| stat.f_type == BTRFS_MAGIC)
-}
-
-/// Whether `path` is a subvolume root.
-pub fn is_subvolume_root(path: &Path) -> bool {
-    use std::os::unix::fs::MetadataExt;
-    std::fs::metadata(path).is_ok_and(|meta| meta.ino() == SUBVOLUME_ROOT_INO)
-}
-
-/// The subvolume containing `path`, and the path's position inside it.
-///
-/// Walks up until it finds a subvolume boundary. Stops at a filesystem
-/// boundary: crossing one would name a subvolume that does not contain `path`
-/// at all, and snapshotting it would protect the wrong data.
-pub fn containing_subvolume(path: &Path) -> Option<Subvolume> {
-    if !is_btrfs(path) {
-        return None;
-    }
-    let device = device_of(path)?;
-    let mut current = path;
-    let mut climbed: Vec<&std::ffi::OsStr> = Vec::new();
-    loop {
-        if is_subvolume_root(current) {
-            climbed.reverse();
-            return Some(Subvolume {
-                root: current.to_path_buf(),
-                prefix: climbed.iter().collect(),
-            });
-        }
-        let parent = current.parent()?;
-        // Leaving the filesystem, or leaving btrfs, means there is no
-        // containing subvolume to speak of.
-        if device_of(parent) != Some(device) || !is_btrfs(parent) {
-            return None;
-        }
-        climbed.push(current.file_name()?);
-        current = parent;
-    }
-}
-
-fn device_of(path: &Path) -> Option<u64> {
-    use std::os::unix::fs::MetadataExt;
-    std::fs::metadata(path).ok().map(|meta| meta.dev())
-}
 
 /// Take a read-only snapshot of `subvolume` at `dest`.
 pub async fn create(subvolume: &Path, dest: &Path) -> Result<(), String> {
@@ -218,21 +150,13 @@ async fn btrfs(args: &[&std::ffi::OsStr]) -> Result<(), String> {
     Err(String::from_utf8_lossy(&out.stderr).trim().to_string())
 }
 
-#[cfg(test)]
+// Against a real btrfs filesystem, so with the integration tests; the
+// subvolume lookup's own tests are in `backtrack_core::btrfs`.
+#[cfg(all(test, feature = "integration"))]
 mod tests {
     use super::*;
-
-    #[test]
-    fn a_non_btrfs_path_has_no_containing_subvolume() {
-        // tmpfs or ext4 under /tmp on most machines; either way, not btrfs.
-        let dir = tempfile::tempdir().unwrap();
-        if is_btrfs(dir.path()) {
-            // The developer's /tmp is on btrfs; this particular assertion has
-            // nothing to say, and the btrfs behaviour is covered below.
-            return;
-        }
-        assert_eq!(containing_subvolume(dir.path()), None);
-    }
+    use backtrack_core::btrfs::is_subvolume_root;
+    use std::path::PathBuf;
 
     /// A scratch directory on a btrfs filesystem, or `None`.
     ///
@@ -241,7 +165,6 @@ mod tests {
     /// with a warning where btrfs is not available, exactly as the stage plan
     /// asks — building a loopback image would need root, which the daemon this
     /// is testing does not have either.
-    #[cfg(feature = "integration")]
     fn btrfs_scratch(name: &str) -> Option<PathBuf> {
         let base = std::env::var_os("XDG_CACHE_HOME")
             .map(PathBuf::from)
@@ -266,14 +189,12 @@ mod tests {
 
     /// Create a subvolume the test user owns, which is the one kind an
     /// unprivileged process can snapshot.
-    #[cfg(feature = "integration")]
     async fn make_subvolume(at: &Path) -> bool {
         btrfs(&["subvolume".as_ref(), "create".as_ref(), at.as_os_str()])
             .await
             .is_ok()
     }
 
-    #[cfg(feature = "integration")]
     #[tokio::test]
     async fn a_snapshot_can_be_taken_read_and_removed() {
         // The whole btrfs path against a real filesystem: take a snapshot of a
@@ -329,7 +250,6 @@ mod tests {
         let _ = std::fs::remove_dir_all(&scratch);
     }
 
-    #[cfg(feature = "integration")]
     #[tokio::test]
     async fn the_probe_agrees_with_what_actually_happens() {
         // The probe is a rehearsal, so it must not report success where a real
@@ -365,7 +285,6 @@ mod tests {
         let _ = std::fs::remove_dir_all(&scratch);
     }
 
-    #[cfg(feature = "integration")]
     #[tokio::test]
     async fn a_root_owned_subvolume_is_refused_rather_than_half_used() {
         // The case that decides this on a real desktop: `$HOME` normally sits
@@ -393,16 +312,5 @@ mod tests {
             "the probe cleaned up either way (reported usable: {usable})"
         );
         let _ = std::fs::remove_dir_all(&scratch);
-    }
-
-    #[test]
-    fn the_subvolume_search_stops_at_a_filesystem_boundary() {
-        // Not a btrfs assertion: whatever `/proc` is, it is not the filesystem
-        // its parent is on, and the search must not climb out of it into `/`.
-        let proc = Path::new("/proc/self");
-        if !proc.exists() {
-            return;
-        }
-        assert_eq!(containing_subvolume(proc), None);
     }
 }
