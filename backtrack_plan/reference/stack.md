@@ -76,6 +76,7 @@ interface. The `1` is the API's major version: an incompatible change ships as
 | `SetupRepo(...)` / `ImportRepo(path)` | Wizard operations (create vs adopt existing repo) |
 | `SearchFiles(query) → results` | FTS5 cross-snapshot search over the index (grouped-by-file results incl. deleted files). What the Trash holds that no backup has is matched by the same rules: a result carries the Trash copy's archive name, deletion time and size, and a path no backup has is a result with no versions (S16-T5) |
 | `RestoreEverything(archive, policy) → job` | Guided disaster recovery: per-top-level-folder extract jobs, resumable |
+| `GetSnapper() → info` | What the daemon found of Snapper's snapshots of the backed-up folders: whether any is on btrfs, how many `.snapshots` folders and snapshots it reads, and the `.snapshots` folders it may not read (S17-T4) |
 | `ListTrashed() → items` | What the desktop's Trash holds from the backed-up folders: archive name, original path, deletion time, kind, size, modification time, and whether it holds something no backup has (S16-T2) |
 | `ListTrashedFolder(archive, path) → entries` | What is directly inside a folder of a trashed item, for browsing into a folder moved to the Trash whole (S16-T3) |
 

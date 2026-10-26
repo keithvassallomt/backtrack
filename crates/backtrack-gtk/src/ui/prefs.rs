@@ -19,7 +19,7 @@ use std::path::PathBuf;
 use std::rc::Rc;
 
 use backtrack_core::config::{self, Config};
-use backtrack_core::dbus::{Status, StorageInfo};
+use backtrack_core::dbus::{SnapperInfo, Status, StorageInfo};
 use futures::StreamExt;
 use gtk4::prelude::*;
 use gtk4::{gio, glib, Align, Box as GtkBox, Button, Label, Orientation};
@@ -44,6 +44,7 @@ thread_local! {
 type Show = Box<dyn Fn(&Config)>;
 type ShowStatus = Box<dyn Fn(&Status)>;
 type ShowStorage = Box<dyn Fn(Result<&StorageInfo, &str>)>;
+type ShowSnapper = Box<dyn Fn(&SnapperInfo)>;
 
 struct Prefs {
     app: adw::Application,
@@ -60,6 +61,7 @@ struct Prefs {
     shows: RefCell<Vec<Show>>,
     status_shows: RefCell<Vec<ShowStatus>>,
     storage_shows: RefCell<Vec<ShowStorage>>,
+    snapper_shows: RefCell<Vec<ShowSnapper>>,
     bound: RefCell<Vec<Setting>>,
 }
 
@@ -126,6 +128,7 @@ fn build(
         shows: RefCell::new(Vec::new()),
         status_shows: RefCell::new(Vec::new()),
         storage_shows: RefCell::new(Vec::new()),
+        snapper_shows: RefCell::new(Vec::new()),
         bound: RefCell::new(Vec::new()),
     });
 
@@ -241,6 +244,7 @@ fn build(
     crate::ui::spawn(async move {
         first.refresh_status().await;
         first.refresh_storage().await;
+        first.refresh_snapper().await;
     });
     info!("preferences opened");
     window
@@ -324,6 +328,10 @@ impl Prefs {
         self.storage_shows.borrow_mut().push(Box::new(show));
     }
 
+    fn show_snapper(&self, show: impl Fn(&SnapperInfo) + 'static) {
+        self.snapper_shows.borrow_mut().push(Box::new(show));
+    }
+
     /// Read the configuration again and put it on screen.
     async fn reload(&self) {
         match read_config(&self.daemon).await {
@@ -338,6 +346,20 @@ impl Prefs {
             Err(message) => warn!(message, "the settings could not be read again"),
         }
         self.refresh_status().await;
+        self.refresh_snapper().await;
+    }
+
+    /// What the daemon found of Snapper's snapshots. A daemon from before
+    /// Stage 17 has no answer, and the group stays hidden.
+    async fn refresh_snapper(&self) {
+        match self.daemon.get_snapper().await {
+            Ok(info) => {
+                for show in self.snapper_shows.borrow().iter() {
+                    show(&info);
+                }
+            }
+            Err(error) => warn!(%error, "what was found of Snapper could not be read"),
+        }
     }
 
     async fn refresh_status(&self) {
@@ -981,6 +1003,8 @@ impl Prefs {
         destination.add(&last);
         page.add(&destination);
 
+        page.add(&self.snapper_group());
+
         let retention = Self::group("Retention");
         let config = self.config.borrow().clone();
         let automatic = schedule::automatic_row(config.storage.retention.automatic);
@@ -1026,6 +1050,48 @@ impl Prefs {
         offline.add(&usage);
         page.add(&offline);
         page
+    }
+
+    /// Snapper's snapshots (Stage 17): whether they are read, how many, and
+    /// the guide where there is something to do. Hidden until the daemon has
+    /// answered, and where no backed-up folder is on btrfs.
+    fn snapper_group(self: &Rc<Self>) -> adw::PreferencesGroup {
+        let group = Self::group("Snapper");
+        group.set_visible(false);
+        let row = adw::ActionRow::builder().use_markup(false).build();
+        row.add_prefix(&gtk4::Image::from_icon_name("camera-photo-symbolic"));
+        let guide = Button::with_label("Read the Guide…");
+        guide.set_valign(Align::Center);
+        row.add_suffix(&guide);
+        group.add(&row);
+        let address: Rc<RefCell<Option<String>>> = Rc::default();
+        let opening = Rc::clone(&address);
+        let owner = self.window.clone();
+        guide.connect_clicked(move |_| {
+            let Some(address) = opening.borrow().clone() else {
+                return;
+            };
+            gtk4::UriLauncher::new(&address).launch(
+                Some(&owner),
+                gio::Cancellable::NONE,
+                |result: Result<(), glib::Error>| {
+                    if let Err(error) = result {
+                        warn!(%error, "the guide to Snapper could not be opened");
+                    }
+                },
+            );
+        });
+        let shown = group.clone();
+        self.show_snapper(move |info| {
+            let said = model::snapper_row(info);
+            shown.set_visible(said.is_some());
+            let Some(said) = said else { return };
+            row.set_title(&said.title);
+            row.set_subtitle(&said.subtitle);
+            guide.set_visible(said.guide.is_some());
+            *address.borrow_mut() = said.guide;
+        });
+        group
     }
 
     /// The local snapshot limit: a fixed menu of sizes, with a value set by

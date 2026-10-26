@@ -62,8 +62,8 @@ use crate::reachability::{DestinationProbe, Reach, RealProbe};
 use crate::schedule::{self, ScheduleInput};
 
 pub use backtrack_core::dbus::{
-    HealthReport, LocalStorage, RecoveryStatus, ReplacedFile, RestorePreview, SearchResult, Status,
-    StorageInfo,
+    HealthReport, LocalStorage, RecoveryStatus, ReplacedFile, RestorePreview, SearchResult,
+    SnapperInfo, Status, StorageInfo,
 };
 pub use dev::Dev;
 pub use error::{DaemonError, Result};
@@ -3865,6 +3865,12 @@ impl Daemon1 {
             "the damaged repository was put aside with nothing in it deleted"
         );
         Ok(aside.display().to_string())
+    }
+
+    /// What the daemon found of Snapper's snapshots of the backed-up folders
+    /// when it last looked (Stage 17), for Preferences.
+    async fn get_snapper(&self) -> SnapperInfo {
+        self.shared.snapper.info()
     }
 
     /// Where the room on this computer has gone: the local safety net, the

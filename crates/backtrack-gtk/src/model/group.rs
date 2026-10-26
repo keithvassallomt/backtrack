@@ -69,6 +69,8 @@ pub enum Kept {
     LocalSnapshot { until: i64 },
     /// Not a backup at all: things in the desktop's Trash (Stage 16).
     InTrash,
+    /// Not a backup either: one of Snapper's snapshots (Stage 17).
+    Snapper,
 }
 
 impl Kept {
@@ -76,9 +78,12 @@ impl Kept {
         if archive.repo == super::trash::REPO {
             return Kept::InTrash;
         }
-        // One of Snapper's is not a local backup waiting for the destination:
-        // nothing will ever copy it there.
-        if archive.repo == "primary" || archive.repo == "snapper" {
+        // Not a local backup waiting for the destination, which will never
+        // have a copy of it.
+        if archive.repo == "snapper" {
+            return Kept::Snapper;
+        }
+        if archive.repo == "primary" {
             return Kept::Normally;
         }
         match (archive.caught_up, archive.removed_at()) {
@@ -102,9 +107,17 @@ pub struct Badge {
 /// pane alike.
 pub const IN_TRASH_TOOLTIP: &str = "Not a backup. This was moved to the Trash, and is kept only on this computer: emptying the Trash removes it, and Backtrack has no other copy of it.";
 
+/// What hovering a Snapper snapshot's badge says.
+pub const SNAPPER_TOOLTIP: &str = "Not a backup. Snapper took this snapshot on this computer, and it is kept on the same disk as your files: it goes when Snapper removes it, and if that disk fails, it goes with it.";
+
 pub fn badge(kept: Kept, tz: &glib::TimeZone) -> Option<Badge> {
     match kept {
         Kept::Normally => None,
+        Kept::Snapper => Some(Badge {
+            text: "Snapper snapshot",
+            class: "snapper",
+            tooltip: SNAPPER_TOOLTIP.to_string(),
+        }),
         Kept::InTrash => Some(Badge {
             text: "in the Trash",
             class: "in-trash",
@@ -385,9 +398,18 @@ mod tests {
     }
 
     #[test]
-    fn a_snapper_snapshot_is_not_a_local_backup_waiting_for_the_destination() {
+    fn a_snapper_snapshot_has_a_badge_of_its_own_saying_it_is_not_a_backup() {
         let groups = sidebar(&[local(1, "snapper", None, false)], NOW, &utc());
-        assert_eq!(groups[0].rows[0].kept, Kept::Normally);
+        assert_eq!(groups[0].rows[0].kept, Kept::Snapper);
+        let shown = badge(Kept::Snapper, &utc()).unwrap();
+        assert_eq!((shown.text, shown.class), ("Snapper snapshot", "snapper"));
+        for said in [
+            "Not a backup",
+            "Snapper took this snapshot on this computer",
+            "it goes when Snapper removes it",
+        ] {
+            assert!(shown.tooltip.contains(said), "{said}: {}", shown.tooltip);
+        }
     }
 
     #[test]

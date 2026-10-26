@@ -2989,6 +2989,37 @@ async fn snappers_snapshots_are_kept_in_the_catalogue_as_they_come_and_go() {
         "after the oldest was removed",
     )
     .await;
+    let daemon = Daemon1::new(Arc::clone(&shared));
+    assert_eq!(
+        daemon.get_snapper().await,
+        backtrack_core::dbus::SnapperInfo {
+            on_btrfs: true,
+            folders: 1,
+            snapshots: 2,
+            unreadable: Vec::new(),
+        }
+    );
+
+    // Closed to this user, as `.snapshots` is until Snapper's configuration
+    // names them: heard by the watch on the subvolume's top, said by
+    // `GetSnapper`, and its snapshots out of the catalogue.
+    if !rustix::process::geteuid().is_root() {
+        use std::os::unix::fs::PermissionsExt;
+        let folder = machine.home.join(".snapshots");
+        std::fs::set_permissions(&folder, std::fs::Permissions::from_mode(0o000)).unwrap();
+        until(Vec::new(), "once .snapshots could not be read").await;
+        let info = daemon.get_snapper().await;
+        std::fs::set_permissions(&folder, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert_eq!(
+            info,
+            backtrack_core::dbus::SnapperInfo {
+                on_btrfs: true,
+                folders: 0,
+                snapshots: 0,
+                unreadable: vec![folder.display().to_string()],
+            }
+        );
+    }
 }
 
 /// A machine whose `/home` is a btrfs subvolume this user owns (see

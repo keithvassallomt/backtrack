@@ -35,7 +35,10 @@
     color: @error_color;
 }
 
-.badge.local-snapshot {
+/* On this computer and temporary, like a local snapshot, whether Backtrack
+ * or Snapper took it. */
+.badge.local-snapshot,
+.badge.snapper {
     background-color: alpha(@warning_color, 0.15);
     color: @warning_color;
 }

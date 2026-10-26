@@ -23,6 +23,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use backtrack_core::dbus::SnapperInfo;
 use backtrack_core::index::{IndexReader, Repo};
 use backtrack_core::snapper::{self, Found, Snapper};
 use rustix::fs::inotify;
@@ -38,6 +39,8 @@ const SETTLE: Duration = Duration::from_secs(1);
 /// What the daemon knows of Snapper.
 #[derive(Default)]
 pub struct SnapperState {
+    /// What the last look found, for `GetSnapper`.
+    found: Mutex<SnapperInfo>,
     /// Snapshots that could not be catalogued. Left out until the daemon
     /// starts again, so that one that always fails is not tried after every
     /// job.
@@ -49,6 +52,11 @@ pub struct SnapperState {
 }
 
 impl SnapperState {
+    /// What the last look found.
+    pub fn info(&self) -> SnapperInfo {
+        self.found.lock().unwrap().clone()
+    }
+
     /// The names of the snapshots the catalogue should hold.
     fn wanted(&self, found: &[Snapper]) -> BTreeSet<String> {
         let failed = self.failed.lock().unwrap();
@@ -123,6 +131,7 @@ pub async fn watch(shared: Arc<Shared>) {
                     watch_snapper(fd, &tops, &found);
                 }
                 let wanted = shared.snapper.wanted(&found);
+                *shared.snapper.found.lock().unwrap() = summary(&found, &tops);
                 let checking = wanted.clone();
                 let stale = tokio::task::spawn_blocking(move || differs(&index, &checking))
                     .await
@@ -151,6 +160,25 @@ pub async fn watch(shared: Arc<Shared>) {
             _ = shared.snapper.rescan.notified() => {}
         }
     }
+}
+
+/// What a look found, as `GetSnapper` gives it: `found` from the subvolumes
+/// at `tops`.
+fn summary(found: &[Snapper], tops: &[PathBuf]) -> SnapperInfo {
+    let mut info = SnapperInfo {
+        on_btrfs: !tops.is_empty(),
+        ..SnapperInfo::default()
+    };
+    for at in found {
+        match &at.found {
+            Found::Snapshots(snapshots) => {
+                info.folders += 1;
+                info.snapshots += snapshots.len() as u32;
+            }
+            Found::Unreadable => info.unreadable.push(at.folder.display().to_string()),
+        }
+    }
+    info
 }
 
 /// The top of each subvolume holding one of `sources`, once each.
@@ -223,3 +251,64 @@ fn read_events(fd: &OwnedFd, changed: mpsc::UnboundedSender<()>) {
 }
 
 pub(crate) mod tests;
+
+#[cfg(test)]
+mod summary {
+    use super::*;
+    use backtrack_core::snapper::{Snapshot, Type};
+
+    fn at(folder: &str, found: Found) -> Snapper {
+        Snapper {
+            subvolume: PathBuf::from(folder).parent().unwrap().to_path_buf(),
+            folder: PathBuf::from(folder),
+            found,
+        }
+    }
+
+    fn snapshots(n: u64) -> Found {
+        Found::Snapshots(
+            (1..=n)
+                .map(|number| Snapshot {
+                    number,
+                    kind: Type::Single,
+                    date: 0,
+                    description: String::new(),
+                    path: PathBuf::from(format!("/x/{number}/snapshot")),
+                })
+                .collect(),
+        )
+    }
+
+    #[test]
+    fn a_look_is_summed_up_for_preferences() {
+        assert_eq!(summary(&[], &[]), SnapperInfo::default(), "not on btrfs");
+        assert_eq!(
+            summary(&[], &[PathBuf::from("/home")]),
+            SnapperInfo {
+                on_btrfs: true,
+                ..SnapperInfo::default()
+            },
+            "on btrfs, with no Snapper"
+        );
+        assert_eq!(
+            summary(
+                &[
+                    at("/home/.snapshots", snapshots(3)),
+                    at("/data/.snapshots", Found::Unreadable),
+                    at("/srv/.snapshots", snapshots(0)),
+                ],
+                &[
+                    PathBuf::from("/home"),
+                    PathBuf::from("/data"),
+                    PathBuf::from("/srv")
+                ],
+            ),
+            SnapperInfo {
+                on_btrfs: true,
+                folders: 2,
+                snapshots: 3,
+                unreadable: vec!["/data/.snapshots".to_string()],
+            }
+        );
+    }
+}

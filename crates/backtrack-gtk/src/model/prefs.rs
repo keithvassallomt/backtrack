@@ -14,7 +14,7 @@
 use std::path::{Path, PathBuf};
 
 use backtrack_core::config::{Compression, Config, Notifications};
-use backtrack_core::dbus::{Status, StorageInfo};
+use backtrack_core::dbus::{SnapperInfo, Status, StorageInfo};
 use gtk4::glib;
 
 use super::format;
@@ -344,6 +344,76 @@ pub fn install_page() -> String {
     )
 }
 
+/// The guide to Snapper (Stage 17), at `section` if one is named.
+pub fn snapper_guide(section: Option<&str>) -> String {
+    let page = format!("{}/blob/main/docs/snapper.md", env!("CARGO_PKG_REPOSITORY"));
+    match section {
+        Some(section) => format!("{page}#{section}"),
+        None => page,
+    }
+}
+
+/// The section of the guide on letting Backtrack read Snapper's snapshots.
+pub const SNAPPER_ACCESS: &str = "giving-backtrack-access";
+
+/// What Preferences → Storage says about Snapper's snapshots.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SnapperRow {
+    pub title: String,
+    pub subtitle: String,
+    /// The guide, or the part of it, worth reading from here.
+    pub guide: Option<String>,
+}
+
+/// What to say about Snapper, from what the daemon found. None where no
+/// backed-up folder is on btrfs, which Snapper needs: there is nothing to
+/// offer, and saying so would only be noise.
+pub fn snapper_row(info: &SnapperInfo) -> Option<SnapperRow> {
+    if !info.on_btrfs {
+        return None;
+    }
+    let reading = match info.snapshots {
+        1 => "Reading 1 snapshot taken by Snapper".to_string(),
+        n => format!("Reading {n} snapshots taken by Snapper"),
+    };
+    if !info.unreadable.is_empty() {
+        let folders = info.unreadable.join(", ");
+        let also = if info.folders > 0 {
+            format!(" {reading}, elsewhere.")
+        } else {
+            String::new()
+        };
+        return Some(SnapperRow {
+            title: "Snapper's snapshots cannot be read".to_string(),
+            subtitle: format!(
+                "Snapper keeps them in {folders}, which only the administrator can \
+                 read until Snapper is told to let you.{also}"
+            ),
+            guide: Some(snapper_guide(Some(SNAPPER_ACCESS))),
+        });
+    }
+    if info.folders > 0 {
+        return Some(SnapperRow {
+            title: if info.snapshots == 0 {
+                "Snapper is set up, and has taken no snapshots yet".to_string()
+            } else {
+                reading
+            },
+            subtitle: "They are shown in the timeline among your backups. They are kept on \
+                       this computer's own disk until Snapper removes them, and are not backups."
+                .to_string(),
+            guide: None,
+        });
+    }
+    Some(SnapperRow {
+        title: "Snapper is not set up".to_string(),
+        subtitle: "Your backed-up folders are on btrfs, where Snapper can take a snapshot \
+                   every few minutes, and Backtrack can show them in the timeline."
+            .to_string(),
+        guide: Some(snapper_guide(None)),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -571,6 +641,77 @@ mod tests {
                 .any(|line| line == format!("## {}", capitalised(&anchor))),
             "docs/file-manager-integration.md has no heading for #{anchor}"
         );
+    }
+
+    fn snapper(folders: u32, snapshots: u32, unreadable: &[&str]) -> SnapperInfo {
+        SnapperInfo {
+            on_btrfs: true,
+            folders,
+            snapshots,
+            unreadable: unreadable.iter().map(|s| s.to_string()).collect(),
+        }
+    }
+
+    #[test]
+    fn with_no_folder_on_btrfs_there_is_nothing_to_say_about_snapper() {
+        assert_eq!(snapper_row(&SnapperInfo::default()), None);
+    }
+
+    #[test]
+    fn on_btrfs_with_no_snapper_the_guide_is_offered() {
+        let row = snapper_row(&snapper(0, 0, &[])).unwrap();
+        assert_eq!(row.title, "Snapper is not set up");
+        assert_eq!(row.guide, Some(snapper_guide(None)));
+    }
+
+    #[test]
+    fn snapshots_that_cannot_be_read_are_named_with_the_way_to_read_them() {
+        let row = snapper_row(&snapper(0, 0, &["/home/.snapshots"])).unwrap();
+        assert_eq!(row.title, "Snapper's snapshots cannot be read");
+        assert!(
+            row.subtitle.contains("/home/.snapshots"),
+            "{}",
+            row.subtitle
+        );
+        assert!(!row.subtitle.contains("Reading"), "{}", row.subtitle);
+        assert_eq!(row.guide, Some(snapper_guide(Some(SNAPPER_ACCESS))));
+
+        let mixed = snapper_row(&snapper(1, 5, &["/data/.snapshots"])).unwrap();
+        assert!(
+            mixed
+                .subtitle
+                .ends_with("Reading 5 snapshots taken by Snapper, elsewhere."),
+            "{}",
+            mixed.subtitle
+        );
+    }
+
+    #[test]
+    fn snapshots_being_read_are_counted() {
+        let row = snapper_row(&snapper(1, 24, &[])).unwrap();
+        assert_eq!(row.title, "Reading 24 snapshots taken by Snapper");
+        assert!(row.subtitle.contains("are not backups"), "{}", row.subtitle);
+        assert_eq!(row.guide, None);
+        assert_eq!(
+            snapper_row(&snapper(1, 1, &[])).unwrap().title,
+            "Reading 1 snapshot taken by Snapper"
+        );
+        assert_eq!(
+            snapper_row(&snapper(1, 0, &[])).unwrap().title,
+            "Snapper is set up, and has taken no snapshots yet"
+        );
+    }
+
+    #[test]
+    fn the_access_section_is_a_section_of_the_snapper_guide() {
+        let doc = include_str!("../../../../docs/snapper.md");
+        let anchor = snapper_guide(Some(SNAPPER_ACCESS));
+        let anchor = anchor.rsplit_once('#').unwrap().1;
+        assert!(
+            doc.lines().any(|line| line == "## Giving Backtrack access"),
+            "docs/snapper.md has no heading for #{anchor}"
+        );
+        assert_eq!(anchor, "giving-backtrack-access");
     }
 
     fn capitalised(word: &str) -> String {

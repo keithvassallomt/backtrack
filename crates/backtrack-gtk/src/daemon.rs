@@ -13,8 +13,8 @@
 //! daemon running?" check anywhere in the app. Asking for it starts it.
 
 use backtrack_core::dbus::{
-    HealthReport, LocalStorage, RecoveryStatus, ReplacedFile, RestorePreview, SearchResult, Status,
-    StorageInfo,
+    HealthReport, LocalStorage, RecoveryStatus, ReplacedFile, RestorePreview, SearchResult,
+    SnapperInfo, Status, StorageInfo,
 };
 use tracing::warn;
 
@@ -168,6 +168,8 @@ pub trait Daemon1 {
     fn start_fresh(&self) -> zbus::Result<String>;
     /// Where the room on this computer has gone.
     fn get_local_storage(&self) -> zbus::Result<LocalStorage>;
+
+    fn get_snapper(&self) -> zbus::Result<SnapperInfo>;
     /// Remove the copies extracted for previews; the bytes freed.
     fn clear_preview_cache(&self) -> zbus::Result<u64>;
     /// Give up the files restores replaced, but the last hour's; the bytes

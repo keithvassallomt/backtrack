@@ -298,7 +298,7 @@ fn factory() -> SignalListItemFactory {
                 label.remove_css_class("heading");
                 label.set_sensitive(snapshot.catalogued);
                 describe(&label, &snapshot);
-                for class in ["local-only", "local-snapshot", "in-trash"] {
+                for class in ["local-only", "local-snapshot", "in-trash", "snapper"] {
                     badge.remove_css_class(class);
                 }
                 badge.set_tooltip_text(None);
@@ -333,6 +333,7 @@ fn describe(label: &Label, snapshot: &Row) {
         (true, Kept::LocalOnly) => format!("{}, local backup only", snapshot.label),
         (true, Kept::LocalSnapshot { .. }) => format!("{}, local snapshot", snapshot.label),
         (true, Kept::InTrash) => format!("{}, in the Trash, not a backup", snapshot.label),
+        (true, Kept::Snapper) => format!("{}, Snapper snapshot, not a backup", snapshot.label),
         (true, Kept::Normally) => snapshot.label.clone(),
     };
     label.update_property(&[gtk4::accessible::Property::Label(&spoken)]);
