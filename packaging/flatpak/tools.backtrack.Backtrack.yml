@@ -97,6 +97,9 @@ modules:
       - cargo build --release --locked --offline -p backtrackd -p backtrack-gtk -p backtrack-cli
       - install -Dm755 -t /app/bin target/release/backtrackd target/release/backtrack-gtk
           target/release/backtrack-tray target/release/backtrack
+      # Run outside the sandbox, never in it: Preferences hands it over
+      # (S17-T7).
+      - install -Dm755 -t /app/share/backtrack packaging/snapper/backtrack-snapper-setup
       - install -Dm644 -t /app/share/applications packaging/desktop/tools.backtrack.Backtrack.desktop
       - install -Dm644 -t /app/share/metainfo packaging/tools.backtrack.Backtrack.metainfo.xml
       - install -Dm644 -t /app/share/icons/hicolor/scalable/apps

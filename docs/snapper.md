@@ -64,12 +64,39 @@ folder is an ordinary folder inside a larger subvolume, as some installers lay
 it out. Snapper could take snapshots of that whole subvolume, your
 system included, but that is beyond this guide.
 
+## Setting it up
+
+Backtrack comes with a script that does all of this for you. In Backtrack,
+open Preferences → Storage, and under **Snapper** choose **Set Up Snapper…**:
+it opens a terminal running the script. From the Flatpak, it copies the
+command that runs it instead, for you to paste into a terminal. You can also
+run it yourself, from a terminal:
+
+```sh
+backtrack-snapper-setup
+```
+
+It works on Fedora, openSUSE, Arch Linux and Ubuntu. It checks that this guide
+applies to your computer, says what it is about to do, and asks you once.
+Each command is shown as it runs, and `sudo` asks for your password for the
+ones that need the administrator.
+
+Run it again, and it offers to undo what it did. It keeps a note of what it
+changed in `/var/lib/backtrack/snapper-setup`, so that the undo takes back
+only that: a Snapper you had already, or openSUSE's own snapshots of the
+system, are left as they were. If Snapper already takes snapshots of `/home`,
+the script changes nothing but letting you read them, and that is all its
+undo takes back.
+
+The rest of this guide gives the commands the script runs, step by step, for
+anyone who wants to know what changes, or to do it by hand.
+
 ## Installing Snapper
 
 ### Fedora
 
 ```sh
-sudo dnf install snapper
+sudo dnf install -y snapper
 ```
 
 ## Taking snapshots of your home folder
@@ -202,9 +229,10 @@ with its configuration:
 ```sh
 sudo systemctl stop snapperd.service
 sudo snapper -c home delete-config
-sudo systemctl disable --now snapper-timeline.timer snapper-cleanup.timer
-sudo rm -rf /etc/systemd/system/snapper-timeline.timer.d
+sudo rm -f /etc/systemd/system/snapper-timeline.timer.d/every-5-minutes.conf
+sudo rmdir --ignore-fail-on-non-empty /etc/systemd/system/snapper-timeline.timer.d
 sudo systemctl daemon-reload
+sudo systemctl disable --now snapper-timeline.timer snapper-cleanup.timer
 ```
 
 Stopping Snapper's background service first works around a fault in Snapper
@@ -216,7 +244,7 @@ Then remove Snapper itself.
 On Fedora:
 
 ```sh
-sudo dnf remove snapper
+sudo dnf remove -y snapper
 ```
 
 Check that no configuration is left:

@@ -69,7 +69,8 @@ package_backtrack() {
   cd "$pkgbase-$_version"
   install -Dm755 -t "$pkgdir/usr/bin" \
     target/release/backtrackd target/release/backtrack-gtk \
-    target/release/backtrack-tray target/release/backtrack
+    target/release/backtrack-tray target/release/backtrack \
+    packaging/snapper/backtrack-snapper-setup
   # No install scriptlet enables the unit: the daemon enables its own when
   # "Run in background" is on (background::apply).
   install -Dm644 -t "$pkgdir/usr/lib/systemd/user" packaging/systemd/backtrackd.service

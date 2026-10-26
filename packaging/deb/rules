@@ -30,7 +30,8 @@ override_dh_auto_test:
 override_dh_auto_install:
 	install -Dm755 -t debian/backtrack/usr/bin \
 	    target/release/backtrackd target/release/backtrack-gtk \
-	    target/release/backtrack-tray target/release/backtrack
+	    target/release/backtrack-tray target/release/backtrack \
+	    packaging/snapper/backtrack-snapper-setup
 	install -Dm644 -t debian/backtrack/usr/lib/systemd/user packaging/systemd/backtrackd.service
 	install -Dm644 -t debian/backtrack/usr/share/dbus-1/services \
 	    packaging/dbus/tools.backtrack.Backtrack.Daemon1.service \
