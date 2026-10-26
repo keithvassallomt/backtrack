@@ -99,6 +99,12 @@ anyone who wants to know what changes, or to do it by hand.
 sudo dnf install -y snapper
 ```
 
+### Arch Linux
+
+```sh
+sudo pacman -S --needed --noconfirm snapper
+```
+
 ## Taking snapshots of your home folder
 
 Tell Snapper to take snapshots of `/home`, in a configuration named `home`,
@@ -203,7 +209,9 @@ sudo snapper -c home set-config TIMELINE_LIMIT_DAILY=7 TIMELINE_LIMIT_MONTHLY=0 
 ```
 
 To see what each snapshot holds that nothing else does, which is what
-removing it would free (the `Exclusive` column):
+removing it would free (the `Exclusive` column), run the command below. It
+reads every file in `/home`, so on a large home folder it can take many
+minutes:
 
 ```sh
 sudo btrfs filesystem du -s --human-readable /home/.snapshots/*/snapshot
@@ -245,6 +253,12 @@ On Fedora:
 
 ```sh
 sudo dnf remove -y snapper
+```
+
+On Arch Linux:
+
+```sh
+sudo pacman -Rns --noconfirm snapper
 ```
 
 Check that no configuration is left:

@@ -34,6 +34,8 @@ ONLY_IN_THE_GUIDE = {
     "systemctl list-timers snapper-timeline.timer",
     "df -h /home",
     "snapper -c home delete 42",
+    # Reads every file in /home, which takes many minutes on a large one.
+    "sudo btrfs filesystem du -s --human-readable /home/.snapshots/*/snapshot",
     "ls /etc/snapper/configs",
     "backtrack-snapper-setup",
 }
@@ -112,8 +114,8 @@ class GuideAndScript(unittest.TestCase):
                 with self.subTest(distro=distro, command=command):
                     self.assertIn(command, given)
 
-    def test_the_guide_covers_fedora(self):
-        self.assertIn("fedora", documented())
+    def test_the_guide_covers_each_distribution_checked_so_far(self):
+        self.assertEqual(documented(), ["fedora", "arch"])
 
     def test_a_distribution_the_script_does_not_know_is_refused(self):
         run = subprocess.run(

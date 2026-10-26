@@ -183,7 +183,6 @@ set_up() {
     step 'sudo snapper -c home set-config TIMELINE_LIMIT_DAILY=7 TIMELINE_LIMIT_MONTHLY=0 TIMELINE_LIMIT_YEARLY=0'
     step 'snapper -c home create --description "My first snapshot"'
     step 'snapper -c home list'
-    step 'sudo btrfs filesystem du -s --human-readable /home/.snapshots/*/snapshot'
 
     if [[ $mode == run ]]; then
         say ""
