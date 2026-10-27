@@ -163,6 +163,15 @@ nine are drawn.
   motion stuttering. A virtual machine rendering in software is not the
   measure: Keith judges the motion on real hardware.
 
+**Built** (2026-10-27): Rewind opens with Ctrl+T in Backtrack's window, for
+now (S18-T7 adds the button, the menu item and the other ways in). Each
+backup's folder is a real widget, laid out once and drawn into a texture with
+its shadow, two a frame, the front one first; the stack is those textures. The
+front card is one too until S18-T4 makes it a live file view. The folder as it
+is now is read from the disk. GNOME turns GTK's animations off when it renders
+in software, as on the GNOME VM, so Rewind crossfades there; on the Plasma VM
+it flies. `scripts/rewind-check` is Keith's check on his laptop.
+
 **Accept:** on Keith's laptop, stepping through fifty backups of a real folder
 looks smooth to Keith, over the starfield; on both VMs, native and Flatpak, the
 view opens full screen over the desktop's own wallpaper (S18-T2), steps by

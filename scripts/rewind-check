@@ -1,0 +1,74 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-3.0-or-later
+# SPDX-FileCopyrightText: 2026 Keith Vassallo <keith@vassallo.cloud>
+#
+# S18-T3's checks of Rewind on this computer, by hand: whether its motion
+# looks smooth on real hardware, which no virtual machine can say, and its
+# crossfade with animations off. Each step says what to do at the screen.
+#
+#   scripts/rewind-check install   build the AUR packages here and say how to
+#                                  install them
+#   scripts/rewind-check 1         the motion, through a real folder's backups
+#   scripts/rewind-check 2         with animations off: a crossfade instead;
+#                                  puts animations back on afterwards
+#
+# Run from the checkout.
+
+set -euo pipefail
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+
+say() { printf '\n\033[1m%s\033[0m\n' "$*"; }
+
+case "${1:-}" in
+install)
+    say "Building the AUR packages from this checkout…"
+    just --justfile "$ROOT/Justfile" aur-build >/dev/null
+    package="$(ls "$ROOT"/target/aur/backtrack-[0-9]*-x86_64.pkg.tar.zst)"
+    cat <<EOF
+Built. Install it, and restart the daemon so it runs the same build:
+
+  sudo pacman -U $package
+  systemctl --user restart backtrackd.service
+
+Then close Backtrack's window if it is open, and run: scripts/rewind-check 1
+EOF
+    ;;
+1)
+    say "1. Rewind's motion (S18-T3)"
+    cat <<'EOF'
+  a. Open Backtrack, and go to a folder with many backups (Documents, say).
+  b. Press Ctrl+T. Rewind opens full screen over the starfield: on Hyprland
+     there is no desktop wallpaper to show, so the stars are Backtrack's own.
+  c. Press Up a few times, one at a time: each step goes back one backup,
+     slow, fast, then slow. Then Down to come forward again.
+  d. Hold Up for three seconds: the stack glides back through the backups
+     without stopping at each one, and settles on one when you let go.
+  e. Home goes to the folder as it is now; End to the oldest backup.
+  f. The mouse wheel steps too.
+  g. Escape: back to Backtrack's window, at the backup it showed.
+
+What I would like to know: does the motion look smooth to you, stepping
+and gliding? Anything that stutters, or the stack drawn wrongly anywhere?
+EOF
+    ;;
+2)
+    say "2. With animations off (S18-T3)"
+    gsettings set org.gnome.desktop.interface enable-animations false
+    cat <<'EOF'
+Animations are now off for GTK applications.
+
+  a. In Backtrack's window, press Ctrl+T.
+  b. Press Up, then Down: the backups crossfade in place, with no flight.
+  c. Escape.
+
+Press Enter here when done, and animations go back on.
+EOF
+    read -r _
+    gsettings reset org.gnome.desktop.interface enable-animations
+    echo "Animations are on again ($(gsettings get org.gnome.desktop.interface enable-animations))."
+    ;;
+*)
+    sed -n '/^# S18-T3/,/^# Run from/p' "$0" | sed 's/^# \{0,1\}//'
+    exit 2
+    ;;
+esac
