@@ -92,6 +92,66 @@ fn send_sigterm(child: &Child) {
     }
 }
 
+/// A Borg let go of while it still runs: asked to stop with SIGTERM rather
+/// than killed outright, and killed only if it has not gone after a grace
+/// period.
+///
+/// Borg gives up the repository's lock as it stops. Killed while taking or
+/// giving up the lock (which it does even to read, briefly holding
+/// `lock.exclusive` to edit the roster), it leaves the lock behind, and every
+/// Borg after it is refused as LockedByOther until the lock is broken. A
+/// listing read only part way, or a preview nobody wants any more, lets go of
+/// its Borg this way; a job stops its own (see [`spawn`]).
+pub(super) struct Stopping {
+    child: Option<Child>,
+    grace: Duration,
+}
+
+impl Stopping {
+    /// `child`, which must have been spawned without `kill_on_drop`.
+    pub(super) fn new(child: Child) -> Stopping {
+        Stopping::with_grace(child, CANCEL_GRACE)
+    }
+
+    fn with_grace(child: Child, grace: Duration) -> Stopping {
+        Stopping {
+            child: Some(child),
+            grace,
+        }
+    }
+
+    pub(super) fn child(&mut self) -> &mut Child {
+        self.child.as_mut().expect("held until dropped")
+    }
+}
+
+impl Drop for Stopping {
+    fn drop(&mut self) {
+        let Some(mut child) = self.child.take() else {
+            return;
+        };
+        if matches!(child.try_wait(), Ok(Some(_))) {
+            return;
+        }
+        send_sigterm(&child);
+        let grace = self.grace;
+        match tokio::runtime::Handle::try_current() {
+            Ok(runtime) => {
+                runtime.spawn(async move {
+                    if tokio::time::timeout(grace, child.wait()).await.is_err() {
+                        let _ = child.start_kill();
+                        let _ = child.wait().await;
+                    }
+                });
+            }
+            // No runtime left to wait for it on: killing it is all there is.
+            Err(_) => {
+                let _ = child.start_kill();
+            }
+        }
+    }
+}
+
 /// Spawn a job-style borg command (progress on stderr) and return its stream.
 /// Stdout is discarded; the stderr reader forwards events and, on exit,
 /// classifies failure into the terminal [`JobEvent::Finished`].
@@ -206,15 +266,15 @@ fn spawn(mut cmd: Command, warnings: Warnings) -> Result<JobStream> {
 /// becomes the read's error, carrying the classified [`EngineError`] for
 /// [`EngineError::from_io`] to recover.
 pub(super) fn spawn_stdout(mut cmd: Command) -> Result<Pin<Box<dyn AsyncRead + Send>>> {
-    cmd.stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .kill_on_drop(true);
+    // Stopped by `Stopping` if the reader is dropped early, not killed.
+    cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
     let mut child = cmd.spawn().map_err(|e| EngineError::BorgFailed {
         code: -1,
         stderr: format!("spawning borg extract --stdout: {e}"),
     })?;
     let stdout = child.stdout.take().expect("stdout piped");
     let stderr = child.stderr.take().expect("stderr piped");
+    let mut child = Stopping::new(child);
 
     // Read while the file streams rather than after it: a Borg with a full
     // stderr pipe would wait on us while we waited on its stdout.
@@ -237,10 +297,14 @@ pub(super) fn spawn_stdout(mut cmd: Command) -> Result<Pin<Box<dyn AsyncRead + S
     });
     let verdict = async move {
         let errors = errors.await.unwrap_or_default();
-        let status = child.wait().await.map_err(|e| EngineError::BorgFailed {
-            code: -1,
-            stderr: e.to_string(),
-        })?;
+        let status = child
+            .child()
+            .wait()
+            .await
+            .map_err(|e| EngineError::BorgFailed {
+                code: -1,
+                stderr: e.to_string(),
+            })?;
         let code = status.code().unwrap_or(-1);
         match classify_exit(code) {
             // A warning is Borg reaching its normal end, as for every other
@@ -260,7 +324,7 @@ struct BorgStdout {
     stdout: tokio::process::ChildStdout,
     /// Borg's exit, awaited once stdout has ended, and `None` once it has
     /// been. It owns the child, so a reader dropped early still has Borg
-    /// killed.
+    /// stopped.
     verdict: Option<Pin<Box<dyn Future<Output = Result<()>> + Send>>>,
 }
 
@@ -336,6 +400,83 @@ async fn forward_line(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A stand-in for a Borg in the middle of something: it runs `trap` for
+    /// SIGTERM, says it is ready, and goes on until stopped.
+    async fn running(trap: &str, marker: &Path) -> Child {
+        let mut child = Command::new("sh")
+            .arg("-c")
+            .arg(format!("{trap}; echo ready; while :; do sleep 0.05; done"))
+            .env("MARKER", marker)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            // Not the test's own: a stand-in left running by a failing test
+            // would hold the test runner's output open.
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        let mut ready = BufReader::new(child.stdout.take().unwrap()).lines();
+        assert_eq!(ready.next_line().await.unwrap().as_deref(), Some("ready"));
+        child
+    }
+
+    fn alive(pid: u32) -> bool {
+        std::path::Path::new(&format!("/proc/{pid}")).exists()
+    }
+
+    async fn until(what: impl Fn() -> bool) -> bool {
+        for _ in 0..100 {
+            if what() {
+                return true;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        false
+    }
+
+    #[tokio::test]
+    async fn a_borg_let_go_of_is_asked_to_stop_rather_than_killed() {
+        // Stopped this way, Borg gives up the repository's lock; killed, it
+        // can leave the lock behind for every Borg after it.
+        let dir = tempfile::tempdir().unwrap();
+        let marker = dir.path().join("stopped");
+        let child = running(r#"trap 'echo asked > "$MARKER"; exit 0' TERM"#, &marker).await;
+        drop(Stopping::new(child));
+        assert!(
+            until(|| marker.exists()).await,
+            "the Borg was sent SIGTERM, which it could act on"
+        );
+    }
+
+    #[tokio::test]
+    async fn one_that_will_not_stop_is_killed_once_the_grace_is_up() {
+        /// Kills the stand-in however the test ends, a failure included.
+        struct Reap(u32);
+        impl Drop for Reap {
+            fn drop(&mut self) {
+                if let Some(pid) = rustix::process::Pid::from_raw(self.0 as i32) {
+                    let _ = rustix::process::kill_process(pid, rustix::process::Signal::KILL);
+                }
+            }
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let child = running("trap '' TERM", &dir.path().join("unused")).await;
+        let pid = child.id().unwrap();
+        let _reap = Reap(pid);
+        drop(Stopping::with_grace(child, Duration::from_millis(300)));
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert!(alive(pid), "given its grace first");
+        assert!(until(|| !alive(pid)).await, "and then killed");
+    }
+
+    #[tokio::test]
+    async fn one_that_has_finished_is_left_alone() {
+        let mut child = Command::new("true").spawn().unwrap();
+        let _ = child.wait().await;
+        let mut stopping = Stopping::new(child);
+        assert!(stopping.child().try_wait().unwrap().is_some());
+        drop(stopping);
+    }
 
     #[test]
     fn parses_borg_version_banner() {

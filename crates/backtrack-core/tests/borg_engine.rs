@@ -446,3 +446,102 @@ async fn a_patterns_file_extracts_a_folder_less_what_it_turns_down_and_names_eac
     assert_eq!(std::fs::read(here.join("keep/deep/b.txt")).unwrap(), b"b");
     assert!(!here.join("keep/a.txt").exists());
 }
+
+/// The lock files a repository holds: none, once every Borg has let go.
+fn locks(repo: &str) -> Vec<&'static str> {
+    ["lock.exclusive", "lock.roster"]
+        .into_iter()
+        .filter(|name| std::path::Path::new(repo).join(name).exists())
+        .collect()
+}
+
+/// Wait up to 15 seconds (the stopping grace, and some) for the repository's
+/// locks to go.
+async fn unlocked(repo: &str) -> Vec<&'static str> {
+    for _ in 0..150 {
+        if locks(repo).is_empty() {
+            return Vec::new();
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    locks(repo)
+}
+
+/// S17-T9: a listing read only part way, or a preview nobody wants any more,
+/// lets go of its Borg mid-run. Killed outright, Borg left its place in the
+/// lock behind, and every Borg after it was refused as LockedByOther.
+#[tokio::test]
+async fn a_listing_or_a_preview_given_up_part_way_leaves_the_repository_unlocked() {
+    let f = fixture().await;
+    let many = f.src.join("many");
+    std::fs::create_dir_all(&many).unwrap();
+    for i in 0..3000 {
+        std::fs::write(many.join(format!("file-{i}.txt")), format!("file {i}")).unwrap();
+    }
+    // Larger than a pipe holds, so that Borg is still writing it when the
+    // reader stops reading.
+    let big: Vec<u8> = (0..8_000_000u32)
+        .map(|i| (i.wrapping_mul(2_654_435_761) >> 24) as u8)
+        .collect();
+    std::fs::write(f.src.join("big.bin"), &big).unwrap();
+    let eng = engine(&f).await;
+    eng.init_repo(&RepoSpec {
+        path: f.repo.clone(),
+        encryption: Encryption::RepokeyBlake2,
+    })
+    .await
+    .unwrap();
+    run_to_finish(
+        eng.create(&CreateSpec {
+            archive_name: "arch".into(),
+            sources: vec![f.src.clone()],
+            excludes: vec![],
+            compression: Compression::Zstd,
+            upload_limit_kib: None,
+            one_file_system: false,
+            created_at: std::time::SystemTime::now(),
+            paths: Vec::new(),
+        })
+        .await
+        .unwrap(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        locks(&f.repo),
+        Vec::<&str>::new(),
+        "nothing holds it to begin with"
+    );
+
+    let mut listing = eng.list_archive(&ArchiveId("arch".into())).await.unwrap();
+    listing.next().await.unwrap().unwrap();
+    drop(listing);
+    assert_eq!(
+        unlocked(&f.repo).await,
+        Vec::<&str>::new(),
+        "after a listing given up"
+    );
+
+    let member = f
+        .src
+        .join("big.bin")
+        .to_str()
+        .unwrap()
+        .trim_start_matches('/')
+        .to_string();
+    let mut preview = eng
+        .extract_stdout(&ArchiveId("arch".into()), &member)
+        .await
+        .unwrap();
+    let mut first = vec![0u8; 4096];
+    preview.read_exact(&mut first).await.unwrap();
+    assert_eq!(first, big[..4096]);
+    drop(preview);
+    assert_eq!(
+        unlocked(&f.repo).await,
+        Vec::<&str>::new(),
+        "after a preview given up"
+    );
+
+    eng.repo_info().await.expect("and the next Borg is let in");
+}

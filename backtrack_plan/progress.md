@@ -19,7 +19,7 @@ Nothing right now.
 > See [../CLAUDE.md](../CLAUDE.md) for the full workflow.
 
 **Current stage:** 17 (complete)
-**Last updated:** 2026-10-26
+**Last updated:** 2026-10-27
 
 ## Stage 0 — Bootstrap ([stage file](stages/stage-00-bootstrap.md))
 - [x] S00-T1 Git repo, license, .gitignore, README skeleton
@@ -190,6 +190,7 @@ Nothing right now.
 - [x] S17-T6 A script that sets Snapper up, and undoes it
 - [x] S17-T7 Set Up Snapper from Preferences
 - [x] S17-T8 Reading a backup into the catalogue no longer slows with its size
+- [x] S17-T9 Giving up a listing or a preview part way leaves no lock behind
 
 ## Stage 18 — The full-screen time view ([stage file](stages/stage-18-full-screen-time-view.md))
 - [ ] S18-T1 Mockups of the full-screen view, to choose a design
