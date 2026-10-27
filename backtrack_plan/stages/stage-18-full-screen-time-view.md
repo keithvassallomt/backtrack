@@ -28,7 +28,8 @@ they do in the main window.
 
 ## Order of work
 T1 first, since everything visible follows the chosen design. T2 does not
-depend on it and can run beside it. Then T3 to T8 in order.
+depend on it and can run beside it. Then T3 to T8 in order. T9, which came out
+of T1, changes only the main window and stands on its own.
 
 ## Tasks
 
@@ -156,9 +157,9 @@ selection), so leaving the view lands where it was.
   on disk now (the desktop's thumbnail cache already has those), and fetched
   lazily, for the front window only, where it is not; never for the backups
   behind.
-- The main window's badges, in brief: "deleted" and "changed", with the
-  full meaning in their tooltips ("Deleted after this backup", "Changed since
-  this backup"), and Stages 16 and 17's.
+- The main window's badges, in the brief words S18-T9 gives them: "deleted"
+  and "changed" on files, "trashed" and "Snapper" (Stages 16 and 17), each
+  with the full meaning in its tooltip.
 
 **Accept:** unit tests on which files get a thumbnail and from where; on a VM,
 walking into a folder and back in the view, with thumbnails for images
@@ -173,6 +174,8 @@ the step arrows beside it.
 - Near the pointer, the ticks widen and the labels grow, as a dock magnifies:
   fully at the pointer and falling off over a few ticks either side. The ticks
   keep their places, so what is clicked is what was drawn there.
+- The step arrows (older and newer) change colour under the pointer, as a
+  button does (Keith, 2026-10-27; the prototype has no hover colour).
 - Clicking a backup flies the stack to it; hovering names it.
 - Local snapshots, the Trash's entries and Snapper's snapshots are marked as
   the sidebar marks them.
@@ -223,6 +226,21 @@ right folder, with the right file selected where one was clicked.
 **Accept:** with Orca on the GNOME VM, stepping reads out each backup and the
 timeline reads as a list of them; the whole of S18-T6's restore done with the
 keyboard alone.
+
+### S18-T9 — Brief badges in the main window
+*(from S18-T1: Keith, 2026-10-27)* The badges in the main window say one word
+or two, as Rewind's do, and leave the rest to their tooltips: "deleted"
+(was "deleted after this") and "changed" (was "changed since then") in the
+file pane; "Snapper" (was "Snapper snapshot") and "local" (was "local
+snapshot") in the sidebar; "trashed" (was "in the Trash") in the sidebar, the
+file pane and search.
+"local backup only" and "not on your disk" keep their words. A changed folder's
+tooltip says that it is something inside it. What a screen reader says for a
+sidebar row keeps the full words, which are clearer spoken than the brief ones.
+The guides and the CHANGELOG use the new words.
+
+**Accept:** unit tests on each word, class and tooltip, and on which badge a
+file pane row gets when more than one would hold; `just check` passes.
 
 ## Definition of Done
 All tasks done; the CHANGELOG's Unreleased section introduces Rewind; mockups 25 and 26 match what was built; the README and the file
