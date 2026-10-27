@@ -52,6 +52,14 @@ each round, the chosen direction is refined until Keith settles it.
 dark, are committed as mockups 25 and 26 in `backtrack_plan/mockups/`, and the
 later tasks here are updated to cite them.
 
+**Chosen** (Keith, 2026-10-27, over two rounds): the stack straight back into
+the distance; the desktop's wallpaper, dimmed, with a starfield where it
+cannot be read; the timeline down the right-hand edge, magnifying near the
+pointer; the front window as icons, switchable to a list. The prototype the
+choice was made in is `backtrack_plan/mockups/rewind/rewind.html`, and the
+later tasks take their measures from it (the depth of the stack, the curve and
+duration of a step, the magnification).
+
 ### S18-T2 — The desktop's wallpaper as the view's background
 Researched on the GNOME and Plasma VMs (Fedora 45, Flatpak 1.18.4,
 2026-10-20); what follows is what was found to work.
@@ -93,26 +101,37 @@ Fedora's wallpapers are JPEG XL: they are decoded with glycin, whose JXL loader
 the GNOME runtime ships (native packages depend on the distribution's glycin
 loaders), off the main thread, scaled once to the screen and cached by path
 and modification time. Any other desktop (Hyprland, Sway and the rest), and any
-failure along the way, gets Backtrack's own background from S18-T1.
+failure along the way, gets Backtrack's own background: the starfield of the
+S18-T1 prototype, which is always dark, whatever the style (only the windows
+follow the style). Over the wallpaper, the view darkens it as mockups 25 and
+26 show.
 
 **Accept:** unit tests on fixtures: a dconf user database with and without the
 key, a system database, a vendor default from compiled schemas, the light and
 dark choice, an XML slideshow, and a Plasma package resolved by size and by
 dark. On the GNOME and Plasma VMs, native and Flatpak, the view shows the
 desktop's own wallpaper, and after it is changed in the desktop's settings the
-next opening shows the new one. On Keith's laptop (Hyprland), Backtrack's own
-background.
+next opening shows the new one. On Keith's laptop (Hyprland), the starfield,
+dark in both styles.
 
 ### S18-T3 — The full-screen view and its stack
-A full-screen window on the monitor it was opened from, drawing the stack the
-chosen design (S18-T1) describes.
+A full-screen window on the monitor it was opened from, drawing the stack
+straight back into the distance, as mockups 25 and 26 show: each backup behind
+is further back and a little higher, darkened with its distance, and up to
+nine are drawn.
 - The backup in front is a live widget (S18-T4); the ones behind are drawn
   from cached images of their folders, so only one real file view exists at a
   time. GTK's GPU renderer and its 3D transforms carry the depth and
   perspective.
-- Moving to another backup flies the stack, with a spring animation, never
-  landing between two backups. Keys: Up and Down (and Page Up and Page Down)
-  step, Home and End go to the ends, Escape cancels, Enter restores.
+- Moving to another backup flies the stack, never landing between two
+  backups. From rest it eases in and out (`ADW_EASE_IN_OUT_CUBIC`): slow, fast,
+  then slow, over 800 ms for one backup and somewhat longer for a longer
+  flight, as in the prototype. A move begun while the stack is still moving
+  keeps the speed it had and eases out, and a held key runs at most two
+  backups ahead of the stack, so holding a key glides rather than stopping at
+  each backup. Over the starfield, the stars stream with the motion.
+- Keys: Up and Down (and Page Up and Page Down) step, Home goes to now and End
+  to the oldest, Escape cancels, Enter restores.
 - With animations switched off in the desktop's settings, a crossfade instead
   of the flight.
 - When frames run late, fewer backups are drawn behind, rather than the
@@ -128,13 +147,18 @@ crossfades.
 The folder at the backup in front, as a file view: listed from the catalogue as
 the main window's file pane is, and sharing the window's state (folder,
 selection), so leaving the view lands where it was.
+- Icons by default, as mockups 25 and 26 show, switched to the main window's
+  list by a pair of buttons in the front window's header bar. In the icon
+  view every cell is the same height: the badge is pinned to the foot of the
+  icon, and the name has room for two lines and never more.
 - Walking into a folder and back up, as in the main window.
 - Icons by file type. Real thumbnails where the backed-up version is the one
   on disk now (the desktop's thumbnail cache already has those), and fetched
   lazily, for the front window only, where it is not; never for the backups
   behind.
-- The badges the main window shows ("deleted after this", "changed since
-  then", and Stages 16 and 17's when they are in).
+- The main window's badges, in brief: "deleted" and "changed", with the
+  full meaning in their tooltips ("Deleted after this backup", "Changed since
+  this backup"), and Stages 16 and 17's.
 
 **Accept:** unit tests on which files get a thumbnail and from where; on a VM,
 walking into a folder and back in the view, with thumbnails for images
@@ -142,8 +166,13 @@ unchanged since the backup and icons for the others, and leaving the view at
 the same folder and selection.
 
 ### S18-T5 — The full-screen view's timeline
-The listed backups (Stage 15) as the chosen design's timeline, with its
-labels ("Today (Now)", the months) and the step arrows.
+The listed backups (Stage 15) as a timeline down the right-hand edge, as
+mockups 25 and 26 show: a tick for each backup, the oldest at the top and now
+at the bottom, with its labels ("Today (Now)", "Yesterday", the months) and
+the step arrows beside it.
+- Near the pointer, the ticks widen and the labels grow, as a dock magnifies:
+  fully at the pointer and falling off over a few ticks either side. The ticks
+  keep their places, so what is clicked is what was drawn there.
 - Clicking a backup flies the stack to it; hovering names it.
 - Local snapshots, the Trash's entries and Snapper's snapshots are marked as
   the sidebar marks them.
