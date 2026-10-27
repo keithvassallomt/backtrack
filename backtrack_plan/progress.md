@@ -18,7 +18,7 @@ Nothing right now.
 > tasks: add them here + to the stage file, then `just provision-board-apply`.
 > See [../CLAUDE.md](../CLAUDE.md) for the full workflow.
 
-**Current stage:** 17 (complete)
+**Current stage:** 18
 **Last updated:** 2026-10-27
 
 ## Stage 0 — Bootstrap ([stage file](stages/stage-00-bootstrap.md))
@@ -193,7 +193,7 @@ Nothing right now.
 - [x] S17-T9 Giving up a listing or a preview part way leaves no lock behind
 
 ## Stage 18 — The full-screen time view ([stage file](stages/stage-18-full-screen-time-view.md))
-- [ ] S18-T1 Mockups of the full-screen view, to choose a design
+- [/] S18-T1 Mockups of the full-screen view, to choose a design
 - [ ] S18-T2 The desktop's wallpaper as the view's background
 - [ ] S18-T3 The full-screen view and its stack
 - [ ] S18-T4 The full-screen view's front window

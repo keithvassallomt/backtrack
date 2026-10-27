@@ -1,0 +1,967 @@
+<!doctype html>
+<!--
+  SPDX-License-Identifier: GPL-3.0-or-later
+  SPDX-FileCopyrightText: 2026 Keith Vassallo <keith@vassallo.cloud>
+
+  Rewind, the full-screen view (S18-T1): a prototype of four design
+  directions, to judge the motion rather than imagine it. Open it in a
+  browser, full screen (F11). The keys are listed in the panel at the top
+  left; 1 to 4 choose a direction, each with its own background, timeline and
+  front window, which B, L and F then change one at a time.
+
+  The data is made up: one folder, Projects, with 41 backups over a year.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Rewind Prototype</title>
+<style>
+:root {
+  --accent-bg: #3584e4;
+  --accent: #1c71d8;
+  --warn: #9c6e03;
+  --err: #c01c28;
+  --win-bg: #fafafb;
+  --view-bg: #ffffff;
+  --hb-bg: #ffffff;
+  --fg: rgba(0, 0, 6, 0.8);
+  --dim-fg: rgba(0, 0, 6, 0.55);
+  --border: rgba(0, 0, 6, 0.1);
+  --sel: rgba(53, 132, 228, 0.16);
+  --page: #ffffff;
+  --page-edge: rgba(0, 0, 0, 0.2);
+  --page-fold: #e8e8ea;
+  --shade: 232, 234, 242;
+  --btn-bg: rgba(255, 255, 255, 0.92);
+  --btn-fg: rgba(0, 0, 6, 0.8);
+  --osd-bg: rgba(255, 255, 255, 0.72);
+  --panel-bg: rgba(255, 255, 255, 0.9);
+  --tick: rgba(0, 0, 6, 0.35);
+  --wall-dim: 0.3;
+  --w1: #7fb2f0; --w2: #f3c9d9; --w3: #f7e1b5;
+  --m1: #9aa9d6; --m2: #6f7fb8; --m3: #4a5893;
+  --sun: #fff3d1;
+  --grad-1: #ffffff; --grad-2: #d6d7e0;
+  color-scheme: light;
+}
+:root[data-theme="dark"] {
+  --accent: #78aeed;
+  --warn: #f6d32d;
+  --err: #ff7b63;
+  --win-bg: #222226;
+  --view-bg: #1d1d20;
+  --hb-bg: #2e2e32;
+  --fg: #ffffff;
+  --dim-fg: rgba(255, 255, 255, 0.6);
+  --border: rgba(255, 255, 255, 0.1);
+  --sel: rgba(120, 174, 237, 0.2);
+  --page: #f6f5f4;
+  --page-edge: rgba(0, 0, 0, 0.35);
+  --page-fold: #cfcfd3;
+  --shade: 6, 6, 10;
+  --btn-bg: rgba(58, 58, 64, 0.95);
+  --btn-fg: #ffffff;
+  --osd-bg: rgba(30, 30, 34, 0.72);
+  --panel-bg: rgba(30, 30, 34, 0.92);
+  --tick: rgba(255, 255, 255, 0.4);
+  --wall-dim: 0.5;
+  --w1: #14203f; --w2: #4a2f5e; --w3: #b0587a;
+  --m1: #2a2f52; --m2: #1c2040; --m3: #10132a;
+  --sun: #ffc9a8;
+  --grad-1: #3a3a46; --grad-2: #141418;
+  color-scheme: dark;
+}
+/* What sits on the scene itself (the timeline, the date below the stack)
+   takes its colour from the background behind it, not the theme alone. */
+:root { --osd-fg: #ffffff; --osd-shadow: 0 1px 3px rgba(0, 0, 0, 0.6); }
+:root[data-bg="grad"], :root[data-bg="stars"][data-theme="light"] {
+  --osd-fg: rgba(0, 0, 20, 0.8); --osd-shadow: none;
+}
+
+html, body { margin: 0; height: 100%; overflow: hidden; background: var(--grad-2); }
+body {
+  font-family: "Adwaita Sans", "Cantarell", "Inter", "Noto Sans", system-ui, sans-serif;
+  font-size: 14px; color: var(--fg); user-select: none;
+}
+button { font: inherit; }
+
+.bg { position: absolute; inset: 0; display: none; }
+:root[data-bg="grad"] #bg-grad, :root[data-bg="wall"] #bg-wall, :root[data-bg="stars"] #bg-stars { display: block; }
+#bg-grad { background: radial-gradient(ellipse at 50% 15%, var(--grad-1), var(--grad-2) 75%); }
+#bg-wall svg { width: 100%; height: 100%; display: block; }
+#bg-wall::after { content: ""; position: absolute; inset: 0; background: rgba(0, 0, 0, var(--wall-dim)); }
+#bg-stars { width: 100%; height: 100%; }
+
+#stage { position: absolute; inset: 0; transform-style: preserve-3d; }
+
+/* A window of the stack. Only the one in front is live in the real view;
+   here every window is the same markup, and the ones behind are dimmed by a
+   veil in the scene's colour, as if further away. */
+.win {
+  position: absolute; border-radius: 14px; overflow: hidden;
+  background: var(--view-bg); color: var(--fg);
+  box-shadow: 0 0 0 1px var(--border), 0 20px 60px rgba(0, 0, 0, 0.35);
+  will-change: transform, opacity; backface-visibility: hidden;
+  display: none; cursor: pointer;
+}
+.win.front { cursor: default; }
+.win::after {
+  content: ""; position: absolute; inset: 0; border-radius: inherit;
+  background: rgb(var(--shade)); opacity: var(--dim, 0); pointer-events: none;
+}
+.hb {
+  height: 46px; display: flex; align-items: center; gap: 12px; padding: 0 14px 0 10px;
+  background: var(--hb-bg); border-bottom: 1px solid var(--border);
+}
+.crumbs {
+  display: flex; align-items: center; gap: 2px; padding: 3px 10px; border-radius: 9999px;
+  background: color-mix(in srgb, currentColor 7%, transparent);
+}
+.crumbs span, .crumbs b { padding: 2px 6px; }
+.crumbs .sep { opacity: 0.4; padding: 0 2px; }
+.crumbs svg { width: 16px; height: 16px; margin-left: 2px; opacity: 0.8; }
+.hb-when { margin-left: auto; color: var(--dim-fg); font-weight: 600; display: flex; gap: 8px; align-items: center; }
+.body { position: absolute; top: 47px; left: 0; right: 0; bottom: 0; background: var(--view-bg); }
+
+.badge {
+  border-radius: 9999px; padding: 1px 9px; font-size: 0.82em; font-weight: 700; white-space: nowrap;
+  display: inline-block;
+}
+.badge.deleted { background: color-mix(in srgb, var(--warn) 15%, transparent); color: var(--warn); }
+.badge.changed { background: color-mix(in srgb, var(--accent) 15%, transparent); color: var(--accent); }
+.badge.local-only, .badge.in-trash { background: color-mix(in srgb, var(--err) 15%, transparent); color: var(--err); }
+.badge.local-snapshot, .badge.snapper { background: color-mix(in srgb, var(--warn) 15%, transparent); color: var(--warn); }
+
+/* The front window as a grid of icons. */
+.grid {
+  display: grid; grid-template-columns: repeat(auto-fill, 118px); gap: 6px 8px;
+  padding: 18px 22px; align-content: start; justify-content: start;
+}
+.grid .item {
+  display: flex; flex-direction: column; align-items: center; gap: 5px;
+  padding: 8px 4px 9px; border-radius: 10px; text-align: center;
+}
+.grid .ic { width: 64px; height: 64px; display: grid; place-items: center; }
+.grid .nm { font-size: 13px; line-height: 1.25; word-break: break-word; max-width: 108px; }
+.item.sel { background: var(--sel); }
+.item.sel .nm { color: var(--accent); font-weight: 600; }
+
+/* The front window as the main window's list. */
+.list { padding: 0 6px; }
+.lhead, .row {
+  display: grid; grid-template-columns: minmax(0, 1fr) 96px 190px 170px; align-items: center;
+  padding: 0 14px; gap: 10px;
+}
+.lhead { height: 36px; color: var(--dim-fg); font-weight: 700; font-size: 13px; border-bottom: 1px solid var(--border); }
+.row { height: 40px; border-bottom: 1px solid var(--border); border-radius: 6px; }
+.row .c-name { display: flex; align-items: center; gap: 10px; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.row .sic { width: 26px; height: 26px; flex: none; display: grid; place-items: center; }
+.row .sic svg, .row .sic .thumb { width: 26px; height: 26px; }
+.row .c-dim { color: var(--dim-fg); font-variant-numeric: tabular-nums; }
+
+svg.icon { width: 100%; height: 100%; display: block; }
+.thumb { position: relative; width: 64px; height: 64px; display: grid; place-items: center; }
+.thumb > svg { width: 100%; height: auto; border-radius: 4px; box-shadow: 0 0 0 1px var(--page-edge); }
+.thumb.lazy > svg { box-shadow: none; }
+.thumb .later { position: absolute; inset: 0; display: grid; place-items: center; opacity: 0; transition: opacity 0.25s; }
+.thumb .later svg { width: 100%; height: auto; border-radius: 4px; box-shadow: 0 0 0 1px var(--page-edge); }
+.win.fetched .thumb .later { opacity: 1; }
+.win.fetched .thumb.lazy > svg { opacity: 0; }
+
+/* The timeline down the right-hand edge. */
+#tl-right { position: absolute; right: 26px; top: 7vh; bottom: 112px; width: 170px; display: none; }
+:root[data-tl="right"] #tl-right { display: block; }
+.tk { position: absolute; right: 0; width: 64px; transform: translateY(-50%); cursor: pointer; }
+.tk i {
+  position: absolute; right: 0; top: 50%; height: 2px; width: 20px; margin-top: -1px;
+  background: var(--tick); border-radius: 1px; transition: width 0.12s;
+}
+.tk:hover i { width: 34px; background: var(--osd-fg); }
+.tk.snapper i, .tk.local-snapshot i { background: var(--warn); }
+.tk.in-trash i, .tk.local-only i { background: var(--err); }
+.tk.cur i { width: 40px; height: 3px; margin-top: -1.5px; background: var(--accent-bg); }
+.lab {
+  position: absolute; right: 50px; transform: translateY(-50%); font-size: 12px; font-weight: 600;
+  color: var(--osd-fg); text-shadow: var(--osd-shadow); white-space: nowrap; pointer-events: none; opacity: 0.85;
+}
+.lab.now { font-weight: 800; opacity: 1; }
+#tl-mark {
+  position: absolute; right: 44px; width: 0; height: 0; transform: translateY(-50%);
+  border: 6px solid transparent; border-right: 0; border-left: 9px solid var(--accent-bg);
+  filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.4));
+}
+
+#arrows { position: absolute; display: none; flex-direction: column; gap: 12px; }
+:root[data-tl="right"] #arrows { display: flex; }
+.round {
+  width: 44px; height: 44px; border-radius: 50%; border: 0; display: grid; place-items: center;
+  background: var(--btn-bg); color: var(--btn-fg); cursor: pointer;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.25);
+}
+.round svg { width: 18px; height: 18px; }
+.round:disabled { opacity: 0.4; cursor: default; }
+
+/* The timeline as a strip along the bottom, like the main window's. */
+#tl-strip {
+  position: absolute; left: 50%; transform: translateX(-50%); bottom: 84px;
+  width: min(1120px, 82vw); height: 82px; border-radius: 14px; background: var(--osd-bg);
+  display: none; align-items: center; gap: 10px; padding: 0 10px; box-sizing: border-box;
+  color: var(--osd-fg);
+}
+:root[data-tl="strip"] #tl-strip { display: flex; }
+:root[data-tl="strip"] { --osd-fg: var(--fg); --osd-shadow: none; }
+:root[data-tl="strip"][data-bg="wall"] #when, :root[data-tl="strip"][data-bg="stars"][data-theme="dark"] #when {
+  color: #ffffff; text-shadow: 0 1px 3px rgba(0, 0, 0, 0.6);
+}
+.end {
+  border: 0; border-radius: 9999px; padding: 7px 14px; background: var(--btn-bg); color: var(--btn-fg);
+  font-weight: 700; cursor: pointer; white-space: nowrap; flex: none;
+}
+.end:disabled { opacity: 0.4; cursor: default; }
+#s-area { position: relative; flex: 1; height: 64px; }
+.sb { position: absolute; bottom: 22px; width: 6px; transform: translateX(-50%); cursor: pointer; }
+.sb i { position: absolute; bottom: 0; left: 0; right: 0; border-radius: 2px 2px 0 0; background: var(--tick); }
+.sb:hover i { background: var(--fg); }
+.sb.snapper i, .sb.local-snapshot i { background: var(--warn); }
+.sb.in-trash i, .sb.local-only i { background: var(--err); }
+.sb.cur i { background: var(--accent-bg); }
+#s-mark { position: absolute; top: 0; bottom: 18px; width: 2px; background: var(--accent-bg); transform: translateX(-50%); pointer-events: none; }
+#s-mark::before { content: ""; position: absolute; top: -2px; left: -5px; width: 12px; height: 12px; border-radius: 50%; background: var(--accent-bg); }
+.slab { position: absolute; bottom: 0; font-size: 12px; font-weight: 600; transform: translateX(-50%); white-space: nowrap; opacity: 0.8; }
+
+/* Restore and Cancel, with the backup in front between them. */
+#bar { position: absolute; left: 0; right: 0; bottom: 22px; display: flex; justify-content: center; align-items: center; gap: 18px; }
+.btn {
+  border: 0; border-radius: 9999px; padding: 10px 26px; font-weight: 700; cursor: pointer;
+  background: var(--btn-bg); color: var(--btn-fg); box-shadow: 0 2px 10px rgba(0, 0, 0, 0.25);
+}
+.btn.suggested { background: var(--accent-bg); color: #ffffff; }
+.btn:disabled { opacity: 0.45; cursor: default; }
+#when { min-width: 360px; text-align: center; color: var(--osd-fg); text-shadow: var(--osd-shadow); }
+#when-main { font-weight: 800; font-size: 16px; display: flex; gap: 8px; justify-content: center; align-items: center; }
+#when-sub { font-size: 12.5px; opacity: 0.8; margin-top: 2px; }
+
+#tip {
+  position: absolute; pointer-events: none; padding: 6px 10px; border-radius: 8px; font-size: 12.5px;
+  background: rgba(20, 20, 24, 0.92); color: #ffffff; white-space: nowrap; display: none; z-index: 20;
+}
+#toast {
+  position: absolute; left: 50%; bottom: 84px; transform: translate(-50%, 16px); opacity: 0;
+  padding: 10px 20px; border-radius: 9999px; background: rgba(28, 28, 32, 0.94); color: #ffffff;
+  font-weight: 600; transition: opacity 0.2s, transform 0.2s; pointer-events: none; z-index: 20;
+}
+:root[data-tl="strip"] #toast { bottom: 180px; }
+#toast.on { opacity: 1; transform: translate(-50%, 0); }
+
+#panel {
+  position: absolute; left: 16px; top: 16px; z-index: 30; padding: 12px 14px; border-radius: 12px;
+  background: var(--panel-bg); color: var(--fg); font-size: 12.5px; box-shadow: 0 4px 20px rgba(0, 0, 0, 0.25);
+  display: grid; grid-template-columns: auto auto; gap: 6px 12px; align-items: center; max-width: 560px;
+}
+#panel.off { display: none; }
+#panel h1 { grid-column: 1 / -1; margin: 0 0 2px; font-size: 13.5px; }
+#panel .k { color: var(--dim-fg); font-weight: 700; white-space: nowrap; }
+#panel .seg { display: flex; flex-wrap: wrap; gap: 4px; }
+#panel .seg button {
+  border: 0; border-radius: 6px; padding: 3px 9px; cursor: pointer; color: var(--fg);
+  background: color-mix(in srgb, currentColor 8%, transparent);
+}
+#panel .seg button.on { background: var(--accent-bg); color: #ffffff; }
+#panel .keys { grid-column: 1 / -1; color: var(--dim-fg); line-height: 1.5; margin-top: 2px; }
+#panel kbd {
+  font: inherit; font-weight: 700; padding: 0 4px; border-radius: 4px; color: var(--fg);
+  background: color-mix(in srgb, currentColor 9%, transparent);
+}
+</style>
+</head>
+<body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <defs>
+    <linearGradient id="g-wall-sky" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" style="stop-color:var(--w1)"/>
+      <stop offset="0.62" style="stop-color:var(--w2)"/>
+      <stop offset="1" style="stop-color:var(--w3)"/>
+    </linearGradient>
+    <linearGradient id="g-photo-sky" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#4f93e0"/><stop offset="1" stop-color="#cfe5fb"/>
+    </linearGradient>
+    <linearGradient id="g-photo-hill" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#5fae5a"/><stop offset="1" stop-color="#2f7a3a"/>
+    </linearGradient>
+  </defs>
+</svg>
+
+<div id="scene">
+  <div id="bg-grad" class="bg"></div>
+  <div id="bg-wall" class="bg">
+    <svg viewBox="0 0 1600 900" preserveAspectRatio="xMidYMid slice" aria-hidden="true">
+      <rect width="1600" height="900" fill="url(#g-wall-sky)"/>
+      <circle cx="1080" cy="520" r="120" style="fill:var(--sun)" opacity="0.85"/>
+      <path d="M0 610 L210 430 L380 560 L560 360 L760 560 L930 440 L1120 600 L1300 420 L1600 640 L1600 900 L0 900 Z" style="fill:var(--m1)"/>
+      <path d="M0 700 L180 590 L360 690 L600 540 L820 700 L1040 590 L1260 720 L1450 610 L1600 690 L1600 900 L0 900 Z" style="fill:var(--m2)"/>
+      <path d="M0 800 L260 720 L520 790 L820 700 L1100 800 L1380 730 L1600 790 L1600 900 L0 900 Z" style="fill:var(--m3)"/>
+    </svg>
+  </div>
+  <canvas id="bg-stars" class="bg"></canvas>
+
+  <div id="stage"></div>
+
+  <div id="tl-right"><div id="tl-ticks"></div><div id="tl-mark"></div></div>
+  <div id="arrows">
+    <button class="round" id="up" title="Older (Up)"><svg viewBox="0 0 16 16"><path d="M2.5 10.5 8 5l5.5 5.5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+    <button class="round" id="down" title="Newer (Down)"><svg viewBox="0 0 16 16"><path d="M2.5 5.5 8 11l5.5-5.5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+  </div>
+  <div id="tl-strip">
+    <button class="end" id="s-older">&#8249; Older</button>
+    <div id="s-area"><div id="s-bars"></div><div id="s-mark"></div></div>
+    <button class="end" id="s-newer">Newer &#8250;</button>
+  </div>
+
+  <div id="bar">
+    <button class="btn" id="cancel">Cancel</button>
+    <div id="when"><div id="when-main"></div><div id="when-sub"></div></div>
+    <button class="btn suggested" id="restore">Restore</button>
+  </div>
+  <div id="tip"></div>
+  <div id="toast"></div>
+  <div id="panel"></div>
+</div>
+
+<script>
+(() => {
+  'use strict';
+  const root = document.documentElement;
+  const $ = (s) => document.querySelector(s);
+  const clamp = (x, lo, hi) => Math.min(hi, Math.max(lo, x));
+
+  // ------------------------------------------------------------------ data
+
+  const at = (y, m, d, h = 18, mi = 0) => new Date(y, m - 1, d, h, mi);
+  const NOW = at(2026, 10, 27, 16, 20);
+
+  // Newest first. Index 0 is the folder as it is now.
+  const backups = [{ when: NOW, kind: 'now' }];
+  for (const h of [16, 15, 14, 13, 12, 11, 10, 9]) backups.push({ when: at(2026, 10, 27, h), kind: 'archive' });
+  for (const h of [22, 18, 12, 8]) backups.push({ when: at(2026, 10, 26, h), kind: 'archive' });
+  for (let d = 25; d >= 13; d--) backups.push({ when: at(2026, 10, d), kind: 'archive' });
+  for (const [m, d] of [[10, 11], [10, 4], [9, 27], [9, 20], [9, 13], [9, 6]]) {
+    backups.push({ when: at(2026, m, d), kind: 'archive' });
+  }
+  for (const [y, m, d] of [[2026, 8, 31], [2026, 7, 31], [2026, 6, 30], [2026, 5, 31], [2026, 4, 30],
+    [2026, 3, 31], [2026, 2, 28], [2026, 1, 31], [2025, 12, 31], [2025, 11, 30]]) {
+    backups.push({ when: at(y, m, d), kind: 'archive' });
+  }
+  const markKind = (when, kind) => { const b = backups.find((x) => +x.when === +when); if (b) b.kind = kind; };
+  markKind(at(2026, 10, 27, 14), 'snapper');
+  markKind(at(2026, 10, 27, 10), 'snapper');
+  markKind(at(2026, 10, 27, 12), 'local-snapshot');
+  markKind(at(2026, 10, 24), 'in-trash');
+  const N = backups.length;
+
+  const KIND = {
+    snapper: 'Snapper snapshot',
+    'local-snapshot': 'local snapshot',
+    'in-trash': 'in the Trash',
+    'local-only': 'local backup only',
+  };
+
+  const reportVersions = [
+    at(2026, 2, 3, 10), at(2026, 3, 18, 15, 4), at(2026, 5, 6, 9, 30), at(2026, 6, 30, 11), at(2026, 8, 14, 16, 45),
+    at(2026, 9, 8, 10, 20), at(2026, 9, 24, 14), at(2026, 10, 9, 9, 15), at(2026, 10, 16, 17, 30),
+    at(2026, 10, 20, 12, 5), at(2026, 10, 23, 10, 40), at(2026, 10, 25, 19, 10), at(2026, 10, 26, 15),
+    at(2026, 10, 27, 9, 50), at(2026, 10, 27, 11, 25), at(2026, 10, 27, 13, 40), at(2026, 10, 27, 15, 42),
+  ];
+  // Each file's versions by modification time; `gone` is when it was deleted.
+  const FILES = [
+    { name: 'old-client-folder', type: 'folder', v: [at(2025, 11, 3, 9)], gone: at(2026, 10, 20, 10), items: 14 },
+    { name: 'budget-2026.ods', type: 'sheet', kb: 31,
+      v: [at(2026, 1, 20, 11, 2), at(2026, 3, 2, 9, 40), at(2026, 6, 15, 16, 5), at(2026, 9, 30, 10), at(2026, 10, 26, 17, 48)] },
+    { name: 'invoice-june-draft.pdf', type: 'pdf', kb: 96, v: [at(2026, 6, 26, 14, 10), at(2026, 10, 23, 11, 5)] },
+    { name: 'invoice-may.pdf', type: 'pdf', kb: 182, v: [at(2026, 6, 2, 8, 47)] },
+    { name: 'logo-draft.svg', type: 'vector', kb: 12, v: [at(2026, 3, 12, 15, 30), at(2026, 5, 20, 10)], gone: at(2026, 9, 1, 9) },
+    { name: 'meeting-notes.md', type: 'text', kb: 6, v: [at(2026, 10, 19, 9, 30), at(2026, 10, 22, 14), at(2026, 10, 27, 11, 20)] },
+    { name: 'report.odt', type: 'doc', kb: 45, v: reportVersions },
+    { name: 'site-plan.png', type: 'image', kb: 860, art: ['plan-old', 'plan'], v: [at(2026, 8, 8, 12), at(2026, 10, 22, 16, 30)] },
+    { name: 'site-visit.jpg', type: 'image', kb: 2400, art: ['photo'], v: [at(2026, 9, 14, 13, 2)] },
+    { name: 'tax-notes.txt', type: 'text', kb: 4, v: [at(2026, 1, 12, 20, 15), at(2026, 4, 20, 21), at(2026, 10, 15, 9, 12)] },
+  ];
+
+  function versionAt(f, t) {
+    if (f.gone && t >= f.gone) return -1;
+    let k = -1;
+    f.v.forEach((x, i) => { if (x <= t) k = i; });
+    return k;
+  }
+
+  function contents(t) {
+    const out = [];
+    for (const f of FILES) {
+      const k = versionAt(f, t);
+      if (k < 0) continue;
+      const now = versionAt(f, NOW);
+      out.push({
+        f, k, mtime: f.v[k],
+        kb: f.kb ? f.kb * (0.72 + 0.28 * (k + 1) / f.v.length) : 0,
+        changed: now >= 0 && now !== k,
+        deleted: now < 0,
+        current: now === k,
+        art: f.art ? f.art[Math.min(k, f.art.length - 1)] : null,
+      });
+    }
+    return out;
+  }
+
+  // ------------------------------------------------------------- formatting
+
+  const WD = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+  const MO = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+  const MONTH = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September',
+    'October', 'November', 'December'];
+  const two = (n) => String(n).padStart(2, '0');
+  const hhmm = (d) => `${two(d.getHours())}:${two(d.getMinutes())}`;
+  const sameDay = (a, b) => a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate();
+  const YESTERDAY = new Date(+NOW - 86400e3);
+
+  function label(i) {
+    const d = backups[i].when;
+    if (i === 0) return 'Today (Now)';
+    if (sameDay(d, NOW)) return `Today, ${hhmm(d)}`;
+    if (sameDay(d, YESTERDAY)) return `Yesterday, ${hhmm(d)}`;
+    return `${WD[d.getDay()]} ${d.getDate()} ${MO[d.getMonth()]} ${d.getFullYear()}, ${hhmm(d)}`;
+  }
+  const modified = (d) => `${d.getDate()} ${MO[d.getMonth()]} ${d.getFullYear()}, ${hhmm(d)}`;
+  const size = (e) => e.f.type === 'folder' ? `${e.f.items} items`
+    : e.kb >= 1000 ? `${(e.kb / 1000).toFixed(1)} MB` : `${Math.round(e.kb)} KB`;
+
+  // The timeline's groups: today, yesterday, then the months.
+  function group(i) {
+    const d = backups[i].when;
+    if (sameDay(d, NOW)) return 'Today (Now)';
+    if (sameDay(d, YESTERDAY)) return 'Yesterday';
+    return d.getFullYear() === NOW.getFullYear() ? MONTH[d.getMonth()] : `${MO[d.getMonth()]} ${d.getFullYear()}`;
+  }
+
+  // ------------------------------------------------------------------ icons
+
+  const page = (glyph) => `<svg class="icon" viewBox="0 0 64 64"><path d="M15 4h25l12 12v42a2 2 0 0 1-2 2H15a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2z" fill="var(--page)" stroke="var(--page-edge)"/><path d="M40 4v10a2 2 0 0 0 2 2h10" fill="var(--page-fold)" stroke="var(--page-edge)"/>${glyph}</svg>`;
+  const lines = (x, y, n, w, c) => Array.from({ length: n }, (_, i) =>
+    `<rect x="${x}" y="${y + i * 6}" width="${i === n - 1 ? w * 0.6 : w}" height="2.4" rx="1.2" fill="${c}"/>`).join('');
+  const ICON = {
+    folder: '<svg class="icon" viewBox="0 0 64 64"><path d="M6 15a4 4 0 0 1 4-4h14l6 6h24a4 4 0 0 1 4 4v29a4 4 0 0 1-4 4H10a4 4 0 0 1-4-4z" fill="#d99a06"/><path d="M6 23a3 3 0 0 1 3-3h46a3 3 0 0 1 3 3v27a4 4 0 0 1-4 4H10a4 4 0 0 1-4-4z" fill="#f6c343"/></svg>',
+    pdf: page(`${lines(20, 22, 2, 24, '#c0bfbc')}<rect x="13" y="38" width="39" height="13" fill="#e01b24"/><text x="32.5" y="48" font-size="9.5" font-weight="700" fill="#fff" text-anchor="middle" font-family="sans-serif">PDF</text>`),
+    doc: page(`<rect x="20" y="20" width="24" height="3.4" rx="1.7" fill="#3584e4"/>${lines(20, 29, 4, 24, '#9a9996')}`),
+    sheet: page('<g fill="none" stroke="#26a269" stroke-width="1.6"><rect x="19" y="22" width="26" height="26" rx="1"/><path d="M19 30.7h26M19 39.3h26M27.7 22v26M36.3 22v26"/></g>'),
+    text: page(lines(20, 22, 5, 24, '#9a9996')),
+    vector: page('<path d="M20 44c4-14 10-20 12-20s4 10 12 20" fill="none" stroke="#9141ac" stroke-width="2.6" stroke-linecap="round"/><circle cx="20" cy="44" r="2.6" fill="#9141ac"/><circle cx="44" cy="44" r="2.6" fill="#9141ac"/>'),
+    image: page('<path d="M19 46l8-10 6 7 4-5 8 8z" fill="#77767b"/><circle cx="38" cy="27" r="3.5" fill="#77767b"/>'),
+  };
+  const THUMB = {
+    photo: '<svg viewBox="0 0 80 60"><rect width="80" height="60" fill="url(#g-photo-sky)"/><circle cx="60" cy="16" r="7" fill="#fff6c9"/><path d="M0 42 Q20 28 40 38 T80 34 V60 H0z" fill="url(#g-photo-hill)"/><rect x="18" y="35" width="10" height="8" fill="#f6f5f4"/><path d="M16.5 35.5 23 30l6.5 5.5z" fill="#c01c28"/></svg>',
+    plan: '<svg viewBox="0 0 80 60"><rect width="80" height="60" fill="#1c4f91"/><g fill="none" stroke="#e8f1fb" stroke-width="1.2"><rect x="8" y="8" width="64" height="44"/><path d="M8 30h30M38 8v44M38 24h34M56 24v28"/></g><g stroke="#e8f1fb" stroke-width="0.4" opacity="0.4"><path d="M0 15h80M0 30h80M0 45h80M20 0v60M40 0v60M60 0v60"/></g></svg>',
+    'plan-old': '<svg viewBox="0 0 80 60"><rect width="80" height="60" fill="#1c4f91"/><g fill="none" stroke="#e8f1fb" stroke-width="1.2"><rect x="8" y="8" width="64" height="44"/><path d="M8 30h30M38 8v44"/></g><g stroke="#e8f1fb" stroke-width="0.4" opacity="0.4"><path d="M0 15h80M0 30h80M0 45h80M20 0v60M40 0v60M60 0v60"/></g></svg>',
+  };
+  const HOME = '<svg viewBox="0 0 16 16"><path d="M2 7.5 8 2.5l6 5V14H10v-4H6v4H2z" fill="currentColor"/></svg>';
+
+  // An image the desktop has a thumbnail for already (the version on disk
+  // now) shows it at once. An older version has only an icon until the
+  // window comes to the front and settles, when its thumbnail is fetched.
+  function itemIcon(e) {
+    if (e.f.type !== 'image') return ICON[e.f.type];
+    if (e.current) return `<div class="thumb">${THUMB[e.art]}</div>`;
+    return `<div class="thumb lazy">${ICON.image}<div class="later">${THUMB[e.art]}</div></div>`;
+  }
+  function fileBadge(e) {
+    if (e.deleted) return '<span class="badge deleted">deleted after this</span>';
+    if (e.changed) return '<span class="badge changed">changed since then</span>';
+    return '';
+  }
+  const kindBadge = (i) => KIND[backups[i].kind] ? `<span class="badge ${backups[i].kind}">${KIND[backups[i].kind]}</span>` : '';
+
+  function gridHtml(entries) {
+    return `<div class="grid">${entries.map((e) => `<div class="item" data-name="${e.f.name}">
+      <div class="ic">${itemIcon(e)}</div><div class="nm">${e.f.name}</div>${fileBadge(e)}</div>`).join('')}</div>`;
+  }
+  function listHtml(entries) {
+    return `<div class="list"><div class="lhead"><span>Name</span><span>Size</span><span>Modified</span><span>Status</span></div>${
+      entries.map((e) => `<div class="row item" data-name="${e.f.name}"><span class="c-name"><span class="sic">${itemIcon(e)}</span>${e.f.name}</span>
+        <span class="c-dim">${size(e)}</span><span class="c-dim">${modified(e.mtime)}</span><span>${fileBadge(e)}</span></div>`).join('')}</div>`;
+  }
+
+  // ------------------------------------------------------------ directions
+
+  // How each direction places a window `d` backups behind the one in front.
+  // d is fractional while the stack moves; a negative d is a window that has
+  // come past the front, flying at the viewer as it fades.
+  const DIRS = {
+    straight: {
+      name: 'Straight back', persp: '1300px', origin: '50% 0%', tOrigin: '50% 50%', cx: 0.5, wFrac: 0.7, max: 9,
+      pairing: { bg: 'stars', tl: 'right', front: 'grid' },
+      place(d) {
+        if (d >= 0) return { tf: `translate3d(0, ${-d * 16}px, ${-d * 260}px)`, dim: Math.min(d * 0.09, 0.7) };
+        return { tf: `translate3d(0, ${-d * 70}px, ${-d * 520}px)`, op: 1 + d * 1.7 };
+      },
+    },
+    fan: {
+      name: 'Fan', persp: '1500px', origin: '50% 45%', tOrigin: '0% 50%', cx: 0.43, wFrac: 0.6, max: 8,
+      pairing: { bg: 'wall', tl: 'strip', front: 'list' },
+      place(d) {
+        if (d >= 0) {
+          return { tf: `translate3d(${d * 34}px, ${-d * 8}px, ${-d * 60}px) rotateY(${Math.min(d * 8, 56)}deg)`, dim: Math.min(d * 0.08, 0.6) };
+        }
+        return { tf: `translate3d(${d * 20}px, 0, ${-d * 40}px) rotateY(${d * 80}deg)`, op: 1 + d * 1.3 };
+      },
+    },
+    cascade: {
+      name: 'Cascade', persp: 'none', origin: '50% 50%', tOrigin: '50% 50%', cx: 0.45, wFrac: 0.6, max: 7,
+      pairing: { bg: 'grad', tl: 'right', front: 'list' },
+      place(d) {
+        if (d >= 0) return { tf: `translate(${d * 40}px, ${-d * 36}px) scale(${1 - d * 0.045})`, dim: Math.min(d * 0.13, 0.75) };
+        return { tf: `translate(${d * 70}px, ${-d * 60}px) scale(${1 - d * 0.12})`, op: 1 + d * 1.5 };
+      },
+    },
+    cards: {
+      name: 'Card index', persp: '1200px', origin: '50% 25%', tOrigin: '50% 100%', cx: 0.5, wFrac: 0.7, max: 9,
+      pairing: { bg: 'wall', tl: 'right', front: 'grid' },
+      place(d) {
+        if (d >= 0) {
+          return { tf: `translate3d(0, ${-d * 26}px, ${-d * 70}px) rotateX(${Math.min(d * 6, 50)}deg)`, dim: Math.min(d * 0.08, 0.65) };
+        }
+        return { tf: `translate3d(0, ${-d * 30}px, ${-d * 60}px) rotateX(${d * 95}deg)`, op: 1 + d * 1.25 };
+      },
+    },
+  };
+  const DIR_KEYS = ['straight', 'fan', 'cascade', 'cards'];
+
+  // ----------------------------------------------------------------- state
+
+  const prefersDark = matchMedia('(prefers-color-scheme: dark)').matches;
+  const prefersStill = matchMedia('(prefers-reduced-motion: reduce)').matches;
+  const state = { dir: 'straight', bg: 'stars', tl: 'right', front: 'grid', theme: prefersDark ? 'dark' : 'light', motion: prefersStill ? 'off' : 'on' };
+  for (const part of location.hash.slice(1).split('&')) {
+    const [k, v] = part.split('=');
+    if (k in state && v) state[k] = v;
+  }
+  if (!DIRS[state.dir]) state.dir = 'straight';
+
+  let p = 0; // the position the stack is drawn at, in backups
+  let vel = 0; // its velocity, in backups a second
+  let target = 0; // the backup in front, or on its way there
+  let fade = null; // a crossfade in progress, with motion off
+  let settledAt = 0;
+  let selected = null;
+  let geo = null;
+  const windows = [];
+
+  // ----------------------------------------------------------------- build
+
+  const stage = $('#stage');
+  function buildWindows() {
+    stage.textContent = '';
+    windows.length = 0;
+    for (let i = 0; i < N; i++) {
+      const el = document.createElement('div');
+      el.className = 'win';
+      el.dataset.i = i;
+      const entries = contents(backups[i].when);
+      el.innerHTML = `<div class="hb"><div class="crumbs">${HOME}<span>Home</span><span class="sep">&#8250;</span><span>Documents</span><span class="sep">&#8250;</span><b>Projects</b></div>
+        <div class="hb-when">${kindBadge(i)}<span>${label(i)}</span></div></div>
+        <div class="body">${state.front === 'grid' ? gridHtml(entries) : listHtml(entries)}</div>`;
+      stage.appendChild(el);
+      windows.push(el);
+    }
+    showSelection();
+    placeWindows();
+  }
+
+  function placeWindows() {
+    const dir = DIRS[state.dir];
+    const vw = innerWidth;
+    const vh = innerHeight;
+    const right = state.tl === 'right' ? 230 : 0;
+    const bottom = state.tl === 'strip' ? 186 : 96;
+    const h = Math.min(620, (vh - bottom) * 0.62);
+    const w = Math.min(1040, (vw - right) * dir.wFrac, h * 1.75);
+    const cx = (vw - right) * dir.cx;
+    const cy = vh - bottom - h / 2 - 16;
+    geo = { w, h, cx, cy };
+    stage.style.perspective = dir.persp;
+    stage.style.perspectiveOrigin = dir.origin;
+    stage.style.transformStyle = dir.persp === 'none' ? 'flat' : 'preserve-3d';
+    for (const el of windows) {
+      Object.assign(el.style, {
+        width: `${w}px`, height: `${h}px`, left: `${cx - w / 2}px`, top: `${cy - h / 2}px`, transformOrigin: dir.tOrigin,
+      });
+    }
+    const arrows = $('#arrows');
+    arrows.style.left = `${vw - right + 6}px`;
+    arrows.style.top = `${cy - 50}px`;
+    buildTimelines();
+    lastDrawn = NaN;
+  }
+
+  // -------------------------------------------------------------- timelines
+
+  function buildTimelines() {
+    // Down the right-hand edge: the oldest at the top, now at the bottom.
+    const ticks = $('#tl-ticks');
+    ticks.textContent = '';
+    const box = $('#tl-right').getBoundingClientRect();
+    const H = box.height || innerHeight * 0.7;
+    const yOf = (i) => (N - 1 - i) * (H / (N - 1));
+    let lastY = Infinity;
+    for (let i = 0; i < N; i++) {
+      const tk = document.createElement('div');
+      tk.className = `tk ${backups[i].kind}`;
+      tk.dataset.i = i;
+      tk.style.top = `${yOf(i)}px`;
+      tk.style.height = `${Math.max(8, H / (N - 1))}px`;
+      tk.innerHTML = '<i></i>';
+      ticks.appendChild(tk);
+      // A group is labelled at its newest backup, unless that would crowd
+      // the label below it.
+      const first = i === 0 || group(i) !== group(i - 1);
+      if (first && (i === 0 || lastY - yOf(i) >= 15)) {
+        const lab = document.createElement('div');
+        lab.className = i === 0 ? 'lab now' : 'lab';
+        lab.textContent = group(i);
+        lab.style.top = `${yOf(i)}px`;
+        ticks.appendChild(lab);
+        lastY = yOf(i);
+      }
+    }
+
+    // Along the bottom: the oldest at the left, now at the right.
+    const bars = $('#s-bars');
+    bars.textContent = '';
+    const W = $('#s-area').getBoundingClientRect().width || innerWidth * 0.7;
+    const xOf = (i) => 8 + (N - 1 - i) * ((W - 16) / (N - 1));
+    let lastX = -Infinity;
+    for (let i = N - 1; i >= 0; i--) {
+      const sb = document.createElement('div');
+      sb.className = `sb ${backups[i].kind}`;
+      sb.dataset.i = i;
+      sb.style.left = `${xOf(i)}px`;
+      sb.style.width = `${Math.max(4, ((W - 16) / (N - 1)) * 0.55)}px`;
+      const hh = i === 0 ? 30 : 8 + ((i * 7919) % 23) + (backups[i].kind === 'archive' ? 6 : 0);
+      sb.style.height = `${hh}px`;
+      sb.innerHTML = `<i style="height:${hh}px"></i>`;
+      bars.appendChild(sb);
+      // Here a group is labelled at its oldest backup, where it starts.
+      const start = i === N - 1 || group(i) !== group(i + 1);
+      if (start && xOf(i) - lastX >= 58) {
+        const lab = document.createElement('div');
+        lab.className = 'slab';
+        const g = group(i);
+        lab.textContent = g === 'Today (Now)' ? 'Today' : g === 'Yesterday' || /\d{4}$/.test(g) ? g : g.slice(0, 3);
+        lab.style.left = `${xOf(i)}px`;
+        bars.appendChild(lab);
+        lastX = xOf(i);
+      }
+    }
+    timelineGeo = { H, W, yOf, xOf };
+  }
+  let timelineGeo = null;
+
+  function drawTimelines() {
+    if (!timelineGeo) return;
+    const { H, W } = timelineGeo;
+    $('#tl-mark').style.top = `${(N - 1 - p) * (H / (N - 1))}px`;
+    $('#s-mark').style.left = `${8 + (N - 1 - p) * ((W - 16) / (N - 1))}px`;
+    for (const el of document.querySelectorAll('.tk.cur, .sb.cur')) el.classList.remove('cur');
+    for (const el of document.querySelectorAll(`.tk[data-i="${target}"], .sb[data-i="${target}"]`)) el.classList.add('cur');
+  }
+
+  // ------------------------------------------------------------------ draw
+
+  let lastDrawn = NaN;
+  function drawStack(now) {
+    const dir = DIRS[state.dir];
+    const k = fade ? clamp((now - fade.t0) / 200, 0, 1) : 1;
+    if (fade && k >= 1) fade = null;
+    if (p === lastDrawn && !fade) return;
+    lastDrawn = fade ? NaN : p;
+    for (let i = 0; i < N; i++) {
+      const el = windows[i];
+      el.classList.toggle('front', i === target);
+      let d = i - p;
+      let op = 1;
+      if (fade && i === fade.from) { d = 0; op = 1 - k; }
+      else if (fade && i === fade.to) { op = k; }
+      if (d > dir.max || d < -1) { el.style.display = 'none'; continue; }
+      const pl = dir.place(d);
+      op *= pl.op === undefined ? 1 : clamp(pl.op, 0, 1);
+      op *= clamp((dir.max - d) / 2.5, 0, 1);
+      el.style.display = op <= 0.001 ? 'none' : 'block';
+      el.style.transform = pl.tf + (fade && i === fade.from ? ' translateZ(1px)' : '');
+      el.style.opacity = op.toFixed(3);
+      el.style.setProperty('--dim', (pl.dim || 0).toFixed(3));
+      el.style.zIndex = String(1000 - Math.round(d * 10) + (fade && i === fade.from ? 5 : 0));
+    }
+    drawTimelines();
+  }
+
+  // The spring: stiff enough to arrive briskly, damped just short of
+  // critical so it settles on the backup without bouncing past it.
+  const K = 190;
+  const C = 2 * Math.sqrt(K) * 0.92;
+  function advance(dt) {
+    if (state.motion === 'off') { p = target; vel = 0; return; }
+    let left = dt;
+    while (left > 0) {
+      const h = Math.min(left, 1 / 240);
+      vel += (K * (target - p) - C * vel) * h;
+      p += vel * h;
+      left -= h;
+    }
+    if (Math.abs(target - p) < 0.0008 && Math.abs(vel) < 0.01) { p = target; vel = 0; }
+  }
+
+  // ----------------------------------------------------------------- stars
+
+  const canvas = $('#bg-stars');
+  const ctx = canvas.getContext('2d');
+  const stars = Array.from({ length: 600 }, () => star(Math.random()));
+  function star(z) { return { x: Math.random() * 2 - 1, y: Math.random() * 2 - 1, z: 0.04 + z }; }
+  function sizeCanvas() {
+    const r = devicePixelRatio || 1;
+    canvas.width = innerWidth * r;
+    canvas.height = innerHeight * r;
+    ctx.setTransform(r, 0, 0, r, 0, 0);
+  }
+  function drawStars(dt) {
+    if (state.bg !== 'stars') return;
+    const w = innerWidth;
+    const hgt = innerHeight;
+    const dark = state.theme === 'dark';
+    const g = ctx.createRadialGradient(w / 2, hgt * 0.3, 0, w / 2, hgt * 0.3, Math.max(w, hgt) * 0.8);
+    g.addColorStop(0, dark ? '#18203a' : '#f4f6fc');
+    g.addColorStop(1, dark ? '#04050a' : '#c7d0e6');
+    ctx.fillStyle = g;
+    ctx.fillRect(0, 0, w, hgt);
+    // Going back in time flies into the stack, so the stars come at the
+    // viewer; going forward, they recede. At rest they drift.
+    const speed = 0.012 + vel * 0.2;
+    const vx = w / 2;
+    const vy = geo ? geo.cy - geo.h * 0.9 : hgt * 0.3;
+    const scale = Math.max(w, hgt) * 0.5;
+    ctx.fillStyle = dark ? '#ffffff' : '#27305a';
+    ctx.strokeStyle = ctx.fillStyle;
+    for (const s of stars) {
+      s.z -= speed * dt;
+      if (s.z <= 0.04) Object.assign(s, star(1));
+      if (s.z > 1.05) Object.assign(s, star(0));
+      const sx = vx + (s.x / s.z) * scale;
+      const sy = vy + (s.y / s.z) * scale;
+      if (sx < -50 || sx > w + 50 || sy < -50 || sy > hgt + 50) { Object.assign(s, star(Math.random() * 0.6 + 0.4)); continue; }
+      const a = clamp((1.05 - s.z) * 1.3, 0, 1) * (dark ? 1 : 0.55);
+      const r = (1.05 - s.z) * 1.8 + 0.25;
+      ctx.globalAlpha = a;
+      if (Math.abs(speed) > 0.25) {
+        const tz = s.z + speed * 0.035;
+        ctx.lineWidth = r;
+        ctx.beginPath();
+        ctx.moveTo(sx, sy);
+        ctx.lineTo(vx + (s.x / tz) * scale, vy + (s.y / tz) * scale);
+        ctx.stroke();
+      } else {
+        ctx.beginPath();
+        ctx.arc(sx, sy, r, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
+    ctx.globalAlpha = 1;
+  }
+
+  // ------------------------------------------------------------------ loop
+
+  let last = performance.now();
+  function frame(now) {
+    const dt = Math.min(0.05, (now - last) / 1000);
+    last = now;
+    const was = p;
+    advance(dt);
+    drawStack(now);
+    drawStars(dt);
+    // Thumbnails are fetched for the front window once it has settled.
+    if (p === target && was !== p) settledAt = now;
+    if (p === target && settledAt && now - settledAt > 300) {
+      windows[target].classList.add('fetched');
+      settledAt = 0;
+    }
+    requestAnimationFrame(frame);
+  }
+
+  // --------------------------------------------------------------- actions
+
+  function goTo(i) {
+    i = clamp(i, 0, N - 1);
+    if (i === target) return;
+    if (state.motion === 'off') { fade = { from: target, to: i, t0: performance.now() }; settledAt = performance.now(); }
+    target = i;
+    updateBar();
+  }
+  const step = (n) => goTo(target + n);
+
+  function updateBar() {
+    $('#when-main').innerHTML = `<span>${label(target)}</span>${kindBadge(target)}`;
+    $('#when-sub').textContent = target === 0 ? 'The folder as it is now' : `Backup ${target} of ${N - 1}`;
+    $('#restore').disabled = target === 0;
+    $('#up').disabled = $('#s-older').disabled = target === N - 1;
+    $('#down').disabled = $('#s-newer').disabled = target === 0;
+  }
+
+  function showSelection() {
+    for (const el of document.querySelectorAll('.item.sel')) el.classList.remove('sel');
+    if (selected) for (const el of document.querySelectorAll(`.item[data-name="${selected}"]`)) el.classList.add('sel');
+  }
+  function select(name) { selected = name; showSelection(); }
+  function selectNext(n) {
+    const names = [...windows[target].querySelectorAll('.item')].map((el) => el.dataset.name);
+    if (!names.length) return;
+    const pos = names.indexOf(selected);
+    select(names[clamp(pos < 0 ? (n > 0 ? 0 : names.length - 1) : pos + n, 0, names.length - 1)]);
+  }
+
+  let toastTimer = 0;
+  function toast(text) {
+    const t = $('#toast');
+    t.textContent = text;
+    t.classList.add('on');
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => t.classList.remove('on'), 2600);
+  }
+  function restore() {
+    if (target === 0) { toast('Nothing to restore: this is the folder as it is now.'); return; }
+    const inFront = selected && windows[target].querySelector(`.item[data-name="${selected}"]`);
+    toast(`Restore would put back ${inFront ? selected : 'the folder Projects'} as it was ${label(target).replace(/^Today, /, 'today at ').replace(/^Yesterday, /, 'yesterday at ')}.`);
+  }
+  const cancel = () => toast('Cancel would close Rewind here, with nothing changed.');
+
+  // ----------------------------------------------------------------- panel
+
+  const CHOICES = {
+    dir: { key: '1-4', label: 'Direction', options: Object.fromEntries(DIR_KEYS.map((k, i) => [k, `${i + 1} ${DIRS[k].name}`])) },
+    bg: { key: 'B', label: 'Background', options: { wall: 'Wallpaper, dimmed', stars: 'Starfield', grad: 'Gradient' } },
+    tl: { key: 'L', label: 'Timeline', options: { right: 'Right-hand edge', strip: 'Bottom strip' } },
+    front: { key: 'F', label: 'Front window', options: { grid: 'Icons', list: 'List' } },
+    theme: { key: 'T', label: 'Style', options: { light: 'Light', dark: 'Dark' } },
+    motion: { key: 'M', label: 'Animations', options: { on: 'On', off: 'Off (crossfade)' } },
+  };
+  function buildPanel() {
+    const panel = $('#panel');
+    panel.innerHTML = '<h1>Rewind prototype</h1>' + Object.entries(CHOICES).map(([name, c]) =>
+      `<span class="k">${c.label} <kbd>${c.key}</kbd></span><span class="seg">${Object.entries(c.options).map(([v, text]) =>
+        `<button data-k="${name}" data-v="${v}" class="${state[name] === v ? 'on' : ''}">${text}</button>`).join('')}</span>`).join('') +
+      `<div class="keys"><kbd>Up</kbd> <kbd>Down</kbd> <kbd>PgUp</kbd> <kbd>PgDn</kbd> older and newer; <kbd>Home</kbd> now, <kbd>End</kbd> the oldest;
+       <kbd>Left</kbd> <kbd>Right</kbd> select a file; <kbd>Enter</kbd> restore, <kbd>Esc</kbd> cancel; the mouse wheel and clicks work too.
+       <kbd>H</kbd> hides this panel.</div>`;
+  }
+  function choose(name, value) {
+    if (name === 'dir') Object.assign(state, { dir: value }, DIRS[value].pairing);
+    else state[name] = value;
+    apply(name === 'front' || name === 'dir');
+  }
+  function cycle(name) {
+    const opts = Object.keys(CHOICES[name].options);
+    choose(name, opts[(opts.indexOf(state[name]) + 1) % opts.length]);
+  }
+  function apply(rebuild) {
+    root.dataset.theme = state.theme;
+    root.dataset.bg = state.bg;
+    root.dataset.tl = state.tl;
+    history.replaceState(null, '', `#${Object.entries(state).map(([k, v]) => `${k}=${v}`).join('&')}`);
+    buildPanel();
+    if (rebuild) buildWindows(); else placeWindows();
+    if (state.motion === 'off') { p = target; vel = 0; }
+    lastDrawn = NaN;
+  }
+
+  // ----------------------------------------------------------------- input
+
+  addEventListener('keydown', (ev) => {
+    if (ev.ctrlKey || ev.altKey || ev.metaKey) return;
+    const key = ev.key;
+    const handled = {
+      ArrowUp: () => step(1), PageUp: () => step(1), ArrowDown: () => step(-1), PageDown: () => step(-1),
+      Home: () => goTo(0), End: () => goTo(N - 1), Enter: restore, Escape: cancel,
+      ArrowLeft: () => selectNext(-1), ArrowRight: () => selectNext(1),
+      b: () => cycle('bg'), l: () => cycle('tl'), f: () => cycle('front'), t: () => cycle('theme'), m: () => cycle('motion'),
+      h: () => $('#panel').classList.toggle('off'),
+      1: () => choose('dir', DIR_KEYS[0]), 2: () => choose('dir', DIR_KEYS[1]),
+      3: () => choose('dir', DIR_KEYS[2]), 4: () => choose('dir', DIR_KEYS[3]),
+    }[key.length === 1 ? key.toLowerCase() : key];
+    if (handled) { ev.preventDefault(); handled(); }
+  });
+
+  let wheel = 0;
+  addEventListener('wheel', (ev) => {
+    if (ev.target.closest('#panel')) return;
+    ev.preventDefault();
+    wheel += ev.deltaY;
+    if (Math.abs(wheel) >= 60) { step(wheel < 0 ? 1 : -1); wheel = 0; }
+  }, { passive: false });
+
+  stage.addEventListener('click', (ev) => {
+    const win = ev.target.closest('.win');
+    if (!win) return;
+    const i = Number(win.dataset.i);
+    if (i !== target) { goTo(i); return; }
+    const item = ev.target.closest('.item');
+    select(item ? item.dataset.name : null);
+  });
+  stage.addEventListener('dblclick', (ev) => {
+    const item = ev.target.closest('.win.front .item');
+    if (item) toast(item.dataset.name === 'old-client-folder' ? 'Opening a folder is not in this prototype.' : 'Opening a file is not in this prototype.');
+  });
+
+  const tip = $('#tip');
+  function hover(ev) {
+    const t = ev.target.closest('.tk, .sb');
+    if (!t) { tip.style.display = 'none'; return; }
+    const i = Number(t.dataset.i);
+    tip.innerHTML = `${label(i)}${KIND[backups[i].kind] ? ` &#183; ${KIND[backups[i].kind]}` : ''}`;
+    tip.style.display = 'block';
+    const r = t.getBoundingClientRect();
+    if (t.classList.contains('tk')) {
+      tip.style.left = `${r.left - tip.offsetWidth - 46}px`;
+      tip.style.top = `${r.top + r.height / 2 - tip.offsetHeight / 2}px`;
+    } else {
+      tip.style.left = `${r.left + r.width / 2 - tip.offsetWidth / 2}px`;
+      tip.style.top = `${r.top - tip.offsetHeight - 30}px`;
+    }
+  }
+  for (const id of ['#tl-right', '#tl-strip']) {
+    $(id).addEventListener('mousemove', hover);
+    $(id).addEventListener('mouseleave', () => { tip.style.display = 'none'; });
+    $(id).addEventListener('click', (ev) => { const t = ev.target.closest('.tk, .sb'); if (t) goTo(Number(t.dataset.i)); });
+  }
+  $('#up').onclick = () => step(1);
+  $('#down').onclick = () => step(-1);
+  $('#s-older').onclick = () => step(1);
+  $('#s-newer').onclick = () => step(-1);
+  $('#restore').onclick = restore;
+  $('#cancel').onclick = cancel;
+  $('#panel').addEventListener('click', (ev) => {
+    const b = ev.target.closest('button[data-k]');
+    if (b) choose(b.dataset.k, b.dataset.v);
+  });
+  // Buttons are for the mouse here; the keys stay with the view.
+  addEventListener('mousedown', (ev) => { if (ev.target.closest('button')) ev.preventDefault(); });
+  addEventListener('resize', () => { sizeCanvas(); placeWindows(); });
+
+  // ----------------------------------------------------------------- start
+
+  sizeCanvas();
+  root.dataset.theme = state.theme;
+  root.dataset.bg = state.bg;
+  root.dataset.tl = state.tl;
+  buildPanel();
+  buildWindows();
+  windows[0].classList.add('fetched');
+  updateBar();
+  requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>
