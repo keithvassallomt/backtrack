@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- The keys of GNOME's own schema that Rewind reads, with GNOME's defaults. -->
+<schemalist>
+  <schema id="org.gnome.desktop.background" path="/org/gnome/desktop/background/">
+    <key name="picture-options" type="s"><default>'zoom'</default></key>
+    <key name="picture-uri" type="s"><default>'file:///usr/share/backgrounds/gnome/adwaita-l.jxl'</default></key>
+    <key name="picture-uri-dark" type="s"><default>'file:///usr/share/backgrounds/gnome/adwaita-d.jxl'</default></key>
+    <key name="primary-color" type="s"><default>'#023c88'</default></key>
+  </schema>
+</schemalist>

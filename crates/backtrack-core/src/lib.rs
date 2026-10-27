@@ -34,6 +34,7 @@ pub mod status_line;
 #[cfg(feature = "glib")]
 pub mod trash;
 pub mod walk;
+pub mod xml;
 
 /// The crate version, sourced from the workspace package version at build time.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");

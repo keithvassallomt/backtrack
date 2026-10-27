@@ -23,6 +23,7 @@ mod model;
 mod path;
 mod state;
 mod ui;
+mod wallpaper;
 mod window;
 
 use std::path::PathBuf;
@@ -59,6 +60,10 @@ struct Args {
     /// accepted here only so that parsing does not refuse it.
     #[arg(long = "gapplication-service", hide = true)]
     gapplication_service: bool,
+    /// Find the desktop's wallpaper as Rewind would, draw it, say how it
+    /// went, and exit without opening a window. For checking a desktop.
+    #[arg(long, hide = true)]
+    wallpaper_report: bool,
 }
 
 /// What the window is being asked to show, in archive-relative paths.
@@ -114,7 +119,10 @@ fn main() -> glib::ExitCode {
     // parses the arguments again — see `connect_command_line` — because with a
     // single-instance application they may have come from a different process
     // than this one.
-    let _validated = Args::parse();
+    let validated = Args::parse();
+    if validated.wallpaper_report {
+        return wallpaper::report();
+    }
 
     info!(
         version = backtrack_core::VERSION,
@@ -195,6 +203,7 @@ fn main() -> glib::ExitCode {
             select: given(select),
             fix: None,
             gapplication_service: false,
+            wallpaper_report: false,
         };
         show(&browser, Target::resolve(&args), None);
     });
@@ -321,6 +330,7 @@ mod tests {
             select: select.map(PathBuf::from),
             fix: None,
             gapplication_service: false,
+            wallpaper_report: false,
         }
     }
 

@@ -1,0 +1,8 @@
+[org/gnome/desktop/background]
+picture-uri='file:///home/keith/Pictures/lake.jpg'
+picture-uri-dark='file:///home/keith/Pictures/lake%20at%20night.jpg'
+picture-options='scaled'
+primary-color='#204a87'
+
+[org/gnome/desktop/interface]
+color-scheme='prefer-dark'

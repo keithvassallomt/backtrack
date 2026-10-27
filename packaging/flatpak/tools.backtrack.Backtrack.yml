@@ -38,6 +38,10 @@ finish-args:
   - --talk-name=org.freedesktop.secrets
   # The tray icon on desktops that have a system tray (S14-T3).
   - --talk-name=org.kde.StatusNotifierWatcher
+  # Plasma's wallpaper, which its shell says on the session bus and Rewind
+  # shows behind its windows (S18-T2). GNOME's is read from dconf's files,
+  # which --filesystem=host already reaches.
+  - --talk-name=org.kde.plasmashell
   # The battery and metered-network checks before a scheduled backup. Without
   # them both read as unknown, and backups run anyway.
   - --system-talk-name=org.freedesktop.UPower

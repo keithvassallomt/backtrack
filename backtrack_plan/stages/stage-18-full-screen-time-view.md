@@ -107,13 +107,37 @@ S18-T1 prototype, which is always dark, whatever the style (only the windows
 follow the style). Over the wallpaper, the view darkens it as mockups 25 and
 26 show.
 
+**Found while building it** (2026-10-27):
+- GTK decodes through glycin itself: `gdk::Texture` read Fedora 45's 5120 by
+  5120 JPEG XL natively and inside the Flatpak (runtime 51) on the GNOME VM,
+  so Backtrack takes no glycin dependency of its own. glycin's loaders run in
+  a sandbox the Flatpak portal makes only for a real application: in a bare
+  `flatpak run` of the SDK the portal refuses, and JPEG XL fails there alone.
+- `/run/host/etc/dconf/db` is there with `--filesystem=host` alone. Fedora's
+  profile is `user`, then `local`, `site` and `distro`; `HOST_XDG_CONFIG_HOME`
+  is unset in the Flatpak, so the user's database is `~/.config/dconf/user`.
+- Plasma's default wallpaper follows `kdeglobals` as KConfig reads it:
+  `~/.config`, then `~/.config/kdedefaults`, `/etc/xdg` and Fedora's
+  `/usr/share/kde-settings/kde-profile/default/xdg`, which names Fedora's
+  look-and-feel. The Plasma VM's own `kdeglobals` names Breeze Dark, and its
+  desktop shows the Next package's dark picture, as resolved here (compared
+  with a screenshot: 0.25% different, against 32% for the light picture).
+  `Color` comes as a struct of one ARGB number. The first screen's wallpaper
+  is the one used: Plasma numbers its screens its own way.
+- GTK reports a scale of 3.56 for a rotated 5K monitor on Hyprland at scale 2,
+  the panel's width over the rotated width, so the screen's size is taken at
+  a scale of two at most.
+- `backtrack-gtk --wallpaper-report` (hidden from `--help`) finds and draws
+  the wallpaper as Rewind will, and says where each setting came from.
+
 **Accept:** unit tests on fixtures: a dconf user database with and without the
 key, a system database, a vendor default from compiled schemas, the light and
 dark choice, an XML slideshow, and a Plasma package resolved by size and by
-dark. On the GNOME and Plasma VMs, native and Flatpak, the view shows the
-desktop's own wallpaper, and after it is changed in the desktop's settings the
-next opening shows the new one. On Keith's laptop (Hyprland), the starfield,
-dark in both styles.
+dark. On the GNOME and Plasma VMs, native and Flatpak, the report finds and
+draws the desktop's own wallpaper, and after it is changed in the desktop's
+settings it finds the new one. On Keith's laptop (Hyprland), the report falls
+back to the starfield. (The view itself arrives in S18-T3, whose check sees
+the wallpaper in it.)
 
 ### S18-T3 — The full-screen view and its stack
 A full-screen window on the monitor it was opened from, drawing the stack
@@ -140,9 +164,10 @@ nine are drawn.
   measure: Keith judges the motion on real hardware.
 
 **Accept:** on Keith's laptop, stepping through fifty backups of a real folder
-looks smooth to Keith; on both VMs, the view opens full screen, steps by every
-key above, and Escape returns to where it was opened from; with animations off,
-crossfades.
+looks smooth to Keith, over the starfield; on both VMs, native and Flatpak, the
+view opens full screen over the desktop's own wallpaper (S18-T2), steps by
+every key above, and Escape returns to where it was opened from; with
+animations off, crossfades.
 
 ### S18-T4 — The full-screen view's front window
 The folder at the backup in front, as a file view: listed from the catalogue as
