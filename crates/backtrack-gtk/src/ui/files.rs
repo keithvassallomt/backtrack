@@ -553,13 +553,7 @@ impl Files {
             .into_iter()
             .zip(on_disk.into_iter().chain(std::iter::repeat(UNKNOWN)))
             .collect();
-        // Folders first, then by name, the way every file manager does it. The
-        // index returns plain name order, which mixes them.
-        sorted.sort_by(|(a, _), (b, _)| {
-            (b.kind == Kind::Dir)
-                .cmp(&(a.kind == Kind::Dir))
-                .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
-        });
+        sorted.sort_by(|(a, _), (b, _)| crate::model::folders_first(a, b));
         for (entry, on_disk) in sorted {
             let partly = leading.contains(&entry.name);
             let data = RowData {
@@ -823,7 +817,7 @@ fn status_factory() -> SignalListItemFactory {
 /// The themed icon for an entry, chosen from its name the way a file manager
 /// does — the index records no content type, and guessing from the name is what
 /// gives a PDF a PDF icon.
-fn icon_for(entry: &Entry) -> gio::Icon {
+pub(crate) fn icon_for(entry: &Entry) -> gio::Icon {
     match entry.kind {
         Kind::Dir => gio::ThemedIcon::new("folder").upcast(),
         Kind::Symlink => gio::ThemedIcon::new("emblem-symbolic-link").upcast(),

@@ -31,13 +31,24 @@ pub mod pause;
 pub mod plugins;
 pub mod prefs;
 pub mod restore;
+pub mod rewind;
 pub mod search;
 pub mod status;
 pub mod trash;
 pub mod wallpaper;
 pub mod wizard;
 
+use backtrack_core::index::{Entry, Kind};
 use gtk4::glib;
+
+/// The order a folder's entries are shown in: folders first, then by name,
+/// the way every file manager does it. The index returns plain name order,
+/// which mixes them.
+pub fn folders_first(a: &Entry, b: &Entry) -> std::cmp::Ordering {
+    (b.kind == Kind::Dir)
+        .cmp(&(a.kind == Kind::Dir))
+        .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
+}
 
 /// Days since the Unix epoch, in `tz`. The unit the calendar, the density strip
 /// and the sidebar all bucket by: two timestamps belong to the same day exactly

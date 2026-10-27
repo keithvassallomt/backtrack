@@ -484,6 +484,20 @@ impl Window {
             app.set_accels_for_action("win.search", &["<Control>f"]);
         }
 
+        // Rewind, the full-screen view (Stage 18), at the folder and backup
+        // on screen. S18-T7 adds the header bar button and the menu item.
+        let rewind = gio::SimpleAction::new("rewind", None);
+        {
+            let this = Rc::clone(self);
+            rewind.connect_activate(move |_, _| {
+                ui::rewind::open(&this.window, &this.state.view(), &this.index);
+            });
+        }
+        self.window.add_action(&rewind);
+        if let Some(app) = self.window.application() {
+            app.set_accels_for_action("win.rewind", &["<Control>t"]);
+        }
+
         let compare = gio::SimpleAction::new("compare", None);
         compare.set_enabled(false);
         let comparer = Rc::clone(self);

@@ -17,6 +17,7 @@ pub mod preview;
 pub mod recovery;
 pub mod replaced;
 pub mod restore;
+pub mod rewind;
 pub mod schedule;
 pub mod search;
 pub mod sidebar;
