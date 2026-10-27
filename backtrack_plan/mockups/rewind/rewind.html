@@ -469,7 +469,8 @@ svg.icon { width: 100%; height: 100%; display: block; }
 
   const prefersDark = matchMedia('(prefers-color-scheme: dark)').matches;
   const prefersStill = matchMedia('(prefers-reduced-motion: reduce)').matches;
-  const state = { bg: 'wall', front: 'grid', theme: prefersDark ? 'dark' : 'light', motion: prefersStill ? 'off' : 'on', step: '800' };
+  const DEFAULTS = { bg: 'wall', front: 'grid', theme: prefersDark ? 'dark' : 'light', motion: prefersStill ? 'off' : 'on', step: '800' };
+  const state = { ...DEFAULTS };
   for (const part of location.hash.slice(1).split('&')) {
     const [k, v] = part.split('=');
     if (k in state && v) state[k] = v;
@@ -866,6 +867,8 @@ svg.icon { width: 100%; height: 100%; display: block; }
 
   // ----------------------------------------------------------------- start
 
+  // A link from an earlier round may carry choices this one no longer has.
+  for (const [k, c] of Object.entries(CHOICES)) if (!(state[k] in c.options)) state[k] = DEFAULTS[k];
   sizeCanvas();
   root.dataset.theme = state.theme;
   root.dataset.bg = state.bg;
