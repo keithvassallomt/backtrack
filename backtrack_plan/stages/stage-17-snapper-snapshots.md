@@ -229,6 +229,23 @@ and it grows with the square of the number of files. The lookup is by path.
 on the query as it was; reading Keith's backed-up folders into a copy of his
 catalogue takes a fraction of a second (6.5 s before).
 
+### S17-T9 — Giving up a listing or a preview part way leaves no lock behind
+*(defect, found in CI while merging Stage 17)* Reading an archive's listing
+only part way, or dropping a preview before its file has been read, let go of
+its Borg by killing it with SIGKILL. Borg holds the repository's lock while it
+lists or extracts, and briefly holds `lock.exclusive` even to join or leave as
+a reader; killed then, it leaves the lock behind, and every Borg after it is
+refused as LockedByOther until the lock is broken. S15-T6's end-to-end test
+did exactly this in CI from time to time, and a catalogue job cancelled
+mid-archive could do it to a real repository. Such a Borg is now asked to stop
+with SIGTERM, as a cancelled job is, and killed only if it has not gone after
+the same grace period.
+
+**Accept:** a test that a Borg let go of is sent SIGTERM, and killed once the
+grace is up if it ignores it; against real Borg, a listing given up after its
+first item and a preview given up after its first few kilobytes leave the
+repository with no lock, shown to fail with Borg killed outright.
+
 ## Definition of Done
 All tasks done; the CHANGELOG's Unreleased section says what changed for the
 user; Stage 5's own btrfs snapshots can be previewed and restored from, as a

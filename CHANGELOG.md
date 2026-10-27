@@ -412,6 +412,11 @@ All notable changes to Backtrack are documented here. This project adheres to
   accumulated, and with the square of the number of files: six and a half
   seconds for 55,000 files after a week of hourly backups, and far longer for
   more files. It now takes a fraction of a second.
+- Cataloguing stopped part way through a backup, or a preview closed before
+  its file had arrived, could leave the backup destination locked, so that
+  every backup after it failed with "the repository is locked by another
+  process". Borg is now asked to stop, which lets it release the lock, and is
+  only forced to if it does not.
 
 ## [0.1.0] - TBD
 

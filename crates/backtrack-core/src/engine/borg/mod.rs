@@ -25,7 +25,7 @@ use crate::engine::{
 use crate::index::{ArchiveMeta, BorgItem};
 use crate::secret::SecretStore;
 
-use invoke::{base_command, probe_version, spawn_check, spawn_stdout, spawn_streamed};
+use invoke::{base_command, probe_version, spawn_check, spawn_stdout, spawn_streamed, Stopping};
 
 /// The v1 backup engine: drives the `borg` CLI (1.2/1.4).
 pub struct BorgCli {
@@ -306,18 +306,18 @@ impl BackupEngine for BorgCli {
             .arg("--format")
             .arg(crate::index::ITEM_FORMAT)
             .arg(self.archive_ref(id));
-        cmd.stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .kill_on_drop(true);
+        cmd.stdout(Stdio::piped()).stderr(Stdio::null());
         let mut child = cmd.spawn().map_err(|e| EngineError::BorgFailed {
             code: -1,
             stderr: format!("spawning borg list: {e}"),
         })?;
         let stdout = child.stdout.take().expect("stdout piped");
         let lines = BufReader::new(stdout).lines();
+        let child = Stopping::new(child);
 
-        // Own the child in the stream state so it lives as long as the stream
-        // (kill_on_drop reaps it if the consumer drops early).
+        // Own the child in the stream state so it lives as long as the stream,
+        // and is stopped, not killed, if the consumer drops it early: see
+        // `Stopping`.
         let stream = stream::unfold((lines, child), |(mut lines, mut child)| async move {
             // Loops rather than yielding per line, so a blank line — which
             // `--format` produces for an item whose fields are all empty, and
@@ -336,7 +336,7 @@ impl BackupEngine for BorgCli {
                         return Some((item, (lines, child)));
                     }
                     Ok(None) => {
-                        let _ = child.wait().await;
+                        let _ = child.child().wait().await;
                         return None;
                     }
                     Err(e) => {
