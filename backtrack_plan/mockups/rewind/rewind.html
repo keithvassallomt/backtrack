@@ -3,11 +3,16 @@
   SPDX-License-Identifier: GPL-3.0-or-later
   SPDX-FileCopyrightText: 2026 Keith Vassallo <keith@vassallo.cloud>
 
-  Rewind, the full-screen view (S18-T1): a prototype of four design
-  directions, to judge the motion rather than imagine it. Open it in a
-  browser, full screen (F11). The keys are listed in the panel at the top
-  left; 1 to 4 choose a direction, each with its own background, timeline and
-  front window, which B, L and F then change one at a time.
+  Rewind, the full-screen view (S18-T1): a prototype, to judge the motion
+  rather than imagine it. Open it in a browser, full screen (F11). The keys
+  are listed in the panel at the top left.
+
+  Round 2, the direction Keith chose from the first four (2026-10-27): the
+  stack goes straight back into the distance; the background is the desktop's
+  wallpaper, dimmed, or a starfield where the wallpaper cannot be read, always
+  dark; the timeline is down the right-hand edge; the front window shows icons
+  and switches to a list from its own header bar. The stack moves with an
+  ease-in-out curve, slow, fast, then slow, over a duration adjustable here.
 
   The data is made up: one folder, Projects, with 41 backups over a year.
 -->
@@ -22,7 +27,6 @@
   --accent: #1c71d8;
   --warn: #9c6e03;
   --err: #c01c28;
-  --win-bg: #fafafb;
   --view-bg: #ffffff;
   --hb-bg: #ffffff;
   --fg: rgba(0, 0, 6, 0.8);
@@ -32,24 +36,19 @@
   --page: #ffffff;
   --page-edge: rgba(0, 0, 0, 0.2);
   --page-fold: #e8e8ea;
-  --shade: 232, 234, 242;
   --btn-bg: rgba(255, 255, 255, 0.92);
   --btn-fg: rgba(0, 0, 6, 0.8);
-  --osd-bg: rgba(255, 255, 255, 0.72);
-  --panel-bg: rgba(255, 255, 255, 0.9);
-  --tick: rgba(0, 0, 6, 0.35);
+  --panel-bg: rgba(255, 255, 255, 0.92);
   --wall-dim: 0.3;
   --w1: #7fb2f0; --w2: #f3c9d9; --w3: #f7e1b5;
   --m1: #9aa9d6; --m2: #6f7fb8; --m3: #4a5893;
   --sun: #fff3d1;
-  --grad-1: #ffffff; --grad-2: #d6d7e0;
   color-scheme: light;
 }
 :root[data-theme="dark"] {
   --accent: #78aeed;
   --warn: #f6d32d;
   --err: #ff7b63;
-  --win-bg: #222226;
   --view-bg: #1d1d20;
   --hb-bg: #2e2e32;
   --fg: #ffffff;
@@ -59,27 +58,21 @@
   --page: #f6f5f4;
   --page-edge: rgba(0, 0, 0, 0.35);
   --page-fold: #cfcfd3;
-  --shade: 6, 6, 10;
   --btn-bg: rgba(58, 58, 64, 0.95);
   --btn-fg: #ffffff;
-  --osd-bg: rgba(30, 30, 34, 0.72);
-  --panel-bg: rgba(30, 30, 34, 0.92);
-  --tick: rgba(255, 255, 255, 0.4);
+  --panel-bg: rgba(30, 30, 34, 0.94);
   --wall-dim: 0.5;
   --w1: #14203f; --w2: #4a2f5e; --w3: #b0587a;
   --m1: #2a2f52; --m2: #1c2040; --m3: #10132a;
   --sun: #ffc9a8;
-  --grad-1: #3a3a46; --grad-2: #141418;
   color-scheme: dark;
 }
-/* What sits on the scene itself (the timeline, the date below the stack)
-   takes its colour from the background behind it, not the theme alone. */
-:root { --osd-fg: #ffffff; --osd-shadow: 0 1px 3px rgba(0, 0, 0, 0.6); }
-:root[data-bg="grad"], :root[data-bg="stars"][data-theme="light"] {
-  --osd-fg: rgba(0, 0, 20, 0.8); --osd-shadow: none;
-}
+/* Both backgrounds are dark behind the stack (the wallpaper is dimmed, the
+   starfield is always night), so what sits on the scene itself, the
+   timeline and the date below the stack, is light in either style. */
+:root { --osd-fg: #ffffff; --osd-shadow: 0 1px 3px rgba(0, 0, 0, 0.7); --tick: rgba(255, 255, 255, 0.45); }
 
-html, body { margin: 0; height: 100%; overflow: hidden; background: var(--grad-2); }
+html, body { margin: 0; height: 100%; overflow: hidden; background: #04050a; }
 body {
   font-family: "Adwaita Sans", "Cantarell", "Inter", "Noto Sans", system-ui, sans-serif;
   font-size: 14px; color: var(--fg); user-select: none;
@@ -87,31 +80,30 @@ body {
 button { font: inherit; }
 
 .bg { position: absolute; inset: 0; display: none; }
-:root[data-bg="grad"] #bg-grad, :root[data-bg="wall"] #bg-wall, :root[data-bg="stars"] #bg-stars { display: block; }
-#bg-grad { background: radial-gradient(ellipse at 50% 15%, var(--grad-1), var(--grad-2) 75%); }
+:root[data-bg="wall"] #bg-wall, :root[data-bg="stars"] #bg-stars { display: block; }
 #bg-wall svg { width: 100%; height: 100%; display: block; }
 #bg-wall::after { content: ""; position: absolute; inset: 0; background: rgba(0, 0, 0, var(--wall-dim)); }
 #bg-stars { width: 100%; height: 100%; }
 
-#stage { position: absolute; inset: 0; transform-style: preserve-3d; }
+#stage { position: absolute; inset: 0; transform-style: preserve-3d; perspective: 1300px; perspective-origin: 50% 0%; }
 
 /* A window of the stack. Only the one in front is live in the real view;
-   here every window is the same markup, and the ones behind are dimmed by a
-   veil in the scene's colour, as if further away. */
+   here every window is the same markup, and the ones behind are darkened by
+   a veil, as if further away. */
 .win {
   position: absolute; border-radius: 14px; overflow: hidden;
   background: var(--view-bg); color: var(--fg);
-  box-shadow: 0 0 0 1px var(--border), 0 20px 60px rgba(0, 0, 0, 0.35);
+  box-shadow: 0 0 0 1px var(--border), 0 20px 60px rgba(0, 0, 0, 0.45);
   will-change: transform, opacity; backface-visibility: hidden;
   display: none; cursor: pointer;
 }
 .win.front { cursor: default; }
 .win::after {
   content: ""; position: absolute; inset: 0; border-radius: inherit;
-  background: rgb(var(--shade)); opacity: var(--dim, 0); pointer-events: none;
+  background: rgb(6, 6, 10); opacity: var(--dim, 0); pointer-events: none;
 }
 .hb {
-  height: 46px; display: flex; align-items: center; gap: 12px; padding: 0 14px 0 10px;
+  height: 46px; display: flex; align-items: center; gap: 12px; padding: 0 8px 0 10px;
   background: var(--hb-bg); border-bottom: 1px solid var(--border);
 }
 .crumbs {
@@ -122,6 +114,13 @@ button { font: inherit; }
 .crumbs .sep { opacity: 0.4; padding: 0 2px; }
 .crumbs svg { width: 16px; height: 16px; margin-left: 2px; opacity: 0.8; }
 .hb-when { margin-left: auto; color: var(--dim-fg); font-weight: 600; display: flex; gap: 8px; align-items: center; }
+.views { display: flex; border-radius: 8px; overflow: hidden; background: color-mix(in srgb, currentColor 7%, transparent); }
+.views button {
+  border: 0; background: none; color: var(--fg); width: 36px; height: 30px; display: grid; place-items: center;
+  cursor: pointer; opacity: 0.7;
+}
+.views button.on { background: color-mix(in srgb, currentColor 14%, transparent); opacity: 1; }
+.views svg { width: 16px; height: 16px; }
 .body { position: absolute; top: 47px; left: 0; right: 0; bottom: 0; background: var(--view-bg); }
 
 .badge {
@@ -133,7 +132,7 @@ button { font: inherit; }
 .badge.local-only, .badge.in-trash { background: color-mix(in srgb, var(--err) 15%, transparent); color: var(--err); }
 .badge.local-snapshot, .badge.snapper { background: color-mix(in srgb, var(--warn) 15%, transparent); color: var(--warn); }
 
-/* The front window as a grid of icons. */
+/* The front window as icons. */
 .grid {
   display: grid; grid-template-columns: repeat(auto-fill, 118px); gap: 6px 8px;
   padding: 18px 22px; align-content: start; justify-content: start;
@@ -170,16 +169,15 @@ svg.icon { width: 100%; height: 100%; display: block; }
 .win.fetched .thumb.lazy > svg { opacity: 0; }
 
 /* The timeline down the right-hand edge. */
-#tl-right { position: absolute; right: 26px; top: 7vh; bottom: 112px; width: 170px; display: none; }
-:root[data-tl="right"] #tl-right { display: block; }
+#tl-right { position: absolute; right: 26px; top: 7vh; bottom: 112px; width: 170px; }
 .tk { position: absolute; right: 0; width: 64px; transform: translateY(-50%); cursor: pointer; }
 .tk i {
   position: absolute; right: 0; top: 50%; height: 2px; width: 20px; margin-top: -1px;
   background: var(--tick); border-radius: 1px; transition: width 0.12s;
 }
 .tk:hover i { width: 34px; background: var(--osd-fg); }
-.tk.snapper i, .tk.local-snapshot i { background: var(--warn); }
-.tk.in-trash i, .tk.local-only i { background: var(--err); }
+.tk.snapper i, .tk.local-snapshot i { background: #f6d32d; }
+.tk.in-trash i, .tk.local-only i { background: #ff7b63; }
 .tk.cur i { width: 40px; height: 3px; margin-top: -1.5px; background: var(--accent-bg); }
 .lab {
   position: absolute; right: 50px; transform: translateY(-50%); font-size: 12px; font-weight: 600;
@@ -192,54 +190,26 @@ svg.icon { width: 100%; height: 100%; display: block; }
   filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.4));
 }
 
-#arrows { position: absolute; display: none; flex-direction: column; gap: 12px; }
-:root[data-tl="right"] #arrows { display: flex; }
+#arrows { position: absolute; display: flex; flex-direction: column; gap: 12px; }
 .round {
   width: 44px; height: 44px; border-radius: 50%; border: 0; display: grid; place-items: center;
   background: var(--btn-bg); color: var(--btn-fg); cursor: pointer;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.25);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
 }
 .round svg { width: 18px; height: 18px; }
 .round:disabled { opacity: 0.4; cursor: default; }
-
-/* The timeline as a strip along the bottom, like the main window's. */
-#tl-strip {
-  position: absolute; left: 50%; transform: translateX(-50%); bottom: 84px;
-  width: min(1120px, 82vw); height: 82px; border-radius: 14px; background: var(--osd-bg);
-  display: none; align-items: center; gap: 10px; padding: 0 10px; box-sizing: border-box;
-  color: var(--osd-fg);
-}
-:root[data-tl="strip"] #tl-strip { display: flex; }
-:root[data-tl="strip"] { --osd-fg: var(--fg); --osd-shadow: none; }
-:root[data-tl="strip"][data-bg="wall"] #when, :root[data-tl="strip"][data-bg="stars"][data-theme="dark"] #when {
-  color: #ffffff; text-shadow: 0 1px 3px rgba(0, 0, 0, 0.6);
-}
-.end {
-  border: 0; border-radius: 9999px; padding: 7px 14px; background: var(--btn-bg); color: var(--btn-fg);
-  font-weight: 700; cursor: pointer; white-space: nowrap; flex: none;
-}
-.end:disabled { opacity: 0.4; cursor: default; }
-#s-area { position: relative; flex: 1; height: 64px; }
-.sb { position: absolute; bottom: 22px; width: 6px; transform: translateX(-50%); cursor: pointer; }
-.sb i { position: absolute; bottom: 0; left: 0; right: 0; border-radius: 2px 2px 0 0; background: var(--tick); }
-.sb:hover i { background: var(--fg); }
-.sb.snapper i, .sb.local-snapshot i { background: var(--warn); }
-.sb.in-trash i, .sb.local-only i { background: var(--err); }
-.sb.cur i { background: var(--accent-bg); }
-#s-mark { position: absolute; top: 0; bottom: 18px; width: 2px; background: var(--accent-bg); transform: translateX(-50%); pointer-events: none; }
-#s-mark::before { content: ""; position: absolute; top: -2px; left: -5px; width: 12px; height: 12px; border-radius: 50%; background: var(--accent-bg); }
-.slab { position: absolute; bottom: 0; font-size: 12px; font-weight: 600; transform: translateX(-50%); white-space: nowrap; opacity: 0.8; }
 
 /* Restore and Cancel, with the backup in front between them. */
 #bar { position: absolute; left: 0; right: 0; bottom: 22px; display: flex; justify-content: center; align-items: center; gap: 18px; }
 .btn {
   border: 0; border-radius: 9999px; padding: 10px 26px; font-weight: 700; cursor: pointer;
-  background: var(--btn-bg); color: var(--btn-fg); box-shadow: 0 2px 10px rgba(0, 0, 0, 0.25);
+  background: var(--btn-bg); color: var(--btn-fg); box-shadow: 0 2px 10px rgba(0, 0, 0, 0.35);
 }
 .btn.suggested { background: var(--accent-bg); color: #ffffff; }
 .btn:disabled { opacity: 0.45; cursor: default; }
 #when { min-width: 360px; text-align: center; color: var(--osd-fg); text-shadow: var(--osd-shadow); }
 #when-main { font-weight: 800; font-size: 16px; display: flex; gap: 8px; justify-content: center; align-items: center; }
+#when-main .badge { text-shadow: none; }
 #when-sub { font-size: 12.5px; opacity: 0.8; margin-top: 2px; }
 
 #tip {
@@ -251,23 +221,23 @@ svg.icon { width: 100%; height: 100%; display: block; }
   padding: 10px 20px; border-radius: 9999px; background: rgba(28, 28, 32, 0.94); color: #ffffff;
   font-weight: 600; transition: opacity 0.2s, transform 0.2s; pointer-events: none; z-index: 20;
 }
-:root[data-tl="strip"] #toast { bottom: 180px; }
 #toast.on { opacity: 1; transform: translate(-50%, 0); }
 
 #panel {
   position: absolute; left: 16px; top: 16px; z-index: 30; padding: 12px 14px; border-radius: 12px;
-  background: var(--panel-bg); color: var(--fg); font-size: 12.5px; box-shadow: 0 4px 20px rgba(0, 0, 0, 0.25);
-  display: grid; grid-template-columns: auto auto; gap: 6px 12px; align-items: center; max-width: 560px;
+  background: var(--panel-bg); color: var(--fg); font-size: 12.5px; box-shadow: 0 4px 20px rgba(0, 0, 0, 0.35);
+  display: grid; grid-template-columns: auto auto; gap: 6px 12px; align-items: center; max-width: 520px;
 }
 #panel.off { display: none; }
 #panel h1 { grid-column: 1 / -1; margin: 0 0 2px; font-size: 13.5px; }
 #panel .k { color: var(--dim-fg); font-weight: 700; white-space: nowrap; }
-#panel .seg { display: flex; flex-wrap: wrap; gap: 4px; }
+#panel .seg { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; }
 #panel .seg button {
   border: 0; border-radius: 6px; padding: 3px 9px; cursor: pointer; color: var(--fg);
   background: color-mix(in srgb, currentColor 8%, transparent);
 }
 #panel .seg button.on { background: var(--accent-bg); color: #ffffff; }
+#panel .speed { font-weight: 700; min-width: 128px; text-align: center; }
 #panel .keys { grid-column: 1 / -1; color: var(--dim-fg); line-height: 1.5; margin-top: 2px; }
 #panel kbd {
   font: inherit; font-weight: 700; padding: 0 4px; border-radius: 4px; color: var(--fg);
@@ -293,7 +263,6 @@ svg.icon { width: 100%; height: 100%; display: block; }
 </svg>
 
 <div id="scene">
-  <div id="bg-grad" class="bg"></div>
   <div id="bg-wall" class="bg">
     <svg viewBox="0 0 1600 900" preserveAspectRatio="xMidYMid slice" aria-hidden="true">
       <rect width="1600" height="900" fill="url(#g-wall-sky)"/>
@@ -311,11 +280,6 @@ svg.icon { width: 100%; height: 100%; display: block; }
   <div id="arrows">
     <button class="round" id="up" title="Older (Up)"><svg viewBox="0 0 16 16"><path d="M2.5 10.5 8 5l5.5 5.5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
     <button class="round" id="down" title="Newer (Down)"><svg viewBox="0 0 16 16"><path d="M2.5 5.5 8 11l5.5-5.5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
-  </div>
-  <div id="tl-strip">
-    <button class="end" id="s-older">&#8249; Older</button>
-    <div id="s-area"><div id="s-bars"></div><div id="s-mark"></div></div>
-    <button class="end" id="s-newer">Newer &#8250;</button>
   </div>
 
   <div id="bar">
@@ -462,6 +426,8 @@ svg.icon { width: 100%; height: 100%; display: block; }
     'plan-old': '<svg viewBox="0 0 80 60"><rect width="80" height="60" fill="#1c4f91"/><g fill="none" stroke="#e8f1fb" stroke-width="1.2"><rect x="8" y="8" width="64" height="44"/><path d="M8 30h30M38 8v44"/></g><g stroke="#e8f1fb" stroke-width="0.4" opacity="0.4"><path d="M0 15h80M0 30h80M0 45h80M20 0v60M40 0v60M60 0v60"/></g></svg>',
   };
   const HOME = '<svg viewBox="0 0 16 16"><path d="M2 7.5 8 2.5l6 5V14H10v-4H6v4H2z" fill="currentColor"/></svg>';
+  const VIEW_ICONS = '<svg viewBox="0 0 16 16"><g fill="currentColor"><rect x="1.5" y="1.5" width="5.5" height="5.5" rx="1"/><rect x="9" y="1.5" width="5.5" height="5.5" rx="1"/><rect x="1.5" y="9" width="5.5" height="5.5" rx="1"/><rect x="9" y="9" width="5.5" height="5.5" rx="1"/></g></svg>';
+  const VIEW_LIST = '<svg viewBox="0 0 16 16"><g fill="currentColor"><rect x="1.5" y="2" width="13" height="2.2" rx="1"/><rect x="1.5" y="6.9" width="13" height="2.2" rx="1"/><rect x="1.5" y="11.8" width="13" height="2.2" rx="1"/></g></svg>';
 
   // An image the desktop has a thumbnail for already (the version on disk
   // now) shows it at once. An older version has only an icon until the
@@ -488,69 +454,38 @@ svg.icon { width: 100%; height: 100%; display: block; }
         <span class="c-dim">${size(e)}</span><span class="c-dim">${modified(e.mtime)}</span><span>${fileBadge(e)}</span></div>`).join('')}</div>`;
   }
 
-  // ------------------------------------------------------------ directions
+  // ----------------------------------------------------------------- stack
 
-  // How each direction places a window `d` backups behind the one in front.
-  // d is fractional while the stack moves; a negative d is a window that has
+  // Where a window `d` backups behind the one in front is drawn. d is
+  // fractional while the stack moves; a negative d is a window that has
   // come past the front, flying at the viewer as it fades.
-  const DIRS = {
-    straight: {
-      name: 'Straight back', persp: '1300px', origin: '50% 0%', tOrigin: '50% 50%', cx: 0.5, wFrac: 0.7, max: 9,
-      pairing: { bg: 'stars', tl: 'right', front: 'grid' },
-      place(d) {
-        if (d >= 0) return { tf: `translate3d(0, ${-d * 16}px, ${-d * 260}px)`, dim: Math.min(d * 0.09, 0.7) };
-        return { tf: `translate3d(0, ${-d * 70}px, ${-d * 520}px)`, op: 1 + d * 1.7 };
-      },
-    },
-    fan: {
-      name: 'Fan', persp: '1500px', origin: '50% 45%', tOrigin: '0% 50%', cx: 0.43, wFrac: 0.6, max: 8,
-      pairing: { bg: 'wall', tl: 'strip', front: 'list' },
-      place(d) {
-        if (d >= 0) {
-          return { tf: `translate3d(${d * 34}px, ${-d * 8}px, ${-d * 60}px) rotateY(${Math.min(d * 8, 56)}deg)`, dim: Math.min(d * 0.08, 0.6) };
-        }
-        return { tf: `translate3d(${d * 20}px, 0, ${-d * 40}px) rotateY(${d * 80}deg)`, op: 1 + d * 1.3 };
-      },
-    },
-    cascade: {
-      name: 'Cascade', persp: 'none', origin: '50% 50%', tOrigin: '50% 50%', cx: 0.45, wFrac: 0.6, max: 7,
-      pairing: { bg: 'grad', tl: 'right', front: 'list' },
-      place(d) {
-        if (d >= 0) return { tf: `translate(${d * 40}px, ${-d * 36}px) scale(${1 - d * 0.045})`, dim: Math.min(d * 0.13, 0.75) };
-        return { tf: `translate(${d * 70}px, ${-d * 60}px) scale(${1 - d * 0.12})`, op: 1 + d * 1.5 };
-      },
-    },
-    cards: {
-      name: 'Card index', persp: '1200px', origin: '50% 25%', tOrigin: '50% 100%', cx: 0.5, wFrac: 0.7, max: 9,
-      pairing: { bg: 'wall', tl: 'right', front: 'grid' },
-      place(d) {
-        if (d >= 0) {
-          return { tf: `translate3d(0, ${-d * 26}px, ${-d * 70}px) rotateX(${Math.min(d * 6, 50)}deg)`, dim: Math.min(d * 0.08, 0.65) };
-        }
-        return { tf: `translate3d(0, ${-d * 30}px, ${-d * 60}px) rotateX(${d * 95}deg)`, op: 1 + d * 1.25 };
-      },
-    },
-  };
-  const DIR_KEYS = ['straight', 'fan', 'cascade', 'cards'];
+  const DEPTH = 9;
+  function place(d) {
+    if (d >= 0) return { tf: `translate3d(0, ${-d * 16}px, ${-d * 260}px)`, dim: Math.min(d * 0.09, 0.7) };
+    return { tf: `translate3d(0, ${-d * 70}px, ${-d * 520}px)`, op: 1 + d * 1.7 };
+  }
 
   // ----------------------------------------------------------------- state
 
   const prefersDark = matchMedia('(prefers-color-scheme: dark)').matches;
   const prefersStill = matchMedia('(prefers-reduced-motion: reduce)').matches;
-  const state = { dir: 'straight', bg: 'stars', tl: 'right', front: 'grid', theme: prefersDark ? 'dark' : 'light', motion: prefersStill ? 'off' : 'on' };
+  const state = { bg: 'wall', front: 'grid', theme: prefersDark ? 'dark' : 'light', motion: prefersStill ? 'off' : 'on', step: '800' };
   for (const part of location.hash.slice(1).split('&')) {
     const [k, v] = part.split('=');
     if (k in state && v) state[k] = v;
   }
-  if (!DIRS[state.dir]) state.dir = 'straight';
+  const stepMs = () => clamp(Number(state.step) || 800, 200, 3000);
 
   let p = 0; // the position the stack is drawn at, in backups
   let vel = 0; // its velocity, in backups a second
   let target = 0; // the backup in front, or on its way there
-  let fade = null; // a crossfade in progress, with motion off
+  let tween = null; // the move in progress
+  let fade = null; // a crossfade in progress, with animations off
   let settledAt = 0;
   let selected = null;
   let geo = null;
+  let timelineGeo = null;
+  let lastDrawn = NaN;
   const windows = [];
 
   // ----------------------------------------------------------------- build
@@ -561,11 +496,12 @@ svg.icon { width: 100%; height: 100%; display: block; }
     windows.length = 0;
     for (let i = 0; i < N; i++) {
       const el = document.createElement('div');
-      el.className = 'win';
+      el.className = i === target ? 'win front' : 'win';
       el.dataset.i = i;
       const entries = contents(backups[i].when);
       el.innerHTML = `<div class="hb"><div class="crumbs">${HOME}<span>Home</span><span class="sep">&#8250;</span><span>Documents</span><span class="sep">&#8250;</span><b>Projects</b></div>
-        <div class="hb-when">${kindBadge(i)}<span>${label(i)}</span></div></div>
+        <div class="hb-when">${kindBadge(i)}<span>${label(i)}</span></div>
+        <div class="views"><button data-view="grid" title="Show as icons" class="${state.front === 'grid' ? 'on' : ''}">${VIEW_ICONS}</button><button data-view="list" title="Show as a list" class="${state.front === 'list' ? 'on' : ''}">${VIEW_LIST}</button></div></div>
         <div class="body">${state.front === 'grid' ? gridHtml(entries) : listHtml(entries)}</div>`;
       stage.appendChild(el);
       windows.push(el);
@@ -575,39 +511,30 @@ svg.icon { width: 100%; height: 100%; display: block; }
   }
 
   function placeWindows() {
-    const dir = DIRS[state.dir];
     const vw = innerWidth;
     const vh = innerHeight;
-    const right = state.tl === 'right' ? 230 : 0;
-    const bottom = state.tl === 'strip' ? 186 : 96;
+    const right = 230;
+    const bottom = 96;
     const h = Math.min(620, (vh - bottom) * 0.62);
-    const w = Math.min(1040, (vw - right) * dir.wFrac, h * 1.75);
-    const cx = (vw - right) * dir.cx;
+    const w = Math.min(1040, (vw - right) * 0.7, h * 1.75);
+    const cx = (vw - right) * 0.5;
     const cy = vh - bottom - h / 2 - 16;
     geo = { w, h, cx, cy };
-    stage.style.perspective = dir.persp;
-    stage.style.perspectiveOrigin = dir.origin;
-    stage.style.transformStyle = dir.persp === 'none' ? 'flat' : 'preserve-3d';
     for (const el of windows) {
-      Object.assign(el.style, {
-        width: `${w}px`, height: `${h}px`, left: `${cx - w / 2}px`, top: `${cy - h / 2}px`, transformOrigin: dir.tOrigin,
-      });
+      Object.assign(el.style, { width: `${w}px`, height: `${h}px`, left: `${cx - w / 2}px`, top: `${cy - h / 2}px` });
     }
     const arrows = $('#arrows');
     arrows.style.left = `${vw - right + 6}px`;
     arrows.style.top = `${cy - 50}px`;
-    buildTimelines();
+    buildTimeline();
     lastDrawn = NaN;
   }
 
-  // -------------------------------------------------------------- timelines
-
-  function buildTimelines() {
-    // Down the right-hand edge: the oldest at the top, now at the bottom.
+  // The oldest at the top, now at the bottom.
+  function buildTimeline() {
     const ticks = $('#tl-ticks');
     ticks.textContent = '';
-    const box = $('#tl-right').getBoundingClientRect();
-    const H = box.height || innerHeight * 0.7;
+    const H = $('#tl-right').getBoundingClientRect().height || innerHeight * 0.7;
     const yOf = (i) => (N - 1 - i) * (H / (N - 1));
     let lastY = Infinity;
     for (let i = 0; i < N; i++) {
@@ -630,54 +557,21 @@ svg.icon { width: 100%; height: 100%; display: block; }
         lastY = yOf(i);
       }
     }
-
-    // Along the bottom: the oldest at the left, now at the right.
-    const bars = $('#s-bars');
-    bars.textContent = '';
-    const W = $('#s-area').getBoundingClientRect().width || innerWidth * 0.7;
-    const xOf = (i) => 8 + (N - 1 - i) * ((W - 16) / (N - 1));
-    let lastX = -Infinity;
-    for (let i = N - 1; i >= 0; i--) {
-      const sb = document.createElement('div');
-      sb.className = `sb ${backups[i].kind}`;
-      sb.dataset.i = i;
-      sb.style.left = `${xOf(i)}px`;
-      sb.style.width = `${Math.max(4, ((W - 16) / (N - 1)) * 0.55)}px`;
-      const hh = i === 0 ? 30 : 8 + ((i * 7919) % 23) + (backups[i].kind === 'archive' ? 6 : 0);
-      sb.style.height = `${hh}px`;
-      sb.innerHTML = `<i style="height:${hh}px"></i>`;
-      bars.appendChild(sb);
-      // Here a group is labelled at its oldest backup, where it starts.
-      const start = i === N - 1 || group(i) !== group(i + 1);
-      if (start && xOf(i) - lastX >= 58) {
-        const lab = document.createElement('div');
-        lab.className = 'slab';
-        const g = group(i);
-        lab.textContent = g === 'Today (Now)' ? 'Today' : g === 'Yesterday' || /\d{4}$/.test(g) ? g : g.slice(0, 3);
-        lab.style.left = `${xOf(i)}px`;
-        bars.appendChild(lab);
-        lastX = xOf(i);
-      }
-    }
-    timelineGeo = { H, W, yOf, xOf };
+    timelineGeo = { H };
   }
-  let timelineGeo = null;
 
-  function drawTimelines() {
+  function drawTimeline() {
     if (!timelineGeo) return;
-    const { H, W } = timelineGeo;
-    $('#tl-mark').style.top = `${(N - 1 - p) * (H / (N - 1))}px`;
-    $('#s-mark').style.left = `${8 + (N - 1 - p) * ((W - 16) / (N - 1))}px`;
-    for (const el of document.querySelectorAll('.tk.cur, .sb.cur')) el.classList.remove('cur');
-    for (const el of document.querySelectorAll(`.tk[data-i="${target}"], .sb[data-i="${target}"]`)) el.classList.add('cur');
+    $('#tl-mark').style.top = `${(N - 1 - p) * (timelineGeo.H / (N - 1))}px`;
+    for (const el of document.querySelectorAll('.tk.cur')) el.classList.remove('cur');
+    const cur = document.querySelector(`.tk[data-i="${target}"]`);
+    if (cur) cur.classList.add('cur');
   }
 
   // ------------------------------------------------------------------ draw
 
-  let lastDrawn = NaN;
   function drawStack(now) {
-    const dir = DIRS[state.dir];
-    const k = fade ? clamp((now - fade.t0) / 200, 0, 1) : 1;
+    const k = fade ? clamp((now - fade.t0) / 220, 0, 1) : 1;
     if (fade && k >= 1) fade = null;
     if (p === lastDrawn && !fade) return;
     lastDrawn = fade ? NaN : p;
@@ -688,37 +582,56 @@ svg.icon { width: 100%; height: 100%; display: block; }
       let op = 1;
       if (fade && i === fade.from) { d = 0; op = 1 - k; }
       else if (fade && i === fade.to) { op = k; }
-      if (d > dir.max || d < -1) { el.style.display = 'none'; continue; }
-      const pl = dir.place(d);
+      if (d > DEPTH || d < -1) { el.style.display = 'none'; continue; }
+      const pl = place(d);
       op *= pl.op === undefined ? 1 : clamp(pl.op, 0, 1);
-      op *= clamp((dir.max - d) / 2.5, 0, 1);
+      op *= clamp((DEPTH - d) / 2.5, 0, 1);
       el.style.display = op <= 0.001 ? 'none' : 'block';
       el.style.transform = pl.tf + (fade && i === fade.from ? ' translateZ(1px)' : '');
       el.style.opacity = op.toFixed(3);
       el.style.setProperty('--dim', (pl.dim || 0).toFixed(3));
       el.style.zIndex = String(1000 - Math.round(d * 10) + (fade && i === fade.from ? 5 : 0));
     }
-    drawTimelines();
+    drawTimeline();
   }
 
-  // The spring: stiff enough to arrive briskly, damped just short of
-  // critical so it settles on the backup without bouncing past it.
-  const K = 190;
-  const C = 2 * Math.sqrt(K) * 0.92;
-  function advance(dt) {
-    if (state.motion === 'off') { p = target; vel = 0; return; }
-    let left = dt;
-    while (left > 0) {
-      const h = Math.min(left, 1 / 240);
-      vel += (K * (target - p) - C * vel) * h;
-      p += vel * h;
-      left -= h;
+  // A move takes the step's duration for one backup, and somewhat longer
+  // for a longer flight. From rest it eases in and out (cubic): slow, fast,
+  // slow. A move begun while the stack is still moving keeps the speed it
+  // had and eases out, so a held key glides rather than stopping at each
+  // backup.
+  function startMove(now) {
+    const span = target - p;
+    if (span === 0) { tween = null; return; }
+    const dur = (stepMs() / 1000) * (1 + 0.35 * Math.log(Math.max(1, Math.abs(span))));
+    const fresh = Math.abs(vel) < 0.05;
+    // Never so fast at the start that it would sail past the backup.
+    const m0 = clamp(vel * dur, -2.5 * Math.abs(span), 2.5 * Math.abs(span));
+    tween = { from: p, to: target, m0, t0: now, dur, fresh };
+  }
+
+  function advance(now) {
+    if (state.motion === 'off') { p = target; vel = 0; tween = null; return; }
+    if (!tween) return;
+    const { from, to, m0, dur, fresh } = tween;
+    const s = clamp((now - tween.t0) / 1000 / dur, 0, 1);
+    const span = to - from;
+    if (fresh) {
+      p = from + span * (s < 0.5 ? 4 * s ** 3 : 1 - (2 - 2 * s) ** 3 / 2);
+      vel = (span * (s < 0.5 ? 12 * s * s : 12 * (1 - s) ** 2)) / dur;
+    } else {
+      const s2 = s * s;
+      const s3 = s2 * s;
+      p = (2 * s3 - 3 * s2 + 1) * from + (s3 - 2 * s2 + s) * m0 + (-2 * s3 + 3 * s2) * to;
+      vel = ((6 * s2 - 6 * s) * from + (3 * s2 - 4 * s + 1) * m0 + (-6 * s2 + 6 * s) * to) / dur;
     }
-    if (Math.abs(target - p) < 0.0008 && Math.abs(vel) < 0.01) { p = target; vel = 0; }
+    if (s >= 1) { p = to; vel = 0; tween = null; }
   }
 
   // ----------------------------------------------------------------- stars
 
+  // The starfield is night in either style: it stands in for the wallpaper,
+  // which is dimmed, and the windows are what follow the style.
   const canvas = $('#bg-stars');
   const ctx = canvas.getContext('2d');
   const stars = Array.from({ length: 600 }, () => star(Math.random()));
@@ -733,20 +646,19 @@ svg.icon { width: 100%; height: 100%; display: block; }
     if (state.bg !== 'stars') return;
     const w = innerWidth;
     const hgt = innerHeight;
-    const dark = state.theme === 'dark';
     const g = ctx.createRadialGradient(w / 2, hgt * 0.3, 0, w / 2, hgt * 0.3, Math.max(w, hgt) * 0.8);
-    g.addColorStop(0, dark ? '#18203a' : '#f4f6fc');
-    g.addColorStop(1, dark ? '#04050a' : '#c7d0e6');
+    g.addColorStop(0, '#18203a');
+    g.addColorStop(1, '#04050a');
     ctx.fillStyle = g;
     ctx.fillRect(0, 0, w, hgt);
     // Going back in time flies into the stack, so the stars come at the
     // viewer; going forward, they recede. At rest they drift.
     const speed = 0.012 + vel * 0.2;
-    const vx = w / 2;
+    const vx = geo ? geo.cx : w / 2;
     const vy = geo ? geo.cy - geo.h * 0.9 : hgt * 0.3;
     const scale = Math.max(w, hgt) * 0.5;
-    ctx.fillStyle = dark ? '#ffffff' : '#27305a';
-    ctx.strokeStyle = ctx.fillStyle;
+    ctx.fillStyle = '#ffffff';
+    ctx.strokeStyle = '#ffffff';
     for (const s of stars) {
       s.z -= speed * dt;
       if (s.z <= 0.04) Object.assign(s, star(1));
@@ -754,9 +666,8 @@ svg.icon { width: 100%; height: 100%; display: block; }
       const sx = vx + (s.x / s.z) * scale;
       const sy = vy + (s.y / s.z) * scale;
       if (sx < -50 || sx > w + 50 || sy < -50 || sy > hgt + 50) { Object.assign(s, star(Math.random() * 0.6 + 0.4)); continue; }
-      const a = clamp((1.05 - s.z) * 1.3, 0, 1) * (dark ? 1 : 0.55);
       const r = (1.05 - s.z) * 1.8 + 0.25;
-      ctx.globalAlpha = a;
+      ctx.globalAlpha = clamp((1.05 - s.z) * 1.3, 0, 1);
       if (Math.abs(speed) > 0.25) {
         const tz = s.z + speed * 0.035;
         ctx.lineWidth = r;
@@ -780,7 +691,7 @@ svg.icon { width: 100%; height: 100%; display: block; }
     const dt = Math.min(0.05, (now - last) / 1000);
     last = now;
     const was = p;
-    advance(dt);
+    advance(now);
     drawStack(now);
     drawStars(dt);
     // Thumbnails are fetched for the front window once it has settled.
@@ -797,18 +708,25 @@ svg.icon { width: 100%; height: 100%; display: block; }
   function goTo(i) {
     i = clamp(i, 0, N - 1);
     if (i === target) return;
-    if (state.motion === 'off') { fade = { from: target, to: i, t0: performance.now() }; settledAt = performance.now(); }
+    const now = performance.now();
+    if (state.motion === 'off') { fade = { from: target, to: i, t0: now }; settledAt = now; }
     target = i;
+    if (state.motion === 'on') startMove(now);
     updateBar();
   }
-  const step = (n) => goTo(target + n);
+  // A held key or a run of wheel clicks moves at most two backups ahead of
+  // the stack, so it glides at the stack's pace instead of racing off.
+  function step(n, repeat) {
+    if (repeat && Math.abs(target + n - p) > 2) return;
+    goTo(target + n);
+  }
 
   function updateBar() {
     $('#when-main').innerHTML = `<span>${label(target)}</span>${kindBadge(target)}`;
     $('#when-sub').textContent = target === 0 ? 'The folder as it is now' : `Backup ${target} of ${N - 1}`;
     $('#restore').disabled = target === 0;
-    $('#up').disabled = $('#s-older').disabled = target === N - 1;
-    $('#down').disabled = $('#s-newer').disabled = target === 0;
+    $('#up').disabled = target === N - 1;
+    $('#down').disabled = target === 0;
   }
 
   function showSelection() {
@@ -841,39 +759,40 @@ svg.icon { width: 100%; height: 100%; display: block; }
   // ----------------------------------------------------------------- panel
 
   const CHOICES = {
-    dir: { key: '1-4', label: 'Direction', options: Object.fromEntries(DIR_KEYS.map((k, i) => [k, `${i + 1} ${DIRS[k].name}`])) },
-    bg: { key: 'B', label: 'Background', options: { wall: 'Wallpaper, dimmed', stars: 'Starfield', grad: 'Gradient' } },
-    tl: { key: 'L', label: 'Timeline', options: { right: 'Right-hand edge', strip: 'Bottom strip' } },
+    bg: { key: 'B', label: 'Background', options: { wall: 'Wallpaper, dimmed', stars: 'Starfield (where there is no wallpaper)' } },
     front: { key: 'F', label: 'Front window', options: { grid: 'Icons', list: 'List' } },
     theme: { key: 'T', label: 'Style', options: { light: 'Light', dark: 'Dark' } },
     motion: { key: 'M', label: 'Animations', options: { on: 'On', off: 'Off (crossfade)' } },
   };
   function buildPanel() {
-    const panel = $('#panel');
-    panel.innerHTML = '<h1>Rewind prototype</h1>' + Object.entries(CHOICES).map(([name, c]) =>
+    $('#panel').innerHTML = '<h1>Rewind prototype, round 2</h1>' + Object.entries(CHOICES).map(([name, c]) =>
       `<span class="k">${c.label} <kbd>${c.key}</kbd></span><span class="seg">${Object.entries(c.options).map(([v, text]) =>
         `<button data-k="${name}" data-v="${v}" class="${state[name] === v ? 'on' : ''}">${text}</button>`).join('')}</span>`).join('') +
+      `<span class="k">One step <kbd>[</kbd> <kbd>]</kbd></span><span class="seg"><button data-speed="100">Slower</button>
+       <span class="speed">${stepMs()} ms</span><button data-speed="-100">Faster</button></span>` +
       `<div class="keys"><kbd>Up</kbd> <kbd>Down</kbd> <kbd>PgUp</kbd> <kbd>PgDn</kbd> older and newer; <kbd>Home</kbd> now, <kbd>End</kbd> the oldest;
        <kbd>Left</kbd> <kbd>Right</kbd> select a file; <kbd>Enter</kbd> restore, <kbd>Esc</kbd> cancel; the mouse wheel and clicks work too.
        <kbd>H</kbd> hides this panel.</div>`;
   }
   function choose(name, value) {
-    if (name === 'dir') Object.assign(state, { dir: value }, DIRS[value].pairing);
-    else state[name] = value;
-    apply(name === 'front' || name === 'dir');
+    state[name] = value;
+    apply(name === 'front');
   }
   function cycle(name) {
     const opts = Object.keys(CHOICES[name].options);
     choose(name, opts[(opts.indexOf(state[name]) + 1) % opts.length]);
   }
+  function slower(ms) {
+    state.step = String(clamp(stepMs() + ms, 200, 3000));
+    apply(false);
+  }
   function apply(rebuild) {
     root.dataset.theme = state.theme;
     root.dataset.bg = state.bg;
-    root.dataset.tl = state.tl;
     history.replaceState(null, '', `#${Object.entries(state).map(([k, v]) => `${k}=${v}`).join('&')}`);
     buildPanel();
     if (rebuild) buildWindows(); else placeWindows();
-    if (state.motion === 'off') { p = target; vel = 0; }
+    if (state.motion === 'off') { p = target; vel = 0; tween = null; }
     lastDrawn = NaN;
   }
 
@@ -882,14 +801,14 @@ svg.icon { width: 100%; height: 100%; display: block; }
   addEventListener('keydown', (ev) => {
     if (ev.ctrlKey || ev.altKey || ev.metaKey) return;
     const key = ev.key;
+    const r = ev.repeat;
     const handled = {
-      ArrowUp: () => step(1), PageUp: () => step(1), ArrowDown: () => step(-1), PageDown: () => step(-1),
+      ArrowUp: () => step(1, r), PageUp: () => step(1, r), ArrowDown: () => step(-1, r), PageDown: () => step(-1, r),
       Home: () => goTo(0), End: () => goTo(N - 1), Enter: restore, Escape: cancel,
       ArrowLeft: () => selectNext(-1), ArrowRight: () => selectNext(1),
-      b: () => cycle('bg'), l: () => cycle('tl'), f: () => cycle('front'), t: () => cycle('theme'), m: () => cycle('motion'),
+      b: () => cycle('bg'), f: () => cycle('front'), t: () => cycle('theme'), m: () => cycle('motion'),
+      '[': () => slower(100), ']': () => slower(-100),
       h: () => $('#panel').classList.toggle('off'),
-      1: () => choose('dir', DIR_KEYS[0]), 2: () => choose('dir', DIR_KEYS[1]),
-      3: () => choose('dir', DIR_KEYS[2]), 4: () => choose('dir', DIR_KEYS[3]),
     }[key.length === 1 ? key.toLowerCase() : key];
     if (handled) { ev.preventDefault(); handled(); }
   });
@@ -899,7 +818,7 @@ svg.icon { width: 100%; height: 100%; display: block; }
     if (ev.target.closest('#panel')) return;
     ev.preventDefault();
     wheel += ev.deltaY;
-    if (Math.abs(wheel) >= 60) { step(wheel < 0 ? 1 : -1); wheel = 0; }
+    if (Math.abs(wheel) >= 60) { step(wheel < 0 ? 1 : -1, true); wheel = 0; }
   }, { passive: false });
 
   stage.addEventListener('click', (ev) => {
@@ -907,6 +826,8 @@ svg.icon { width: 100%; height: 100%; display: block; }
     if (!win) return;
     const i = Number(win.dataset.i);
     if (i !== target) { goTo(i); return; }
+    const view = ev.target.closest('[data-view]');
+    if (view) { choose('front', view.dataset.view); return; }
     const item = ev.target.closest('.item');
     select(item ? item.dataset.name : null);
   });
@@ -916,35 +837,28 @@ svg.icon { width: 100%; height: 100%; display: block; }
   });
 
   const tip = $('#tip');
-  function hover(ev) {
-    const t = ev.target.closest('.tk, .sb');
+  const timeline = $('#tl-right');
+  timeline.addEventListener('mousemove', (ev) => {
+    const t = ev.target.closest('.tk');
     if (!t) { tip.style.display = 'none'; return; }
     const i = Number(t.dataset.i);
     tip.innerHTML = `${label(i)}${KIND[backups[i].kind] ? ` &#183; ${KIND[backups[i].kind]}` : ''}`;
     tip.style.display = 'block';
     const r = t.getBoundingClientRect();
-    if (t.classList.contains('tk')) {
-      tip.style.left = `${r.left - tip.offsetWidth - 46}px`;
-      tip.style.top = `${r.top + r.height / 2 - tip.offsetHeight / 2}px`;
-    } else {
-      tip.style.left = `${r.left + r.width / 2 - tip.offsetWidth / 2}px`;
-      tip.style.top = `${r.top - tip.offsetHeight - 30}px`;
-    }
-  }
-  for (const id of ['#tl-right', '#tl-strip']) {
-    $(id).addEventListener('mousemove', hover);
-    $(id).addEventListener('mouseleave', () => { tip.style.display = 'none'; });
-    $(id).addEventListener('click', (ev) => { const t = ev.target.closest('.tk, .sb'); if (t) goTo(Number(t.dataset.i)); });
-  }
+    tip.style.left = `${r.left - tip.offsetWidth - 46}px`;
+    tip.style.top = `${r.top + r.height / 2 - tip.offsetHeight / 2}px`;
+  });
+  timeline.addEventListener('mouseleave', () => { tip.style.display = 'none'; });
+  timeline.addEventListener('click', (ev) => { const t = ev.target.closest('.tk'); if (t) goTo(Number(t.dataset.i)); });
   $('#up').onclick = () => step(1);
   $('#down').onclick = () => step(-1);
-  $('#s-older').onclick = () => step(1);
-  $('#s-newer').onclick = () => step(-1);
   $('#restore').onclick = restore;
   $('#cancel').onclick = cancel;
   $('#panel').addEventListener('click', (ev) => {
     const b = ev.target.closest('button[data-k]');
     if (b) choose(b.dataset.k, b.dataset.v);
+    const s = ev.target.closest('button[data-speed]');
+    if (s) slower(Number(s.dataset.speed));
   });
   // Buttons are for the mouse here; the keys stay with the view.
   addEventListener('mousedown', (ev) => { if (ev.target.closest('button')) ev.preventDefault(); });
@@ -955,7 +869,6 @@ svg.icon { width: 100%; height: 100%; display: block; }
   sizeCanvas();
   root.dataset.theme = state.theme;
   root.dataset.bg = state.bg;
-  root.dataset.tl = state.tl;
   buildPanel();
   buildWindows();
   windows[0].classList.add('fetched');
