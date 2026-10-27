@@ -137,19 +137,30 @@ button { font: inherit; }
   display: grid; grid-template-columns: repeat(auto-fill, 118px); gap: 6px 8px;
   padding: 18px 22px; align-content: start; justify-content: start;
 }
+/* Every cell is the same height: the badge is pinned to the foot of the
+   icon, and the name has room for two lines and never more. */
 .grid .item {
-  display: flex; flex-direction: column; align-items: center; gap: 5px;
+  display: flex; flex-direction: column; align-items: center; gap: 11px;
   padding: 8px 4px 9px; border-radius: 10px; text-align: center;
 }
-.grid .ic { width: 64px; height: 64px; display: grid; place-items: center; }
-.grid .nm { font-size: 13px; line-height: 1.25; word-break: break-word; max-width: 108px; }
+.grid .ic { position: relative; width: 64px; height: 64px; display: grid; place-items: center; }
+.grid .nm {
+  font-size: 13px; line-height: 1.25; height: 2.5em; max-width: 108px; word-break: break-word;
+  display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden;
+}
+.grid .ic .badge {
+  position: absolute; left: 50%; bottom: -8px; transform: translateX(-50%);
+  font-size: 11px; line-height: 17px; padding: 0 7px; box-shadow: 0 0 0 2px var(--view-bg);
+}
+.grid .ic .badge.deleted { background: color-mix(in srgb, var(--warn) 18%, var(--view-bg)); }
+.grid .ic .badge.changed { background: color-mix(in srgb, var(--accent) 18%, var(--view-bg)); }
 .item.sel { background: var(--sel); }
 .item.sel .nm { color: var(--accent); font-weight: 600; }
 
 /* The front window as the main window's list. */
 .list { padding: 0 6px; }
 .lhead, .row {
-  display: grid; grid-template-columns: minmax(0, 1fr) 96px 190px 170px; align-items: center;
+  display: grid; grid-template-columns: minmax(0, 1fr) 96px 190px 110px; align-items: center;
   padding: 0 14px; gap: 10px;
 }
 .lhead { height: 36px; color: var(--dim-fg); font-weight: 700; font-size: 13px; border-bottom: 1px solid var(--border); }
@@ -448,15 +459,15 @@ svg.icon { width: 100%; height: 100%; display: block; }
     return `<div class="thumb lazy">${ICON.image}<div class="later">${THUMB[e.art]}</div></div>`;
   }
   function fileBadge(e) {
-    if (e.deleted) return '<span class="badge deleted">deleted after this</span>';
-    if (e.changed) return '<span class="badge changed">changed since then</span>';
+    if (e.deleted) return '<span class="badge deleted" title="Deleted after this backup">deleted</span>';
+    if (e.changed) return '<span class="badge changed" title="Changed since this backup">changed</span>';
     return '';
   }
   const kindBadge = (i) => KIND[backups[i].kind] ? `<span class="badge ${backups[i].kind}">${KIND[backups[i].kind]}</span>` : '';
 
   function gridHtml(entries) {
     return `<div class="grid">${entries.map((e) => `<div class="item" data-name="${e.f.name}">
-      <div class="ic">${itemIcon(e)}</div><div class="nm">${e.f.name}</div>${fileBadge(e)}</div>`).join('')}</div>`;
+      <div class="ic">${itemIcon(e)}${fileBadge(e)}</div><div class="nm" title="${e.f.name}">${e.f.name}</div></div>`).join('')}</div>`;
   }
   function listHtml(entries) {
     return `<div class="list"><div class="lhead"><span>Name</span><span>Size</span><span>Modified</span><span>Status</span></div>${
