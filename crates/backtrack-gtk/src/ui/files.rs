@@ -11,8 +11,8 @@
 //! looking rather than searching.
 //!
 //! Both status badges come from the index, not from a comparison done here:
-//! "deleted after this" and "changed since then" are columns of the query in
-//! S01-T3, computed in SQL over the interval encoding.
+//! "deleted" (after this backup) and "changed" (since it) are columns of the
+//! query in S01-T3, computed in SQL over the interval encoding.
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
@@ -30,8 +30,8 @@ use tracing::{debug, warn};
 
 use crate::daemon::Daemon1Proxy;
 use crate::index::Index;
-use crate::model::above;
 use crate::model::empty::{self, Coverage, Empty};
+use crate::model::{above, file_badge};
 use crate::path;
 use crate::state::{AppState, Change, Selected};
 
@@ -776,8 +776,8 @@ fn text_factory(text: fn(&RowData) -> String, align: Align) -> SignalListItemFac
     factory
 }
 
-/// The badges. Both are words first and colour second: the pane has to work in
-/// a screenshot printed in black and white.
+/// The badges, chosen in `model::file_badge`. They are words first and colour
+/// second: the pane has to work in a screenshot printed in black and white.
 fn status_factory() -> SignalListItemFactory {
     let factory = SignalListItemFactory::new();
     factory.connect_setup(|_, item| {
@@ -799,41 +799,23 @@ fn status_factory() -> SignalListItemFactory {
         ) else {
             return;
         };
-        label.remove_css_class("deleted");
-        label.remove_css_class("changed");
-        label.remove_css_class("partly");
-        label.remove_css_class("in-trash");
-        label.set_tooltip_text(None);
-        if row.trash.is_some() {
-            label.set_text("in the Trash");
-            label.add_css_class("in-trash");
-            label.set_tooltip_text(Some(crate::model::group::IN_TRASH_TOOLTIP));
-            label.set_visible(true);
-        } else if row.partly {
-            label.set_text(above::BADGE);
-            label.add_css_class("partly");
-            label.set_visible(true);
-        } else if row.entry.deleted_after {
-            label.set_text("deleted after this");
-            label.add_css_class("deleted");
-            label.set_visible(true);
-        } else if row.on_disk == ABSENT {
-            // The catalogue believes this file is current and the computer
-            // disagrees, which is the one question the other two badges cannot
-            // answer and the one a person usually arrives with. Only ever
-            // shown for a *known* absence: an unknown says nothing.
-            label.set_text("not on your disk");
-            label.add_css_class("deleted");
-            label.set_visible(true);
-        } else if row.entry.changed_since {
-            label.set_text("changed since then");
-            label.add_css_class("changed");
-            label.set_visible(true);
-        } else {
-            // An em dash rather than nothing, so the column reads as answered.
-            label.set_text("—");
-            label.set_visible(true);
+        for class in file_badge::CLASSES {
+            label.remove_css_class(class);
         }
+        let badge = file_badge::of(file_badge::Facts {
+            folder: row.entry.kind == Kind::Dir,
+            in_trash: row.trash.is_some(),
+            partly: row.partly,
+            deleted_after: row.entry.deleted_after,
+            absent: row.on_disk == ABSENT,
+            changed_since: row.entry.changed_since,
+        });
+        label.set_text(badge.text);
+        if let Some(class) = badge.class {
+            label.add_css_class(class);
+        }
+        label.set_tooltip_text(badge.tooltip);
+        label.set_visible(true);
     });
     factory
 }

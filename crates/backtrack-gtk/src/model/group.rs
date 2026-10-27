@@ -103,7 +103,7 @@ pub struct Badge {
 }
 
 /// The badge for how a backup is kept, or none.
-/// What hovering an "in the Trash" badge says, in the sidebar and the file
+/// What hovering a "trashed" badge says, in the sidebar and the file
 /// pane alike.
 pub const IN_TRASH_TOOLTIP: &str = "Not a backup. This was moved to the Trash, and is kept only on this computer: emptying the Trash removes it, and Backtrack has no other copy of it.";
 
@@ -114,12 +114,12 @@ pub fn badge(kept: Kept, tz: &glib::TimeZone) -> Option<Badge> {
     match kept {
         Kept::Normally => None,
         Kept::Snapper => Some(Badge {
-            text: "Snapper snapshot",
+            text: "Snapper",
             class: "snapper",
             tooltip: SNAPPER_TOOLTIP.to_string(),
         }),
         Kept::InTrash => Some(Badge {
-            text: "in the Trash",
+            text: "trashed",
             class: "in-trash",
             tooltip: IN_TRASH_TOOLTIP.to_string(),
         }),
@@ -133,7 +133,7 @@ pub fn badge(kept: Kept, tz: &glib::TimeZone) -> Option<Badge> {
                 .to_string(),
         }),
         Kept::LocalSnapshot { until } => Some(Badge {
-            text: "local snapshot",
+            text: "local",
             class: "local-snapshot",
             tooltip: format!(
                 "Your backup destination now has this snapshot's data. Some files here \
@@ -402,7 +402,7 @@ mod tests {
         let groups = sidebar(&[local(1, "snapper", None, false)], NOW, &utc());
         assert_eq!(groups[0].rows[0].kept, Kept::Snapper);
         let shown = badge(Kept::Snapper, &utc()).unwrap();
-        assert_eq!((shown.text, shown.class), ("Snapper snapshot", "snapper"));
+        assert_eq!((shown.text, shown.class), ("Snapper", "snapper"));
         for said in [
             "Not a backup",
             "Snapper took this snapshot on this computer",
@@ -410,6 +410,18 @@ mod tests {
         ] {
             assert!(shown.tooltip.contains(said), "{said}: {}", shown.tooltip);
         }
+    }
+
+    #[test]
+    fn a_trash_entry_is_badged_trashed_and_says_it_is_not_a_backup() {
+        let shown = badge(Kept::InTrash, &utc()).unwrap();
+        assert_eq!((shown.text, shown.class), ("trashed", "in-trash"));
+        assert_eq!(shown.tooltip, IN_TRASH_TOOLTIP);
+        assert!(
+            shown.tooltip.starts_with("Not a backup."),
+            "{}",
+            shown.tooltip
+        );
     }
 
     #[test]
@@ -439,7 +451,7 @@ mod tests {
             &utc(),
         )
         .unwrap();
-        assert_eq!(shown.text, "local snapshot");
+        assert_eq!(shown.text, "local");
         assert_eq!(shown.class, "local-snapshot");
         assert!(
             shown

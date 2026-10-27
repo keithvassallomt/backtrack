@@ -151,7 +151,7 @@ fn build() -> Result<()> {
         summary.archives, summary.versions
     );
     println!(
-        "  old-client-folder shows a 'deleted after this' badge at snapshot 10: {}",
+        "  old-client-folder shows a 'deleted' badge at snapshot 10: {}",
         if summary.old_client_deleted_at_10 {
             "yes"
         } else {

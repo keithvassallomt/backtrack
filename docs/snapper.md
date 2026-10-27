@@ -29,7 +29,7 @@ What it adds to Backtrack:
   found.
 
 Backtrack reads Snapper's snapshots, and never takes, changes or removes one.
-Each is shown in the timeline with the badge **Snapper snapshot**, and can be
+Each is shown in the timeline with the badge **Snapper**, and can be
 browsed, previewed, compared and restored from like a backup, with or without
 your backup destination.
 

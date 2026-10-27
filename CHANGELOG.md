@@ -27,10 +27,10 @@ All notable changes to Backtrack are documented here. This project adheres to
   when you want them. Backups kept on this computer while the destination was
   away are marked as such, and one still being catalogued says so rather than
   pretending to be empty.
-- Files that were deleted later reappear as you step back, marked "deleted
-  after this"; files you have changed since are marked "changed since then".
-  Both are words as well as colour, so they are still readable in a screenshot
-  or with colour-blindness.
+- Files that were deleted later reappear as you step back, marked "deleted";
+  files you have changed since are marked "changed". Both are words as well
+  as colour, so they are still readable in a screenshot or with
+  colour-blindness.
 - Step one backup at a time with the Older and Newer buttons or Ctrl+Left and
   Ctrl+Right, and use the arrow beside them to skip straight to the next time
   the selected file actually changed — which saves stepping through forty
@@ -273,7 +273,7 @@ All notable changes to Backtrack are documented here. This project adheres to
   made after one backup and deleted before the next was in no backup at all,
   and now it can still be got back; so can a version the backups have since
   thinned out. The entry shows the folder as it was, with what went to the
-  Trash back in its place and marked "in the Trash". It is not a backup, and
+  Trash back in its place and marked "trashed". It is not a backup, and
   it goes when the Trash is emptied, which its badge says.
 - Restoring something from a Trash entry takes it out of the Trash, as the
   file manager's own Restore does, and Undo puts it back there with the time
@@ -289,7 +289,7 @@ All notable changes to Backtrack are documented here. This project adheres to
   [docs/trash.md](docs/trash.md).
 - Where your home folder is on btrfs and Snapper takes snapshots of it,
   Backtrack shows those snapshots in the timeline among your backups, marked
-  "Snapper snapshot". Snapper goes on taking them on battery and while backups
+  "Snapper". Snapper goes on taking them on battery and while backups
   are paused, and can take one every few minutes, so a file overwritten or
   deleted between two backups can still be found. They can be browsed,
   previewed, compared and restored from, with the backup destination away. A
@@ -332,9 +332,9 @@ All notable changes to Backtrack are documented here. This project adheres to
 - Snapshots kept on this computer now say whether your backup destination has
   them. Until it catches up they are marked "local backup only", in red.
   Afterwards, one that still holds versions of files the destination never
-  got is marked "local snapshot", in yellow, and says when it will be
+  got is marked "local", in yellow, and says when it will be
   removed; one holding nothing of its own is no longer marked at all.
-- A folder is marked "changed since then" when something inside it, at any
+- A folder is marked "changed" when something inside it, at any
   depth, is different or gone in the newest backup, so the marks lead down to
   the file that changed. The mark used to follow the folder's own modification
   time, which moves whenever a file is added and says nothing about changes
@@ -354,7 +354,7 @@ All notable changes to Backtrack are documented here. This project adheres to
 ### Fixed
 - Pausing or resuming backups is announced to other programs straight away,
   rather than up to a minute later.
-- A file could be shown as "deleted after this" while it still existed, in the
+- A file could be shown as "deleted" while it still existed, in the
   window between a backup finishing and its file list being read. On a first
   run, which reads that list for every backup in turn, this could have been the
   first thing shown about an entire folder.

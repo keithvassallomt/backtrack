@@ -23,6 +23,7 @@ pub mod distro;
 pub mod empty;
 pub mod everything;
 pub mod exclusions;
+pub mod file_badge;
 pub mod format;
 pub mod group;
 pub mod health;

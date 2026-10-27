@@ -24,9 +24,9 @@ pub struct Entry {
     pub size: i64,
     pub mtime: i64,
     /// The entry existed at the selected archive but is gone in the latest one
-    /// ("deleted after this").
+    /// (the "deleted" badge).
     pub deleted_after: bool,
-    /// "Changed since then". For a file, a newer version of it exists after
+    /// The "changed" badge. For a file, a newer version of it exists after
     /// the selected archive. For a folder, something at or below it in the
     /// selected archive is changed or gone in the latest one, while the folder
     /// itself is still there (see [`IndexReader::folder_at`]).
@@ -265,7 +265,7 @@ impl IndexReader {
     /// The badges are measured against the newest archive that has actually
     /// been catalogued — see the note inside.
     ///
-    /// A folder's "changed since then" comes from what is inside it, not from
+    /// A folder's "changed" badge comes from what is inside it, not from
     /// its own record (S15-T4). The folder's own modification time changes
     /// when an entry directly inside it is added or removed, which says
     /// nothing anyone can act on, and nothing at all about a change two
@@ -280,7 +280,7 @@ impl IndexReader {
         // Deliberately the newest *catalogued* archive, not `MAX(seq)`. An
         // archive that exists but has not had its file list read yet has no
         // version rows, so measuring against it would report every file in the
-        // timeline as "deleted after this" — an orange badge on the whole
+        // timeline as "deleted" — an orange badge on the whole
         // folder for as long as the ingest takes, which on a first-run backfill
         // is a very long time. Same reasoning as `latest_catalogued_seq`, which
         // the offline delta already depends on for the same reason.
