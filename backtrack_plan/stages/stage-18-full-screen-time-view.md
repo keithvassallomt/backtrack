@@ -31,7 +31,8 @@ T1 first, since everything visible follows the chosen design. T2 does not
 depend on it and can run beside it. Then T3 to T8 in order. T9, which came out
 of T1, changes only the main window and stands on its own. T10 to T17 came out
 of Keith's check of T3 on his laptop (2026-10-31) and go before T4; the last
-three in the order Keith set: T16, T15, then T17.
+three in the order Keith set: T16, T15, then T17. T18 to T20, which T15 led
+to, follow T17.
 
 ## Tasks
 
@@ -538,7 +539,8 @@ project's documentation or source, as surveyed that day.
 **Accept:** findings recorded in this section for each program and desktop
 above: how its current wallpaper is read, per output, natively and in the
 Flatpak, checked on Keith's laptop for Caelestia and hyprpaper; tasks added for
-the ones Keith picks.
+the ones Keith picks. Keith picked all three groups (2026-10-31): S18-T18,
+T19 and T20.
 
 ### S18-T16 — Container storage is left out of backups by default
 *(raised by Keith 2026-10-31)* Podman's storage, `~/.local/share/containers`,
@@ -581,6 +583,52 @@ unit, as well as the service itself.
 
 **Accept:** findings recorded in this section: where the memory goes, with
 figures, and whether it grows over backups; tasks added for what Keith picks.
+
+### S18-T18 — Rewind shows the wallpaper of Hyprland's shells and wallpaper programs
+From S18-T15's findings. On a desktop other than GNOME or Plasma, Backtrack
+reads the record kept by the program that draws the wallpaper: Caelestia,
+awww (and swww before it), wpaperd, hyprpaper, waypaper, Noctalia and
+DankMaterialShell.
+- On Hyprland, natively, the background layer named on each monitor (the
+  `j/layers` request on Hyprland's socket) says whose record to read, so a
+  record left behind by a program no longer used is not taken for the
+  wallpaper.
+- Without that (in the Flatpak, or on another compositor such as niri), the
+  most recently written record that names a picture which exists is read.
+- The picture for the monitor Rewind opens on, where the record keeps one per
+  monitor.
+- `--wallpaper-report` says whose record was read, and why that one.
+
+**Accept:** unit tests on each record's format, on fixtures shaped as each
+project writes them, and on the choice between records with Hyprland's layers
+and without; on Keith's laptop, natively, Rewind shows Caelestia's wallpaper,
+and after `caelestia wallpaper` changes it, the new one; the Flatpak's reading
+of the records checked on a VM, with a record in place.
+
+### S18-T19 — Rewind shows the wallpaper of COSMIC, Xfce, Cinnamon and MATE
+From S18-T15's findings, each a reader of the desktop's own settings.
+- COSMIC: its state file, per output.
+- Xfce: `xfce4-desktop.xml`, the monitor's `last-image` for its single
+  workspace if one is set, else the first.
+- Cinnamon and MATE: their GSettings keys, read from dconf's files and the
+  compiled schemas as S18-T2 reads GNOME's, slideshows included.
+
+**Accept:** unit tests on fixtures of each desktop's files; on a VM with Xfce
+and Cinnamon installed, natively and in the Flatpak, Rewind shows the
+desktop's wallpaper, and after it is changed, the new one.
+
+### S18-T20 — Rewind shows Sway's wallpaper
+From S18-T15's findings: Sway keeps no record of it beyond its config.
+- The config Sway reads (the first of `~/.sway/config`, `~/.config/sway/config`,
+  i3's and `/etc/sway/config`), with its `include`s and `set $variables`, for
+  `output <name|*> bg <file> <mode>`: the monitor's own line, else `output *`'s,
+  the last one read winning.
+- A change made at run time with `swaymsg` is not seen; the report says the
+  picture came from the config.
+
+**Accept:** unit tests on configs with includes, variables, `~`, `*` and named
+outputs; on a VM with Sway, natively and in the Flatpak, Rewind shows the
+wallpaper its config names.
 
 ## Definition of Done
 All tasks done; the CHANGELOG's Unreleased section introduces Rewind; mockups 25 and 26 match what was built; the README and the file

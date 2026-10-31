@@ -207,9 +207,12 @@ Nothing right now.
 - [x] S18-T12 The window and Rewind open quickly on a large catalogue
 - [x] S18-T13 An upgrade restarts the running tray and service
 - [x] S18-T14 On battery, a backup that has waited long enough runs anyway
-- [/] S18-T15 Investigate: the wallpaper on Hyprland and other desktops
+- [x] S18-T15 Investigate: the wallpaper on Hyprland and other desktops
 - [x] S18-T16 Container storage is left out of backups by default
 - [ ] S18-T17 Investigate: the service's memory use during a backup
+- [ ] S18-T18 Rewind shows the wallpaper of Hyprland's shells and wallpaper programs
+- [ ] S18-T19 Rewind shows the wallpaper of COSMIC, Xfce, Cinnamon and MATE
+- [ ] S18-T20 Rewind shows Sway's wallpaper
 
 ## Blocked
 
