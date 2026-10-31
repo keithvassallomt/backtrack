@@ -491,6 +491,50 @@ configured there but not running.
   Xfce, Cinnamon, MATE and Budgie.
 - For each, what reading it takes inside the Flatpak.
 
+**Found** (2026-10-31). Checked on Keith's laptop: the rest is from each
+project's documentation or source, as surveyed that day.
+- **Which program draws it, on Hyprland.** `hyprctl layers` (the `j/layers`
+  request on Hyprland's socket) names the background layer of each monitor and
+  its process: `caelestia-background`, from `qs -c caelestia`, on Keith's
+  laptop. That says which record to read, so a record left behind by a program
+  no longer used is not taken for the wallpaper. The socket is under
+  `$XDG_RUNTIME_DIR/hypr`, which a Flatpak does not see; granting it would also
+  grant control of Hyprland, so in the Flatpak the records alone decide.
+- **Caelestia** (2.5.0, checked): `~/.local/state/caelestia/wallpaper/path.txt`
+  holds the picture's absolute path, and `current` beside it links to it. One
+  picture on every screen; its per-monitor settings hold only the bar's.
+  Readable in the Flatpak under `HOST_XDG_STATE_HOME`, as is the picture.
+- **hyprpaper** (0.8.4 installed, checked; not running there): its live state
+  is `hyprctl hyprpaper listactive`, over a protocol of its own since 0.8; its
+  config, `~/.config/hypr/hyprpaper.conf`, has per-monitor `wallpaper` blocks
+  since 0.8, and Keith's still uses the older one-line syntax. The config
+  misses changes made at run time.
+- **awww** (swww until 0.12): `~/.cache/awww/<version>/<output>`, written on
+  every change, per output, readable in the Flatpak; swww 0.11 used
+  `~/.cache/swww/<output>`.
+- **wpaperd**: one link per output, `~/.local/state/wpaperd/wallpapers/<output>`.
+- **waypaper**: `~/.config/waypaper/config.ini` (or its state file), per output,
+  but only what waypaper itself last set.
+- **Noctalia** (5.x): `~/.local/state/noctalia/settings.toml`, per output with a
+  default; 4.x used `~/.cache/noctalia/wallpapers.json`.
+- **DankMaterialShell** (2.x): `~/.local/state/dms/session.json`,
+  `wallpaperPath`, per output when `perMonitorWallpaper` is set.
+- **swaybg** and **mpvpaper**: no record; the picture is only on their command
+  line, which a Flatpak cannot see. Sway's `output … bg` lines can be parsed
+  from its config (with its `include`s and variables); **niri** draws no picture
+  itself and leaves it to one of the above.
+- **COSMIC**: `~/.local/state/cosmic/com.system76.CosmicBackground/v1/wallpapers`,
+  per output, rewritten on every change.
+- **Xfce**: `~/.config/xfce4/xfconf/xfce-perchannel-xml/xfce4-desktop.xml`,
+  `/backdrop/screen0/monitor<connector>/workspace<n>/last-image`, per output
+  and per workspace (the current workspace is not in the file).
+- **Cinnamon** and **MATE**: GSettings like GNOME's
+  (`org.cinnamon.desktop.background` `picture-uri`, `org.mate.background`
+  `picture-filename`), read from dconf's files as S18-T2 reads GNOME's.
+  **Budgie** uses GNOME's key, which S18-T2 already reads.
+- Every record outside `$HOME` (a picture under `/usr`) is read in the Flatpak
+  under `/run/host`, as S18-T2 does.
+
 **Accept:** findings recorded in this section for each program and desktop
 above: how its current wallpaper is read, per output, natively and in the
 Flatpak, checked on Keith's laptop for Caelestia and hyprpaper; tasks added for
