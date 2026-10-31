@@ -6,7 +6,8 @@
 # smooth on real hardware, which no virtual machine can say, and its
 # crossfade with animations off (S18-T3); a backup held up on battery saying
 # so (S18-T10); hidden files, and a quick opening on a large catalogue (S18-T11
-# and T12). Each step says what to do at the screen.
+# and T12); a backup on battery that has waited long enough running anyway
+# (S18-T14). Each step says what to do at the screen.
 #
 #   scripts/rewind-check install   build the AUR packages here and say how to
 #                                  install them
@@ -16,6 +17,8 @@
 #   scripts/rewind-check 3         on battery: why no backup runs (S18-T10)
 #   scripts/rewind-check 4         hidden files, and how fast it all opens
 #                                  (S18-T11 and T12)
+#   scripts/rewind-check 5         on battery: how long a backup waits
+#                                  (S18-T14)
 #
 # Run from the checkout.
 
@@ -84,13 +87,13 @@ EOF
     cat <<'EOF'
 
   With backups on battery off (the default), once a backup is due it should
-  say "Next backup   waiting for mains power: backups on battery are off
-  (backup.on_battery)", where it said "due now" before.
+  say "Next backup   waiting for mains power", where it said "due now"
+  before, and name the setting.
 
-  a. Open Backtrack: the line at the bottom of the window says the same,
-     "· waiting for mains power, because Back up on battery power is off in
-     Preferences".
-  b. The tray's first line says "· waiting for mains power".
+  a. Open Backtrack: the line at the bottom of the window ends "· waiting for
+     charger".
+  b. The tray's first line says "Last: 1h ago. Waiting for charger." (with
+     the hours since your last backup).
   c. Plug the charger in: within a couple of minutes a backup runs, and the
      waiting is no longer mentioned.
 EOF
@@ -106,6 +109,25 @@ EOF
   d. Ctrl+T for Rewind at your home folder: its cards fill at once (five
      seconds before), with no dotfiles; Ctrl+H there shows them, and the
      window's switch moves with it.
+EOF
+    ;;
+5)
+    say "5. On battery, a backup that has waited long enough runs anyway (S18-T14)"
+    cat <<'EOF'
+  a. In Preferences, Backup page: under Back up on battery power (off) is
+     "Wait for mains power", set to "Up to 3 hours". Turn Back up on battery
+     power on: that row goes. Turn it off again: it is back.
+  b. Unplug the charger, and wait until a backup is due (backtrack status
+     says when). Then:
+     - the window's bottom line ends "· waiting for charger until HH:MM",
+       three hours after the last backup;
+     - backtrack status says "Next backup   waiting for mains power until
+       <that time> (in …), then backs up on battery anyway
+       (backup.on_battery_after)";
+     - the tray says "Last: 1h ago. Waiting for charger."
+  c. In Preferences, set Wait for mains power to "Up to 1 hour". Within about
+     two minutes a backup starts, on battery.
+  d. Set it back to "Up to 3 hours", and plug the charger in.
 EOF
     ;;
 *)
