@@ -4,15 +4,16 @@
 //! Rewind's stage: what is behind the stack, and the stack.
 //!
 //! Each card is laid out once as a widget and its drawing kept (see `card`);
-//! the stack is those drawings, placed with GTK's perspective and 3D
-//! transforms, so the GPU carries the depth and nothing is laid out while the
+//! the stack is those drawings, each scaled and placed as a perspective would
+//! show it (see `model::rewind::scale_at`), so nothing is laid out while the
 //! stack moves. The drawings are kept as GTK's render nodes rather than
 //! rendered into textures: the first texture a process renders can hold the
 //! main loop for seconds on some drivers (three, on an Intel laptop), while
-//! nodes are drawn with the window's own frames. Two cards are made at a time, the one in front first, so the
-//! view opens at once and the cards behind arrive over the next frames. The
-//! motion runs on the frame clock, and when frames run late fewer cards are
-//! drawn behind (see `model::rewind::Budget`).
+//! nodes are drawn with the window's own frames. Two cards are made at a
+//! time, the one in front first, so the view opens at once and the cards
+//! behind arrive over the next frames. The motion runs on the frame clock,
+//! and when frames run late fewer cards are drawn behind (see
+//! `model::rewind::Budget`).
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -564,13 +565,14 @@ fn draw_card(
     let (w, h) = (layout.width as f32, layout.height as f32);
     snapshot.save();
     // The eye looks at the top of the screen's middle: the stack goes back
-    // towards it.
+    // towards it, each card scaled towards that point as a perspective would
+    // (see `rewind::scale_at`).
+    let scale = rewind::scale_at(place.depth) as f32;
     snapshot.translate(&graphene::Point::new(width / 2.0, 0.0));
-    snapshot.perspective((rewind::PERSPECTIVE * layout.height) as f32);
-    snapshot.translate_3d(&graphene::Point3D::new(
+    snapshot.scale(scale, scale);
+    snapshot.translate(&graphene::Point::new(
         layout.cx as f32 - width / 2.0,
         (layout.cy - place.rise * layout.height) as f32,
-        (-place.depth * layout.height) as f32,
     ));
     snapshot.push_opacity(place.opacity * opacity);
     let card = graphene::Rect::new(-w / 2.0, -h / 2.0, w, h);

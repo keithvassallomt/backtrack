@@ -91,6 +91,17 @@ pub fn place(d: f64, deepest: usize) -> Placement {
     }
 }
 
+/// How much smaller a card `depth` card heights back is drawn than the front
+/// one, with the eye `PERSPECTIVE` card heights in front of it: what a
+/// perspective projection makes of a point that far back. The stack goes
+/// straight back, every card facing the eye, so a card's picture is the card
+/// scaled towards the vanishing point, and is drawn as such (S18-T3). Drawn
+/// under GTK's 3D transforms instead, each card went through an off-screen
+/// picture, and on Keith's laptop some came out partly or not at all.
+pub fn scale_at(depth: f64) -> f64 {
+    PERSPECTIVE / (PERSPECTIVE + depth)
+}
+
 /// Whether the card `d` backups behind the front is drawn at all.
 pub fn drawn(d: f64, deepest: usize) -> bool {
     d > -1.0 && d < deepest as f64 && place(d, deepest).opacity > 0.001
@@ -578,6 +589,20 @@ mod tests {
         let small = layout(1280.0, 720.0);
         assert!(small.height < 620.0 && small.width <= small.height * 1.75);
         assert!(small.cx + small.width / 2.0 < 1280.0 - RIGHT + 1.0);
+    }
+
+    #[test]
+    fn a_card_further_back_is_drawn_smaller_as_a_perspective_would() {
+        assert_eq!(scale_at(0.0), 1.0, "the front card at its own size");
+        assert_eq!(scale_at(PERSPECTIVE), 0.5, "twice as far from the eye");
+        // GTK's perspective divides by 1 + depth / PERSPECTIVE.
+        for depth in [0.42, 1.68, 3.36] {
+            assert!((scale_at(depth) * (1.0 + depth / PERSPECTIVE) - 1.0).abs() < 1e-12);
+        }
+        let behind = place(4.0, DEEPEST);
+        assert!(scale_at(behind.depth) < scale_at(place(1.0, DEEPEST).depth));
+        // One come past the front is nearer the eye, and larger.
+        assert!(scale_at(place(-0.5, DEEPEST).depth) > 1.0);
     }
 
     #[test]
