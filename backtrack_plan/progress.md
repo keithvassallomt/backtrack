@@ -205,7 +205,7 @@ Nothing right now.
 - [x] S18-T10 A backup held up by the battery or the network says so
 - [x] S18-T11 Hidden files are hidden, as file managers hide them
 - [x] S18-T12 The window and Rewind open quickly on a large catalogue
-- [/] S18-T13 An upgrade restarts the running tray and service
+- [x] S18-T13 An upgrade restarts the running tray and service
 - [x] S18-T14 On battery, a backup that has waited long enough runs anyway
 - [ ] S18-T15 Investigate: the wallpaper on Hyprland and other desktops
 

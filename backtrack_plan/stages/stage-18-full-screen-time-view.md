@@ -424,6 +424,12 @@ it ran afterwards. With the link hidden (`--nofilesystem` override) and the
 portal polling every 15 seconds, the portal's word alone did the same within
 two seconds of its look.
 
+On Keith's laptop (`scripts/rewind-check 6`), reinstalling the AUR package
+while both ran: the service noticed 33 seconds later, exited with 76, and
+systemd started the new one five seconds after; the tray came back by itself.
+With a backup running during the install, the service waited for it to finish
+before restarting.
+
 **Accept:** on Keith's laptop, installing a newer AUR build while the tray and
 the service run: within a minute, with no command run, the tray shows the new
 service's status and `systemctl --user status backtrackd` shows the service
