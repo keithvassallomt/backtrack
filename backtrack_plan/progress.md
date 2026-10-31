@@ -195,7 +195,7 @@ Nothing right now.
 ## Stage 18 — The full-screen time view ([stage file](stages/stage-18-full-screen-time-view.md))
 - [x] S18-T1 Mockups of the full-screen view, to choose a design
 - [x] S18-T2 The desktop's wallpaper as the view's background
-- [/] S18-T3 The full-screen view and its stack
+- [x] S18-T3 The full-screen view and its stack
 - [ ] S18-T4 The full-screen view's front window
 - [ ] S18-T5 The full-screen view's timeline
 - [ ] S18-T6 Restore and Cancel in the full-screen view
