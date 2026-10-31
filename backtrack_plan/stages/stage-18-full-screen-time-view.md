@@ -207,6 +207,10 @@ it flies. `scripts/rewind-check` is Keith's check on his laptop.
   1.6; a screenshot, or `GSK_DEBUG=full-redraw`, put it right): every Rewind
   frame now repaints the whole screen, its base colour a step different from
   the frame before, as the starfield's moving stars always made it do.
+- With all of these in, Keith looked again on the VMs (`scripts/rewind-check`
+  7 and 8): Rewind over GNOME's, Cinnamon's, Xfce's and Plasma's wallpaper,
+  natively and in the Flatpak, the cards whole as it stepped and glided, and a
+  changed wallpaper shown the next time it opened.
 
 **Accept:** on Keith's laptop, stepping through fifty backups of a real folder
 looks smooth to Keith, over the starfield; on both VMs, native and Flatpak, the
