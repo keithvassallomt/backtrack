@@ -581,6 +581,23 @@ unit, as well as the service itself.
   the archive (a peak), measured on a copy of Keith's catalogue and on a
   generated archive of millions of files.
 
+**Found** (2026-10-31), sampled every two seconds from `/proc` and the
+unit's cgroup through the 14:16 backup on Keith's laptop (2,563,206 files,
+container storage left out since S18-T16):
+- Borg's create held up to 792 MB (its files cache and chunk index for that
+  many files), from 14:16:46 to 14:18:42; its prune, up to 302 MB.
+- The catalogue's ingest of the archive took the daemon from 155 MB to 430 MB,
+  from 14:18:42 to 14:19:21. `PathResolver` keeps every path it resolves for
+  the length of an ingest, so that a folder is looked up once; it keeps every
+  file too, though none is looked up twice, which at 2.5 million files is
+  likely most of that rise.
+- After the backup the daemon held 267 MB, where it had held 152 MB before:
+  memory the allocator keeps, or a slow leak; one backup does not say which.
+- The unit's peak, the figure systemd reports, was 1,884 MB, of which 1,229 MB
+  was page cache: files Borg read, cached by the kernel and charged to the unit,
+  which the kernel takes back when anything needs it. That is most of the
+  3.8 GB and 7.1 GB seen earlier.
+
 **Accept:** findings recorded in this section: where the memory goes, with
 figures, and whether it grows over backups; tasks added for what Keith picks.
 
