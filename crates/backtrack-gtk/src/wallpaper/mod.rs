@@ -63,6 +63,11 @@ pub enum Desktop {
     Other(String),
 }
 
+/// Which desktop this is.
+pub fn desktop() -> Desktop {
+    desktop_of(&std::env::var("XDG_CURRENT_DESKTOP").unwrap_or_default())
+}
+
 fn desktop_of(names: &str) -> Desktop {
     for name in names.split(':') {
         match name.trim().to_ascii_lowercase().as_str() {
@@ -84,7 +89,7 @@ pub struct Found {
 /// What the desktop shows behind its windows, on a screen of `screen`.
 pub async fn find(screen: Screen) -> Result<Found, (Why, Vec<String>)> {
     let host = Host::here();
-    let desktop = desktop_of(&std::env::var("XDG_CURRENT_DESKTOP").unwrap_or_default());
+    let desktop = desktop();
     let mut lines = vec![format!(
         "Desktop: {}{}",
         match &desktop {

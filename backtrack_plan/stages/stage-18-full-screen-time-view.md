@@ -146,8 +146,8 @@ straight back into the distance, as mockups 25 and 26 show: each backup behind
 is further back and a little higher, darkened with its distance, and up to
 nine are drawn.
 - The backup in front is a live widget (S18-T4); the ones behind are drawn
-  from cached images of their folders, so only one real file view exists at a
-  time. GTK's GPU renderer and its 3D transforms carry the depth and
+  from their folders' drawings, made once and kept, so only one real file view
+  exists at a time. GTK's GPU renderer and its 3D transforms carry the depth and
   perspective.
 - Moving to another backup flies the stack, never landing between two
   backups. From rest it eases in and out (`ADW_EASE_IN_OUT_CUBIC`): slow, fast,
@@ -166,12 +166,29 @@ nine are drawn.
 
 **Built** (2026-10-27): Rewind opens with Ctrl+T in Backtrack's window, for
 now (S18-T7 adds the button, the menu item and the other ways in). Each
-backup's folder is a real widget, laid out once and drawn into a texture with
-its shadow, two a frame, the front one first; the stack is those textures. The
+backup's folder is a real widget, laid out once and its drawing kept with its
+shadow, two at a time, the front one first; the stack is those drawings. The
 front card is one too until S18-T4 makes it a live file view. The folder as it
 is now is read from the disk. GNOME turns GTK's animations off when it renders
 in software, as on the GNOME VM, so Rewind crossfades there; on the Plasma VM
 it flies. `scripts/rewind-check` is Keith's check on his laptop.
+
+**Found on Keith's laptop** (2026-10-31), and fixed:
+- The cards were first rendered into textures off-screen, and the first such
+  render in a process held the main loop for about three seconds on the
+  laptop's Intel GPU, whatever its size, so the stack opened as empty
+  outlines. Each card's drawing is now kept as GTK's render nodes and drawn
+  with the window's own frames, which pay no such cost.
+- Hyprland makes a window full screen only after it is first shown, so Rewind
+  first laid out its stack for a small window. It now takes the monitor's size
+  from the start.
+- On a desktop with no wallpaper to read, the starfield is there from the first
+  frame instead of after the attempt to read one.
+- Home and End flew past outlines: only the cards where the stack would land
+  were made, and those on the screen were let go as it set off. The cards
+  around the stack are now kept too, and those along the way are made as it
+  flies, after those where it lands. A long flight through hundreds of backups
+  can still pass a few cards before they are made.
 
 **Accept:** on Keith's laptop, stepping through fifty backups of a real folder
 looks smooth to Keith, over the starfield; on both VMs, native and Flatpak, the

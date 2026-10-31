@@ -3,10 +3,13 @@
 
 //! Rewind's stage: what is behind the stack, and the stack.
 //!
-//! Each card is laid out once as a widget and drawn into a texture (see
-//! `card`); the stack is those textures, placed with GTK's perspective and 3D
+//! Each card is laid out once as a widget and its drawing kept (see `card`);
+//! the stack is those drawings, placed with GTK's perspective and 3D
 //! transforms, so the GPU carries the depth and nothing is laid out while the
-//! stack moves. Two cards are made at a time, the one in front first, so the
+//! stack moves. The drawings are kept as GTK's render nodes rather than
+//! rendered into textures: the first texture a process renders can hold the
+//! main loop for seconds on some drivers (three, on an Intel laptop), while
+//! nodes are drawn with the window's own frames. Two cards are made at a time, the one in front first, so the
 //! view opens at once and the cards behind arrive over the next frames. The
 //! motion runs on the frame clock, and when frames run late fewer cards are
 //! drawn behind (see `model::rewind::Budget`).
@@ -26,7 +29,7 @@ use crate::model::rewind::{self, Budget, Layout, Motion, Starfield};
 
 /// The corners of a card, as Adwaita rounds a window's.
 const RADIUS: f32 = 14.0;
-/// The shadow drawn into each card's texture, and the room left for it.
+/// The shadow drawn with each card, and the room left for it.
 const SHADOW_BLUR: f32 = 40.0;
 const SHADOW_DROP: f32 = 16.0;
 const MARGIN: f32 = 64.0;
@@ -50,13 +53,13 @@ pub enum Background {
     Stars,
 }
 
-/// A card's texture, and the card size it was made at.
+/// A card's drawing, and the card size it was made at.
 struct Made {
-    texture: gdk::Texture,
+    node: gsk::RenderNode,
     size: (i32, i32),
 }
 
-/// A card being laid out, to be drawn into a texture at the next snapshot.
+/// A card being laid out, to be drawn at the next snapshot.
 struct Making {
     slot: usize,
     generation: u64,
@@ -79,6 +82,8 @@ struct State {
     stars: Option<Starfield>,
     /// With animations off: the card fading out, and when it began.
     fade: Option<(usize, i64)>,
+    /// Frames drawn since the view opened, for the log.
+    frames: u64,
     /// The last frame drawn while the stack moved, for the budget.
     last_moving_frame: Option<i64>,
     last_tick: Option<i64>,
@@ -221,6 +226,8 @@ impl Stage {
         state.background = Some(background);
         state.wallpaper_in.set(false);
         state.background_since = self.now();
+        drop(state);
+        self.queue_draw();
     }
 
     /// The backup in front, or on its way there.
@@ -335,8 +342,9 @@ impl Stage {
             state.fade = None;
         }
 
-        // Cards made and drawn into their textures are let go; the cards the
-        // stack needs next are made, the one in front first.
+        // Cards laid out and drawn are let go; the cards the stack needs next
+        // are made, those it comes to rest among first (see
+        // `rewind::to_make`).
         let done: Vec<gtk4::Box> = state
             .making
             .iter()
@@ -345,19 +353,16 @@ impl Stage {
             .collect();
         state.making.retain(|m| !m.done);
         let target = state.motion.as_ref().map_or(0, Motion::target);
+        let position = state.motion.as_ref().map_or(0.0, Motion::position);
         let deepest = state.budget.deepest();
-        let keep = target.saturating_sub(2)..=target + rewind::DEEPEST + 2;
         let fading = state.fade.map(|(slot, _)| slot);
         state
             .made
-            .retain(|slot, _| keep.contains(slot) || Some(*slot) == fading);
+            .retain(|slot, _| rewind::kept(*slot, position, target) || Some(*slot) == fading);
         let card = state.card;
         let mut wanted = Vec::new();
         if card.0 > 0 && card.1 > 0 {
-            let order = std::iter::once(target)
-                .chain((1..=deepest).map(|d| target + d))
-                .chain(target.checked_sub(1));
-            for slot in order {
+            for slot in rewind::to_make(position, target, deepest, state.slots.len()) {
                 if wanted.len() + state.making.len() >= MAKING {
                     break;
                 }
@@ -406,12 +411,8 @@ impl Stage {
         }
     }
 
-    /// Draw every card that has been laid out into its texture.
+    /// Keep the drawing of every card that has been laid out.
     fn capture(&self) {
-        let Some(renderer) = self.native().and_then(|n| n.renderer()) else {
-            return;
-        };
-        let scale = self.scale_factor().clamp(1, 2) as f32;
         let ready: Vec<(usize, gtk4::Box, (i32, i32), u64)> = self
             .imp()
             .state
@@ -424,7 +425,6 @@ impl Stage {
         for (slot, widget, size, generation) in ready {
             let (w, h) = (size.0 as f32, size.1 as f32);
             let snapshot = gtk4::Snapshot::new();
-            snapshot.scale(scale, scale);
             snapshot.translate(&graphene::Point::new(MARGIN, MARGIN));
             let outline = gsk::RoundedRect::from_rect(graphene::Rect::new(0.0, 0.0, w, h), RADIUS);
             snapshot.append_outset_shadow(
@@ -436,20 +436,12 @@ impl Stage {
                 SHADOW_BLUR,
             );
             self.snapshot_child(&widget, &snapshot);
-            let viewport = graphene::Rect::new(
-                0.0,
-                0.0,
-                (w + 2.0 * MARGIN) * scale,
-                (h + 2.0 * MARGIN) * scale,
-            );
-            let texture = snapshot
-                .to_node()
-                .map(|node| renderer.render_texture(&node, Some(&viewport)));
-            debug!(slot, made = texture.is_some(), "Rewind drew a card");
+            let node = snapshot.to_node();
+            debug!(slot, made = node.is_some(), "Rewind drew a card");
             let mut state = self.imp().state.borrow_mut();
             // Laid out before hidden files were shown or hidden: made again.
-            if let Some(texture) = texture.filter(|_| generation == state.generation) {
-                state.made.insert(slot, Made { texture, size });
+            if let Some(node) = node.filter(|_| generation == state.generation) {
+                state.made.insert(slot, Made { node, size });
             }
             if let Some(m) = state.making.iter_mut().find(|m| m.slot == slot) {
                 m.done = true;
@@ -463,6 +455,14 @@ impl Stage {
             return;
         }
         let layout = rewind::layout(f64::from(width), f64::from(height));
+        let frames = {
+            let mut state = self.imp().state.borrow_mut();
+            state.frames += 1;
+            state.frames
+        };
+        if frames == 1 {
+            debug!(width, height, "Rewind drew its first frame");
+        }
         let state = self.imp().state.borrow();
         let now = self.now();
         let full = graphene::Rect::new(0.0, 0.0, width, height);
@@ -572,15 +572,16 @@ fn draw_card(
     let card = graphene::Rect::new(-w / 2.0, -h / 2.0, w, h);
     let rounded = gsk::RoundedRect::from_rect(card, RADIUS);
     match made {
-        Some(made) => snapshot.append_texture(
-            &made.texture,
-            &graphene::Rect::new(
-                -w / 2.0 - MARGIN,
-                -h / 2.0 - MARGIN,
-                w + 2.0 * MARGIN,
-                h + 2.0 * MARGIN,
-            ),
-        ),
+        Some(made) => {
+            // Made at a card size a rounding away from this one, at most.
+            let (mw, mh) = (made.size.0 as f32, made.size.1 as f32);
+            snapshot.save();
+            snapshot.translate(&graphene::Point::new(-w / 2.0, -h / 2.0));
+            snapshot.scale(w / mw, h / mh);
+            snapshot.translate(&graphene::Point::new(-MARGIN, -MARGIN));
+            snapshot.append_node(&made.node);
+            snapshot.restore();
+        }
         // Not made yet: its outline, so the stack is there from the first
         // frame.
         None => {

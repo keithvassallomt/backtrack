@@ -108,14 +108,31 @@ pub fn open(parent: &adw::ApplicationWindow, view: &View, index: &Index) {
     let monitor = parent
         .surface()
         .and_then(|surface| WidgetExt::display(parent).monitor_at_surface(&surface));
+    // The monitor's own size from the first frame: a compositor that makes
+    // the window full screen only after it has first been shown (Hyprland
+    // does) would otherwise have the stack laid out for a window the size of
+    // the two lines under it.
+    if let Some(monitor) = &monitor {
+        let geometry = monitor.geometry();
+        window.set_default_size(geometry.width(), geometry.height());
+    }
     match &monitor {
         Some(monitor) => window.fullscreen_on_monitor(monitor),
         None => window.fullscreen(),
     }
+    // Where there is no wallpaper to read, the stars from the first frame,
+    // with nothing to wait for.
+    let desktop = crate::wallpaper::desktop();
+    if let crate::wallpaper::Desktop::Other(name) = &desktop {
+        debug!(desktop = %name, "Rewind shows the starfield: no wallpaper to read here");
+        stage.set_background(Background::Stars);
+    }
     window.present();
 
     read_folders(&stage, &view, index.clone(), at);
-    find_background(&stage, monitor);
+    if !matches!(desktop, crate::wallpaper::Desktop::Other(_)) {
+        find_background(&stage, monitor);
+    }
 }
 
 /// The keys, and the mouse wheel: Up and Down (and Page Up and Page Down) step

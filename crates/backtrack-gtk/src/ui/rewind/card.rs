@@ -6,9 +6,9 @@
 //!
 //! A card is a real widget, styled by the theme (and by whatever palette the
 //! person has given GTK), but it is never on screen as one: the stage lays it
-//! out once, draws it into a texture, and lets it go. Every card in the stack
-//! is such a texture, so moving the stack moves pictures and nothing is laid
-//! out while it moves.
+//! out once, keeps its drawing, and lets it go. Every card in the stack is
+//! such a drawing, so moving the stack moves pictures and nothing is laid out
+//! while it moves.
 
 use backtrack_core::index::Entry;
 use gtk4::prelude::*;

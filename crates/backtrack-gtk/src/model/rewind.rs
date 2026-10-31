@@ -96,6 +96,50 @@ pub fn drawn(d: f64, deepest: usize) -> bool {
     d > -1.0 && d < deepest as f64 && place(d, deepest).opacity > 0.001
 }
 
+/// The cards to make, most wanted first, with the stack at `position` on its
+/// way to `target`, `deepest` drawn behind the front, among `count` cards.
+///
+/// The cards the stack comes to rest among come first, so that it lands on
+/// cards with their contents. While it moves, the cards along the way follow:
+/// the next to come into view first, as they are on the screen longest, then
+/// those in view, from where they came in.
+pub fn to_make(position: f64, target: usize, deepest: usize, count: usize) -> Vec<usize> {
+    let mut order: Vec<usize> = std::iter::once(target)
+        .chain((1..=deepest).map(|d| target + d))
+        .chain(target.checked_sub(1))
+        .collect();
+    let here = position.floor() as isize;
+    let deepest = deepest as isize;
+    if target as f64 > position {
+        // Going back: cards come into view at the far end of the stack.
+        order.extend(
+            [here + deepest + 1, here + deepest + 2]
+                .into_iter()
+                .chain((here..=here + deepest).rev())
+                .filter_map(|slot| usize::try_from(slot).ok()),
+        );
+    } else if (target as f64) < position {
+        // Coming forward: they come into view from in front of the eye.
+        order.extend(
+            [here - 1, here - 2]
+                .into_iter()
+                .chain(here..=here + deepest)
+                .filter_map(|slot| usize::try_from(slot).ok()),
+        );
+    }
+    let mut seen = std::collections::HashSet::new();
+    order.retain(|slot| *slot < count && seen.insert(*slot));
+    order
+}
+
+/// Whether a card already made is kept, with the stack at `position` on its
+/// way to `target`: those near either are, so that the cards on the screen as
+/// a flight sets off keep their contents.
+pub fn kept(slot: usize, position: f64, target: usize) -> bool {
+    let near = |at: usize| (at.saturating_sub(2)..=at + DEEPEST + 2).contains(&slot);
+    near(target) || near(position.max(0.0).floor() as usize)
+}
+
 /// The stack's motion.
 ///
 /// From rest a move eases in and out (cubic, as `ADW_EASE_IN_OUT_CUBIC`):
@@ -532,6 +576,54 @@ mod tests {
         let past = place(-0.3, DEEPEST);
         assert!(past.depth < 0.0 && past.opacity < 1.0);
         assert!(!drawn(-0.6, DEEPEST));
+    }
+
+    #[test]
+    fn the_cards_landed_on_are_made_first_then_those_along_the_way() {
+        // At rest: the front card, those behind it, and the one in front.
+        let mut at_rest: Vec<usize> = (4..=13).collect();
+        at_rest.push(3);
+        assert_eq!(to_make(4.0, 4, DEEPEST, 50), at_rest);
+        assert_eq!(
+            to_make(0.0, 0, DEEPEST, 3),
+            vec![0, 1, 2],
+            "only cards there are"
+        );
+
+        // Going back, on the way from 0 to 30: the cards at 30 first, then the
+        // next two to come into view at the far end, then those in view, from
+        // the back.
+        let going_back = to_make(5.3, 30, DEEPEST, 50);
+        let mut expected: Vec<usize> = (30..=39).collect();
+        expected.extend([29, 15, 16, 14, 13, 12, 11, 10, 9, 8, 7, 6, 5]);
+        assert_eq!(going_back, expected);
+
+        // Coming forward, on the way from 30 to 2: the next two to come into
+        // view in front, then those in view, from the front.
+        let coming_forward = to_make(20.4, 2, DEEPEST, 50);
+        let mut expected: Vec<usize> = (2..=11).collect();
+        expected.push(1);
+        expected.extend([19, 18]);
+        expected.extend(20..=29);
+        assert_eq!(coming_forward, expected);
+
+        // Near the end, nothing past it, and nothing twice.
+        let near_the_end = to_make(45.5, 49, DEEPEST, 50);
+        assert!(near_the_end.iter().all(|slot| *slot < 50));
+        let mut unique = near_the_end.clone();
+        unique.sort_unstable();
+        unique.dedup();
+        assert_eq!(unique.len(), near_the_end.len());
+    }
+
+    #[test]
+    fn cards_near_the_stack_or_where_it_is_going_are_kept() {
+        // Setting off from 5 for 30: the cards on the screen stay made.
+        assert!((3..=16).all(|slot| kept(slot, 5.3, 30)));
+        assert!((28..=41).all(|slot| kept(slot, 5.3, 30)));
+        assert!(!kept(22, 5.3, 30), "neither here nor there");
+        assert!(!kept(1, 5.3, 30));
+        assert!(kept(0, 0.0, 0));
     }
 
     #[test]
