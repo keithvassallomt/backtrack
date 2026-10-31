@@ -669,6 +669,19 @@ From S18-T15's findings, each a reader of the desktop's own settings.
 - Cinnamon and MATE: their GSettings keys, read from dconf's files and the
   compiled schemas as S18-T2 reads GNOME's, slideshows included.
 
+**Found on the GNOME VM** (2026-10-31, Xfce 4.20 and Cinnamon 6.7.9 installed
+beside GNOME), when Keith looked:
+- Fedora 45's Cinnamon is 6.7, which keeps the wallpaper in
+  `picture-uri-list` (one entry for each monitor by its connector, or one for
+  all in its default 'mirror' mode) and leaves `picture-uri` as it was: a
+  changed wallpaper did not show. The list is read first now
+  (`gnome::from_list`), the older keys only while it is empty.
+- Xfce writes nothing of the wallpaper, to its file or to xfconf, until it is
+  changed, and showed the starfield. The system's settings folders are read
+  next, where xfconf finds a distribution's defaults, then xfdesktop's own
+  default, which its build names: Fedora's `images/default.jxl`, upstream's
+  `xfce-x.svg`.
+
 **Accept:** unit tests on fixtures of each desktop's files; on a VM with Xfce
 and Cinnamon installed, natively and in the Flatpak, Rewind shows the
 desktop's wallpaper, and after it is changed, the new one.

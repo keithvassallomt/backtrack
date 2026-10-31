@@ -131,9 +131,16 @@ pub async fn find(screen: Screen, output: Option<String>) -> Result<Found, (Why,
     let dark = dark.unwrap_or(false);
     lines.push(format!("Screen: {} by {}", screen.width, screen.height));
     let found = match desktop {
-        Desktop::Gnome => gnome(&host, gnome::GNOME, screen, dark, &mut lines),
-        Desktop::Cinnamon => gnome(&host, gnome::CINNAMON, screen, dark, &mut lines),
-        Desktop::Mate => gnome(&host, gnome::MATE, screen, dark, &mut lines),
+        Desktop::Gnome => gnome(&host, gnome::GNOME, screen, None, dark, &mut lines),
+        Desktop::Cinnamon => gnome(
+            &host,
+            gnome::CINNAMON,
+            screen,
+            output.as_deref(),
+            dark,
+            &mut lines,
+        ),
+        Desktop::Mate => gnome(&host, gnome::MATE, screen, None, dark, &mut lines),
         Desktop::Cosmic => from_file(
             &host,
             &host
@@ -142,14 +149,7 @@ pub async fn find(screen: Screen, output: Option<String>) -> Result<Found, (Why,
             |text| cosmic::choose(text, output.as_deref()),
             &mut lines,
         ),
-        Desktop::Xfce => from_file(
-            &host,
-            &host
-                .config
-                .join("xfce4/xfconf/xfce-perchannel-xml/xfce4-desktop.xml"),
-            |text| xfce::choose(text, output.as_deref()),
-            &mut lines,
-        ),
+        Desktop::Xfce => xfce_desktop(&host, output.as_deref(), &mut lines),
         Desktop::Plasma => match &connection {
             Some(connection) => plasma(&host, connection, screen, dark, &mut lines).await,
             None => Err(Why::Unreachable("there is no session bus".to_owned())),
@@ -208,19 +208,114 @@ fn from_file(
     }
 }
 
-/// GNOME's wallpaper, or Cinnamon's or MATE's, as `schema` keeps it.
+/// What xfdesktop shows where nothing is set: the default its build names.
+/// Fedora's names its release's own picture (found in Fedora 45's
+/// `xfdesktop`); upstream's, `xfce-x.svg`.
+const XFCE_DEFAULTS: [&str; 2] = [
+    "/usr/share/backgrounds/images/default.jxl",
+    "/usr/share/backgrounds/xfce/xfce-x.svg",
+];
+
+/// Xfce's wallpaper (S18-T19): the user's settings, else the system's,
+/// where xfconf finds its defaults, else xfdesktop's own default. Xfce writes
+/// nothing of the wallpaper until it is changed.
+fn xfce_desktop(
+    host: &Host,
+    output: Option<&str>,
+    lines: &mut Vec<String>,
+) -> Result<Wallpaper, Why> {
+    let file = "xfce4/xfconf/xfce-perchannel-xml/xfce4-desktop.xml";
+    let files = std::iter::once(host.config.join(file))
+        .chain(host.config_dirs().into_iter().map(|dir| dir.join(file)));
+    for path in files {
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        if let Some(wallpaper) = xfce::choose(&text, output) {
+            lines.push(format!("Settings: from {}", path.display()));
+            return match wallpaper {
+                Wallpaper::Picture { path, fit, behind } => picture_at(host, path, fit, behind),
+                colour => Ok(colour),
+            };
+        }
+        lines.push(format!("Settings: {} names no wallpaper", path.display()));
+    }
+    let default = XFCE_DEFAULTS
+        .iter()
+        .map(PathBuf::from)
+        .find(|path| host.path(path).exists())
+        .ok_or_else(|| {
+            Why::NoRecord("Xfce names no wallpaper, and its default is not there".to_owned())
+        })?;
+    lines.push(format!(
+        "Settings: none; xfdesktop's default, {}",
+        default.display()
+    ));
+    picture_at(host, default, Fit::Cover, Rgb(0, 0, 0))
+}
+
+/// Cinnamon's `picture-uri-list` (since 6.7), as maps of each entry's
+/// strings: natively through GSettings, in the Flatpak from dconf's files,
+/// falling to the schema's default (empty).
+fn cinnamon_list(
+    host: &Host,
+    lines: &mut Vec<String>,
+) -> Vec<std::collections::HashMap<String, String>> {
+    let key = "picture-uri-list";
+    let list = if host.flatpak {
+        host.dconf_layers()
+            .read_from(&format!("{}{key}", gnome::CINNAMON.path))
+            .map(|(_, value)| value)
+    } else {
+        gio::SettingsSchemaSource::default()
+            .and_then(|source| source.lookup(gnome::CINNAMON.id, true))
+            .filter(|schema| schema.has_key(key))
+            .map(|schema| {
+                gio::Settings::new_full(&schema, None::<&gio::SettingsBackend>, None).value(key)
+            })
+    };
+    let Some(list) = list.filter(|v| v.is_container()) else {
+        return Vec::new();
+    };
+    let entries: Vec<_> = list
+        .iter()
+        .map(|entry| {
+            entry
+                .iter()
+                .filter_map(|pair| {
+                    let name = pair.child_value(0).str()?.to_owned();
+                    let value = pair.child_value(1);
+                    let value = value.as_variant().unwrap_or(value);
+                    Some((name, value.str()?.to_owned()))
+                })
+                .collect()
+        })
+        .collect();
+    lines.push(format!("  {key}: {} entries", entries.len()));
+    entries
+}
+
+/// GNOME's wallpaper, or Cinnamon's or MATE's, as `schema` keeps it, on the
+/// monitor named `output` where the desktop keeps one for each.
 fn gnome(
     host: &Host,
     schema: gnome::Schema,
     screen: Screen,
+    output: Option<&str>,
     dark: bool,
     lines: &mut Vec<String>,
 ) -> Result<Wallpaper, Why> {
-    let settings = if host.flatpak {
+    let mut settings = if host.flatpak {
         gnome_from_files(host, schema, lines)
     } else {
         gnome_from_gsettings(schema, lines)
     };
+    if schema == gnome::CINNAMON {
+        if let Some(own) = gnome::from_list(&cinnamon_list(host, lines), output) {
+            lines.push(format!("  from the list: '{}'", own.picture_uri));
+            settings = own;
+        }
+    }
     let wallpaper = gnome::choose(&settings, dark)?;
     let Wallpaper::Picture { path, fit, behind } = wallpaper else {
         return Ok(wallpaper);

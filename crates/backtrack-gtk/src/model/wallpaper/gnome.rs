@@ -84,6 +84,36 @@ impl Settings {
     }
 }
 
+/// Cinnamon's wallpaper since 6.7, `picture-uri-list`: one entry for each
+/// monitor, by its `connector`, in its 'independent' mode, or one with none in
+/// 'mirror' and 'spanned', each with GNOME's keys. The entry for `output`,
+/// else the one for every monitor, else the first; None while the list is
+/// empty, when the older keys stand. Fedora 45's Cinnamon 6.7 changes only
+/// the list (found on the GNOME VM, 2026-10-31).
+pub fn from_list(
+    entries: &[std::collections::HashMap<String, String>],
+    output: Option<&str>,
+) -> Option<Settings> {
+    let connector = |entry: &std::collections::HashMap<String, String>| {
+        entry.get("connector").filter(|c| !c.is_empty()).cloned()
+    };
+    let entry = output
+        .and_then(|output| {
+            entries
+                .iter()
+                .find(|e| connector(e).as_deref() == Some(output))
+        })
+        .or_else(|| entries.iter().find(|e| connector(e).is_none()))
+        .or_else(|| entries.first())?;
+    let get = |key: &str| entry.get(key).cloned().unwrap_or_default();
+    Some(Settings {
+        picture_uri: get("picture-uri"),
+        picture_uri_dark: String::new(),
+        picture_options: get("picture-options"),
+        primary_color: get("primary-color"),
+    })
+}
+
 /// What GNOME shows. The path may be a timed slideshow's XML (see
 /// `super::slideshow`), which only the caller can read.
 pub fn choose(settings: &Settings, dark: bool) -> Result<Wallpaper, Why> {
@@ -228,6 +258,43 @@ mod tests {
         assert_eq!(settings.picture_uri, "file:///a.png");
         assert_eq!(settings.picture_uri_dark, "");
         assert_eq!(settings.picture_options, "scaled");
+    }
+
+    #[test]
+    fn cinnamons_list_gives_each_monitor_its_own() {
+        let entry = |pairs: &[(&str, &str)]| {
+            pairs
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect::<std::collections::HashMap<_, _>>()
+        };
+        // As on the GNOME VM after Keith changed it, in 'mirror' mode.
+        let mirror = [entry(&[
+            (
+                "picture-uri",
+                "file:///usr/share/backgrounds/gnome/blendpills-l.jxl",
+            ),
+            ("picture-options", "zoom"),
+            ("primary-color", "#023c88"),
+        ])];
+        assert_eq!(
+            from_list(&mirror, Some("Virtual-1")).map(|s| s.picture_uri),
+            Some("file:///usr/share/backgrounds/gnome/blendpills-l.jxl".to_owned())
+        );
+        let independent = [
+            entry(&[("connector", "DP-1"), ("picture-uri", "file:///a.png")]),
+            entry(&[("connector", "eDP-1"), ("picture-uri", "file:///b.png")]),
+        ];
+        assert_eq!(
+            from_list(&independent, Some("eDP-1")).map(|s| s.picture_uri),
+            Some("file:///b.png".to_owned())
+        );
+        assert_eq!(
+            from_list(&independent, Some("HDMI-1")).map(|s| s.picture_uri),
+            Some("file:///a.png".to_owned()),
+            "a monitor it has nothing for, the first"
+        );
+        assert_eq!(from_list(&[], Some("eDP-1")), None, "the older keys stand");
     }
 
     #[test]
