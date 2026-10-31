@@ -198,6 +198,15 @@ it flies. `scripts/rewind-check` is Keith's check on his laptop.
   seconds of smooth motion, never at rest. His display refreshes at 120 Hz,
   where 60 frames a second counted as late. Frames are now measured against 60
   a second at most, and at rest the cards come back one every 120 ms.
+- Then, after a step, some cards behind the front one showed as empty outlines,
+  and some lost their top part. Two causes. Under GTK's 3D transforms each
+  card's nodes went through an off-screen picture, some drawn partly or not at
+  all; the cards face the eye, so they are now drawn scaled towards the
+  vanishing point, with no 3D transform (`rewind::scale_at`). And the screen
+  was left stale where GTK did not count it as changed (Hyprland, at a scale of
+  1.6; a screenshot, or `GSK_DEBUG=full-redraw`, put it right): every Rewind
+  frame now repaints the whole screen, its base colour a step different from
+  the frame before, as the starfield's moving stars always made it do.
 
 **Accept:** on Keith's laptop, stepping through fifty backups of a real folder
 looks smooth to Keith, over the starfield; on both VMs, native and Flatpak, the
@@ -642,6 +651,9 @@ under `/usr`: the record read through the host's state folder, the picture
 from `/run/host`, drawn at 3840 by 2160. Rewind no longer shows the starfield at once
 on a desktop other than GNOME or Plasma: it looks for a record first, as it
 asks GNOME and Plasma.
+
+Checked by Keith on his laptop: Rewind over his Caelestia wallpaper, and after
+he changed it, over the new one.
 
 **Accept:** unit tests on each record's format, on fixtures shaped as each
 project writes them, and on the choice between records with Hyprland's layers

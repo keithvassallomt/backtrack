@@ -471,7 +471,16 @@ impl Stage {
         let state = self.imp().state.borrow();
         let now = self.now();
         let full = graphene::Rect::new(0.0, 0.0, width, height);
-        snapshot.append_color(&rgba(0x04, 0x05, 0x0a, 1.0), &full);
+        // Every frame repaints the whole screen. GTK repaints only what it
+        // finds changed, and on Keith's laptop (Hyprland, at a scale of 1.6)
+        // that left the cards behind the front one as they had been frames
+        // before, outlines or half drawn, until something else repainted
+        // them; `GSK_DEBUG=full-redraw` cured it. A base colour one step
+        // different from frame to frame, under the wallpaper where there is
+        // one, makes the whole screen a change, as the starfield's moving
+        // stars always did.
+        let base = if frames % 2 == 0 { 0x0a } else { 0x0b };
+        snapshot.append_color(&rgba(0x04, 0x05, base, 1.0), &full);
         match &state.background {
             Some(Background::Wallpaper { texture, dim }) => {
                 let shown =
