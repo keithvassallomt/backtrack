@@ -212,7 +212,7 @@ Nothing right now.
 - [/] S18-T17 Investigate: the service's memory use during a backup
 - [x] S18-T18 Rewind shows the wallpaper of Hyprland's shells and wallpaper programs
 - [x] S18-T19 Rewind shows the wallpaper of COSMIC, Xfce, Cinnamon and MATE
-- [ ] S18-T20 Rewind shows Sway's wallpaper
+- [/] S18-T20 Rewind shows Sway's wallpaper
 - [ ] S18-T21 Cataloguing a backup holds less memory
 
 ## Blocked

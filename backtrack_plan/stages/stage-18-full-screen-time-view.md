@@ -704,6 +704,13 @@ From S18-T15's findings: Sway keeps no record of it beyond its config.
 - A change made at run time with `swaymsg` is not seen; the report says the
   picture came from the config.
 
+**Built** (2026-10-31): `model::wallpaper::sway`, reading a config as Sway
+does (comments, `\` continuations, `set` substituted in the lines after it and
+only in a `set`'s value, `include`s where they stand, `output` lines and
+blocks, `bg … solid_color`). Natively it reads the newest `swaybg`'s command
+line first, as on Hyprland, which a change made with `swaymsg` is in; the
+config is what the Flatpak, which cannot see other processes, reads.
+
 **Accept:** unit tests on configs with includes, variables, `~`, `*` and named
 outputs; on a VM with Sway, natively and in the Flatpak, Rewind shows the
 wallpaper its config names.

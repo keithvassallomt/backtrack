@@ -26,7 +26,9 @@ use tracing::{debug, info};
 
 use crate::host::Host;
 use crate::model::wallpaper::records::{self, Program, Record};
-use crate::model::wallpaper::{cosmic, gnome, plasma, slideshow, xfce, Fit, Rgb, Wallpaper, Why};
+use crate::model::wallpaper::{
+    cosmic, gnome, plasma, slideshow, sway, xfce, Fit, Rgb, Wallpaper, Why,
+};
 
 pub use report::report;
 
@@ -66,6 +68,8 @@ pub enum Desktop {
     Xfce,
     Cinnamon,
     Mate,
+    /// S18-T20.
+    Sway,
     Other(String),
 }
 
@@ -83,6 +87,7 @@ fn desktop_of(names: &str) -> Desktop {
             "xfce" => return Desktop::Xfce,
             "x-cinnamon" | "cinnamon" => return Desktop::Cinnamon,
             "mate" => return Desktop::Mate,
+            "sway" => return Desktop::Sway,
             _ => {}
         }
     }
@@ -110,6 +115,7 @@ pub async fn find(screen: Screen, output: Option<String>) -> Result<Found, (Why,
             Desktop::Xfce => "Xfce".to_owned(),
             Desktop::Cinnamon => "Cinnamon".to_owned(),
             Desktop::Mate => "MATE".to_owned(),
+            Desktop::Sway => "Sway".to_owned(),
             Desktop::Other(name) if name.is_empty() => "not named".to_owned(),
             Desktop::Other(name) => name.clone(),
         },
@@ -150,6 +156,7 @@ pub async fn find(screen: Screen, output: Option<String>) -> Result<Found, (Why,
             &mut lines,
         ),
         Desktop::Xfce => xfce_desktop(&host, output.as_deref(), &mut lines),
+        Desktop::Sway => sway_desktop(&host, output.as_deref(), &mut lines),
         Desktop::Plasma => match &connection {
             Some(connection) => plasma(&host, connection, screen, dark, &mut lines).await,
             None => Err(Why::Unreachable("there is no session bus".to_owned())),
@@ -206,6 +213,115 @@ fn from_file(
         Wallpaper::Picture { path, fit, behind } => picture_at(host, path, fit, behind),
         colour => Ok(colour),
     }
+}
+
+/// Sway's wallpaper (S18-T20). Natively, the command line of the `swaybg`
+/// Sway last started, which a change made at run time is in; otherwise, and
+/// in the Flatpak, which cannot see other processes, what its config says.
+fn sway_desktop(
+    host: &Host,
+    output: Option<&str>,
+    lines: &mut Vec<String>,
+) -> Result<Wallpaper, Why> {
+    if !host.flatpak {
+        if let Some((pid, record)) = newest_swaybg(output) {
+            lines.push(format!("Read: swaybg's command line ({pid})"));
+            return match record.wallpaper {
+                Wallpaper::Picture { path, fit, behind } => picture_at(host, path, fit, behind),
+                colour => Ok(colour),
+            };
+        }
+    }
+    let config = sway::configs(&host.home, &host.config)
+        .into_iter()
+        .map(|path| host.path(&path))
+        .find(|path| path.is_file())
+        .ok_or_else(|| Why::NoRecord("Sway's config is not there".to_owned()))?;
+    lines.push(format!("Settings: from {}", config.display()));
+    let text = std::fs::read_to_string(&config)
+        .map_err(|e| Why::Unreadable(config.clone(), e.to_string()))?;
+    let dir = config.parent().map(Path::to_path_buf).unwrap_or_default();
+    let read = |pattern: &str| included(host, &dir, pattern);
+    match sway::choose(&text, output, &host.home, &read).ok_or_else(|| {
+        Why::NoRecord("Sway's config names no wallpaper for this screen".to_owned())
+    })? {
+        Wallpaper::Picture { path, fit, behind } => picture_at(host, path, fit, behind),
+        colour => Ok(colour),
+    }
+}
+
+/// The newest `swaybg` of this user's, and what its command line shows.
+fn newest_swaybg(output: Option<&str>) -> Option<(i32, Record)> {
+    use std::os::unix::fs::MetadataExt;
+    let me = std::fs::metadata("/proc/self").ok()?.uid();
+    std::fs::read_dir("/proc")
+        .ok()?
+        .flatten()
+        .filter_map(|entry| {
+            let pid: i32 = entry.file_name().to_str()?.parse().ok()?;
+            let meta = entry.metadata().ok()?;
+            let comm = std::fs::read_to_string(entry.path().join("comm")).ok()?;
+            (meta.uid() == me && comm.trim() == "swaybg").then_some((pid, meta.mtime()))
+        })
+        .max_by_key(|(_, started)| *started)
+        .and_then(|(pid, _)| Some((pid, swaybg_of(pid, output)?)))
+}
+
+/// The texts of the files a Sway `include` names: `~`, a path relative to
+/// the config's folder, and `*` and `?` in the file's name, as its includes
+/// are usually written.
+fn included(host: &Host, dir: &Path, pattern: &str) -> Vec<String> {
+    let pattern = match pattern.strip_prefix("~/") {
+        Some(rest) => host.home.join(rest),
+        None if pattern.starts_with('/') => PathBuf::from(pattern),
+        None => dir.join(pattern),
+    };
+    let pattern = host.path(&pattern);
+    let name = pattern
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let files: Vec<PathBuf> = if name.contains(['*', '?']) {
+        let mut found: Vec<PathBuf> = pattern
+            .parent()
+            .and_then(|parent| std::fs::read_dir(parent).ok())
+            .map(|entries| {
+                entries
+                    .flatten()
+                    .map(|entry| entry.path())
+                    .filter(|path| {
+                        path.file_name()
+                            .is_some_and(|n| wildcard(&name, &n.to_string_lossy()))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        found.sort();
+        found
+    } else {
+        vec![pattern]
+    };
+    files
+        .iter()
+        .filter_map(|file| std::fs::read_to_string(file).ok())
+        .collect()
+}
+
+/// Whether `name` matches `pattern`, `*` for any run of characters and `?`
+/// for one.
+fn wildcard(pattern: &str, name: &str) -> bool {
+    fn matches(p: &[char], n: &[char]) -> bool {
+        match (p.first(), n.first()) {
+            (None, None) => true,
+            (Some('*'), _) => matches(&p[1..], n) || (!n.is_empty() && matches(p, &n[1..])),
+            (Some('?'), Some(_)) => matches(&p[1..], &n[1..]),
+            (Some(a), Some(b)) if a == b => matches(&p[1..], &n[1..]),
+            _ => false,
+        }
+    }
+    let p: Vec<char> = pattern.chars().collect();
+    let n: Vec<char> = name.chars().collect();
+    matches(&p, &n)
 }
 
 /// What xfdesktop shows where nothing is set: the default its build names.
@@ -980,6 +1096,31 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_sway_include_reads_its_files_in_order() {
+        assert!(wildcard("*", "50-systemd-user.conf"));
+        assert!(wildcard("*.conf", "a.conf"));
+        assert!(!wildcard("*.conf", "a.conf.bak"));
+        assert!(wildcard("1?-*", "10-wallpaper"));
+        let dir = tempfile::tempdir().unwrap();
+        let config_d = dir.path().join("config.d");
+        std::fs::create_dir(&config_d).unwrap();
+        std::fs::write(config_d.join("20-late"), "late").unwrap();
+        std::fs::write(config_d.join("10-early"), "early").unwrap();
+        std::fs::write(dir.path().join("own"), "own").unwrap();
+        let host = Host {
+            flatpak: false,
+            config: dir.path().into(),
+            data: dir.path().into(),
+            state: dir.path().into(),
+            cache: dir.path().into(),
+            home: dir.path().into(),
+        };
+        assert_eq!(included(&host, dir.path(), "config.d/*"), ["early", "late"]);
+        assert_eq!(included(&host, dir.path(), "~/own"), ["own"]);
+        assert!(included(&host, dir.path(), "absent/*").is_empty());
+    }
+
+    #[test]
     fn the_desktop_is_named_by_any_part_of_xdg_current_desktop() {
         assert_eq!(desktop_of("GNOME"), Desktop::Gnome);
         assert_eq!(desktop_of("ubuntu:GNOME"), Desktop::Gnome);
@@ -988,6 +1129,7 @@ mod tests {
         assert_eq!(desktop_of("XFCE"), Desktop::Xfce);
         assert_eq!(desktop_of("X-Cinnamon"), Desktop::Cinnamon);
         assert_eq!(desktop_of("MATE"), Desktop::Mate);
+        assert_eq!(desktop_of("sway"), Desktop::Sway);
         // Budgie keeps GNOME's wallpaper, and says so.
         assert_eq!(desktop_of("Budgie:GNOME"), Desktop::Gnome);
         assert_eq!(desktop_of("Hyprland"), Desktop::Other("Hyprland".into()));

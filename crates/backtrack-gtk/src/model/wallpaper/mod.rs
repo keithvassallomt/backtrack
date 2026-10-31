@@ -18,6 +18,7 @@ pub mod gvdb;
 pub mod plasma;
 pub mod records;
 pub mod slideshow;
+pub mod sway;
 pub mod xfce;
 
 use std::fmt;
