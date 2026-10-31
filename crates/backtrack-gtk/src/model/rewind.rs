@@ -289,6 +289,8 @@ pub struct Budget {
     deepest: usize,
     late: Vec<bool>,
     on_time: u32,
+    /// When the last card came back at rest, in seconds.
+    returned: f64,
 }
 
 /// Frames looked back over, and how many of them late are too many.
@@ -296,6 +298,12 @@ const WINDOW: usize = 12;
 const TOO_MANY_LATE: usize = 3;
 /// On-time frames in a row before one more is drawn again.
 const BEFORE_DEEPER: u32 = 120;
+/// The slowest display a frame is measured against: on a faster one, a frame
+/// at 60 a second is smooth enough, and not late (Keith's laptop, at 120 Hz,
+/// drew three cards where it could have drawn nine).
+const SLOWEST_PERIOD: f64 = 1.0 / 60.0;
+/// At rest, how often one more card comes back, in seconds.
+const RETURN_EVERY: f64 = 0.12;
 
 impl Default for Budget {
     fn default() -> Budget {
@@ -303,6 +311,7 @@ impl Default for Budget {
             deepest: DEEPEST,
             late: Vec::with_capacity(WINDOW),
             on_time: 0,
+            returned: 0.0,
         }
     }
 }
@@ -314,9 +323,10 @@ impl Budget {
 
     /// A frame drawn while the stack moved, `interval` seconds after the one
     /// before, on a display that refreshes every `period` seconds. A frame
-    /// half as late again as it should be is late.
+    /// half as late again as it should be is late, measured against 60 a
+    /// second at most.
     pub fn frame(&mut self, interval: f64, period: f64) {
-        let late = interval > period * 1.5;
+        let late = interval > period.max(SLOWEST_PERIOD) * 1.5;
         if self.late.len() == WINDOW {
             self.late.remove(0);
         }
@@ -331,6 +341,19 @@ impl Budget {
             self.late.clear();
         } else if self.on_time >= BEFORE_DEEPER && self.deepest < DEEPEST {
             self.deepest += 1;
+            self.on_time = 0;
+        }
+    }
+
+    /// The stack at rest at `now`, in seconds: nothing needs keeping up
+    /// with, so the cards left out come back, one every `RETURN_EVERY`, the
+    /// next starting faint at the far end. Without it, a stack thinned while
+    /// it moved stayed thin until it next moved smoothly for two seconds.
+    pub fn at_rest(&mut self, now: f64) {
+        if self.deepest < DEEPEST && now - self.returned >= RETURN_EVERY {
+            self.deepest += 1;
+            self.returned = now;
+            self.late.clear();
             self.on_time = 0;
         }
     }
@@ -652,6 +675,49 @@ mod tests {
             steady.frame(period * 1.3, period);
         }
         assert_eq!(steady.deepest(), DEEPEST);
+    }
+
+    #[test]
+    fn a_fast_display_is_held_to_sixty_frames_a_second_at_most() {
+        // Keith's laptop refreshes at 120 Hz.
+        let period = 1.0 / 120.0;
+        let mut sixty = Budget::default();
+        for _ in 0..60 {
+            sixty.frame(1.0 / 60.0, period);
+        }
+        assert_eq!(sixty.deepest(), DEEPEST, "60 a second is smooth enough");
+        let mut thirty = Budget::default();
+        for _ in 0..60 {
+            thirty.frame(1.0 / 30.0, period);
+        }
+        assert!(thirty.deepest() < DEEPEST, "30 a second is late");
+    }
+
+    #[test]
+    fn at_rest_the_cards_left_out_come_back_one_at_a_time() {
+        let period = 1.0 / 60.0;
+        let mut budget = Budget::default();
+        for _ in 0..60 {
+            budget.frame(period * 3.0, period);
+        }
+        assert_eq!(budget.deepest(), SHALLOWEST);
+        let mut now = 10.0;
+        budget.at_rest(now);
+        assert_eq!(budget.deepest(), SHALLOWEST + 1);
+        budget.at_rest(now + RETURN_EVERY / 2.0);
+        assert_eq!(budget.deepest(), SHALLOWEST + 1, "not all at once");
+        // A frame at a time, at 120 a second.
+        while budget.deepest() < DEEPEST {
+            now += 1.0 / 120.0;
+            budget.at_rest(now);
+        }
+        assert!(
+            now - 10.0 < 1.0,
+            "all of them back within a second: {:.2} s",
+            now - 10.0
+        );
+        budget.at_rest(now + 5.0);
+        assert_eq!(budget.deepest(), DEEPEST, "never more than all");
     }
 
     #[test]

@@ -192,6 +192,12 @@ it flies. `scripts/rewind-check` is Keith's check on his laptop.
   around the stack are now kept too, and those along the way are made as it
   flies, after those where it lands. A long flight through hundreds of backups
   can still pass a few cards before they are made.
+- Over Keith's wallpaper (S18-T18), only the two cards behind the front one
+  showed, the second faint: frames had run late while he stepped back, so the
+  stack drew three cards rather than nine, and it took them back only after two
+  seconds of smooth motion, never at rest. His display refreshes at 120 Hz,
+  where 60 frames a second counted as late. Frames are now measured against 60
+  a second at most, and at rest the cards come back one every 120 ms.
 
 **Accept:** on Keith's laptop, stepping through fifty backups of a real folder
 looks smooth to Keith, over the starfield; on both VMs, native and Flatpak, the

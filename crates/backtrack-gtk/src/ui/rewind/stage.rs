@@ -310,6 +310,7 @@ impl Stage {
             state.last_moving_frame = Some(now);
         } else {
             state.last_moving_frame = None;
+            state.budget.at_rest(now as f64 / 1e6);
         }
         let since_last = state
             .last_tick
@@ -377,7 +378,10 @@ impl Stage {
         }
         let wallpaper_coming = matches!(state.background, Some(Background::Wallpaper { .. }))
             && !state.wallpaper_in.get();
+        // Cards coming back at rest are drawn as they come.
+        let returning = !was_moving && state.budget.deepest() < rewind::DEEPEST;
         let busy = was_moving
+            || returning
             || state.fade.is_some()
             || fade_ended
             || state.stars.is_some()
