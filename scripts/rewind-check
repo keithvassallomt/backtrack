@@ -7,7 +7,8 @@
 # crossfade with animations off (S18-T3); a backup held up on battery saying
 # so (S18-T10); hidden files, and a quick opening on a large catalogue (S18-T11
 # and T12); a backup on battery that has waited long enough running anyway
-# (S18-T14). Each step says what to do at the screen.
+# (S18-T14); the tray and the service restarting after an upgrade (S18-T13).
+# Each step says what to do at the screen.
 #
 #   scripts/rewind-check install   build the AUR packages here and say how to
 #                                  install them
@@ -19,6 +20,8 @@
 #                                  (S18-T11 and T12)
 #   scripts/rewind-check 5         on battery: how long a backup waits
 #                                  (S18-T14)
+#   scripts/rewind-check 6         an upgrade restarts the tray and the
+#                                  service by themselves (S18-T13)
 #
 # Run from the checkout.
 
@@ -128,6 +131,29 @@ EOF
   c. In Preferences, set Wait for mains power to "Up to 1 hour". Within about
      two minutes a backup starts, on battery.
   d. Set it back to "Up to 3 hours", and plug the charger in.
+EOF
+    ;;
+6)
+    say "6. An upgrade restarts the tray and the service (S18-T13)"
+    package="$(ls "$ROOT"/target/aur/backtrack-[0-9]*-x86_64.pkg.tar.zst)"
+    cat <<EOF
+  The tray and the service running now are from before this, so after the
+  first install below they are restarted by hand, for the last time.
+
+  a. Install it, and restart both:
+       sudo pacman -U $package
+       systemctl --user restart backtrackd.service
+       pkill -x backtrack-tray; setsid -f backtrack-tray >/dev/null 2>&1
+  b. Install the same package again (pacman says it is reinstalling):
+       sudo pacman -U $package
+     Within a minute, with no command: the tray icon goes and comes back, and
+       systemctl --user status backtrackd.service
+     says it has been running since after the install. Its log says why:
+       journalctl --user -u backtrackd.service --since -5min | grep -i upgraded
+  c. Back Up Now from the tray, and while it runs, install it a third time.
+     The service waits: the log says "restarts once its work is done", and
+     it restarts only after the backup has finished. The tray restarts at
+     once, and says "Backing up now…" (or the backup's progress) again.
 EOF
     ;;
 *)
