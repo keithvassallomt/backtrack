@@ -31,7 +31,7 @@ use tracing::{debug, warn};
 use crate::daemon::Daemon1Proxy;
 use crate::index::Index;
 use crate::model::empty::{self, Coverage, Empty};
-use crate::model::{above, file_badge};
+use crate::model::{above, file_badge, hidden};
 use crate::path;
 use crate::state::{AppState, Change, Selected};
 
@@ -192,7 +192,7 @@ pub fn build(
         let at_entry = watcher.state.view().at_trash_entry();
         if matches!(
             change,
-            Change::Folder | Change::Seq | Change::Archives | Change::Disk
+            Change::Folder | Change::Seq | Change::Archives | Change::Disk | Change::Hidden
         ) || (change == Change::Trash && at_entry)
         {
             watcher.reload();
@@ -289,7 +289,7 @@ impl Files {
                 return;
             }
             // A folder outside the backup may lead down to folders in it.
-            let (leading, partly) = match &answer {
+            let (leading, partly, ways_down) = match &answer {
                 Ok((entries, false)) => {
                     let roots = this.roots_at(seq).await;
                     if this.generation.get() != wanted {
@@ -299,9 +299,13 @@ impl Files {
                         .into_iter()
                         .filter(|name| !entries.iter().any(|e| &e.name == name))
                         .collect();
-                    (leading, above::partly(&folder, &roots))
+                    (
+                        leading,
+                        above::partly(&folder, &roots),
+                        hidden::ways_down(&folder, &roots),
+                    )
                 }
-                _ => (Vec::new(), false),
+                _ => (Vec::new(), false, Vec::new()),
             };
             let answer = answer.map(|(entries, here)| (entries, here, leading));
             match answer {
@@ -353,7 +357,7 @@ impl Files {
                         partly,
                         "folder loaded"
                     );
-                    this.show(entries, on_disk, &leading, &HashMap::new())
+                    this.show(entries, on_disk, &leading, &ways_down, &HashMap::new())
                 }
                 Err(error) => {
                     warn!(%error, folder, seq, "the folder could not be read");
@@ -449,7 +453,7 @@ impl Files {
                         trashed = trashed.len(),
                         "Trash entry loaded"
                     );
-                    this.show(entries, on_disk, &[], &trashed);
+                    this.show(entries, on_disk, &[], &[], &trashed);
                 }
                 Err(error) => {
                     warn!(%error, folder, seq, "the folder could not be read");
@@ -540,6 +544,7 @@ impl Files {
         entries: Vec<Entry>,
         on_disk: Vec<u8>,
         leading: &[String],
+        ways_down: &[String],
         trashed: &HashMap<String, String>,
     ) {
         let previously = self.state.view().selected.map(|s| s.name);
@@ -554,6 +559,10 @@ impl Files {
             .zip(on_disk.into_iter().chain(std::iter::repeat(UNKNOWN)))
             .collect();
         sorted.sort_by(|(a, _), (b, _)| crate::model::folders_first(a, b));
+        // Hidden files, unless they are shown, and never a way down to what
+        // is backed up (S18-T11).
+        let show_hidden = self.state.view().show_hidden;
+        sorted.retain(|(entry, _)| hidden::shown(&entry.name, show_hidden, ways_down));
         for (entry, on_disk) in sorted {
             let partly = leading.contains(&entry.name);
             let data = RowData {

@@ -64,6 +64,7 @@ pub fn open(parent: &adw::ApplicationWindow, view: &View, index: &Index) {
     let stage = Stage::new();
     stage.set_slots(slots, at);
     stage.set_background(Background::Waiting);
+    stage.set_show_hidden(view.show_hidden);
 
     let when = Label::new(None);
     when.add_css_class("rewind-when");
@@ -133,8 +134,18 @@ fn keys(
     {
         let (stage, held, say) = (stage.clone(), Rc::clone(&held), Rc::clone(&say));
         let (window, parent) = (window.clone(), parent.clone());
-        controller.connect_key_pressed(move |_, key, code, _| {
+        controller.connect_key_pressed(move |_, key, code, modifiers| {
             let repeat = !held.borrow_mut().insert(code);
+            // Ctrl+H, as in the window, and kept in step with it (S18-T11).
+            let control = modifiers.contains(gdk::ModifierType::CONTROL_MASK)
+                && !modifiers.contains(gdk::ModifierType::SHIFT_MASK);
+            if control && matches!(key, gdk::Key::h | gdk::Key::H) {
+                if !repeat {
+                    stage.set_show_hidden(!stage.show_hidden());
+                    let _ = WidgetExt::activate_action(&parent, "win.show-hidden", None);
+                }
+                return glib::Propagation::Stop;
+            }
             let to = match key {
                 gdk::Key::Up | gdk::Key::KP_Up | gdk::Key::Page_Up | gdk::Key::KP_Page_Up => {
                     stage.step(1, repeat)

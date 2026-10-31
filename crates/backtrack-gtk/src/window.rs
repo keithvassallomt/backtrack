@@ -98,6 +98,13 @@ impl Window {
     /// Build a window showing `target`, and start loading the index behind it.
     pub fn build(app: &adw::Application, target: &Target) -> adw::ApplicationWindow {
         let state = AppState::new(target.folder.clone());
+        state.set_show_hidden(crate::model::hidden::from_desktop(
+            crate::host::Host::here().setting(
+                crate::model::hidden::SCHEMA,
+                crate::model::hidden::PATH,
+                crate::model::hidden::KEY,
+            ),
+        ));
         let index = Index::spawn(backtrack_core::paths::index_db());
 
         let window = adw::ApplicationWindow::builder()
@@ -412,7 +419,8 @@ impl Window {
 
         // Every backup, or only those in which the folder differs (Stage 15).
         // Stateful and boolean, so the menu draws it as a check item and
-        // activating it toggles it. Ctrl+H, as Show Hidden Files in Nautilus.
+        // activating it toggles it. Ctrl+Shift+H: Ctrl+H is Show Hidden Files,
+        // as in Nautilus (S18-T11).
         let show_all =
             gio::SimpleAction::new_stateful("show-all-backups", None, &false.to_variant());
         let shower = Rc::clone(self);
@@ -426,7 +434,27 @@ impl Window {
         });
         self.window.add_action(&show_all);
         if let Some(app) = self.window.application() {
-            app.set_accels_for_action("win.show-all-backups", &["<Control>h"]);
+            app.set_accels_for_action("win.show-all-backups", &["<Control><Shift>h"]);
+        }
+
+        // Hidden files, as file managers have them: left out unless asked
+        // for, starting from the desktop's own choice (S18-T11).
+        let show_hidden = gio::SimpleAction::new_stateful(
+            "show-hidden",
+            None,
+            &self.state.view().show_hidden.to_variant(),
+        );
+        let shower = Rc::clone(self);
+        show_hidden.connect_change_state(move |action, value| {
+            let Some(on) = value.and_then(|v| v.get::<bool>()) else {
+                return;
+            };
+            action.set_state(&on.to_variant());
+            shower.state.set_show_hidden(on);
+        });
+        self.window.add_action(&show_hidden);
+        if let Some(app) = self.window.application() {
+            app.set_accels_for_action("win.show-hidden", &["<Control>h"]);
         }
 
         // Up a folder, the way every file manager spells it. The breadcrumb

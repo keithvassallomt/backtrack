@@ -266,8 +266,13 @@ All notable changes to Backtrack are documented here. This project adheres to
   is left out never hides anything you could restore, because everything in it
   is also in the next one listed. On the strip, a day with backups but nothing
   new says "nothing changed here", and a day without any says "no backups".
-- Show All Backups in the main menu (Ctrl+H) lists every backup again. It is
-  off to begin with, and Backtrack remembers which you chose.
+- Show All Backups in the main menu (Ctrl+Shift+H) lists every backup again.
+  It is off to begin with, and Backtrack remembers which you chose.
+- Hidden files, whose names begin with a dot, are left out of the file list,
+  as file managers leave them out, unless Show Hidden Files in the main menu
+  (Ctrl+H) is on. Backtrack starts from your desktop's own choice, the one the
+  file chooser and Files share. A hidden folder that leads to a folder you
+  back up is always shown.
 - What you move to the Trash from a backed-up folder now appears in the
   timeline while it is still in the Trash, at the time you deleted it. A file
   made after one backup and deleted before the next was in no backup at all,

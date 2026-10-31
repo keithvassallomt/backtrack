@@ -45,6 +45,8 @@ pub enum Change {
     /// What the desktop's Trash holds changed, so a Trash entry being shown
     /// may show something else (Stage 16).
     Trash,
+    /// Hidden files are now shown, or no longer (S18-T11).
+    Hidden,
 }
 
 /// The entry the file pane has selected, if any.
@@ -95,6 +97,8 @@ pub struct View {
     pub generation: u64,
     /// Every backup is listed, whatever the listing says (Show All Backups).
     pub show_all: bool,
+    /// Hidden files are shown (Show Hidden Files, S18-T11).
+    pub show_hidden: bool,
     /// What the desktop's Trash holds from the backed-up folders, as the
     /// daemon lists it (Stage 16).
     pub trash: Rc<Vec<TrashedItem>>,
@@ -579,6 +583,15 @@ impl AppState {
         self.announce(Change::Selection);
     }
 
+    /// Show hidden files, or stop showing them.
+    pub fn set_show_hidden(&self, on: bool) {
+        if self.view.borrow().show_hidden == on {
+            return;
+        }
+        self.view.borrow_mut().show_hidden = on;
+        self.announce(Change::Hidden);
+    }
+
     /// Say that what is on this computer changed under the folder being
     /// viewed. Nothing in the state itself changes, which is why this is not
     /// `set_folder` again: setting what is already set announces nothing.
@@ -766,6 +779,26 @@ mod tests {
         assert_eq!(*seen.borrow(), [Change::Disk]);
         assert_eq!(state.view().folder, "home");
         assert!(state.view().selected.is_some(), "the selection is kept");
+    }
+
+    #[test]
+    fn showing_hidden_files_is_announced_once_and_keeps_the_place() {
+        let state = AppState::new("home".into());
+        let seen = Rc::new(RefCell::new(Vec::new()));
+        let changes = Rc::clone(&seen);
+        state.subscribe(move |_, change| changes.borrow_mut().push(change));
+        assert!(!state.view().show_hidden, "hidden by default");
+        state.set_show_hidden(true);
+        state.set_show_hidden(true);
+        assert_eq!(
+            *seen.borrow(),
+            [Change::Hidden],
+            "the same again says nothing"
+        );
+        assert!(state.view().show_hidden);
+        state.set_show_hidden(false);
+        assert_eq!(*seen.borrow(), [Change::Hidden, Change::Hidden]);
+        assert_eq!(state.view().folder, "home");
     }
 
     /// Nine backups, seq 9 the newest, with "home/Docs" listing only 9 and 4:

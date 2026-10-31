@@ -24,8 +24,8 @@ use gtk4::prelude::*;
 use gtk4::{gdk, gdk_pixbuf, gio, glib};
 use tracing::{debug, info};
 
-use crate::model::wallpaper::dconf::{self, Layers};
-use crate::model::wallpaper::{gnome, gvdb, plasma, slideshow, Fit, Rgb, Wallpaper, Why};
+use crate::host::Host;
+use crate::model::wallpaper::{gnome, plasma, slideshow, Fit, Rgb, Wallpaper, Why};
 
 pub use report::report;
 
@@ -72,82 +72,6 @@ fn desktop_of(names: &str) -> Desktop {
         }
     }
     Desktop::Other(names.to_owned())
-}
-
-/// The host's files, seen from here: natively where they are; inside the
-/// Flatpak, the host's `/usr` and `/etc` under `/run/host`, which
-/// `--filesystem=host` reaches, and its home folder where it is.
-#[derive(Debug, Clone)]
-struct Host {
-    flatpak: bool,
-    /// The host's `~/.config` and `~/.local/share`. Inside the Flatpak,
-    /// `XDG_CONFIG_HOME` and `XDG_DATA_HOME` are the sandbox's own.
-    config: PathBuf,
-    data: PathBuf,
-}
-
-impl Host {
-    fn here() -> Host {
-        let flatpak = Path::new("/.flatpak-info").exists();
-        let home = glib::home_dir();
-        let host_dir = |var: &str, default: &str| {
-            std::env::var_os(var)
-                .filter(|v| !v.is_empty())
-                .map_or_else(|| home.join(default), PathBuf::from)
-        };
-        if flatpak {
-            Host {
-                flatpak,
-                config: host_dir("HOST_XDG_CONFIG_HOME", ".config"),
-                data: host_dir("HOST_XDG_DATA_HOME", ".local/share"),
-            }
-        } else {
-            Host {
-                flatpak,
-                config: glib::user_config_dir(),
-                data: glib::user_data_dir(),
-            }
-        }
-    }
-
-    /// Where a path the desktop names is found from here.
-    fn path(&self, path: &Path) -> PathBuf {
-        if self.flatpak && (path.starts_with("/usr") || path.starts_with("/etc")) {
-            Path::new("/run/host").join(path.strip_prefix("/").unwrap_or(path))
-        } else {
-            path.to_path_buf()
-        }
-    }
-
-    /// The system's data folders, most important first. Natively
-    /// `XDG_DATA_DIRS`; inside the Flatpak that is the sandbox's, so the
-    /// host's usual two.
-    fn data_dirs(&self) -> Vec<PathBuf> {
-        self.dirs("XDG_DATA_DIRS", &["/usr/local/share", "/usr/share"])
-    }
-
-    /// The system's configuration folders, most important first, as KConfig
-    /// reads them. Fedora's Plasma session adds its own profile's, which the
-    /// Flatpak cannot see in the environment and so names itself.
-    fn config_dirs(&self) -> Vec<PathBuf> {
-        let mut dirs = self.dirs("XDG_CONFIG_DIRS", &["/etc/xdg"]);
-        if self.flatpak {
-            dirs.insert(0, self.config.join("kdedefaults"));
-            dirs.push(self.path(Path::new("/usr/share/kde-settings/kde-profile/default/xdg")));
-        }
-        dirs
-    }
-
-    fn dirs(&self, var: &str, usual: &[&str]) -> Vec<PathBuf> {
-        let from_env = (!self.flatpak)
-            .then(|| std::env::var(var).ok())
-            .flatten()
-            .filter(|v| !v.is_empty());
-        match from_env {
-            Some(list) => list.split(':').map(PathBuf::from).collect(),
-            None => usual.iter().map(|d| self.path(Path::new(d))).collect(),
-        }
-    }
 }
 
 /// What was found, and how, for the report.
@@ -294,34 +218,9 @@ fn gnome_from_gsettings(lines: &mut Vec<String>) -> gnome::Settings {
 /// defaults in the host's compiled schemas (where a distribution's vendor
 /// override, as Fedora's wallpaper, is compiled in).
 fn gnome_from_files(host: &Host, lines: &mut Vec<String>) -> gnome::Settings {
-    let profile = std::iter::once(host.path(Path::new("/etc/dconf/profile/user")))
-        .chain(
-            host.data_dirs()
-                .into_iter()
-                .map(|d| d.join("dconf/profile/user")),
-        )
-        .find_map(|path| std::fs::read_to_string(path).ok());
-    let databases = dconf::profile(profile.as_deref())
-        .into_iter()
-        .filter_map(|source| {
-            let path = match &source {
-                dconf::Source::User(name) => host.config.join("dconf").join(name),
-                dconf::Source::System(name) => {
-                    host.path(&Path::new("/etc/dconf/db").join(name))
-                }
-                dconf::Source::File(path) => host.path(Path::new(path)),
-            };
-            let table = gvdb::parse(&std::fs::read(&path).ok()?)
-                .inspect_err(|why| debug!(path = %path.display(), "a dconf database is unreadable: {}", why.0))
-                .ok()?;
-            Some((source, table))
-        })
-        .collect();
-    let layers = Layers { databases };
-    let schemas = host.path(Path::new("/usr/share/glib-2.0/schemas"));
-    let defaults = gio::SettingsSchemaSource::from_directory(&schemas, None, false)
-        .ok()
-        .and_then(|source| source.lookup(gnome::SCHEMA, false));
+    let layers = host.dconf_layers();
+    let schemas = host.schemas();
+    let defaults = host.compiled_schema(gnome::SCHEMA);
     lines.push(format!(
         "Settings: from dconf's files ({} read), then {}",
         layers.databases.len(),

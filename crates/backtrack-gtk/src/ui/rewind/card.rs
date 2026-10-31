@@ -14,6 +14,8 @@ use backtrack_core::index::Entry;
 use gtk4::prelude::*;
 use gtk4::{Align, Box as GtkBox, Label, Orientation};
 
+use crate::model::hidden;
+
 /// The header bar's height.
 const HEADER: i32 = 46;
 /// One cell of the grid, and the space around the grid.
@@ -33,9 +35,10 @@ pub struct Content {
     pub entries: Option<Vec<Entry>>,
 }
 
-/// A card `width` by `height` showing `content`. Only as many entries as fit
-/// are made: the card is never scrolled, and the rest would only be clipped.
-pub fn build(content: &Content, width: i32, height: i32) -> GtkBox {
+/// A card `width` by `height` showing `content`, hidden files only when
+/// `show_hidden` (S18-T11). Only as many entries as fit are made: the card is
+/// never scrolled, and the rest would only be clipped.
+pub fn build(content: &Content, width: i32, height: i32, show_hidden: bool) -> GtkBox {
     let card = GtkBox::new(Orientation::Vertical, 0);
     card.add_css_class("rewind-card");
     card.set_overflow(gtk4::Overflow::Hidden);
@@ -72,13 +75,25 @@ pub fn build(content: &Content, width: i32, height: i32) -> GtkBox {
         body.set_child(Some(&notice("Nothing here")));
         return card;
     }
+    let entries: Vec<&Entry> = entries
+        .iter()
+        .filter(|entry| hidden::shown(&entry.name, show_hidden, &[]))
+        .collect();
+    if entries.is_empty() {
+        body.set_child(Some(&notice("Only hidden files here")));
+        return card;
+    }
     let columns = ((width - 2 * PADDING) / CELL_WIDTH).max(1);
     let rows = ((height - HEADER - 2 * PADDING) / CELL_HEIGHT + 1).max(1);
     let grid = gtk4::Grid::new();
     grid.add_css_class("rewind-card-grid");
     grid.set_column_homogeneous(true);
     grid.set_valign(Align::Start);
-    for (i, entry) in entries.iter().take((columns * rows) as usize).enumerate() {
+    for (i, entry) in entries
+        .into_iter()
+        .take((columns * rows) as usize)
+        .enumerate()
+    {
         let i = i as i32;
         grid.attach(&item(entry), i % columns, i / columns, 1, 1);
     }

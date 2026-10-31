@@ -59,6 +59,7 @@ struct Made {
 /// A card being laid out, to be drawn into a texture at the next snapshot.
 struct Making {
     slot: usize,
+    generation: u64,
     widget: gtk4::Box,
     size: (i32, i32),
     laid_out: bool,
@@ -85,6 +86,11 @@ struct State {
     /// ends between frames still needs the frame that shows it ended.
     wallpaper_in: std::cell::Cell<bool>,
     card: (i32, i32),
+    /// Hidden files are shown on the cards (S18-T11).
+    show_hidden: bool,
+    /// Counts changes to how cards are drawn, so that a card laid out before
+    /// one is not kept after it.
+    generation: u64,
 }
 
 mod imp {
@@ -179,6 +185,23 @@ impl Stage {
         state.slots = slots;
         state.made.clear();
         state.motion = Some(Motion::new(at, oldest));
+    }
+
+    /// Show hidden files on the cards, or stop: every card is made again.
+    pub fn set_show_hidden(&self, on: bool) {
+        let mut state = self.imp().state.borrow_mut();
+        if state.show_hidden == on {
+            return;
+        }
+        state.show_hidden = on;
+        state.generation += 1;
+        state.made.clear();
+        drop(state);
+        self.queue_draw();
+    }
+
+    pub fn show_hidden(&self) -> bool {
+        self.imp().state.borrow().show_hidden
     }
 
     /// What the folder held at one of the backups, once it has been read.
@@ -355,6 +378,7 @@ impl Stage {
             || state.stars.is_some()
             || !wanted.is_empty()
             || wallpaper_coming;
+        let (show_hidden, generation) = (state.show_hidden, state.generation);
         drop(guard);
         for widget in done {
             widget.unparent();
@@ -363,10 +387,11 @@ impl Stage {
             let mut making = Vec::new();
             debug!(slots = ?wanted.iter().map(|(slot, _)| slot).collect::<Vec<_>>(), "Rewind is making cards");
             for (slot, content) in wanted {
-                let widget = card::build(&content, card.0, card.1);
+                let widget = card::build(&content, card.0, card.1, show_hidden);
                 widget.set_parent(self);
                 making.push(Making {
                     slot,
+                    generation,
                     widget,
                     size: card,
                     laid_out: false,
@@ -387,16 +412,16 @@ impl Stage {
             return;
         };
         let scale = self.scale_factor().clamp(1, 2) as f32;
-        let ready: Vec<(usize, gtk4::Box, (i32, i32))> = self
+        let ready: Vec<(usize, gtk4::Box, (i32, i32), u64)> = self
             .imp()
             .state
             .borrow()
             .making
             .iter()
             .filter(|m| m.laid_out && !m.done)
-            .map(|m| (m.slot, m.widget.clone(), m.size))
+            .map(|m| (m.slot, m.widget.clone(), m.size, m.generation))
             .collect();
-        for (slot, widget, size) in ready {
+        for (slot, widget, size, generation) in ready {
             let (w, h) = (size.0 as f32, size.1 as f32);
             let snapshot = gtk4::Snapshot::new();
             snapshot.scale(scale, scale);
@@ -422,7 +447,8 @@ impl Stage {
                 .map(|node| renderer.render_texture(&node, Some(&viewport)));
             debug!(slot, made = texture.is_some(), "Rewind drew a card");
             let mut state = self.imp().state.borrow_mut();
-            if let Some(texture) = texture {
+            // Laid out before hidden files were shown or hidden: made again.
+            if let Some(texture) = texture.filter(|_| generation == state.generation) {
                 state.made.insert(slot, Made { texture, size });
             }
             if let Some(m) = state.making.iter_mut().find(|m| m.slot == slot) {

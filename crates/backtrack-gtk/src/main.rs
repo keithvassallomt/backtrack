@@ -18,6 +18,7 @@
 //! "Browse Backups of This Folder…" twice is a thing people do.
 
 mod daemon;
+mod host;
 mod index;
 mod model;
 mod path;

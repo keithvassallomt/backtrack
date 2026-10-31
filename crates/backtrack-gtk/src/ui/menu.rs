@@ -36,6 +36,7 @@ pub fn model() -> gio::Menu {
     // action is a stateful boolean.
     let view = gio::Menu::new();
     view.append(Some("Show All Backups"), Some("win.show-all-backups"));
+    view.append(Some("Show Hidden Files"), Some("win.show-hidden"));
     menu.append_section(None, &view);
 
     let stash = gio::Menu::new();
@@ -112,6 +113,10 @@ pub fn shortcuts_dialog() -> adw::ShortcutsDialog {
     files.add(adw::ShortcutsItem::from_action(
         "Search every backup",
         "win.search",
+    ));
+    files.add(adw::ShortcutsItem::from_action(
+        "Show hidden files",
+        "win.show-hidden",
     ));
     // The one key that belongs to the list widget rather than to an action.
     files.add(adw::ShortcutsItem::new(

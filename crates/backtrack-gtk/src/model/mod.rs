@@ -27,6 +27,7 @@ pub mod file_badge;
 pub mod format;
 pub mod group;
 pub mod health;
+pub mod hidden;
 pub mod pause;
 pub mod plugins;
 pub mod prefs;
