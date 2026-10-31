@@ -69,7 +69,9 @@ pub fn build(wizard: &Rc<Wizard>) -> adw::NavigationPage {
     advanced.add_css_class("boxed-list");
     let expander = adw::ExpanderRow::builder()
         .title("Advanced: exclusions")
-        .subtitle("Trash, caches, node_modules and VM images are excluded by default")
+        .subtitle(
+            "Trash, caches, node_modules, VM images and container storage are excluded by default",
+        )
         .build();
     expander.add_prefix(&gtk4::Image::from_icon_name("emblem-system-symbolic"));
     advanced.append(&expander);

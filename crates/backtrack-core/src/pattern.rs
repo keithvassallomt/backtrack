@@ -375,6 +375,23 @@ mod tests {
         assert!(e.excludes("home/k/src/app/target/debug"));
         assert!(e.excludes("home/k/vm/disk.qcow2"));
         assert!(e.excludes("home/k/images/ubuntu.iso"));
+        // Container storage (S18-T16): the folders, which a walk then does
+        // not go into, as Borg does not.
+        assert!(e.excludes("home/k/.local/share/containers"));
+        assert!(e.excludes("home/k/.local/share/docker"));
+    }
+
+    #[test]
+    fn the_container_exclusions_leave_lookalikes_alone() {
+        let e = defaults();
+        for path in [
+            "home/k/containers/compose.yml",
+            "home/k/.local/share/containers-notes.txt",
+            "home/k/Documents/docker/Dockerfile",
+            "home/k/.config/containers/registries.conf",
+        ] {
+            assert!(!e.excludes(path), "{path} is not container storage");
+        }
     }
 
     #[test]

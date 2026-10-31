@@ -320,6 +320,11 @@ All notable changes to Backtrack are documented here. This project adheres to
   tray and `backtrack status`, which also names the setting that would let it
   run. Before, the window said only how long ago the last backup was, and
   `backtrack status` that the next one was "due now".
+- Podman's and rootless Docker's storage are left out of backups by default:
+  container images rebuild from their registries, and a copy of container
+  volumes' files is neither whole nor consistent (`podman volume export` is
+  the way to back them up). Existing setups keep their own exclusion list;
+  add "Container storage" in Preferences → Backup.
 - After an upgrade, the tray icon and the backup service restart as the new
   version by themselves, the service once it has finished any backup under
   way. Before, they ran on as the old version until restarted by hand, and the

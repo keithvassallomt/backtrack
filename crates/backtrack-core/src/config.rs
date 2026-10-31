@@ -164,6 +164,14 @@ fn default_exclusions() -> Vec<String> {
         "**/._sync_*.db*",
         "**/.nextcloudsync.log",
         "**/.owncloudsync.log",
+        // Podman's and rootless Docker's storage (S18-T16): images and
+        // containers, rebuilt from their images, and volumes, whose files
+        // the containers own under other user IDs and write as they run, so
+        // a backup of them is neither whole nor consistent. On Keith's laptop
+        // they were 364,000 files checked every hour. `podman volume export`
+        // is how a volume is backed up.
+        "**/.local/share/containers",
+        "**/.local/share/docker",
     ]
     .into_iter()
     .map(String::from)

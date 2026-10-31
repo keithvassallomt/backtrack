@@ -512,8 +512,16 @@ up.
 - As with S15-T8, the defaults seed a new setup; an existing one keeps its own
   list, which Preferences → Backup edits.
 
-**Accept:** pattern tests: files deep in Podman's and rootless Docker's storage
-are excluded, and folders that only resemble them are not; a default
+**Built** (2026-10-31): on Keith's laptop the storage held about 150,000
+files of images and containers and 213,000 in volumes, of which 14 (among them
+Nextcloud's `data` folder and `config.php`) could not be read. Checked with
+borg 1.4.5 on a throwaway repository: both folders are excluded and not gone
+into, and `~/containers`, `~/.config/containers` and
+`~/.local/share/containers-notes.txt` are kept. Keith's own setup keeps its
+list until he adds the row.
+
+**Accept:** pattern tests: Podman's and rootless Docker's storage folders are
+excluded, and folders that only resemble them are not; a default
 configuration lists them, read in Preferences as one row.
 
 ### S18-T17 — Investigate: the service's memory use during a backup
