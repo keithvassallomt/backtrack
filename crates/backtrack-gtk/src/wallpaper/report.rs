@@ -28,8 +28,9 @@ pub fn report() -> glib::ExitCode {
         return glib::ExitCode::FAILURE;
     };
     let screen = Screen::of(&monitor);
+    let output = monitor.connector().map(|c| c.to_string());
     glib::MainContext::default().block_on(async move {
-        match find(screen).await {
+        match find(screen, output).await {
             Ok(found) => {
                 for line in &found.lines {
                     println!("{line}");

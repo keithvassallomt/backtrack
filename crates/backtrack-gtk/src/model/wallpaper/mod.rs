@@ -15,6 +15,7 @@ pub mod dconf;
 pub mod gnome;
 pub mod gvdb;
 pub mod plasma;
+pub mod records;
 pub mod slideshow;
 
 use std::fmt;
@@ -75,8 +76,8 @@ pub enum Wallpaper {
 /// Why the desktop's wallpaper is not shown, for the report and the log.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Why {
-    /// A desktop this does not know how to ask.
-    OtherDesktop(String),
+    /// Nothing that draws the wallpaper says what it is (S18-T18).
+    NoRecord(String),
     /// The desktop could not be asked.
     Unreachable(String),
     /// The desktop shows something other than a picture or a colour, such as
@@ -93,10 +94,7 @@ pub enum Why {
 impl fmt::Display for Why {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Why::OtherDesktop(name) if name.is_empty() => {
-                write!(f, "the desktop does not say which it is")
-            }
-            Why::OtherDesktop(name) => write!(f, "{name} is not GNOME or Plasma"),
+            Why::NoRecord(what) => write!(f, "{what}"),
             Why::Unreachable(what) => write!(f, "the desktop could not be asked: {what}"),
             Why::NotAPicture(what) => write!(f, "the desktop shows {what}, not a picture"),
             Why::NotAFile(uri) => write!(f, "the desktop's picture is not a local file: {uri}"),

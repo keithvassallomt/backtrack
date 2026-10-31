@@ -25,6 +25,7 @@ use gtk4::{gdk, gdk_pixbuf, gio, glib};
 use tracing::{debug, info};
 
 use crate::host::Host;
+use crate::model::wallpaper::records::{self, Program, Record};
 use crate::model::wallpaper::{gnome, plasma, slideshow, Fit, Rgb, Wallpaper, Why};
 
 pub use report::report;
@@ -86,8 +87,9 @@ pub struct Found {
     pub lines: Vec<String>,
 }
 
-/// What the desktop shows behind its windows, on a screen of `screen`.
-pub async fn find(screen: Screen) -> Result<Found, (Why, Vec<String>)> {
+/// What the desktop shows behind its windows, on a screen of `screen`, the
+/// monitor named `output` (its connector, such as `eDP-1`) where known.
+pub async fn find(screen: Screen, output: Option<String>) -> Result<Found, (Why, Vec<String>)> {
     let host = Host::here();
     let desktop = desktop();
     let mut lines = vec![format!(
@@ -121,7 +123,7 @@ pub async fn find(screen: Screen) -> Result<Found, (Why, Vec<String>)> {
             Some(connection) => plasma(&host, connection, screen, dark, &mut lines).await,
             None => Err(Why::Unreachable("there is no session bus".to_owned())),
         },
-        Desktop::Other(name) => Err(Why::OtherDesktop(name)),
+        Desktop::Other(_) => others(&host, output.as_deref(), &mut lines),
     };
     match found {
         Ok(wallpaper) => Ok(Found { wallpaper, lines }),
@@ -187,6 +189,246 @@ fn gnome(
         return picture_at(host, picture, fit, behind);
     }
     picture_at(host, path, fit, behind)
+}
+
+/// Every program whose record is looked for where nothing says which draws
+/// the wallpaper. swaybg keeps none.
+const RECORDED: [Program; 8] = [
+    Program::Caelestia,
+    Program::Awww,
+    Program::Swww,
+    Program::Wpaperd,
+    Program::Hyprpaper,
+    Program::Waypaper,
+    Program::Noctalia,
+    Program::DankMaterialShell,
+];
+
+/// The wallpaper where neither GNOME nor Plasma draws it (S18-T18): the
+/// record of the program that does. On Hyprland, outside the Flatpak, the
+/// background layer says which program that is; otherwise the record written
+/// last that names something there to show.
+fn others(host: &Host, output: Option<&str>, lines: &mut Vec<String>) -> Result<Wallpaper, Why> {
+    let layer = if host.flatpak {
+        None
+    } else {
+        hyprland_layers().and_then(|json| records::background(&json, output))
+    };
+    let record = match layer {
+        Some(layer) => {
+            let process = std::fs::read_to_string(format!("/proc/{}/comm", layer.pid))
+                .unwrap_or_default()
+                .trim()
+                .to_owned();
+            lines.push(format!(
+                "Hyprland's background on {}: the layer {}, of {process} ({})",
+                layer.monitor, layer.namespace, layer.pid
+            ));
+            let program = Program::of_layer(&layer.namespace, &process).ok_or_else(|| {
+                Why::NoRecord(format!(
+                    "{process} draws the wallpaper, a program Backtrack does not know"
+                ))
+            })?;
+            let record = match program {
+                Program::Swaybg => swaybg_of(layer.pid, output),
+                program => record_of(host, program, output),
+            };
+            record.ok_or_else(|| {
+                Why::NoRecord(format!(
+                    "{} draws the wallpaper, and keeps no record of it that can be read",
+                    program.name()
+                ))
+            })?
+        }
+        None => {
+            let found: Vec<Record> = RECORDED
+                .iter()
+                .filter_map(|program| record_of(host, *program, output))
+                .filter(|record| match &record.wallpaper {
+                    Wallpaper::Picture { path, .. } => host.path(path).exists(),
+                    Wallpaper::Colour(_) => true,
+                })
+                .collect();
+            for record in &found {
+                lines.push(format!(
+                    "Record: {}'s, written {}",
+                    record.program.name(),
+                    record
+                        .written
+                        .and_then(|t| glib::DateTime::from_unix_local(
+                            t.duration_since(std::time::UNIX_EPOCH).ok()?.as_secs() as i64
+                        )
+                        .ok())
+                        .and_then(|t| t.format("%Y-%m-%d %H:%M").ok())
+                        .map_or_else(|| "at a time not known".to_owned(), |t| t.to_string())
+                ));
+            }
+            records::newest(found).ok_or_else(|| {
+                Why::NoRecord("no wallpaper program's record names a picture".to_owned())
+            })?
+        }
+    };
+    lines.push(format!("Read: {}'s record", record.program.name()));
+    match record.wallpaper {
+        Wallpaper::Picture { path, fit, behind } => {
+            if host.path(&path).is_dir() {
+                return Err(Why::NotAPicture(format!(
+                    "a folder of pictures, {}, not one picture",
+                    path.display()
+                )));
+            }
+            picture_at(host, path, fit, behind)
+        }
+        colour => Ok(colour),
+    }
+}
+
+/// Hyprland's layers (`j/layers` on its socket), outside the Flatpak, if
+/// this is Hyprland and it answers within a second.
+fn hyprland_layers() -> Option<String> {
+    use std::io::{Read, Write};
+    let runtime = std::env::var_os("XDG_RUNTIME_DIR")?;
+    let instance = std::env::var_os("HYPRLAND_INSTANCE_SIGNATURE")?;
+    let socket = Path::new(&runtime)
+        .join("hypr")
+        .join(instance)
+        .join(".socket.sock");
+    let mut stream = std::os::unix::net::UnixStream::connect(socket).ok()?;
+    stream.set_read_timeout(Some(Duration::from_secs(1))).ok()?;
+    stream
+        .set_write_timeout(Some(Duration::from_secs(1)))
+        .ok()?;
+    stream.write_all(b"j/layers").ok()?;
+    let mut answer = String::new();
+    stream.read_to_string(&mut answer).ok()?;
+    Some(answer)
+}
+
+/// swaybg's picture, from its command line.
+fn swaybg_of(pid: i32, output: Option<&str>) -> Option<Record> {
+    let line = std::fs::read(format!("/proc/{pid}/cmdline")).ok()?;
+    let args: Vec<String> = line
+        .split(|b| *b == 0)
+        .filter(|a| !a.is_empty())
+        .map(|a| String::from_utf8_lossy(a).into_owned())
+        .collect();
+    Some(Record {
+        program: Program::Swaybg,
+        wallpaper: records::swaybg(&args, output)?,
+        written: None,
+    })
+}
+
+/// When a file was last written.
+fn written(path: &Path) -> Option<std::time::SystemTime> {
+    std::fs::symlink_metadata(path)
+        .and_then(|m| m.modified())
+        .ok()
+}
+
+/// The file for `output` in `dir`, else, not knowing the output, the one
+/// written last.
+fn for_output(dir: &Path, output: Option<&str>) -> Option<PathBuf> {
+    if let Some(output) = output {
+        let own = dir.join(output);
+        return std::fs::symlink_metadata(&own).is_ok().then_some(own);
+    }
+    std::fs::read_dir(dir)
+        .ok()?
+        .flatten()
+        .map(|entry| entry.path())
+        .max_by_key(|path| written(path))
+}
+
+/// What `program` keeps of the wallpaper, where S18-T15 found it.
+fn record_of(host: &Host, program: Program, output: Option<&str>) -> Option<Record> {
+    let (wallpaper, file) = match program {
+        Program::Caelestia => {
+            let file = host.state.join("caelestia/wallpaper/path.txt");
+            (
+                records::caelestia(&std::fs::read_to_string(&file).ok()?)?,
+                file,
+            )
+        }
+        Program::Awww => {
+            // One folder for each version of awww that has run.
+            let version = std::fs::read_dir(host.cache.join("awww"))
+                .ok()?
+                .flatten()
+                .map(|entry| entry.path())
+                .filter(|path| path.is_dir())
+                .max_by_key(|path| written(path))?;
+            let file = for_output(&version, output)?;
+            (records::awww(&std::fs::read(&file).ok()?)?, file)
+        }
+        Program::Swww => {
+            let file = for_output(&host.cache.join("swww"), output)?;
+            (records::swww(&std::fs::read(&file).ok()?)?, file)
+        }
+        Program::Wpaperd => {
+            let file = for_output(&host.state.join("wpaperd/wallpapers"), output)?;
+            let picture = std::fs::read_link(&file).ok()?;
+            (
+                Wallpaper::Picture {
+                    path: file.parent()?.join(picture),
+                    fit: Fit::Cover,
+                    behind: Rgb(0, 0, 0),
+                },
+                file,
+            )
+        }
+        Program::Hyprpaper => {
+            let file = host.config.join("hypr/hyprpaper.conf");
+            let text = std::fs::read_to_string(&file).ok()?;
+            (records::hyprpaper(&text, output, &host.home)?, file)
+        }
+        Program::Waypaper => [
+            host.state.join("waypaper/state.ini"),
+            host.config.join("waypaper/config.ini"),
+        ]
+        .into_iter()
+        .filter_map(|file| {
+            let text = std::fs::read_to_string(&file).ok()?;
+            Some((records::waypaper(&text, output, &host.home)?, file))
+        })
+        .max_by_key(|(_, file)| written(file))?,
+        Program::Noctalia => {
+            // Its config's files in order, then its own settings, as it reads
+            // them; when it was set is when its own settings were written.
+            let mut files: Vec<PathBuf> = std::fs::read_dir(host.config.join("noctalia"))
+                .map(|dir| {
+                    dir.flatten()
+                        .map(|entry| entry.path())
+                        .filter(|path| path.extension().is_some_and(|e| e == "toml"))
+                        .collect()
+                })
+                .unwrap_or_default();
+            files.sort();
+            let settings = host.state.join("noctalia/settings.toml");
+            files.push(settings.clone());
+            let texts: Vec<String> = files
+                .iter()
+                .filter_map(|file| std::fs::read_to_string(file).ok())
+                .collect();
+            let texts: Vec<&str> = texts.iter().map(String::as_str).collect();
+            (records::noctalia(&texts, &host.home)?, settings)
+        }
+        Program::DankMaterialShell => [
+            host.state.join("dms/session.json"),
+            host.state.join("DankMaterialShell/session.json"),
+        ]
+        .into_iter()
+        .find_map(|file| {
+            let text = std::fs::read_to_string(&file).ok()?;
+            Some((records::dank_material_shell(&text, output)?, file))
+        })?,
+        Program::Swaybg => return None,
+    };
+    Some(Record {
+        program,
+        wallpaper,
+        written: written(&file),
+    })
 }
 
 /// A picture the desktop names, as read from here, if it is there.
@@ -603,6 +845,9 @@ mod tests {
             flatpak: true,
             config: "/home/keith/.config".into(),
             data: "/home/keith/.local/share".into(),
+            state: "/home/keith/.local/state".into(),
+            cache: "/home/keith/.cache".into(),
+            home: "/home/keith".into(),
         };
         assert_eq!(
             flatpak.path(Path::new("/usr/share/backgrounds/a.jxl")),

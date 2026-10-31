@@ -120,20 +120,10 @@ pub fn open(parent: &adw::ApplicationWindow, view: &View, index: &Index) {
         Some(monitor) => window.fullscreen_on_monitor(monitor),
         None => window.fullscreen(),
     }
-    // On a desktop whose wallpaper Backtrack does not read (it reads GNOME's
-    // and Plasma's, S18-T2), the stars from the first frame, with nothing to
-    // wait for.
-    let desktop = crate::wallpaper::desktop();
-    if let crate::wallpaper::Desktop::Other(name) = &desktop {
-        debug!(desktop = %name, "Rewind shows the starfield: this desktop's wallpaper is not read");
-        stage.set_background(Background::Stars);
-    }
     window.present();
 
     read_folders(&stage, &view, index.clone(), at);
-    if !matches!(desktop, crate::wallpaper::Desktop::Other(_)) {
-        find_background(&stage, monitor);
-    }
+    find_background(&stage, monitor);
 }
 
 /// The keys, and the mouse wheel: Up and Down (and Page Up and Page Down) step
@@ -307,7 +297,11 @@ fn find_background(stage: &Stage, monitor: Option<gdk::Monitor>) {
             },
             crate::wallpaper::Screen::of,
         );
-        let background = match crate::wallpaper::find(screen).await {
+        let output = monitor
+            .as_ref()
+            .and_then(|m| m.connector())
+            .map(|c| c.to_string());
+        let background = match crate::wallpaper::find(screen, output).await {
             Ok(found) => {
                 let wallpaper = found.wallpaper;
                 match gio::spawn_blocking(move || crate::wallpaper::draw(&wallpaper, screen)).await

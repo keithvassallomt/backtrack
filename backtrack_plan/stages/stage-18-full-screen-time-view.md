@@ -517,8 +517,12 @@ project's documentation or source, as surveyed that day.
 - **wpaperd**: one link per output, `~/.local/state/wpaperd/wallpapers/<output>`.
 - **waypaper**: `~/.config/waypaper/config.ini` (or its state file), per output,
   but only what waypaper itself last set.
-- **Noctalia** (5.x): `~/.local/state/noctalia/settings.toml`, per output with a
-  default; 4.x used `~/.cache/noctalia/wallpapers.json`.
+- **Noctalia** (5.x): `[wallpaper.default] path`, in its config
+  (`~/.config/noctalia/*.toml`) and in `~/.local/state/noctalia/settings.toml`,
+  which it writes when a picture is chosen and which wins; `color:#rrggbb` for
+  a colour. Its per-monitor settings (`[wallpaper.monitor.<name>]`) name
+  folders, not pictures. (Checked in its documentation while building S18-T18:
+  the survey had them as pictures.) 4.x used `~/.cache/noctalia/wallpapers.json`.
 - **DankMaterialShell** (2.x): `~/.local/state/dms/session.json`,
   `wallpaperPath`, per output when `perMonitorWallpaper` is set.
 - **swaybg** and **mpvpaper**: no record; the picture is only on their command
@@ -616,6 +620,22 @@ DankMaterialShell.
 - The picture for the monitor Rewind opens on, where the record keeps one per
   monitor.
 - `--wallpaper-report` says whose record was read, and why that one.
+
+**Built** (2026-10-31): `model::wallpaper::records`, a parser for each
+record, each checked against the project's own source or documentation
+(Caelestia's on Keith's laptop), and the choice between them; the files and
+Hyprland's socket are read in `wallpaper::others`. swaybg, which keeps no
+record, is read from its command line when Hyprland's layer names it, outside
+the Flatpak. On Keith's laptop the report reads Hyprland's background layer,
+`caelestia-background`, and draws Caelestia's picture; with Hyprland's socket
+hidden, as in the Flatpak, it finds four records (Caelestia's from that
+morning, and awww's, hyprpaper's and waypaper's from July and early October)
+and takes Caelestia's, the newest. In the Flatpak on the Plasma VM, told it was
+on Hyprland, with a Caelestia record written by hand naming Fedora's JPEG XL
+under `/usr`: the record read through the host's state folder, the picture
+from `/run/host`, drawn at 3840 by 2160. Rewind no longer shows the starfield at once
+on a desktop other than GNOME or Plasma: it looks for a record first, as it
+asks GNOME and Plasma.
 
 **Accept:** unit tests on each record's format, on fixtures shaped as each
 project writes them, and on the choice between records with Hyprland's layers

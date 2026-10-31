@@ -25,10 +25,14 @@ use crate::model::wallpaper::gvdb;
 #[derive(Debug, Clone)]
 pub struct Host {
     pub flatpak: bool,
-    /// The host's `~/.config` and `~/.local/share`. Inside the Flatpak,
-    /// `XDG_CONFIG_HOME` and `XDG_DATA_HOME` are the sandbox's own.
+    /// The host's `~/.config`, `~/.local/share`, `~/.local/state` and
+    /// `~/.cache`. Inside the Flatpak, the `XDG_*_HOME` variables are the
+    /// sandbox's own.
     pub config: PathBuf,
     pub data: PathBuf,
+    pub state: PathBuf,
+    pub cache: PathBuf,
+    pub home: PathBuf,
 }
 
 impl Host {
@@ -45,12 +49,18 @@ impl Host {
                 flatpak,
                 config: host_dir("HOST_XDG_CONFIG_HOME", ".config"),
                 data: host_dir("HOST_XDG_DATA_HOME", ".local/share"),
+                state: host_dir("HOST_XDG_STATE_HOME", ".local/state"),
+                cache: host_dir("HOST_XDG_CACHE_HOME", ".cache"),
+                home,
             }
         } else {
             Host {
                 flatpak,
                 config: glib::user_config_dir(),
                 data: glib::user_data_dir(),
+                state: host_dir("XDG_STATE_HOME", ".local/state"),
+                cache: glib::user_cache_dir(),
+                home,
             }
         }
     }
