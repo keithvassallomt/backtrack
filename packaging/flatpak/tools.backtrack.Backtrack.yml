@@ -24,6 +24,13 @@ finish-args:
   # without this every other Flatpak's data (mail, settings, saves) would be
   # left out of every backup, with no warning.
   - --filesystem=~/.var/app
+  # Backtrack's own installation, read-only, installed per user or for the
+  # whole system: its `active` link names the version installed, so that a
+  # daemon still running the last one restarts as the new one (S18-T13).
+  # Flatpak hides its installations as it hides ~/.var/app; the portal's own
+  # update monitor, the alternative, looks only twice an hour.
+  - --filesystem=~/.local/share/flatpak/app/tools.backtrack.Backtrack:ro
+  - --filesystem=/var/lib/flatpak/app/tools.backtrack.Backtrack:ro
   # SSH destinations, signed in with the user's agent.
   - --share=network
   - --socket=ssh-auth

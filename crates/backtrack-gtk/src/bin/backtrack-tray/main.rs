@@ -201,6 +201,22 @@ async fn run() -> Ending {
             if let Err(error) = connection.release_name(bus_name()).await {
                 warn!(%error, "the tray's bus name could not be let go of");
             }
+            if backtrack_core::host::in_flatpak() {
+                // In a sandbox of its own: this one runs the old version.
+                let args: Vec<String> = std::env::args().skip(1).collect();
+                let args: Vec<&str> = args.iter().map(String::as_str).collect();
+                match backtrack_core::upgrade::start_latest(&program, &args).await {
+                    Ok(pid) => {
+                        info!(
+                            pid,
+                            "the new version of the tray is starting; this one leaves"
+                        );
+                        return Ending::Exit(ExitCode::SUCCESS);
+                    }
+                    // This version again, rather than no icon.
+                    Err(error) => warn!(%error, "the new version of the tray could not be started"),
+                }
+            }
             Ending::Restart(program)
         }
         _ => Ending::Exit(ExitCode::SUCCESS),
@@ -221,11 +237,7 @@ async fn watch_program(
     replaced: Arc<Mutex<Option<Replaced>>>,
     quit: Arc<Notify>,
 ) {
-    let what = backtrack_core::host::wait_until_replaced(
-        program.clone(),
-        backtrack_core::host::LOOK_FOR_PROGRAM_EVERY,
-    )
-    .await;
+    let what = backtrack_core::upgrade::replaced().await;
     if what == Replaced::Uninstalled {
         info!(
             program = %program.display(),

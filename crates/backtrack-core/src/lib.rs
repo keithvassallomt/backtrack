@@ -33,6 +33,8 @@ pub mod state;
 pub mod status_line;
 #[cfg(feature = "glib")]
 pub mod trash;
+#[cfg(feature = "upgrade")]
+pub mod upgrade;
 pub mod walk;
 pub mod xml;
 

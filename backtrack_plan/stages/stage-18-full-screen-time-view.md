@@ -402,10 +402,27 @@ private session bus with copies of both programs, replaced as pacman does: the
 service left with 76 thirty seconds later, and the tray showed its icon again
 from the new program in the same process.
 
-Inside a Flatpak, `/app` does not change while the instance runs, so none of
-this happens there. The Flatpak portal can say when an update has been
-installed (`CreateUpdateMonitor`) and start the new version (`Spawn` with
-`FLATPAK_SPAWN_FLAGS_LATEST_VERSION`).
+Inside a Flatpak, `/app` does not change while the instance runs, so the
+update is learnt from Flatpak (`backtrack_core::upgrade`, behind the core
+crate's `upgrade` feature): the installation's `active` link, beside the
+running commit's directory that `/.flatpak-info` names, read every 30 seconds,
+and the Flatpak portal's update monitor (`CreateUpdateMonitor`), which looks
+twice an hour, for any installation the link cannot be read in. Flatpak hides
+its installations from a sandbox even with `--filesystem=host`, so the
+manifest grants Backtrack's own, read-only, per user and system-wide. The
+daemon then exits with `UPGRADED` once idle, and its supervisor asks the
+portal to start the newest `backtrackd --supervise` in a sandbox of its own
+(`Spawn` with `FLATPAK_SPAWN_FLAGS_LATEST_VERSION`, in a scope of its own, not
+the portal's) and leaves. A sandbox does not end with its first process: the
+tray, the daemon's child, ran on in the old one holding its bus name, so the
+tray starts its own new version through the portal too.
+
+On the Plasma VM (Flatpak 1.18.4), built here into a repository and installed
+from it per user, then updated while running: within 22 seconds of `flatpak
+update`, the tray and the daemon each handed over to the new commit, and only
+it ran afterwards. With the link hidden (`--nofilesystem` override) and the
+portal polling every 15 seconds, the portal's word alone did the same within
+two seconds of its look.
 
 **Accept:** on Keith's laptop, installing a newer AUR build while the tray and
 the service run: within a minute, with no command run, the tray shows the new

@@ -16,6 +16,9 @@ integration = []
 # The status line (`status_line`), whose dates go through GLib: the tray and
 # the daemon turn it on, the command line does not.
 glib = ["dep:glib"]
+# Restarting as the new version after an upgrade (`upgrade`), which inside a
+# Flatpak goes through its portal: the daemon and the tray turn it on.
+upgrade = ["dep:ashpd"]
 
 [dependencies]
 tracing.workspace = true
@@ -35,6 +38,7 @@ futures.workspace = true
 tokio-util.workspace = true
 oo7.workspace = true
 glib = { version = "0.22", optional = true }
+ashpd = { version = "0.13", default-features = false, features = ["tokio", "flatpak"], optional = true }
 
 [dev-dependencies]
 tempfile = "3"

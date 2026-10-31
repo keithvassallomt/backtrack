@@ -333,16 +333,7 @@ pub async fn run() -> Result<Outcome, StartupError> {
 
     let replaced = {
         let shared = Arc::clone(&shared);
-        async move {
-            let Ok(program) = std::env::current_exe() else {
-                return std::future::pending().await;
-            };
-            let replaced = backtrack_core::host::wait_until_replaced(
-                program,
-                backtrack_core::host::LOOK_FOR_PROGRAM_EVERY,
-            );
-            once_idle(replaced, move || shared.idle()).await
-        }
+        async move { once_idle(backtrack_core::upgrade::replaced(), move || shared.idle()).await }
     };
     match wait_for_shutdown(&leave, bus_lost, replaced).await? {
         Stop::Asked(reason) => {
