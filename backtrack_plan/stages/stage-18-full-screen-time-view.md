@@ -682,6 +682,11 @@ beside GNOME), when Keith looked:
   default, which its build names: Fedora's `images/default.jxl`, upstream's
   `xfce-x.svg`.
 
+Checked by Keith on the GNOME VM with both fixed (`scripts/rewind-check 7`):
+in GNOME, Xfce and Cinnamon, natively and in the Flatpak, Rewind showed the
+desktop's wallpaper, and after it was changed, the new one. COSMIC and MATE
+rest on their unit tests.
+
 **Accept:** unit tests on fixtures of each desktop's files; on a VM with Xfce
 and Cinnamon installed, natively and in the Flatpak, Rewind shows the
 desktop's wallpaper, and after it is changed, the new one.
