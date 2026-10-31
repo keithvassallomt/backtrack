@@ -29,8 +29,9 @@ they do in the main window.
 ## Order of work
 T1 first, since everything visible follows the chosen design. T2 does not
 depend on it and can run beside it. Then T3 to T8 in order. T9, which came out
-of T1, changes only the main window and stands on its own. T10 to T15 came out
-of Keith's check of T3 on his laptop (2026-10-31) and go before T4.
+of T1, changes only the main window and stands on its own. T10 to T17 came out
+of Keith's check of T3 on his laptop (2026-10-31) and go before T4; the last
+three in the order Keith set: T16, T15, then T17.
 
 ## Tasks
 
@@ -494,6 +495,40 @@ configured there but not running.
 above: how its current wallpaper is read, per output, natively and in the
 Flatpak, checked on Keith's laptop for Caelestia and hyprpaper; tasks added for
 the ones Keith picks.
+
+### S18-T16 — Container storage is left out of backups by default
+*(raised by Keith 2026-10-31)* Podman's storage, `~/.local/share/containers`,
+was in Keith's backups: 364,000 files checked every hour, with a "permission
+denied" warning for each that its containers own under other user IDs. Its
+images and containers (`overlay*`) are rebuilt from images. Its volumes hold
+containers' data, but a backup of their files misses what the containers own
+(Nextcloud's `data` folder and `config.php`, on Keith's laptop) and copies the
+rest while it is being written; `podman volume export` is how they are backed
+up.
+- The default exclusions gain Podman's storage (`**/.local/share/containers`)
+  and rootless Docker's (`**/.local/share/docker`).
+- Preferences → Backup shows the two as one row, **Container storage**, and
+  the wizard's line on what is left out by default names it.
+- As with S15-T8, the defaults seed a new setup; an existing one keeps its own
+  list, which Preferences → Backup edits.
+
+**Accept:** pattern tests: files deep in Podman's and rootless Docker's storage
+are excluded, and folders that only resemble them are not; a default
+configuration lists them, read in Preferences as one row.
+
+### S18-T17 — Investigate: the service's memory use during a backup
+*(found 2026-10-31 on Keith's laptop)* systemd reported the service's memory
+peak at 3.8 GB over an hour holding one backup of 2.9 million files, and at
+7.1 GB in an earlier run. The figure counts Borg, which runs in the service's
+unit, as well as the service itself.
+- Which process peaks, and in which step: Borg's create, the catalogue's
+  reading of the archive, the prune, or the reconcile at start.
+- Whether it grows from one backup to the next (a leak) or with the size of
+  the archive (a peak), measured on a copy of Keith's catalogue and on a
+  generated archive of millions of files.
+
+**Accept:** findings recorded in this section: where the memory goes, with
+figures, and whether it grows over backups; tasks added for what Keith picks.
 
 ## Definition of Done
 All tasks done; the CHANGELOG's Unreleased section introduces Rewind; mockups 25 and 26 match what was built; the README and the file
