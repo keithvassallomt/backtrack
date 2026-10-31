@@ -438,6 +438,11 @@ power until … then backs up on battery anyway (backup.on_battery_after)", and
 Preferences "Next backup: today at 13:00". The tray keeps Keith's short line.
 Preferences and the wizard show "Wait for mains power" (Up to 1 hour, 3, 6, 12
 hours, Up to 1 day, Always) under Back up on battery power while that is off.
+Checked on Keith's laptop on battery (`scripts/rewind-check 5`), with the wait
+set to an hour rather than kept at three, which changes only the length: the
+row in Preferences shown and hidden with the switch, the hold and its end said
+in the window, `backtrack status` and the tray, and a backup that ran on
+battery, with no command, once the wait was over.
 
 **Accept:** unit tests on the scheduler's decision: on battery with the
 setting at 3, a backup held at 2 h 59 min since the last one and run at
