@@ -330,6 +330,18 @@ millisecond.
   quickly however much lies below the folder.
 - The write-ahead log is kept to a size once written back.
 
+**Built** (2026-10-31): schema v5 keeps `ended`, for each folder and each
+archive at which something below it ended, the earliest first archive among
+what ended there; the writer rebuilds it in each transaction that changes the
+versions (a third of a second on Keith's catalogue), and both questions read
+it. The window's reader no longer runs `quick_check`. The log is limited to
+64 MiB and written back after each change. On a raw copy of Keith's catalogue
+and its 546 MB log: the daemon's first open, with the migration, 4.4 s; the
+log then 0 MB; the window's first view of his home folder 1.2 ms (about 7 s
+before); Rewind's 31 listings of it 5.7 ms (5.1 s before). The answers were
+checked equal to the old queries' on that copy, for six folders at every
+backup.
+
 **Accept:** on a copy of Keith's catalogue, the window has his home folder's
 backups and its listing within one second of opening the catalogue, and
 Rewind all its cards' listings within one more; tests that bound each query's

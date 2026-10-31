@@ -14,7 +14,7 @@ use super::{IndexError, Result};
 
 /// The schema version this build of the crate expects. Bump when appending a
 /// migration.
-pub const SCHEMA_VERSION: i64 = 4;
+pub const SCHEMA_VERSION: i64 = 5;
 
 /// Ordered list of migrations. Index `i` migrates the database *to* version
 /// `i + 1`. The runner applies only those beyond the current version.
@@ -100,7 +100,62 @@ const MIGRATIONS: &[&str] = &[
     DROP TABLE archives;
     ALTER TABLE archives_v4 RENAME TO archives;
     "#,
+    // ── v5 ── what ended below each folder (S18-T12).
+    r#"
+    -- For each folder, and each archive at which a file version at or below
+    -- it ended (it was changed or gone in the next catalogued archive), the
+    -- earliest first_seq among those versions. Which backups differ for a
+    -- folder, and whether a folder holds something changed since an archive,
+    -- are then lookups here, however much lies below the folder: walking down
+    -- a home folder of 3.3 million files took 2.8 s and 165 ms. Rebuilt by
+    -- the writer in every transaction that changes the versions (see
+    -- REBUILD_ENDED, which this first build is a copy of).
+    CREATE TABLE ended(
+        folder_id INTEGER NOT NULL,
+        last_seq  INTEGER NOT NULL,
+        first_seq INTEGER NOT NULL,
+        PRIMARY KEY(folder_id, last_seq)
+    ) WITHOUT ROWID;
+    INSERT INTO ended(folder_id, last_seq, first_seq)
+    WITH RECURSIVE up(folder_id, last_seq, first_seq) AS (
+        SELECT p.parent_id, v.last_seq, MIN(v.first_seq)
+          FROM versions v JOIN paths p ON p.id = v.path_id
+         WHERE v.kind != 'dir'
+           AND v.last_seq < (SELECT MAX(seq) FROM archives WHERE status IS NULL)
+         GROUP BY p.parent_id, v.last_seq
+        UNION
+        SELECT p.parent_id, up.last_seq, up.first_seq
+          FROM up JOIN paths p ON p.id = up.folder_id
+    )
+    SELECT folder_id, last_seq, MIN(first_seq) FROM up GROUP BY folder_id, last_seq;
+    "#,
 ];
+
+/// `ended` worked out again from the versions, as the v5 migration first
+/// built it: run by the writer inside every transaction that changes the
+/// versions or which archives are catalogued, so a reader never sees it out of
+/// step with them. A third of a second on a catalogue of 3.3 million files.
+///
+/// A version that ended is one whose last archive is older than the newest
+/// catalogued one. Its folder, and every folder above that, gets a row for
+/// that archive; one row per folder and archive, with the earliest first
+/// archive among the versions that ended there, which is what says whether
+/// any of them was alive at a given archive.
+pub(super) const REBUILD_ENDED: &str = r#"
+    DELETE FROM ended;
+    INSERT INTO ended(folder_id, last_seq, first_seq)
+    WITH RECURSIVE up(folder_id, last_seq, first_seq) AS (
+        SELECT p.parent_id, v.last_seq, MIN(v.first_seq)
+          FROM versions v JOIN paths p ON p.id = v.path_id
+         WHERE v.kind != 'dir'
+           AND v.last_seq < (SELECT MAX(seq) FROM archives WHERE status IS NULL)
+         GROUP BY p.parent_id, v.last_seq
+        UNION
+        SELECT p.parent_id, up.last_seq, up.first_seq
+          FROM up JOIN paths p ON p.id = up.folder_id
+    )
+    SELECT folder_id, last_seq, MIN(first_seq) FROM up GROUP BY folder_id, last_seq;
+"#;
 
 /// Read the current schema version, treating a database with no `meta` table
 /// (a brand-new file) as version 0.
@@ -229,7 +284,7 @@ mod tests {
 
         migrate(&mut conn).unwrap();
 
-        assert_eq!(current_version(&conn).unwrap(), 4);
+        assert_eq!(current_version(&conn).unwrap(), SCHEMA_VERSION);
         assert_eq!(rows(&conn), before, "every archive as it was");
         let versions: i64 = conn
             .query_row("SELECT COUNT(*) FROM versions", [], |r| r.get(0))
@@ -261,5 +316,60 @@ mod tests {
             )
             .unwrap();
         assert_eq!(leftover, 0);
+    }
+
+    /// `ended` as a test reads it: (folder, last archive, earliest first).
+    fn ended(conn: &Connection) -> Vec<(i64, i64, i64)> {
+        let mut stmt = conn
+            .prepare("SELECT folder_id, last_seq, first_seq FROM ended ORDER BY 1, 2")
+            .unwrap();
+        stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap()
+    }
+
+    #[test]
+    fn v5_records_what_ended_below_every_folder() {
+        let mut conn = at_version(4);
+        // home (1) / keith (2) / Documents (3) / a.txt (4), b.txt (5);
+        // keith / notes.txt (6). Archives 1 to 3, all catalogued.
+        conn.execute_batch(
+            "INSERT INTO archives(seq, name, ts, repo) VALUES
+               (1, 'one', 100, 'primary'), (2, 'two', 200, 'primary'), (3, 'three', 300, 'primary');
+             INSERT INTO paths(id, parent_id, name) VALUES
+               (1, 0, 'home'), (2, 1, 'keith'), (3, 2, 'Documents'),
+               (4, 3, 'a.txt'), (5, 3, 'b.txt'), (6, 2, 'notes.txt');
+             INSERT INTO versions(path_id, first_seq, last_seq, size, mtime, mode, kind) VALUES
+               (3, 1, 3, 0, 0, 493, 'dir'),
+               (4, 1, 1, 1, 10, 420, 'file'),  -- a.txt changed after 1
+               (4, 2, 3, 2, 20, 420, 'file'),  -- and is current
+               (5, 2, 2, 1, 20, 420, 'file'),  -- b.txt made at 2, gone at 3
+               (6, 1, 3, 1, 10, 420, 'file');  -- notes.txt never changed",
+        )
+        .unwrap();
+
+        migrate(&mut conn).unwrap();
+
+        assert_eq!(current_version(&conn).unwrap(), 5);
+        assert_eq!(
+            ended(&conn),
+            [
+                // The root, home, keith and Documents each: something ended at
+                // 1 (a.txt, from 1) and at 2 (b.txt, from 2).
+                (0, 1, 1),
+                (0, 2, 2),
+                (1, 1, 1),
+                (1, 2, 2),
+                (2, 1, 1),
+                (2, 2, 2),
+                (3, 1, 1),
+                (3, 2, 2),
+            ],
+            "nothing for what is current, nor for folders' own versions"
+        );
+        // The writer's rebuild agrees with the migration's first build.
+        conn.execute_batch(REBUILD_ENDED).unwrap();
+        assert_eq!(ended(&conn).len(), 8);
     }
 }

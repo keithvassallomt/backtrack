@@ -15,7 +15,7 @@ use rusqlite::{params, OptionalExtension};
 use rusqlite::{Connection, Transaction};
 
 use super::item::{ArchiveMeta, BorgItem, Repo};
-use super::{open_connection, open_memory_connection, IndexError, Result};
+use super::{open_connection, open_memory_connection, schema, IndexError, Result};
 
 /// The source of a listing could not produce the rest of it.
 ///
@@ -288,7 +288,24 @@ impl<'a> PathResolver<'a> {
     }
 }
 
+/// How long a connection waits for another to let go of the catalogue:
+/// rusqlite's own default, put back after a write-back.
+const BUSY: std::time::Duration = std::time::Duration::from_secs(5);
+
 impl IndexWriter {
+    /// Write the log back into the catalogue and cut it back to nothing, after
+    /// a transaction that changed the catalogue (S18-T12). Never waits for a
+    /// reader: with one reading, the log is written back as far as it can be,
+    /// and `journal_size_limit` cuts it back the next time it starts afresh.
+    /// Keith's had been left at 546 MB by the cataloguing of a home folder.
+    pub fn write_back(&self) {
+        let _ = self.conn.busy_timeout(std::time::Duration::ZERO);
+        let _ = self
+            .conn
+            .query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |_| Ok(()));
+        let _ = self.conn.busy_timeout(BUSY);
+    }
+
     /// Open (creating if absent) the index at `path` for writing.
     pub fn open(path: &Path) -> Result<IndexWriter> {
         Ok(IndexWriter {
@@ -561,7 +578,9 @@ impl IndexWriter {
             "UPDATE archives SET status = NULL WHERE seq = ?1",
             params![seq],
         )?;
+        tx.execute_batch(schema::REBUILD_ENDED)?;
         tx.commit()?;
+        self.write_back();
         Ok(stats)
     }
 
@@ -689,7 +708,9 @@ impl IndexWriter {
                 split_versions_around(&tx, *seq)?;
             }
         }
+        tx.execute_batch(schema::REBUILD_ENDED)?;
         tx.commit()?;
+        self.write_back();
 
         // Newest first: the snapshot somebody wants to browse is the last one
         // taken, so that is the one worth catalogued first.
@@ -900,7 +921,9 @@ impl IndexWriter {
         tx.execute_batch("DROP TABLE seqmap; DROP TABLE removed_seqs;")?;
 
         coalesce_versions(&tx)?;
+        tx.execute_batch(schema::REBUILD_ENDED)?;
         tx.commit()?;
+        self.write_back();
         Ok(())
     }
 
@@ -1684,6 +1707,97 @@ mod catalogue_tests {
         let versions = dump_versions(&w);
         assert_eq!(versions.len(), 1);
         assert_eq!((versions[0].1, versions[0].2), (1, 3));
+    }
+
+    /// Whether `ended` is what a rebuild from the versions would make now:
+    /// the rebuild is run in a transaction that is then let go.
+    fn ended_is_current(w: &mut IndexWriter) -> bool {
+        let read = |conn: &Connection| -> Vec<(i64, i64, i64)> {
+            let mut stmt = conn
+                .prepare("SELECT folder_id, last_seq, first_seq FROM ended ORDER BY 1, 2")
+                .unwrap();
+            stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+                .unwrap()
+                .collect::<rusqlite::Result<_>>()
+                .unwrap()
+        };
+        let kept = read(w.conn());
+        let tx = w.conn.transaction().unwrap();
+        tx.execute_batch(schema::REBUILD_ENDED).unwrap();
+        let fresh = read(&tx);
+        drop(tx);
+        kept == fresh
+    }
+
+    #[test]
+    fn the_log_is_written_back_and_cut_back_after_each_change() {
+        // S18-T12: Keith's write-ahead log had been left at 546 MB.
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("index.db");
+        let wal = || std::fs::metadata(tmp.path().join("index.db-wal")).map_or(0, |m| m.len());
+        let mut w = IndexWriter::open(&path).unwrap();
+        let limit: i64 = w
+            .conn()
+            .query_row("PRAGMA journal_size_limit", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(limit, super::super::JOURNAL_SIZE_LIMIT);
+        let files: Vec<BorgItem> = (0..2_000)
+            .map(|i| flat(&format!("home/k/f{i}"), 1))
+            .collect();
+        ingest(&mut w, "a", files.clone());
+        assert_eq!(wal(), 0, "after an ingest");
+        w.sync_archives(Repo::Primary, &[entry("a", 100), entry("b", 200)])
+            .unwrap();
+        assert_eq!(wal(), 0, "after a sync");
+        w.remove_archives(&[2]).unwrap();
+        assert_eq!(wal(), 0, "after a prune");
+    }
+
+    #[test]
+    fn every_change_to_the_catalogue_keeps_what_ended_below_each_folder_current() {
+        // S18-T12: a reader trusts `ended` as it finds it, so every writer
+        // transaction that changes the versions has to leave it current.
+        let mut w = IndexWriter::open_in_memory().unwrap();
+        ingest(&mut w, "a", vec![flat("dir/x", 1), flat("dir/y", 1)]);
+        assert!(ended_is_current(&mut w), "after the first ingest");
+        // y ends at a; x is unchanged at c, ends there and is changed at d.
+        // Inserting b between a and c below moves c along, and with it what
+        // ended there.
+        ingest(&mut w, "c", vec![flat("dir/x", 1)]);
+        ingest(&mut w, "d", vec![flat("dir/x", 2)]);
+        assert!(ended_is_current(&mut w), "after ingests that end versions");
+        let rows = |w: &IndexWriter| -> i64 {
+            w.conn()
+                .query_row("SELECT COUNT(*) FROM ended", [], |r| r.get(0))
+                .unwrap()
+        };
+        assert!(rows(&w) > 0, "something ended, below dir and above it");
+        w.conn()
+            .execute_batch(
+                "UPDATE archives SET ts = 100 WHERE name='a';
+                 UPDATE archives SET ts = 300 WHERE name='c';
+                 UPDATE archives SET ts = 400 WHERE name='d';",
+            )
+            .unwrap();
+        w.sync_archives(
+            Repo::Primary,
+            &[
+                entry("a", 100),
+                entry("b", 200),
+                entry("c", 300),
+                entry("d", 400),
+            ],
+        )
+        .unwrap();
+        assert!(
+            ended_is_current(&mut w),
+            "after an archive is inserted in the middle"
+        );
+        w.ingest_pending(2, vec![flat("dir/x", 1)].into_iter())
+            .unwrap();
+        assert!(ended_is_current(&mut w), "after the hole is catalogued");
+        w.remove_archives(&[1]).unwrap();
+        assert!(ended_is_current(&mut w), "after a prune");
     }
 
     #[test]

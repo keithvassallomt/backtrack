@@ -2,15 +2,20 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # SPDX-FileCopyrightText: 2026 Keith Vassallo <keith@vassallo.cloud>
 #
-# S18-T3's checks of Rewind on this computer, by hand: whether its motion
-# looks smooth on real hardware, which no virtual machine can say, and its
-# crossfade with animations off. Each step says what to do at the screen.
+# Stage 18's checks on this computer, by hand: whether Rewind's motion looks
+# smooth on real hardware, which no virtual machine can say, and its
+# crossfade with animations off (S18-T3); a backup held up on battery saying
+# so (S18-T10); hidden files, and a quick opening on a large catalogue (S18-T11
+# and T12). Each step says what to do at the screen.
 #
 #   scripts/rewind-check install   build the AUR packages here and say how to
 #                                  install them
 #   scripts/rewind-check 1         the motion, through a real folder's backups
 #   scripts/rewind-check 2         with animations off: a crossfade instead;
 #                                  puts animations back on afterwards
+#   scripts/rewind-check 3         on battery: why no backup runs (S18-T10)
+#   scripts/rewind-check 4         hidden files, and how fast it all opens
+#                                  (S18-T11 and T12)
 #
 # Run from the checkout.
 
@@ -67,8 +72,43 @@ EOF
     gsettings reset org.gnome.desktop.interface enable-animations
     echo "Animations are on again ($(gsettings get org.gnome.desktop.interface enable-animations))."
     ;;
+3)
+    say "3. A backup held up on battery says so (S18-T10)"
+    if [[ "$(cat /sys/class/power_supply/A*/online 2>/dev/null | head -n 1)" == 1 ]]; then
+        echo "Unplug the charger first: this is about running on battery."
+    fi
+    echo "What backtrack status says now:"
+    echo
+    backtrack status | sed 's/^/    /'
+    cat <<'EOF'
+
+  With backups on battery off (the default), once a backup is due it should
+  say "Next backup   waiting for mains power: backups on battery are off
+  (backup.on_battery)", where it said "due now" before.
+
+  a. Open Backtrack: the line at the bottom of the window says the same,
+     "· waiting for mains power, because Back up on battery power is off in
+     Preferences".
+  b. The tray's first line says "· waiting for mains power".
+  c. Plug the charger in: within a couple of minutes a backup runs, and the
+     waiting is no longer mentioned.
+EOF
+    ;;
+4)
+    say "4. Hidden files, and how fast it opens (S18-T11 and T12)"
+    cat <<'EOF'
+  a. Open Backtrack at your home folder. It should show its contents at once,
+     where it took about seven seconds before, and no dotfiles.
+  b. Ctrl+H shows the hidden files; Ctrl+H again hides them. Show Hidden
+     Files in the main menu is the same switch.
+  c. Ctrl+Shift+H is Show All Backups now (it was Ctrl+H).
+  d. Ctrl+T for Rewind at your home folder: its cards fill at once (five
+     seconds before), with no dotfiles; Ctrl+H there shows them, and the
+     window's switch moves with it.
+EOF
+    ;;
 *)
-    sed -n '/^# S18-T3/,/^# Run from/p' "$0" | sed 's/^# \{0,1\}//'
+    sed -n '/^# Stage 18/,/^# Run from/p' "$0" | sed 's/^# \{0,1\}//'
     exit 2
     ;;
 esac

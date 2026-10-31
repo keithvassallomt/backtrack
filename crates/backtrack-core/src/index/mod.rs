@@ -69,6 +69,9 @@ pub struct Index {
     conn: Connection,
 }
 
+/// The most the write-ahead log is left at once written back: 64 MiB.
+pub const JOURNAL_SIZE_LIMIT: i64 = 64 * 1024 * 1024;
+
 /// Configure a freshly-opened connection: integrity check, WAL + NORMAL
 /// pragmas, then migrate the schema forward. Shared by every opener so the
 /// writer and readers see identical setup.
@@ -79,6 +82,11 @@ fn configure(mut conn: Connection) -> Result<Connection> {
     // WAL with synchronous=NORMAL: concurrent readers (the GUI) while the single
     // writer (the daemon) ingests, without fsync-per-commit cost.
     conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;")?;
+    // A write-ahead log keeps the size of its biggest write until something
+    // cuts it back: 546 MB on Keith's laptop after cataloguing a home folder
+    // of 3.3 million files (S18-T12). This has SQLite cut it back to the limit
+    // each time it starts the log afresh after a checkpoint.
+    conn.pragma_update(None, "journal_size_limit", JOURNAL_SIZE_LIMIT)?;
     schema::migrate(&mut conn)?;
     Ok(conn)
 }

@@ -204,7 +204,7 @@ Nothing right now.
 - [x] S18-T9 Brief badges in the main window
 - [/] S18-T10 A backup held up by the battery or the network says so
 - [x] S18-T11 Hidden files are hidden, as file managers hide them
-- [ ] S18-T12 The window and Rewind open quickly on a large catalogue
+- [x] S18-T12 The window and Rewind open quickly on a large catalogue
 
 ## Blocked
 

@@ -422,6 +422,11 @@ All notable changes to Backtrack are documented here. This project adheres to
   accumulated, and with the square of the number of files: six and a half
   seconds for 55,000 files after a week of hourly backups, and far longer for
   more files. It now takes a fraction of a second.
+- With a large catalogue, the window took seconds to show anything: about 7
+  seconds for a home folder of 3.3 million files, and Rewind 5 seconds more
+  for its backups. Both now take a few milliseconds, however much lies below
+  the folder. The catalogue's log of recent changes is also no longer left
+  hundreds of megabytes long.
 - Cataloguing stopped part way through a backup, or a preview closed before
   its file had arrived, could leave the backup destination locked, so that
   every backup after it failed with "the repository is locked by another

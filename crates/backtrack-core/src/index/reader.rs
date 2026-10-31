@@ -239,15 +239,31 @@ pub fn names_matching(query: &str, names: &[String]) -> Result<Vec<bool>> {
     Ok(found)
 }
 
+/// The archives at which something below the folder `?1` ended, before the
+/// newest catalogued one `?2` (S18-T12).
+const LISTED: &str = "SELECT last_seq FROM ended WHERE folder_id = ?1 AND last_seq < ?2";
+
+/// The children of the folder `?1` below which something alive at archive
+/// `?2` ended before archive `?3` (S18-T12).
+const CHANGED_INSIDE: &str =
+    "SELECT DISTINCT e.folder_id FROM paths p JOIN ended e ON e.folder_id = p.id
+     WHERE p.parent_id = ?1 AND e.last_seq >= ?2 AND e.last_seq < ?3 AND e.first_seq <= ?2";
+
 impl IndexReader {
     /// Open an existing, already-migrated index for reading. The connection is
     /// put into `query_only` mode so a reader can never mutate the catalogue.
+    ///
+    /// No integrity check here: SQLite's reads the whole file, four seconds of
+    /// a window's opening on a catalogue of 3.3 million files (S18-T12). The
+    /// daemon checks the catalogue when it opens it to write, before anything
+    /// else touches it; a page damaged since is reported by the query that
+    /// reads it, and a file that is not a catalogue at all by the version
+    /// read below.
     pub fn open(path: &Path) -> Result<IndexReader> {
         let conn = Connection::open_with_flags(
             path,
             OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX,
         )?;
-        schema::integrity_check(&conn)?;
         let version = schema::current_version(&conn)?;
         if version != SCHEMA_VERSION {
             return Err(IndexError::Migration(format!(
@@ -323,12 +339,13 @@ impl IndexReader {
     /// Which direct children of `folder_id` hold, at or below them, a file in
     /// archive `seq` that is changed or gone by archive `max`.
     ///
-    /// Worked upwards from those files rather than down through each child:
-    /// they are the versions alive at `seq` that end before `max`, found by
-    /// `versions_last_seq`, so the cost follows how much has changed since
-    /// `seq`, and a folder listing stays as quick as a lookup of its own
-    /// entries. Measured on 2026-10-20 at 0.5 ms on a real catalogue of 54,000
-    /// paths, against 27 ms for walking down through a home folder.
+    /// Read from `ended`, which keeps for every folder the archives at which
+    /// something below it ended and the earliest of those things' first
+    /// archives (S18-T12): a version ending at or after `seq`, and before
+    /// `max`, that began at or before `seq` was alive at `seq` and is changed
+    /// or gone by `max`. Climbing up from the changed files instead took
+    /// 165 ms for a home folder on a catalogue of 3.3 million files, where
+    /// much had changed; this is a lookup per child.
     fn changed_inside(
         &self,
         folder_id: i64,
@@ -338,19 +355,7 @@ impl IndexReader {
         if seq >= max {
             return Ok(std::collections::HashSet::new());
         }
-        // up(id, child): `child` is at or above a changed file, and `id` is
-        // its parent. Climbing stops at the folder, or at the tree's root.
-        let mut stmt = self.conn.prepare_cached(
-            "WITH RECURSIVE up(id, child) AS (
-                 SELECT p.parent_id, p.id FROM versions v JOIN paths p ON p.id = v.path_id
-                 WHERE v.kind != 'dir' AND v.last_seq >= ?2 AND v.last_seq < ?3
-                   AND v.first_seq <= ?2
-                 UNION
-                 SELECT p.parent_id, p.id FROM up JOIN paths p ON p.id = up.id
-                 WHERE up.id != ?1 AND up.id != 0
-             )
-             SELECT child FROM up WHERE id = ?1",
-        )?;
+        let mut stmt = self.conn.prepare_cached(CHANGED_INSIDE)?;
         let rows = stmt.query_map(params![folder_id, seq, max], |r| r.get(0))?;
         Ok(rows.collect::<std::result::Result<_, _>>()?)
     }
@@ -732,16 +737,10 @@ impl IndexReader {
                 rows.collect::<std::result::Result<Vec<i64>, _>>()?
             }
             None => vec![newest],
+            // The archives at which something below the folder ended, which
+            // `ended` keeps for every folder (S18-T12).
             Some(folder_id) => {
-                let mut stmt = self.conn.prepare_cached(
-                    "WITH RECURSIVE below(id) AS (
-                         SELECT ?1
-                         UNION ALL
-                         SELECT p.id FROM paths p JOIN below ON p.parent_id = below.id
-                     )
-                     SELECT DISTINCT v.last_seq FROM versions v JOIN below ON v.path_id = below.id
-                     WHERE v.kind != 'dir' AND v.last_seq < ?2",
-                )?;
+                let mut stmt = self.conn.prepare_cached(LISTED)?;
                 let rows = stmt.query_map(params![folder_id, newest], |r| r.get(0))?;
                 let mut ended = rows.collect::<std::result::Result<Vec<i64>, _>>()?;
                 ended.push(newest);
@@ -1142,6 +1141,40 @@ mod tests {
     /// The folders above `home/k/Docs`, and it.
     fn docs() -> Vec<BorgItem> {
         vec![dir("home"), dir("home/k"), dir("home/k/Docs")]
+    }
+
+    #[test]
+    fn what_differs_below_a_folder_is_looked_up_never_walked() {
+        // S18-T12: walking down a home folder of 3.3 million files took
+        // 2.8 s to say which backups differ for it, and 165 ms to say which
+        // of its folders changed. Both are lookups in `ended` by folder, so
+        // their cost does not grow with what lies below the folder.
+        let (_tmp, r) = scripted();
+        for (name, sql, params) in [
+            ("which backups differ", LISTED, vec![1i64, 4]),
+            ("which folders changed", CHANGED_INSIDE, vec![1i64, 2, 4]),
+        ] {
+            let mut stmt = r
+                .conn
+                .prepare(&format!("EXPLAIN QUERY PLAN {sql}"))
+                .unwrap();
+            let plan: Vec<String> = stmt
+                .query_map(rusqlite::params_from_iter(params), |row| row.get(3))
+                .unwrap()
+                .collect::<rusqlite::Result<_>>()
+                .unwrap();
+            let plan = plan.join(" / ");
+            assert!(
+                plan.contains("SEARCH e USING PRIMARY KEY (folder_id=?")
+                    || plan.contains("SEARCH ended USING PRIMARY KEY (folder_id=?"),
+                "{name}: ended is searched by folder: {plan}"
+            );
+            assert!(
+                !plan.contains("versions"),
+                "{name}: no version is read: {plan}"
+            );
+            assert!(!plan.contains("SCAN"), "{name}: nothing is scanned: {plan}");
+        }
     }
 
     #[test]
