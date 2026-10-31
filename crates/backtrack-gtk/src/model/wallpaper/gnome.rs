@@ -3,7 +3,9 @@
 
 //! GNOME's wallpaper, from `org.gnome.desktop.background`: `picture-uri`, or
 //! `picture-uri-dark` when the desktop's colour scheme is dark, fitted as
-//! `picture-options` says, over `primary-color`.
+//! `picture-options` says, over `primary-color`. Cinnamon and MATE kept
+//! GNOME 2's keys under schemas of their own (S18-T19), and are read the same
+//! way.
 
 use gtk4::glib;
 
@@ -12,6 +14,43 @@ use super::{Fit, Rgb, Wallpaper, Why};
 /// The schema the keys are in, and the dconf path it is kept at.
 pub const SCHEMA: &str = "org.gnome.desktop.background";
 pub const PATH: &str = "/org/gnome/desktop/background/";
+
+/// Where a desktop that keeps its wallpaper as GNOME does keeps it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Schema {
+    pub id: &'static str,
+    pub path: &'static str,
+    /// The key that names the picture: MATE's is a path, `picture-filename`,
+    /// which `choose` reads as it reads the plain paths of an older GNOME.
+    picture: &'static str,
+}
+
+impl Schema {
+    /// This schema's name for one of `KEYS`.
+    pub fn key(&self, name: &'static str) -> &'static str {
+        if name == KEYS[0] {
+            self.picture
+        } else {
+            name
+        }
+    }
+}
+
+pub const GNOME: Schema = Schema {
+    id: SCHEMA,
+    path: PATH,
+    picture: "picture-uri",
+};
+pub const CINNAMON: Schema = Schema {
+    id: "org.cinnamon.desktop.background",
+    path: "/org/cinnamon/desktop/background/",
+    picture: "picture-uri",
+};
+pub const MATE: Schema = Schema {
+    id: "org.mate.background",
+    path: "/org/mate/desktop/background/",
+    picture: "picture-filename",
+};
 
 /// The keys, as the desktop has them.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -34,7 +73,7 @@ impl Settings {
     /// Settings from a reader of one key at a time, as GSettings and dconf's
     /// files each give them. A key it cannot read is empty, as GNOME treats
     /// an empty one.
-    pub fn read(mut key: impl FnMut(&str) -> Option<String>) -> Settings {
+    pub fn read(mut key: impl FnMut(&'static str) -> Option<String>) -> Settings {
         let mut get = |name| key(name).unwrap_or_default();
         Settings {
             picture_uri: get(KEYS[0]),
@@ -189,5 +228,26 @@ mod tests {
         assert_eq!(settings.picture_uri, "file:///a.png");
         assert_eq!(settings.picture_uri_dark, "");
         assert_eq!(settings.picture_options, "scaled");
+    }
+
+    #[test]
+    fn cinnamon_and_mate_keep_gnomes_keys_under_their_own_schemas() {
+        assert_eq!(CINNAMON.key("picture-uri"), "picture-uri");
+        assert_eq!(MATE.key("picture-uri"), "picture-filename");
+        assert_eq!(MATE.key("picture-options"), "picture-options");
+        // MATE's picture is a plain path.
+        let mate = Settings {
+            picture_uri: "/usr/share/backgrounds/mate/nature/Wood.jpg".into(),
+            picture_options: "stretched".into(),
+            ..Settings::default()
+        };
+        assert_eq!(
+            picture(choose(&mate, false)),
+            (
+                "/usr/share/backgrounds/mate/nature/Wood.jpg".to_owned(),
+                Fit::Stretch,
+                Rgb::BLACK
+            )
+        );
     }
 }

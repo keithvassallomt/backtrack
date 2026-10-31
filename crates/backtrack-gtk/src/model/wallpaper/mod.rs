@@ -11,12 +11,14 @@
 //! that goes wrong on the way, gets Backtrack's own background instead: the
 //! starfield, which is always dark.
 
+pub mod cosmic;
 pub mod dconf;
 pub mod gnome;
 pub mod gvdb;
 pub mod plasma;
 pub mod records;
 pub mod slideshow;
+pub mod xfce;
 
 use std::fmt;
 use std::path::PathBuf;

@@ -6,7 +6,9 @@
 //! (Stage 18). Each is a handful of elements holding text, written by a
 //! program rather than a person, and a parser of a few dozen lines reads them
 //! without a dependency. It is not a general XML parser: no namespaces, no
-//! CDATA, and an element is assumed not to hold another of its own name.
+//! CDATA, and `children` assumes an element does not hold another of its own
+//! name; `tags` reads a file whose elements do, such as Xfce's settings
+//! (S18-T19), one tag at a time.
 
 /// What is between `<name>` and `</name>`, the first such element in `text`.
 pub fn element<'a>(text: &'a str, name: &str) -> Option<&'a str> {
@@ -29,19 +31,82 @@ impl Element<'_> {
     /// The value of the attribute `name`, unescaped; None when the tag does
     /// not have it, or its value cannot be read.
     pub fn attribute(&self, name: &str) -> Option<String> {
-        let mut rest = self.attributes;
-        loop {
-            let eq = rest.find('=')?;
-            let key = rest[..eq].trim();
-            let after = rest[eq + 1..].trim_start();
-            let quote = after.chars().next().filter(|c| *c == '"' || *c == '\'')?;
-            let value_end = after[1..].find(quote)? + 1;
-            if key == name {
-                return unescape(&after[1..value_end]);
-            }
-            rest = &after[value_end + 1..];
-        }
+        attribute_in(self.attributes, name)
     }
+}
+
+fn attribute_in(attributes: &str, name: &str) -> Option<String> {
+    let mut rest = attributes;
+    loop {
+        let eq = rest.find('=')?;
+        let key = rest[..eq].trim();
+        let after = rest[eq + 1..].trim_start();
+        let quote = after.chars().next().filter(|c| *c == '"' || *c == '\'')?;
+        let value_end = after[1..].find(quote)? + 1;
+        if key == name {
+            return unescape(&after[1..value_end]);
+        }
+        rest = &after[value_end + 1..];
+    }
+}
+
+/// Whether a tag opens an element, closes one, or is one: `<a>`, `</a>`,
+/// `<a/>`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TagKind {
+    Open,
+    Close,
+    Empty,
+}
+
+/// A tag, as `tags` meets it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Tag<'a> {
+    pub name: &'a str,
+    pub kind: TagKind,
+    attributes: &'a str,
+}
+
+impl Tag<'_> {
+    /// As `Element::attribute`.
+    pub fn attribute(&self, name: &str) -> Option<String> {
+        attribute_in(self.attributes, name)
+    }
+}
+
+/// Every tag in `text`, in order, the declaration and comments passed over:
+/// for a file whose elements hold others of their own name, read by keeping
+/// track of where each opens and closes.
+pub fn tags(text: &str) -> impl Iterator<Item = Tag<'_>> {
+    let mut rest = text;
+    std::iter::from_fn(move || loop {
+        let open = rest.find('<')?;
+        rest = &rest[open + 1..];
+        if let Some(after) = rest.strip_prefix("!--") {
+            rest = &after[after.find("-->")? + 3..];
+            continue;
+        }
+        let tag_end = rest.find('>')?;
+        let tag = &rest[..tag_end];
+        rest = &rest[tag_end + 1..];
+        if tag.starts_with(['?', '!']) {
+            continue;
+        }
+        let (tag, kind) = if let Some(name) = tag.strip_prefix('/') {
+            (name, TagKind::Close)
+        } else if let Some(tag) = tag.strip_suffix('/') {
+            (tag, TagKind::Empty)
+        } else {
+            (tag, TagKind::Open)
+        };
+        let name_end = tag.find(char::is_whitespace).unwrap_or(tag.len());
+        let (name, attributes) = tag.split_at(name_end);
+        return Some(Tag {
+            name: name.trim(),
+            kind,
+            attributes,
+        });
+    })
 }
 
 /// The elements directly inside `body`, in order; an element written
@@ -146,6 +211,28 @@ mod tests {
         let transition = all.next().unwrap();
         assert_eq!(transition.name, "transition");
         assert_eq!(transition.attribute("type").as_deref(), Some("overlay"));
+    }
+
+    #[test]
+    fn tags_follow_elements_that_hold_their_own_name() {
+        let text = r#"<?xml version="1.0"?>
+<channel name="d"><property name="a" type="empty"><!-- note -->
+<property name="b" type="string" value="x &amp; y"/></property></channel>"#;
+        let seen: Vec<(&str, TagKind, Option<String>)> = tags(text)
+            .map(|tag| (tag.name, tag.kind, tag.attribute("name")))
+            .collect();
+        assert_eq!(
+            seen,
+            vec![
+                ("channel", TagKind::Open, Some("d".into())),
+                ("property", TagKind::Open, Some("a".into())),
+                ("property", TagKind::Empty, Some("b".into())),
+                ("property", TagKind::Close, None),
+                ("channel", TagKind::Close, None),
+            ]
+        );
+        let value = tags(text).find(|t| t.kind == TagKind::Empty).unwrap();
+        assert_eq!(value.attribute("value").as_deref(), Some("x & y"));
     }
 
     #[test]

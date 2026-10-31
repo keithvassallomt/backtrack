@@ -26,7 +26,7 @@ use tracing::{debug, info};
 
 use crate::host::Host;
 use crate::model::wallpaper::records::{self, Program, Record};
-use crate::model::wallpaper::{gnome, plasma, slideshow, Fit, Rgb, Wallpaper, Why};
+use crate::model::wallpaper::{cosmic, gnome, plasma, slideshow, xfce, Fit, Rgb, Wallpaper, Why};
 
 pub use report::report;
 
@@ -61,6 +61,11 @@ impl Screen {
 pub enum Desktop {
     Gnome,
     Plasma,
+    /// Those S18-T19 added: their own settings say what they show.
+    Cosmic,
+    Xfce,
+    Cinnamon,
+    Mate,
     Other(String),
 }
 
@@ -74,6 +79,10 @@ fn desktop_of(names: &str) -> Desktop {
         match name.trim().to_ascii_lowercase().as_str() {
             "gnome" => return Desktop::Gnome,
             "kde" => return Desktop::Plasma,
+            "cosmic" => return Desktop::Cosmic,
+            "xfce" => return Desktop::Xfce,
+            "x-cinnamon" | "cinnamon" => return Desktop::Cinnamon,
+            "mate" => return Desktop::Mate,
             _ => {}
         }
     }
@@ -97,6 +106,10 @@ pub async fn find(screen: Screen, output: Option<String>) -> Result<Found, (Why,
         match &desktop {
             Desktop::Gnome => "GNOME".to_owned(),
             Desktop::Plasma => "Plasma".to_owned(),
+            Desktop::Cosmic => "COSMIC".to_owned(),
+            Desktop::Xfce => "Xfce".to_owned(),
+            Desktop::Cinnamon => "Cinnamon".to_owned(),
+            Desktop::Mate => "MATE".to_owned(),
             Desktop::Other(name) if name.is_empty() => "not named".to_owned(),
             Desktop::Other(name) => name.clone(),
         },
@@ -118,7 +131,25 @@ pub async fn find(screen: Screen, output: Option<String>) -> Result<Found, (Why,
     let dark = dark.unwrap_or(false);
     lines.push(format!("Screen: {} by {}", screen.width, screen.height));
     let found = match desktop {
-        Desktop::Gnome => gnome(&host, screen, dark, &mut lines),
+        Desktop::Gnome => gnome(&host, gnome::GNOME, screen, dark, &mut lines),
+        Desktop::Cinnamon => gnome(&host, gnome::CINNAMON, screen, dark, &mut lines),
+        Desktop::Mate => gnome(&host, gnome::MATE, screen, dark, &mut lines),
+        Desktop::Cosmic => from_file(
+            &host,
+            &host
+                .state
+                .join("cosmic/com.system76.CosmicBackground/v1/wallpapers"),
+            |text| cosmic::choose(text, output.as_deref()),
+            &mut lines,
+        ),
+        Desktop::Xfce => from_file(
+            &host,
+            &host
+                .config
+                .join("xfce4/xfconf/xfce-perchannel-xml/xfce4-desktop.xml"),
+            |text| xfce::choose(text, output.as_deref()),
+            &mut lines,
+        ),
         Desktop::Plasma => match &connection {
             Some(connection) => plasma(&host, connection, screen, dark, &mut lines).await,
             None => Err(Why::Unreachable("there is no session bus".to_owned())),
@@ -155,16 +186,40 @@ async fn prefers_dark(connection: &zbus::Connection) -> Option<bool> {
     Some(scheme == 1)
 }
 
+/// The wallpaper a desktop's own settings file names (S18-T19), read by
+/// `choose`.
+fn from_file(
+    host: &Host,
+    file: &Path,
+    choose: impl FnOnce(&str) -> Option<Wallpaper>,
+    lines: &mut Vec<String>,
+) -> Result<Wallpaper, Why> {
+    lines.push(format!("Settings: from {}", file.display()));
+    let text = std::fs::read_to_string(file)
+        .map_err(|e| Why::Unreadable(file.to_path_buf(), e.to_string()))?;
+    match choose(&text).ok_or_else(|| {
+        Why::NoRecord(format!(
+            "{} names no wallpaper for this screen",
+            file.display()
+        ))
+    })? {
+        Wallpaper::Picture { path, fit, behind } => picture_at(host, path, fit, behind),
+        colour => Ok(colour),
+    }
+}
+
+/// GNOME's wallpaper, or Cinnamon's or MATE's, as `schema` keeps it.
 fn gnome(
     host: &Host,
+    schema: gnome::Schema,
     screen: Screen,
     dark: bool,
     lines: &mut Vec<String>,
 ) -> Result<Wallpaper, Why> {
     let settings = if host.flatpak {
-        gnome_from_files(host, lines)
+        gnome_from_files(host, schema, lines)
     } else {
-        gnome_from_gsettings(lines)
+        gnome_from_gsettings(schema, lines)
     };
     let wallpaper = gnome::choose(&settings, dark)?;
     let Wallpaper::Picture { path, fit, behind } = wallpaper else {
@@ -444,15 +499,16 @@ fn picture_at(host: &Host, path: PathBuf, fit: Fit, behind: Rgb) -> Result<Wallp
     })
 }
 
-fn gnome_from_gsettings(lines: &mut Vec<String>) -> gnome::Settings {
-    let schema = gio::SettingsSchemaSource::default().and_then(|s| s.lookup(gnome::SCHEMA, true));
+fn gnome_from_gsettings(which: gnome::Schema, lines: &mut Vec<String>) -> gnome::Settings {
+    let schema = gio::SettingsSchemaSource::default().and_then(|s| s.lookup(which.id, true));
     let Some(schema) = schema else {
-        lines.push(format!("Settings: no {} schema here", gnome::SCHEMA));
+        lines.push(format!("Settings: no {} schema here", which.id));
         return gnome::Settings::default();
     };
     let settings = gio::Settings::new_full(&schema, None::<&gio::SettingsBackend>, None);
-    lines.push("Settings: from GSettings".to_owned());
-    gnome::Settings::read(|key| {
+    lines.push(format!("Settings: {}, from GSettings", which.id));
+    gnome::Settings::read(|name| {
+        let key = which.key(name);
         let value = schema
             .has_key(key)
             .then(|| settings.string(key).to_string())?;
@@ -464,26 +520,24 @@ fn gnome_from_gsettings(lines: &mut Vec<String>) -> gnome::Settings {
 /// GNOME's settings from dconf's own files, in dconf's order, falling to the
 /// defaults in the host's compiled schemas (where a distribution's vendor
 /// override, as Fedora's wallpaper, is compiled in).
-fn gnome_from_files(host: &Host, lines: &mut Vec<String>) -> gnome::Settings {
+fn gnome_from_files(host: &Host, which: gnome::Schema, lines: &mut Vec<String>) -> gnome::Settings {
     let layers = host.dconf_layers();
     let schemas = host.schemas();
-    let defaults = host.compiled_schema(gnome::SCHEMA);
+    let defaults = host.compiled_schema(which.id);
     lines.push(format!(
-        "Settings: from dconf's files ({} read), then {}",
+        "Settings: {}, from dconf's files ({} read), then {}",
+        which.id,
         layers.databases.len(),
         if defaults.is_some() {
             format!("the defaults in {}", schemas.display())
         } else {
-            format!(
-                "nothing: no {} schema in {}",
-                gnome::SCHEMA,
-                schemas.display()
-            )
+            format!("nothing: no {} schema in {}", which.id, schemas.display())
         }
     ));
-    gnome::Settings::read(|key| {
+    gnome::Settings::read(|name| {
+        let key = which.key(name);
         let from_dconf = layers
-            .read_from(&format!("{}{key}", gnome::PATH))
+            .read_from(&format!("{}{key}", which.path))
             .and_then(|(source, value)| Some((source.to_string(), value.str()?.to_owned())));
         let (from, value) = from_dconf.or_else(|| {
             let schema = defaults.as_ref()?;
@@ -835,6 +889,12 @@ mod tests {
         assert_eq!(desktop_of("GNOME"), Desktop::Gnome);
         assert_eq!(desktop_of("ubuntu:GNOME"), Desktop::Gnome);
         assert_eq!(desktop_of("KDE"), Desktop::Plasma);
+        assert_eq!(desktop_of("COSMIC"), Desktop::Cosmic);
+        assert_eq!(desktop_of("XFCE"), Desktop::Xfce);
+        assert_eq!(desktop_of("X-Cinnamon"), Desktop::Cinnamon);
+        assert_eq!(desktop_of("MATE"), Desktop::Mate);
+        // Budgie keeps GNOME's wallpaper, and says so.
+        assert_eq!(desktop_of("Budgie:GNOME"), Desktop::Gnome);
         assert_eq!(desktop_of("Hyprland"), Desktop::Other("Hyprland".into()));
         assert_eq!(desktop_of(""), Desktop::Other(String::new()));
     }
