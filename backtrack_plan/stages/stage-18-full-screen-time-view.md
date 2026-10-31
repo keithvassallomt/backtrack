@@ -32,7 +32,8 @@ depend on it and can run beside it. Then T3 to T8 in order. T9, which came out
 of T1, changes only the main window and stands on its own. T10 to T17 came out
 of Keith's check of T3 on his laptop (2026-10-31) and go before T4; the last
 three in the order Keith set: T16, T15, then T17. T18 to T20, which T15 led
-to, follow T17.
+to, follow T17; T21, which T17 led to, is built once T17's afternoon of
+measurements is in, so that nothing installed meanwhile disturbs them.
 
 ## Tasks
 
@@ -646,6 +647,18 @@ From S18-T15's findings: Sway keeps no record of it beyond its config.
 **Accept:** unit tests on configs with includes, variables, `~`, `*` and named
 outputs; on a VM with Sway, natively and in the Flatpak, Rewind shows the
 wallpaper its config names.
+
+### S18-T21 — Cataloguing a backup holds less memory
+From S18-T17: the catalogue's ingest took the daemon from 155 MB to 430 MB for
+2.5 million files, much of it `PathResolver` keeping every file it resolved,
+none of which is looked up again.
+- The resolver keeps only folders; a file is looked up and inserted, not kept.
+- A lookup no longer copies the name it looks up.
+
+**Accept:** the catalogue an ingest writes is unchanged (the ingest tests pass
+as they are); a test that the resolver keeps folders and not files; on a
+generated listing of 2.5 million files in 50,000 folders, the ingest's peak
+memory measured before and after, and recorded in this section.
 
 ## Definition of Done
 All tasks done; the CHANGELOG's Unreleased section introduces Rewind; mockups 25 and 26 match what was built; the README and the file
