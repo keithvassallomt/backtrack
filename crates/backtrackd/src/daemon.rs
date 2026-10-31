@@ -35,6 +35,7 @@
 use std::path::PathBuf;
 
 use backtrack_core::config::Config;
+use backtrack_core::host::Replaced;
 use backtrack_core::index::IndexWriter;
 use backtrack_core::{dbus, paths};
 
@@ -62,6 +63,16 @@ use zbus::object_server::SignalEmitter;
 /// and the next login's autostart starts a daemon in a new one.
 pub const BUS_LOST: u8 = 75;
 
+/// The exit code once Backtrack has been upgraded under the daemon (S18-T13):
+/// a failure, so that the unit's `Restart=on-failure` starts the new program.
+/// The daemon cannot start it itself: systemd ends a `Type=dbus` service once
+/// its name is let go, which a program starting itself afresh would do.
+pub const UPGRADED: u8 = 76;
+
+/// How often a daemon waiting to restart for an upgrade looks for the work in
+/// hand to be done.
+const IDLE_LOOK_EVERY: std::time::Duration = std::time::Duration::from_secs(10);
+
 /// Why the daemon stopped. Losing the single-instance race is a successful
 /// exit, a normal outcome rather than a failure, which is what makes D-Bus
 /// activation safe to trigger from several clients at once.
@@ -73,14 +84,18 @@ pub enum Outcome {
     AlreadyRunning,
     /// The session bus went away, or took the name with it.
     BusLost,
+    /// Backtrack was upgraded, and the new daemon is to take over.
+    Upgraded,
 }
 
 impl Outcome {
-    /// The process exit code for this outcome: zero, except [`BUS_LOST`].
+    /// The process exit code for this outcome: zero, except [`BUS_LOST`] and
+    /// [`UPGRADED`].
     pub fn exit_code(self) -> u8 {
         match self {
             Outcome::ShutDown | Outcome::AlreadyRunning => 0,
             Outcome::BusLost => BUS_LOST,
+            Outcome::Upgraded => UPGRADED,
         }
     }
 }
@@ -316,19 +331,20 @@ pub async fn run() -> Result<Outcome, StartupError> {
         Arc::clone(&leave),
     ));
 
-    let uninstalled = async {
-        match std::env::current_exe() {
-            Ok(program) => {
-                backtrack_core::host::wait_until_gone(
-                    program,
-                    backtrack_core::host::LOOK_FOR_PROGRAM_EVERY,
-                )
-                .await
-            }
-            Err(_) => std::future::pending().await,
+    let replaced = {
+        let shared = Arc::clone(&shared);
+        async move {
+            let Ok(program) = std::env::current_exe() else {
+                return std::future::pending().await;
+            };
+            let replaced = backtrack_core::host::wait_until_replaced(
+                program,
+                backtrack_core::host::LOOK_FOR_PROGRAM_EVERY,
+            );
+            once_idle(replaced, move || shared.idle()).await
         }
     };
-    match wait_for_shutdown(&leave, bus_lost, uninstalled).await? {
+    match wait_for_shutdown(&leave, bus_lost, replaced).await? {
         Stop::Asked(reason) => {
             info!(reason, "shutting down");
             Ok(Outcome::ShutDown)
@@ -337,6 +353,10 @@ pub async fn run() -> Result<Outcome, StartupError> {
             info!("Backtrack has been uninstalled; the daemon stops with it");
             crate::background::forget_login_link();
             Ok(Outcome::ShutDown)
+        }
+        Stop::Upgraded => {
+            info!("Backtrack has been upgraded; the daemon stops for the new one to start");
+            Ok(Outcome::Upgraded)
         }
         Stop::BusLost => {
             warn!(
@@ -347,12 +367,34 @@ pub async fn run() -> Result<Outcome, StartupError> {
     }
 }
 
+/// `replaced`, once it is time to act on it: an upgrade waits until `idle`, so
+/// the daemon never restarts in the middle of a backup, a restore or a check.
+/// An uninstall does not wait: the program for any of them is gone.
+async fn once_idle(
+    replaced: impl std::future::Future<Output = Replaced>,
+    idle: impl Fn() -> bool,
+) -> Replaced {
+    let replaced = replaced.await;
+    if replaced == Replaced::Upgraded {
+        if !idle() {
+            info!("Backtrack has been upgraded; the daemon restarts once its work is done");
+        }
+        while !idle() {
+            tokio::time::sleep(IDLE_LOOK_EVERY).await;
+        }
+    }
+    replaced
+}
+
 /// Why [`wait_for_shutdown`] returned.
 enum Stop {
     /// A signal, or nothing left to do in the background.
     Asked(&'static str),
     /// The daemon's own program is gone: the package has been removed.
     Uninstalled,
+    /// The daemon's own program has been replaced by a newer one, and the
+    /// daemon is idle.
+    Upgraded,
     /// The session bus went away.
     BusLost,
 }
@@ -500,7 +542,7 @@ pub(crate) fn open_index_at(
 async fn wait_for_shutdown(
     leave: &tokio::sync::Notify,
     bus_lost: impl std::future::Future<Output = ()>,
-    uninstalled: impl std::future::Future<Output = ()>,
+    replaced: impl std::future::Future<Output = Replaced>,
 ) -> Result<Stop, StartupError> {
     let mut sigterm = signal(SignalKind::terminate()).map_err(|source| StartupError::Signals {
         signal: "SIGTERM",
@@ -514,7 +556,10 @@ async fn wait_for_shutdown(
         _ = sigterm.recv() => Ok(Stop::Asked("SIGTERM")),
         _ = sigint.recv() => Ok(Stop::Asked("SIGINT")),
         _ = leave.notified() => Ok(Stop::Asked("not needed in the background")),
-        () = uninstalled => Ok(Stop::Uninstalled),
+        replaced = replaced => Ok(match replaced {
+            Replaced::Uninstalled => Stop::Uninstalled,
+            Replaced::Upgraded => Stop::Upgraded,
+        }),
         () = bus_lost => Ok(Stop::BusLost),
     }
 }
@@ -550,6 +595,47 @@ mod tests {
     fn losing_the_bus_is_a_failure_so_systemd_starts_it_again() {
         assert_ne!(Outcome::BusLost.exit_code(), 0);
         assert_eq!(Outcome::BusLost.exit_code(), BUS_LOST);
+    }
+
+    #[test]
+    fn an_upgrade_is_a_failure_so_systemd_starts_the_new_program() {
+        assert_ne!(Outcome::Upgraded.exit_code(), 0);
+        assert_eq!(Outcome::Upgraded.exit_code(), UPGRADED);
+        assert_ne!(
+            UPGRADED, BUS_LOST,
+            "on which the Flatpak's supervisor stops"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn an_upgrade_waits_for_the_work_in_hand_and_an_uninstall_does_not() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let idle = Arc::new(AtomicBool::new(false));
+        let waiting = {
+            let idle = Arc::clone(&idle);
+            tokio::spawn(once_idle(async { Replaced::Upgraded }, move || {
+                idle.load(Ordering::SeqCst)
+            }))
+        };
+        tokio::time::sleep(std::time::Duration::from_secs(600)).await;
+        assert!(
+            !waiting.is_finished(),
+            "a backup ten minutes long is waited for"
+        );
+        idle.store(true, Ordering::SeqCst);
+        let replaced = tokio::time::timeout(2 * IDLE_LOOK_EVERY, waiting)
+            .await
+            .expect("restarts soon after the backup ends")
+            .unwrap();
+        assert_eq!(replaced, Replaced::Upgraded);
+
+        let gone = tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            once_idle(async { Replaced::Uninstalled }, || false),
+        )
+        .await
+        .expect("an uninstall stops it at once, busy or not");
+        assert_eq!(gone, Replaced::Uninstalled);
     }
 
     /// A connected pair, peer to peer: no bus daemon is needed for a stream to

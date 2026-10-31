@@ -12,12 +12,11 @@ use std::future::Future;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use backtrack_core::dbus::Status;
 use ksni::menu::{MenuItem, StandardItem, SubMenu};
 use tokio::sync::Notify;
 use tracing::{info, warn};
 
-use crate::daemon::Daemon1Proxy;
+use crate::daemon::{Answer, Daemon1Proxy};
 use crate::pause;
 use crate::text::{self, Attention};
 
@@ -27,8 +26,8 @@ pub struct Tray {
     refresh: Arc<Notify>,
     /// Woken to take the icon away.
     quit: Arc<Notify>,
-    /// The status as last read; `None` while the daemon is not running.
-    status: Option<Status>,
+    /// What the daemon said when last asked.
+    status: Answer,
     /// The icon, as pixels at every size (see `crate::icon`).
     pixmaps: Vec<ksni::Icon>,
     /// The icon's name in the icon theme, or "" to send only the pixels.
@@ -43,7 +42,7 @@ impl Tray {
             daemon,
             refresh,
             quit,
-            status: None,
+            status: Answer::NotRunning,
             pixmaps: crate::icon::pixmaps(),
             name: crate::icon::name(std::env::var("XDG_CURRENT_DESKTOP").ok().as_deref()),
             progress: None,
@@ -51,7 +50,7 @@ impl Tray {
     }
 
     /// Show `status`, and how far a backup under way has got, from now on.
-    pub fn show(&mut self, status: Option<Status>, progress: Option<String>) {
+    pub fn show(&mut self, status: Answer, progress: Option<String>) {
         self.status = status;
         self.progress = progress;
     }
@@ -66,7 +65,7 @@ impl Tray {
             .map(|now| now.to_unix())
             .unwrap_or(0);
         text::shown(
-            self.status.as_ref(),
+            &self.status,
             self.progress.as_deref(),
             now,
             &glib::TimeZone::local(),

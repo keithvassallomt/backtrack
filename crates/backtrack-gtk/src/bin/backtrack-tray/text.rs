@@ -5,8 +5,9 @@
 //! is involved. Its first line is `backtrack_core::status_line`'s, which the
 //! Flatpak's daemon also shows in GNOME's Background Apps.
 
-use backtrack_core::dbus::Status;
 use backtrack_core::status_line;
+
+use crate::daemon::Answer;
 
 /// How loudly the icon asks to be looked at. health.md's two states that
 /// earn attention: `AT_RISK`, the yellow banner, and `BROKEN`, the red one.
@@ -16,8 +17,7 @@ pub enum Attention {
     Error,
 }
 
-/// What the tray shows for `status`, `None` meaning the daemon is not
-/// running.
+/// What the tray shows for what the daemon said.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Shown {
     /// The disabled line at the top of the menu, and the tooltip.
@@ -31,21 +31,24 @@ pub struct Shown {
 /// `progress` is how far a backup under way has got, in
 /// `backtrack_core::progress`'s words, which says more than "Backing up now…"
 /// while there is a backup to say it about (S06-T12).
-pub fn shown(
-    status: Option<&Status>,
-    progress: Option<&str>,
-    now: i64,
-    tz: &glib::TimeZone,
-) -> Shown {
-    let Some(status) = status else {
-        // Its menu still works: asking for a backup starts it.
-        return Shown {
-            line: "The Backtrack service is not running".to_string(),
-            attention: None,
-            can_back_up: true,
-            can_pause: true,
-            paused: false,
-        };
+pub fn shown(answer: &Answer, progress: Option<&str>, now: i64, tz: &glib::TimeZone) -> Shown {
+    let status = match answer {
+        Answer::Status(status) => status,
+        // Its menu still works: asking for a backup starts it, and a daemon
+        // of another version still takes it.
+        Answer::NotRunning | Answer::Unreadable => {
+            return Shown {
+                line: match answer {
+                    Answer::Unreadable => "Restarting after an update…",
+                    _ => "The Backtrack service is not running",
+                }
+                .to_string(),
+                attention: None,
+                can_back_up: true,
+                can_pause: true,
+                paused: false,
+            };
+        }
     };
     let paused = status.paused_until > now.max(0) as u64;
     Shown {
@@ -67,6 +70,7 @@ pub fn shown(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use backtrack_core::dbus::Status;
 
     fn utc() -> glib::TimeZone {
         glib::TimeZone::utc()
@@ -97,7 +101,7 @@ mod tests {
 
     #[test]
     fn a_healthy_computer_says_when_it_last_backed_up() {
-        let shown = shown(Some(&status()), None, NOW, &utc());
+        let shown = shown(&Answer::Status(status()), None, NOW, &utc());
         assert_eq!(shown.line, "Last backup: today 10:00");
         assert_eq!(shown.attention, None);
         assert!(shown.can_back_up && shown.can_pause && !shown.paused);
@@ -109,12 +113,12 @@ mod tests {
             active_job: 7,
             ..status()
         };
-        let shown = shown(Some(&running), None, NOW, &utc());
+        let shown = shown(&Answer::Status(running.clone()), None, NOW, &utc());
         assert_eq!(shown.line, "Backing up now…");
         // With the backup's progress, the line says how far it has got.
         let line = "Backing up… 31.5 GB of about 53.1 GB (59%)";
         assert_eq!(
-            super::shown(Some(&running), Some(line), NOW, &utc()).line,
+            super::shown(&Answer::Status(running.clone()), Some(line), NOW, &utc()).line,
             line
         );
         // A line left over from a backup that has ended says nothing now.
@@ -123,7 +127,7 @@ mod tests {
             ..running.clone()
         };
         assert_ne!(
-            super::shown(Some(&idle), Some(line), NOW, &utc()).line,
+            super::shown(&Answer::Status(idle.clone()), Some(line), NOW, &utc()).line,
             line
         );
         assert!(!shown.can_back_up);
@@ -136,7 +140,7 @@ mod tests {
             paused_until: (NOW + 21 * 3_600) as u64,
             ..status()
         };
-        let shown = shown(Some(&paused), None, NOW, &utc());
+        let shown = shown(&Answer::Status(paused.clone()), None, NOW, &utc());
         assert_eq!(shown.line, "Backups are paused until tomorrow 09:00");
         assert!(shown.paused);
     }
@@ -148,7 +152,7 @@ mod tests {
             ..status()
         };
         assert_eq!(
-            shown(Some(&paused), None, NOW, &utc()).line,
+            shown(&Answer::Status(paused.clone()), None, NOW, &utc()).line,
             "Backups are paused until you resume them"
         );
     }
@@ -167,7 +171,7 @@ mod tests {
                 state: state.to_string(),
                 ..status()
             };
-            let shown = shown(Some(&status), None, NOW, &utc());
+            let shown = shown(&Answer::Status(status.clone()), None, NOW, &utc());
             assert_eq!(shown.attention, attention, "{state}");
             if attention.is_some() {
                 assert_eq!(shown.line, "Backups need your attention");
@@ -182,15 +186,24 @@ mod tests {
             last_backup: 0,
             ..status()
         };
-        let shown = shown(Some(&unset), None, NOW, &utc());
+        let shown = shown(&Answer::Status(unset.clone()), None, NOW, &utc());
         assert_eq!(shown.line, "Backups are not set up yet");
         assert!(!shown.can_back_up && !shown.can_pause);
     }
 
     #[test]
     fn no_daemon_still_lets_a_backup_be_asked_for() {
-        let shown = shown(None, None, NOW, &utc());
+        let shown = shown(&Answer::NotRunning, None, NOW, &utc());
         assert_eq!(shown.line, "The Backtrack service is not running");
+        assert!(shown.can_back_up);
+    }
+
+    #[test]
+    fn a_daemon_of_another_version_is_not_said_to_be_stopped() {
+        // S18-T13: after an upgrade, until the older of the tray and the
+        // daemon has restarted.
+        let shown = shown(&Answer::Unreadable, None, NOW, &utc());
+        assert_eq!(shown.line, "Restarting after an update…");
         assert!(shown.can_back_up);
     }
 }

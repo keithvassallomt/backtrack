@@ -25,9 +25,13 @@ mod icon;
 mod text;
 mod tray;
 
+use std::os::unix::process::CommandExt;
+use std::path::PathBuf;
 use std::process::ExitCode;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
+
+use backtrack_core::host::Replaced;
 
 use clap::Parser;
 use futures::stream::{self, StreamExt};
@@ -54,8 +58,15 @@ fn bus_name() -> &'static str {
     }
 }
 
+/// How the tray ends.
+enum Ending {
+    Exit(ExitCode),
+    /// Backtrack has been upgraded: the new tray, `program`, takes over.
+    Restart(PathBuf),
+}
+
 fn main() -> ExitCode {
-    let _log_guard = backtrack_core::logging::init("backtrack-tray");
+    let log_guard = backtrack_core::logging::init("backtrack-tray");
     let _args = Args::parse();
     let runtime = match tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -67,15 +78,29 @@ fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    runtime.block_on(run())
+    match runtime.block_on(run()) {
+        Ending::Exit(code) => code,
+        Ending::Restart(program) => {
+            info!(program = %program.display(), "Backtrack has been upgraded; the tray starts afresh");
+            drop(runtime);
+            // The log file written out before the program is replaced; the
+            // journal still hears of a failure to replace it.
+            drop(log_guard);
+            let error = std::process::Command::new(&program)
+                .args(std::env::args_os().skip(1))
+                .exec();
+            error!(%error, "the upgraded tray could not be started");
+            ExitCode::FAILURE
+        }
+    }
 }
 
-async fn run() -> ExitCode {
+async fn run() -> Ending {
     let connection = match zbus::Connection::session().await {
         Ok(connection) => connection,
         Err(error) => {
             error!(%error, "the session bus could not be reached");
-            return ExitCode::FAILURE;
+            return Ending::Exit(ExitCode::FAILURE);
         }
     };
     match connection
@@ -85,18 +110,18 @@ async fn run() -> ExitCode {
         Ok(RequestNameReply::PrimaryOwner) => {}
         Ok(_) | Err(zbus::Error::NameTaken) => {
             info!("the tray icon is already showing");
-            return ExitCode::SUCCESS;
+            return Ending::Exit(ExitCode::SUCCESS);
         }
         Err(error) => {
             error!(%error, "the tray's bus name could not be claimed");
-            return ExitCode::FAILURE;
+            return Ending::Exit(ExitCode::FAILURE);
         }
     }
     let daemon = match daemon::proxy(&connection).await {
         Ok(daemon) => daemon,
         Err(error) => {
             error!(%error, "the daemon's interface could not be set up");
-            return ExitCode::FAILURE;
+            return Ending::Exit(ExitCode::FAILURE);
         }
     };
 
@@ -117,7 +142,7 @@ async fn run() -> ExitCode {
         Ok(handle) => handle,
         Err(error) => {
             error!(%error, "the tray icon could not be shown");
-            return ExitCode::FAILURE;
+            return Ending::Exit(ExitCode::FAILURE);
         }
     };
     info!("tray icon showing");
@@ -131,15 +156,21 @@ async fn run() -> ExitCode {
         Arc::clone(&busy),
         lines,
     ));
-    if let Ok(program) = std::env::current_exe() {
-        tokio::spawn(leave_when_gone(program, Arc::clone(&quit)));
+    let replaced = Arc::new(Mutex::new(None));
+    let program = std::env::current_exe().ok();
+    if let Some(program) = &program {
+        tokio::spawn(watch_program(
+            program.clone(),
+            Arc::clone(&replaced),
+            Arc::clone(&quit),
+        ));
     }
     refresh.notify_one();
     loop {
         tokio::select! {
             () = refresh.notified() => {
                 let status = daemon::status(&daemon).await;
-                let running = status.as_ref().is_some_and(|status| status.active_job != 0);
+                let running = status.status().is_some_and(|status| status.active_job != 0);
                 busy.store(running, Ordering::Relaxed);
                 // Asked, not waited for: a tray started part way through a
                 // backup, or a backup in a phase that says little, still
@@ -163,27 +194,45 @@ async fn run() -> ExitCode {
     }
     handle.shutdown().await;
     info!("tray icon closed");
-    ExitCode::SUCCESS
+    let upgraded = *replaced.lock().unwrap() == Some(Replaced::Upgraded);
+    match program {
+        Some(program) if upgraded => {
+            // Let go of first, or the new tray would find it taken and leave.
+            if let Err(error) = connection.release_name(bus_name()).await {
+                warn!(%error, "the tray's bus name could not be let go of");
+            }
+            Ending::Restart(program)
+        }
+        _ => Ending::Exit(ExitCode::SUCCESS),
+    }
 }
 
-/// Leave once `program`, this tray's own, is gone: Backtrack has been
-/// uninstalled under it.
+/// Leave once `program`, this tray's own, is uninstalled or upgraded under
+/// it, saying which in `replaced`.
 ///
 /// Nothing else ends a tray left running by an uninstall. Its autostart file
 /// goes with the package, and with it the unit that would have stopped the
 /// tray with the session, so after logging out and straight back in the tray
 /// ran on with no icon and no program behind it until the user's systemd
-/// stopped.
-async fn leave_when_gone(program: std::path::PathBuf, quit: Arc<Notify>) {
-    backtrack_core::host::wait_until_gone(
+/// stopped. After an upgrade, it ran on as the old version and could not read
+/// the new daemon's status (S18-T13): the new tray starts in its place.
+async fn watch_program(
+    program: PathBuf,
+    replaced: Arc<Mutex<Option<Replaced>>>,
+    quit: Arc<Notify>,
+) {
+    let what = backtrack_core::host::wait_until_replaced(
         program.clone(),
         backtrack_core::host::LOOK_FOR_PROGRAM_EVERY,
     )
     .await;
-    info!(
-        program = %program.display(),
-        "Backtrack has been uninstalled; the tray icon leaves with it"
-    );
+    if what == Replaced::Uninstalled {
+        info!(
+            program = %program.display(),
+            "Backtrack has been uninstalled; the tray icon leaves with it"
+        );
+    }
+    *replaced.lock().unwrap() = Some(what);
     quit.notify_one();
 }
 

@@ -44,34 +44,65 @@ fn runtime_of(flatpak_info: &str) -> Option<String> {
         .map(|runtime| runtime.trim().to_string())
 }
 
-/// How often a running program looks for itself; see [`wait_until_gone`].
-pub const LOOK_FOR_PROGRAM_EVERY: Duration = Duration::from_secs(60);
+/// How often a running program looks at itself; see [`wait_until_replaced`].
+pub const LOOK_FOR_PROGRAM_EVERY: Duration = Duration::from_secs(30);
 
-/// How long after a miss the program is looked for again.
+/// How long after a change the program is looked at again.
 const SECOND_LOOK_AFTER: Duration = Duration::from_secs(5);
 
-/// Return once `program`, this process's own, is gone from where it was
-/// started: the package it came with has been uninstalled under it.
+/// What has become of a running program's file.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Replaced {
+    /// Gone: the package it came with has been uninstalled.
+    Uninstalled,
+    /// Another file in its place: the package has been upgraded (S18-T13).
+    Upgraded,
+}
+
+/// Return once `program`, this process's own, has been uninstalled or
+/// upgraded under it, as the file there then is from the one there now.
 ///
-/// Removing a package does not end the processes it started, and on Arch
-/// nothing stops a user's daemon at all, so the daemon and the tray ran on
-/// from deleted programs until the user's systemd stopped. An upgrade puts
-/// the new program where the old one was, so the path never stops existing;
-/// a miss is looked at again a few seconds later, so a package manager
-/// mid-write is not taken for a removal. A Flatpak's `/app` stays while the
-/// instance runs, so inside one this never returns.
-pub async fn wait_until_gone(program: PathBuf, every: Duration) {
-    let mut looks = tokio::time::interval(every);
-    loop {
-        looks.tick().await;
-        if program.exists() {
-            continue;
-        }
-        tokio::time::sleep(SECOND_LOOK_AFTER).await;
-        if !program.exists() {
-            return;
+/// Neither ends the processes a package started. On Arch nothing stops a
+/// user's daemon at all, so after an uninstall the daemon and the tray ran on
+/// from deleted programs until the user's systemd stopped; after an upgrade
+/// they ran on as the old version, and the tray could no longer read the new
+/// daemon's status. A package manager writes the new program beside the old
+/// one and renames it over, and the old one stays on disk, under a new name
+/// or none, while it runs, so the two are never the same file. A change is
+/// looked at again a few seconds later, so a package manager mid-write is
+/// taken for neither. A Flatpak's `/app` stays while the instance runs, so
+/// inside one this never returns.
+pub fn wait_until_replaced(
+    program: PathBuf,
+    every: Duration,
+) -> impl std::future::Future<Output = Replaced> {
+    // Which file is running, taken now rather than at the first look.
+    let running = identity(&program);
+    async move {
+        let Some(running) = running else {
+            return std::future::pending().await;
+        };
+        let mut looks = tokio::time::interval(every);
+        loop {
+            looks.tick().await;
+            let first = identity(&program);
+            if first == Some(running) {
+                continue;
+            }
+            tokio::time::sleep(SECOND_LOOK_AFTER).await;
+            match identity(&program) {
+                None if first.is_none() => return Replaced::Uninstalled,
+                Some(second) if first == Some(second) => return Replaced::Upgraded,
+                _ => {}
+            }
         }
     }
+}
+
+/// Which file is at `path`: its device and inode.
+fn identity(path: &Path) -> Option<(u64, u64)> {
+    use std::os::unix::fs::MetadataExt;
+    std::fs::metadata(path).ok().map(|m| (m.dev(), m.ino()))
 }
 
 #[cfg(test)]
@@ -85,47 +116,74 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let program = dir.path().join("backtrack-tray");
         std::fs::write(&program, b"old").unwrap();
-        let gone = tokio::spawn(wait_until_gone(program.clone(), EVERY));
+        let replaced = tokio::spawn(wait_until_replaced(program.clone(), EVERY));
 
         tokio::time::sleep(Duration::from_secs(600)).await;
         assert!(
-            !gone.is_finished(),
+            !replaced.is_finished(),
             "ten minutes installed, and still there"
         );
 
         std::fs::remove_file(&program).unwrap();
-        tokio::time::timeout(2 * EVERY, gone)
+        let replaced = tokio::time::timeout(2 * EVERY, replaced)
             .await
             .expect("noticed within a couple of looks")
             .unwrap();
+        assert_eq!(replaced, Replaced::Uninstalled);
     }
 
     #[tokio::test(start_paused = true)]
-    async fn an_upgrade_is_not_an_uninstall() {
+    async fn an_upgrade_is_noticed_as_one() {
         // A package manager writes the new program beside the old one and
         // renames it over, so the path is there before, during and after.
+        // The old one stays open while it runs, as it would.
         let dir = tempfile::tempdir().unwrap();
         let program = dir.path().join("backtrack-tray");
         std::fs::write(&program, b"old").unwrap();
-        let gone = tokio::spawn(wait_until_gone(program.clone(), EVERY));
+        let _running = std::fs::File::open(&program).unwrap();
+        let replaced = tokio::spawn(wait_until_replaced(program.clone(), EVERY));
 
         let new = dir.path().join(".backtrack-tray.new");
         std::fs::write(&new, b"new").unwrap();
         std::fs::rename(&new, &program).unwrap();
-        tokio::time::sleep(10 * EVERY).await;
-        assert!(!gone.is_finished(), "an upgraded program stays");
+        let replaced = tokio::time::timeout(2 * EVERY, replaced)
+            .await
+            .expect("noticed within a couple of looks")
+            .unwrap();
+        assert_eq!(
+            replaced,
+            Replaced::Upgraded,
+            "an upgrade is not an uninstall"
+        );
     }
 
     #[tokio::test(start_paused = true)]
     async fn a_program_missing_for_a_moment_is_not_an_uninstall() {
         let dir = tempfile::tempdir().unwrap();
         let program = dir.path().join("backtrack-tray");
-        // Missing at the first look, back before the second.
-        let gone = tokio::spawn(wait_until_gone(program.clone(), EVERY));
-        tokio::time::sleep(Duration::from_secs(2)).await;
+        std::fs::write(&program, b"old").unwrap();
+        let _running = std::fs::File::open(&program).unwrap();
+        let replaced = tokio::spawn(wait_until_replaced(program.clone(), EVERY));
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        // Missing at a look, and back before the second.
+        std::fs::remove_file(&program).unwrap();
+        tokio::time::sleep(EVERY).await;
+        std::fs::write(&program, b"new").unwrap();
+        let replaced = tokio::time::timeout(2 * EVERY, replaced)
+            .await
+            .expect("noticed")
+            .unwrap();
+        assert_eq!(replaced, Replaced::Upgraded, "back within seconds, and new");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_program_not_there_when_started_is_never_reported() {
+        let dir = tempfile::tempdir().unwrap();
+        let program = dir.path().join("backtrack-tray");
+        let replaced = tokio::spawn(wait_until_replaced(program.clone(), EVERY));
         std::fs::write(&program, b"new").unwrap();
         tokio::time::sleep(10 * EVERY).await;
-        assert!(!gone.is_finished(), "a program back within seconds stays");
+        assert!(!replaced.is_finished(), "nothing to compare with");
     }
 
     #[test]

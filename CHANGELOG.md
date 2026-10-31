@@ -320,6 +320,10 @@ All notable changes to Backtrack are documented here. This project adheres to
   tray and `backtrack status`, which also names the setting that would let it
   run. Before, the window said only how long ago the last backup was, and
   `backtrack status` that the next one was "due now".
+- After an upgrade, the tray icon and the backup service restart as the new
+  version by themselves, the service once it has finished any backup under
+  way. Before, they ran on as the old version until restarted by hand, and the
+  tray said the service was not running.
 - On battery, a scheduled backup no longer waits for the charger indefinitely:
   once the last backup is three hours old, it runs anyway, and the window says
   until when it is waiting. Wait for mains power, in Preferences under Back up

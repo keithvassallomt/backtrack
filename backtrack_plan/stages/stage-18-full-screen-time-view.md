@@ -387,6 +387,26 @@ the old version until it is restarted.
 - A tray that cannot read the running service's status says the two are of
   different versions, rather than that the service is not running.
 
+**Built** (2026-10-31): `host::wait_until_replaced`, which the tray and the
+service already ran to notice an uninstall, now also tells an upgrade: the
+file at the program's path is another file than the one running (a package
+manager writes the new program beside the old and renames it over, and the
+old stays on disk while it runs). It looks every 30 seconds. The tray then
+lets go of its bus name and starts the new program in its own place. The
+service waits until no job is running or waiting, then exits with `UPGRADED`
+(76), a failure, which the unit's `Restart=on-failure` starts again as the new
+program: it cannot start itself afresh, as systemd ends a `Type=dbus` service
+once it lets go of its name. A tray that cannot read the service's status
+(`zbus::Error::Variant`) says "Restarting after an update…". Smoke-tested on a
+private session bus with copies of both programs, replaced as pacman does: the
+service left with 76 thirty seconds later, and the tray showed its icon again
+from the new program in the same process.
+
+Inside a Flatpak, `/app` does not change while the instance runs, so none of
+this happens there. The Flatpak portal can say when an update has been
+installed (`CreateUpdateMonitor`) and start the new version (`Spawn` with
+`FLATPAK_SPAWN_FLAGS_LATEST_VERSION`).
+
 **Accept:** on Keith's laptop, installing a newer AUR build while the tray and
 the service run: within a minute, with no command run, the tray shows the new
 service's status and `systemctl --user status backtrackd` shows the service
