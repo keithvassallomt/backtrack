@@ -42,8 +42,9 @@ EOF
     say "1. Rewind's motion (S18-T3)"
     cat <<'EOF'
   a. Open Backtrack, and go to a folder with many backups (Documents, say).
-  b. Press Ctrl+T. Rewind opens full screen over the starfield: on Hyprland
-     there is no desktop wallpaper to show, so the stars are Backtrack's own.
+  b. Press Ctrl+T. Rewind opens full screen over the starfield: Backtrack
+     does not read Hyprland's wallpaper yet (S18-T15), so the stars are its
+     own.
   c. Press Up a few times, one at a time: each step goes back one backup,
      slow, fast, then slow. Then Down to come forward again.
   d. Hold Up for three seconds: the stack glides back through the backups

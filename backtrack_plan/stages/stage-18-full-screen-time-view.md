@@ -29,7 +29,7 @@ they do in the main window.
 ## Order of work
 T1 first, since everything visible follows the chosen design. T2 does not
 depend on it and can run beside it. Then T3 to T8 in order. T9, which came out
-of T1, changes only the main window and stands on its own. T10 to T13 came out
+of T1, changes only the main window and stands on its own. T10 to T15 came out
 of Keith's check of T3 on his laptop (2026-10-31) and go before T4.
 
 ## Tasks
@@ -182,8 +182,8 @@ it flies. `scripts/rewind-check` is Keith's check on his laptop.
 - Hyprland makes a window full screen only after it is first shown, so Rewind
   first laid out its stack for a small window. It now takes the monitor's size
   from the start.
-- On a desktop with no wallpaper to read, the starfield is there from the first
-  frame instead of after the attempt to read one.
+- On a desktop whose wallpaper Backtrack does not read, the starfield is there
+  from the first frame instead of after the attempt to read one.
 - Home and End flew past outlines: only the cards where the stack would land
   were made, and those on the screen were let go as it set off. The cards
   around the stack are now kept too, and those along the way are made as it
@@ -384,6 +384,48 @@ service's status and `systemctl --user status backtrackd` shows the service
 started after the install; with a backup running during the install, the
 service restarts after the backup ends; the same with the Flatpak on the
 Plasma VM, or a note in this section of what the Flatpak cannot do.
+
+### S18-T14 — On battery, a backup that has waited long enough runs anyway
+*(found 2026-10-31 on Keith's laptop)* With backups on battery off (the
+default), a laptop that stays on battery goes without a backup for as long as
+it does: 21 hours on Keith's laptop. Backing up hourly on battery is not free
+either: each backup there checks all 2.9 million files of the included
+folders, about five minutes of Borg, then catalogues the archive and prunes.
+- A new setting, `backup.on_battery_after` (hours, default 3): with backups on
+  battery off, a scheduled backup runs on battery anyway once the last backup
+  is that old. It can be turned off, for backups only on mains power.
+- Preferences shows it with Back up on battery power, and only while that is
+  off.
+- While a backup is held up on battery (S18-T10), the status says when it will
+  run anyway.
+
+**Accept:** unit tests on the scheduler's decision: on battery with the
+setting at 3, a backup held at 2 h 59 min since the last one and run at
+3 h 1 min; held with the setting off; run on mains as before; a config
+without the key reads as 3. Tests on the status saying when the held backup
+will run. On Keith's laptop on battery, a backup runs three hours after the
+last one with no command run.
+
+### S18-T15 — Investigate: the wallpaper on Hyprland and other desktops
+*(raised by Keith 2026-10-31)* Rewind shows its starfield on Hyprland because
+Backtrack reads only GNOME's and Plasma's wallpaper (S18-T2), not because
+there is none. On Hyprland and similar compositors, the wallpaper is drawn by
+a separate program, and no Wayland protocol or portal tells an application
+which picture it shows (the Wallpaper portal only sets one). On Keith's laptop
+that program is the Caelestia shell (Quickshell), which records its current
+wallpaper in `~/.local/state/caelestia/wallpaper/path.txt`; hyprpaper is
+configured there but not running.
+- Survey how each common wallpaper program can be asked for its current
+  picture, per output: hyprpaper, swww, swaybg, wpaperd, mpvpaper, waypaper,
+  Caelestia and the other Quickshell shells (Noctalia, DankMaterialShell).
+- The same for the desktops S18-T2 left to the starfield: Sway, niri, COSMIC,
+  Xfce, Cinnamon, MATE and Budgie.
+- For each, what reading it takes inside the Flatpak.
+
+**Accept:** findings recorded in this section for each program and desktop
+above: how its current wallpaper is read, per output, natively and in the
+Flatpak, checked on Keith's laptop for Caelestia and hyprpaper; tasks added for
+the ones Keith picks.
 
 ## Definition of Done
 All tasks done; the CHANGELOG's Unreleased section introduces Rewind; mockups 25 and 26 match what was built; the README and the file

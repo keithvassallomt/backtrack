@@ -39,7 +39,7 @@ const MAKING: usize = 2;
 const CROSSFADE: i64 = 220_000;
 /// How long the wallpaper takes to come in once it has been drawn.
 const WALLPAPER_IN: i64 = 300_000;
-/// Stars behind the stack, where there is no wallpaper.
+/// Stars behind the stack, where the wallpaper cannot be read.
 const STARS: usize = 600;
 
 /// What is behind the stack.

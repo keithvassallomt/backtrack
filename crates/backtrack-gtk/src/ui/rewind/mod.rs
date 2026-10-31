@@ -120,11 +120,12 @@ pub fn open(parent: &adw::ApplicationWindow, view: &View, index: &Index) {
         Some(monitor) => window.fullscreen_on_monitor(monitor),
         None => window.fullscreen(),
     }
-    // Where there is no wallpaper to read, the stars from the first frame,
-    // with nothing to wait for.
+    // On a desktop whose wallpaper Backtrack does not read (it reads GNOME's
+    // and Plasma's, S18-T2), the stars from the first frame, with nothing to
+    // wait for.
     let desktop = crate::wallpaper::desktop();
     if let crate::wallpaper::Desktop::Other(name) = &desktop {
-        debug!(desktop = %name, "Rewind shows the starfield: no wallpaper to read here");
+        debug!(desktop = %name, "Rewind shows the starfield: this desktop's wallpaper is not read");
         stage.set_background(Background::Stars);
     }
     window.present();
