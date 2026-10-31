@@ -29,7 +29,7 @@ they do in the main window.
 ## Order of work
 T1 first, since everything visible follows the chosen design. T2 does not
 depend on it and can run beside it. Then T3 to T8 in order. T9, which came out
-of T1, changes only the main window and stands on its own. T10 to T12 came out
+of T1, changes only the main window and stands on its own. T10 to T13 came out
 of Keith's check of T3 on his laptop (2026-10-31) and go before T4.
 
 ## Tasks
@@ -364,6 +364,26 @@ backups and its listing within one second of opening the catalogue, and
 Rewind all its cards' listings within one more; tests that bound each query's
 cost on a large generated catalogue; the write-ahead log back under its limit
 after a backup.
+
+### S18-T13 — An upgrade restarts the running tray and service
+*(found 2026-10-31 on Keith's laptop)* After installing a new version, the
+tray icon already running kept the old one. It could not read the new
+service's status (S18-T10 added to it), and said "The Backtrack service is not
+running" until it was restarted by hand. The service likewise keeps running
+the old version until it is restarted.
+- The tray notices when its program is replaced on disk and starts the new one
+  in its place.
+- The service does the same once it is idle, never during a backup, a restore
+  or a check.
+- A tray that cannot read the running service's status says the two are of
+  different versions, rather than that the service is not running.
+
+**Accept:** on Keith's laptop, installing a newer AUR build while the tray and
+the service run: within a minute, with no command run, the tray shows the new
+service's status and `systemctl --user status backtrackd` shows the service
+started after the install; with a backup running during the install, the
+service restarts after the backup ends; the same with the Flatpak on the
+Plasma VM, or a note in this section of what the Flatpak cannot do.
 
 ## Definition of Done
 All tasks done; the CHANGELOG's Unreleased section introduces Rewind; mockups 25 and 26 match what was built; the README and the file
