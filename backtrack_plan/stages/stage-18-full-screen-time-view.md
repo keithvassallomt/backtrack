@@ -304,9 +304,18 @@ it once. Meanwhile the scheduler logs "a scheduled backup was missed; catching
 up shortly" at every retry: 118 times in four hours.
 - A scheduled backup held up by the battery, or by a metered connection, says
   so wherever the next backup is shown (the window's status line, `backtrack
-  status`, the tray), naming the setting in Preferences that would let it
-  run. Once the hold clears, it says nothing of it.
+  status`, the tray), and `backtrack status` names the setting that would let
+  it run. Once the hold clears, it says nothing of it.
 - The scheduler logs a hold once, as the daemon logs the skip.
+
+**Built** (2026-10-31): the daemon's status carries the hold (`held_up`), said
+only while a backup is due and none is running. Checked on Keith's laptop on
+battery: the window, the tray and `backtrack status` said why, and a backup ran
+within two minutes of plugging in, after which the hold was no longer
+mentioned. Keith then shortened the words, which a tray menu cut off: "Last
+backup 1 hour ago · waiting for charger" in the window and "Last: 1h ago.
+Waiting for charger." in the tray; `backtrack status` still names
+`backup.on_battery`.
 
 **Accept:** unit tests on what the status says while a backup is held up and
 after the hold clears; a test that several ticks on battery log the hold once;
@@ -398,6 +407,17 @@ folders, about five minutes of Borg, then catalogues the archive and prunes.
   off.
 - While a backup is held up on battery (S18-T10), the status says when it will
   run anyway.
+
+**Built** (2026-10-31): `backup.on_battery_after`, 3 by default and 0 for no
+limit. Preflight lets a backup held up on battery run once the last backup is
+that old (`preflight::battery_wait_ends`), and never before a first backup,
+which is by far the largest and the one most worth leaving for mains power.
+While one is held, the status's next backup is when the wait ends: the window
+says "waiting for charger until 13:00", `backtrack status` "waiting for mains
+power until … then backs up on battery anyway (backup.on_battery_after)", and
+Preferences "Next backup: today at 13:00". The tray keeps Keith's short line.
+Preferences and the wizard show "Wait for mains power" (Up to 1 hour, 3, 6, 12
+hours, Up to 1 day, Always) under Back up on battery power while that is off.
 
 **Accept:** unit tests on the scheduler's decision: on battery with the
 setting at 3, a backup held at 2 h 59 min since the last one and run at

@@ -65,22 +65,28 @@ pub fn line(status: &Status, now: i64, tz: &glib::TimeZone) -> String {
     format!(
         "Last backup {}{protection}{}",
         ago(last, now, tz),
-        held_up(status)
+        held_up(status, now, tz)
     )
 }
 
-/// What is holding the next backup up, when a setting is (S18-T10), naming
-/// the switch in Preferences that would let it run.
-fn held_up(status: &Status) -> &'static str {
+/// What is holding the next backup up, when a setting is (S18-T10), in
+/// Keith's words (2026-10-31), and until when on battery where the wait has an
+/// end (S18-T14).
+fn held_up(status: &Status, now: i64, tz: &glib::TimeZone) -> String {
     match status.held_up.as_str() {
-        "on-battery" => {
-            " · waiting for mains power, because Back up on battery power is off in Preferences"
+        "on-battery" if status.next_backup as i64 > now => {
+            let end = status.next_backup as i64;
+            let clock = super::format::clock(end, tz);
+            let until = match super::local_day(end, tz) - super::local_day(now, tz) {
+                0 => clock,
+                1 => format!("tomorrow {clock}"),
+                _ => super::format::weekday_day_and_clock(end, tz),
+            };
+            format!(" · waiting for charger until {until}")
         }
-        "metered-connection" => {
-            " · waiting for a connection that is not metered, because Back up on metered \
-             connections is off in Preferences"
-        }
-        _ => "",
+        "on-battery" => " · waiting for charger".to_string(),
+        "metered-connection" => " · waiting for an unmetered network".to_string(),
+        _ => String::new(),
     }
 }
 
@@ -152,16 +158,35 @@ mod tests {
     }
 
     #[test]
-    fn a_backup_held_up_says_by_what_and_which_switch_would_let_it_run() {
+    fn a_backup_held_up_says_by_what() {
         let on_battery = Status {
             last_backup: (NOW - 21 * 3_600) as u64,
+            next_backup: (NOW - 60) as u64,
             held_up: "on-battery".into(),
             ..status()
         };
         assert_eq!(
             line(&on_battery, NOW, &utc()),
-            "Last backup 21 hours ago · waiting for mains power, because Back up on battery \
-             power is off in Preferences"
+            "Last backup 21 hours ago · waiting for charger"
+        );
+        // Until when, where the wait has an end (S18-T14).
+        let until = Status {
+            last_backup: (NOW - 2 * 3_600) as u64,
+            next_backup: (NOW + 3_600) as u64,
+            ..on_battery.clone()
+        };
+        assert_eq!(
+            line(&until, NOW, &utc()),
+            "Last backup 2 hours ago · waiting for charger until 13:00"
+        );
+        let tomorrow = Status {
+            last_backup: (NOW - 2 * 3_600) as u64,
+            next_backup: (NOW + 13 * 3_600) as u64,
+            ..on_battery.clone()
+        };
+        assert_eq!(
+            line(&tomorrow, NOW, &utc()),
+            "Last backup 2 hours ago · waiting for charger until tomorrow 01:00"
         );
         let metered = Status {
             held_up: "metered-connection".into(),
@@ -169,8 +194,7 @@ mod tests {
         };
         assert_eq!(
             line(&metered, NOW, &utc()),
-            "Last backup 2 hours ago · waiting for a connection that is not metered, because \
-             Back up on metered connections is off in Preferences"
+            "Last backup 2 hours ago · waiting for an unmetered network"
         );
         // A backup under way is what the line says, whatever held the last one.
         let running = Status {

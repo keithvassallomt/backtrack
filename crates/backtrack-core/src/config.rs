@@ -116,6 +116,11 @@ pub struct Backup {
     /// Run when on battery. Off by default — an hourly backup is not worth
     /// someone's remaining laptop charge.
     pub on_battery: bool,
+    /// With `on_battery` off, how many hours after the last backup a
+    /// scheduled one waits for mains power before it runs on battery anyway
+    /// (S18-T14); 0 waits however long it takes. Without it, a laptop that
+    /// stays on battery all day goes all day without a backup.
+    pub on_battery_after: u32,
     /// Run over a connection the user has marked metered.
     pub on_metered: bool,
     /// Absolute paths to back up. Empty until the wizard fills it in.
@@ -129,6 +134,7 @@ impl Default for Backup {
         Backup {
             frequency: Frequency::default(),
             on_battery: false,
+            on_battery_after: 3,
             on_metered: false,
             include: Vec::new(),
             exclude: default_exclusions(),
@@ -487,6 +493,7 @@ mod tests {
         let c = Config::default();
         assert_eq!(c.backup.frequency, Frequency::Hourly);
         assert!(!c.backup.on_battery, "battery backups off by default");
+        assert_eq!(c.backup.on_battery_after, 3, "but three hours at most");
         assert!(!c.backup.on_metered, "metered backups off by default");
         // The retention ladder from the Storage page: hourly 24h, daily 1 week,
         // weekly 1 month, monthly 6 months.

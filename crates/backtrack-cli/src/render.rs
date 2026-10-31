@@ -143,6 +143,13 @@ pub fn status_human(status: &Status, progress: Option<&Progress>, now: SystemTim
             from_epoch(status.next_backup)
         ) {
             (Some(until), _) => format!("paused until {}", format_time(until)),
+            // Held up on battery until the wait ends (S18-T14).
+            (None, Some(t)) if status.held_up == "on-battery" && t > now => format!(
+                "waiting for mains power until {} ({}), then backs up on battery anyway \
+                 (backup.on_battery_after)",
+                format_time(t),
+                relative(t, now)
+            ),
             // Due, and a setting is holding it up (S18-T10).
             (None, Some(t)) if t <= now && status.held_up == "on-battery" => {
                 "waiting for mains power: backups on battery are off (backup.on_battery)"
@@ -598,6 +605,22 @@ mod tests {
         };
         let text = status_human(&metered, None, at(1_700_001_800));
         assert!(text.contains("(backup.on_metered)"), "got: {text}");
+
+        // Until when, where the wait has an end (S18-T14).
+        let until = Status {
+            next_backup: 1_700_005_400,
+            held_up: "on-battery".into(),
+            ..status()
+        };
+        let text = status_human(&until, None, at(1_700_001_800));
+        assert!(
+            text.contains(&format!(
+                "Next backup   waiting for mains power until {} (in 1 hour), then backs up on \
+                 battery anyway (backup.on_battery_after)",
+                format_time(at(1_700_005_400))
+            )),
+            "got: {text}"
+        );
     }
 
     #[test]

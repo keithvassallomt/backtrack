@@ -39,7 +39,8 @@ pub struct Status {
     pub state: String,
     /// When the last backup succeeded.
     pub last_backup: u64,
-    /// When the next scheduled backup is due; 0 when manual or paused.
+    /// When the next scheduled backup is due; 0 when manual or paused. While
+    /// one is held up on battery, when it runs anyway (S18-T14), if it does.
     pub next_backup: u64,
     /// Whether the destination answered the last time it was probed. `false`
     /// is what "offline" means everywhere in the interface — there is no

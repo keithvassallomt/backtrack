@@ -28,6 +28,7 @@ pub enum Setting {
     DolphinIntegration,
     Frequency,
     OnBattery,
+    OnBatteryAfter,
     OnMetered,
     Include,
     Exclude,
@@ -45,13 +46,14 @@ pub enum Setting {
 }
 
 impl Setting {
-    pub const ALL: [Setting; 20] = [
+    pub const ALL: [Setting; 21] = [
         Setting::RunInBackground,
         Setting::Notifications,
         Setting::NautilusIntegration,
         Setting::DolphinIntegration,
         Setting::Frequency,
         Setting::OnBattery,
+        Setting::OnBatteryAfter,
         Setting::OnMetered,
         Setting::Include,
         Setting::Exclude,
@@ -77,6 +79,7 @@ impl Setting {
             Setting::DolphinIntegration => "general.dolphin_integration",
             Setting::Frequency => "backup.frequency",
             Setting::OnBattery => "backup.on_battery",
+            Setting::OnBatteryAfter => "backup.on_battery_after",
             Setting::OnMetered => "backup.on_metered",
             Setting::Include => "backup.include",
             Setting::Exclude => "backup.exclude",
@@ -125,6 +128,29 @@ pub fn space_limits(current: u32) -> Vec<u32> {
 
 pub fn space_limit_label(gigabytes: u32) -> String {
     format!("{gigabytes} GB")
+}
+
+/// How long a backup may wait for mains power, in hours (S18-T14), with the
+/// one in force added if somebody set a value by hand that is not among them.
+/// 0, waiting however long it takes, comes last.
+pub fn battery_waits(current: u32) -> Vec<u32> {
+    let mut waits = vec![1, 3, 6, 12, 24];
+    if current != 0 && !waits.contains(&current) {
+        waits.push(current);
+        waits.sort_unstable();
+    }
+    waits.push(0);
+    waits
+}
+
+pub fn battery_wait_label(hours: u32) -> String {
+    match hours {
+        0 => "Always".to_string(),
+        1 => "Up to 1 hour".to_string(),
+        24 => "Up to 1 day".to_string(),
+        hours if hours % 24 == 0 => format!("Up to {} days", hours / 24),
+        hours => format!("Up to {hours} hours"),
+    }
 }
 
 /// "412 GB of 2 TB — 1.9 TB before deduplication", in the mockup's words, and
@@ -531,6 +557,28 @@ mod tests {
     fn a_hand_set_space_limit_is_offered_rather_than_lost() {
         assert_eq!(space_limits(10), vec![5, 10, 20, 50, 100]);
         assert_eq!(space_limits(15), vec![5, 10, 15, 20, 50, 100]);
+    }
+
+    #[test]
+    fn the_battery_waits_on_offer_keep_a_hand_set_one_and_end_with_always() {
+        assert_eq!(battery_waits(3), vec![1, 3, 6, 12, 24, 0]);
+        assert_eq!(battery_waits(0), vec![1, 3, 6, 12, 24, 0]);
+        assert_eq!(battery_waits(48), vec![1, 3, 6, 12, 24, 48, 0]);
+        let labels: Vec<String> = [1, 3, 24, 48, 36, 0]
+            .into_iter()
+            .map(battery_wait_label)
+            .collect();
+        assert_eq!(
+            labels,
+            [
+                "Up to 1 hour",
+                "Up to 3 hours",
+                "Up to 1 day",
+                "Up to 2 days",
+                "Up to 36 hours",
+                "Always"
+            ]
+        );
     }
 
     fn info(stored: u64, original: u64, capacity: u64) -> StorageInfo {

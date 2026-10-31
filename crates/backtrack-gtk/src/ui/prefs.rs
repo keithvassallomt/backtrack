@@ -838,6 +838,7 @@ impl Prefs {
         let battery = schedule::battery_row(config.backup.on_battery);
         self.switch(Setting::OnBattery, &battery, |c| c.backup.on_battery);
         schedule_group.add(&battery);
+        schedule_group.add(&self.battery_wait_row());
         let metered = schedule::metered_row(config.backup.on_metered);
         self.switch(Setting::OnMetered, &metered, |c| c.backup.on_metered);
         schedule_group.add(&metered);
@@ -1218,6 +1219,31 @@ impl Prefs {
             *setting_up.borrow_mut() = how;
         });
         group
+    }
+
+    /// How long a backup waits for mains power (S18-T14), shown only while
+    /// backups on battery are off.
+    fn battery_wait_row(self: &Rc<Self>) -> adw::ComboRow {
+        self.bind(Setting::OnBatteryAfter);
+        let row = schedule::battery_wait_row(self.config.borrow().backup.on_battery);
+        let offered: Rc<RefCell<Vec<u32>>> = Rc::default();
+        let shown = row.clone();
+        let list = Rc::clone(&offered);
+        self.show(move |config| {
+            shown.set_visible(!config.backup.on_battery);
+            *list.borrow_mut() =
+                schedule::show_battery_wait(&shown, config.backup.on_battery_after);
+        });
+        let this = Rc::clone(self);
+        row.connect_selected_notify(move |row| {
+            if this.loading.get() {
+                return;
+            }
+            if let Some(hours) = offered.borrow().get(row.selected() as usize) {
+                this.write(Setting::OnBatteryAfter, hours);
+            }
+        });
+        row
     }
 
     /// The local snapshot limit: a fixed menu of sizes, with a value set by

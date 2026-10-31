@@ -73,6 +73,7 @@ pub struct Choices {
     pub exclude: Vec<String>,
     pub frequency: Frequency,
     pub on_battery: bool,
+    pub on_battery_after: u32,
     pub on_metered: bool,
     pub retention: Retention,
     pub remember: bool,
@@ -97,6 +98,7 @@ impl Choices {
             exclude: config.backup.exclude.clone(),
             frequency: config.backup.frequency,
             on_battery: config.backup.on_battery,
+            on_battery_after: config.backup.on_battery_after,
             on_metered: config.backup.on_metered,
             retention: config.storage.retention,
             remember: config.security.remember_passphrase,
@@ -155,6 +157,11 @@ pub fn changes(
         "backup.on_battery",
         lit(&now.on_battery)?,
         lit(&choices.on_battery)?,
+    );
+    compare(
+        "backup.on_battery_after",
+        lit(&now.on_battery_after)?,
+        lit(&choices.on_battery_after)?,
     );
     compare(
         "backup.on_metered",
@@ -715,6 +722,21 @@ mod tests {
         assert_eq!(
             changes(&config, &choices, &personal).unwrap(),
             vec![("backup.frequency", "\"daily\"".to_string())]
+        );
+    }
+
+    #[test]
+    fn the_wait_for_mains_power_is_written_when_changed() {
+        let personal = vec![home().join("Documents")];
+        let mut config = Config::default();
+        config.storage.repository = Some("/run/media/k/WD/Backtrack/host".into());
+        config.backup.include = personal.clone();
+        let mut choices = Choices::from_config(&config, &personal);
+        assert_eq!(choices.on_battery_after, 3);
+        choices.on_battery_after = 0;
+        assert_eq!(
+            changes(&config, &choices, &personal).unwrap(),
+            vec![("backup.on_battery_after", "0".to_string())]
         );
     }
 
