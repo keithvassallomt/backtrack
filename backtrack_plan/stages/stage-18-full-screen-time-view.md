@@ -29,7 +29,8 @@ they do in the main window.
 ## Order of work
 T1 first, since everything visible follows the chosen design. T2 does not
 depend on it and can run beside it. Then T3 to T8 in order. T9, which came out
-of T1, changes only the main window and stands on its own.
+of T1, changes only the main window and stands on its own. T10 to T12 came out
+of Keith's check of T3 on his laptop (2026-10-31) and go before T4.
 
 ## Tasks
 
@@ -275,6 +276,65 @@ The guides and the CHANGELOG use the new words.
 
 **Accept:** unit tests on each word, class and tooltip, and on which badge a
 file pane row gets when more than one would hold; `just check` passes.
+
+### S18-T10 — A backup held up by the battery or the network says so
+*(found 2026-10-31 on Keith's laptop)* With backups on battery switched off
+(the default) and the laptop on battery, every scheduled backup is skipped,
+and nothing says why: the window and `backtrack status` say "Your files are
+backed up" and "Next backup due now" while the last backup grows older (21
+hours on Keith's laptop). The daemon knows the reason and keeps it only to log
+it once. Meanwhile the scheduler logs "a scheduled backup was missed; catching
+up shortly" at every retry: 118 times in four hours.
+- A scheduled backup held up by the battery, or by a metered connection, says
+  so wherever the next backup is shown (the window's status line, `backtrack
+  status`, the tray), naming the setting in Preferences that would let it
+  run. Once the hold clears, it says nothing of it.
+- The scheduler logs a hold once, as the daemon logs the skip.
+
+**Accept:** unit tests on what the status says while a backup is held up and
+after the hold clears; a test that several ticks on battery log the hold once;
+on Keith's laptop on battery, the window and `backtrack status` say why.
+
+### S18-T11 — Hidden files are hidden, as file managers hide them
+*(found 2026-10-31 on Keith's laptop)* Files and folders whose names begin
+with a dot are shown everywhere: in the window's file pane, and in Rewind,
+whose card for the folder as it is now lists every dotfile in a home folder.
+- They are hidden by default in the file pane and in Rewind's cards. Show
+  Hidden Files, in the primary menu, shows them: Ctrl+H, as in Nautilus and
+  GTK's file chooser. Show All Backups moves to Ctrl+Shift+H (Keith,
+  2026-10-31).
+- Where it can be read, Backtrack starts from the desktop's own choice: GTK's
+  file chooser setting `org.gtk.gtk4.Settings.FileChooser` `show-hidden`,
+  which Nautilus shares, natively through GSettings and inside the Flatpak
+  from dconf's files (S18-T2's reader). Ctrl+H changes it for Backtrack.
+
+**Accept:** unit tests on which entries are hidden, and on the desktop's choice
+read from fixtures (set, unset, and in the Flatpak's way); on the GNOME VM,
+natively and in the Flatpak, a home folder's dotfiles hidden in the window and
+in Rewind, Ctrl+H showing them, Ctrl+Shift+H toggling Show All Backups, and
+`gsettings set org.gtk.gtk4.Settings.FileChooser show-hidden true` followed at
+the next start.
+
+### S18-T12 — The window and Rewind open quickly on a large catalogue
+*(found 2026-10-31 on Keith's laptop)* Keith's catalogue holds 3.3 million
+files (his whole home folder is backed up), in an 853 MB database with a
+546 MB write-ahead log. Timed on a copy: opening it takes 4 s, because every
+open runs SQLite's `quick_check`, which reads the whole file; which backups
+differ for his home folder takes 2.8 s; and his home folder at one backup takes
+165 ms, which Rewind asks once for each of its 31 cards (5 s). The window shows
+nothing of his home folder for about 7 s. Documents, by contrast, answers in a
+millisecond.
+- The window does not check the whole catalogue each time it opens it; the
+  daemon still does, when it opens it to write.
+- Which backups differ for a folder, and a folder at a backup, are answered
+  quickly however much lies below the folder.
+- The write-ahead log is kept to a size once written back.
+
+**Accept:** on a copy of Keith's catalogue, the window has his home folder's
+backups and its listing within one second of opening the catalogue, and
+Rewind all its cards' listings within one more; tests that bound each query's
+cost on a large generated catalogue; the write-ahead log back under its limit
+after a backup.
 
 ## Definition of Done
 All tasks done; the CHANGELOG's Unreleased section introduces Rewind; mockups 25 and 26 match what was built; the README and the file
