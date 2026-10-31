@@ -937,6 +937,17 @@ impl Shared {
         let configured = self.config().is_configured();
         let since = self.state_since(health, now);
         let recovery_job = self.recovery_job().unwrap_or(0);
+        // Learnt when a due backup is declined, so said only while one is due
+        // and none is running: a hold from yesterday is not a reason today.
+        let held_up = self
+            .last_skip
+            .lock()
+            .unwrap()
+            .as_ref()
+            .filter(|skip| matches!(skip, preflight::Skip::OnBattery | preflight::Skip::Metered))
+            .filter(|_| active_job == 0 && next.is_some_and(|due| due <= now))
+            .map_or("", preflight::Skip::as_str)
+            .to_owned();
         Status {
             state: health.state.as_str().to_string(),
             last_backup: to_epoch(last_backup),
@@ -952,6 +963,7 @@ impl Shared {
             reason: health.reason_str().to_string(),
             since,
             recovery_job,
+            held_up,
         }
     }
 
@@ -1348,6 +1360,8 @@ impl Shared {
         if *last == reason {
             return;
         }
+        // The status says why a backup is held up (S18-T10), so the line
+        // that shows it is worked out again, once the lock is let go.
         match &reason {
             Some(skip) => info!(
                 reason = skip.as_str(),
@@ -1360,6 +1374,8 @@ impl Shared {
             None => {}
         }
         *last = reason;
+        drop(last);
+        self.update_status_line();
     }
 
     /// Queue a backup and record the attempt.
@@ -5044,6 +5060,56 @@ mod tests {
             None,
             "a skip must not advance the attempt clock"
         );
+    }
+
+    #[tokio::test]
+    async fn the_status_says_a_backup_is_waiting_for_power_and_stops_once_plugged_in() {
+        let dir = tempfile::tempdir().unwrap();
+        let shared = configured(dir.path());
+        assert_eq!(
+            shared.status_at(SystemTime::now()).held_up,
+            "",
+            "nothing yet"
+        );
+        shared.set_probe(Arc::new(FixedProbe {
+            on_battery: Some(true),
+            metered: Some(false),
+        }));
+        assert_eq!(shared.start_scheduled_backup().await.unwrap(), None);
+        assert_eq!(shared.status_at(SystemTime::now()).held_up, "on-battery");
+
+        // Not due, the last attempt a moment ago: a hold is said only while a
+        // backup is due.
+        let moment_ago = SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        shared.persisted.lock().unwrap().last_attempt = Some(moment_ago);
+        assert_eq!(shared.status_at(SystemTime::now()).held_up, "", "not due");
+        shared.persisted.lock().unwrap().last_attempt = None;
+
+        shared.set_probe(Arc::new(FixedProbe {
+            on_battery: Some(true),
+            metered: Some(true),
+        }));
+        assert_eq!(shared.start_scheduled_backup().await.unwrap(), None);
+        assert_eq!(
+            shared.status_at(SystemTime::now()).held_up,
+            "on-battery",
+            "the battery is asked about first"
+        );
+
+        shared.set_probe(Arc::new(FixedProbe {
+            on_battery: Some(false),
+            metered: Some(false),
+        }));
+        let job = shared
+            .start_scheduled_backup()
+            .await
+            .unwrap()
+            .expect("on mains, the backup runs");
+        assert_eq!(shared.status_at(SystemTime::now()).held_up, "", "running");
+        shared.jobs.cancel(job).unwrap();
     }
 
     #[tokio::test]

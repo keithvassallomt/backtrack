@@ -81,6 +81,11 @@ pub struct Status {
     /// The disaster recovery under way, running or paused, or 0. What a window
     /// opened in the middle of one reattaches to.
     pub recovery_job: u64,
+    /// Why a backup that is due is not running, when it is a setting holding
+    /// it up (S18-T10): `on-battery` or `metered-connection`; empty when
+    /// nothing is. Without it, a laptop on battery all day reads as "backed
+    /// up" while its last backup grows older.
+    pub held_up: String,
 }
 
 /// One step of a disaster recovery, as `GetRecovery` reports it.

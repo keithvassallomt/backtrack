@@ -310,6 +310,11 @@ All notable changes to Backtrack are documented here. This project adheres to
 
 ### Changed
 - Backtrack now requires GNOME 50 or newer (GTK 4.22, libadwaita 1.9).
+- A backup that is due but held up because the computer is on battery, or on a
+  metered connection, now says so in the window, the tray and `backtrack
+  status`, and names the setting that would let it run. Before, the window
+  said only how long ago the last backup was, and `backtrack status` that the
+  next one was "due now".
 - The backup service now announces when a job has finished, so an application
   that started one learns the outcome as it happens instead of asking
   repeatedly whether it is done yet.

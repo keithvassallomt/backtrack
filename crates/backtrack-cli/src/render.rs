@@ -65,6 +65,9 @@ pub fn status_json(
         "last_backup": epoch_field(status.last_backup),
         "last_backup_age_seconds": age_seconds(status.last_backup, now),
         "next_backup": epoch_field(status.next_backup),
+        // What a setting is holding a due backup up for, as the daemon's
+        // token, or null when nothing is (S18-T10).
+        "held_up": if status.held_up.is_empty() { serde_json::Value::Null } else { status.held_up.clone().into() },
         "paused": status.paused_until > 0,
         "paused_until": epoch_field(status.paused_until),
         "active_job": if status.active_job == 0 { serde_json::Value::Null } else { status.active_job.into() },
@@ -140,6 +143,16 @@ pub fn status_human(status: &Status, progress: Option<&Progress>, now: SystemTim
             from_epoch(status.next_backup)
         ) {
             (Some(until), _) => format!("paused until {}", format_time(until)),
+            // Due, and a setting is holding it up (S18-T10).
+            (None, Some(t)) if t <= now && status.held_up == "on-battery" => {
+                "waiting for mains power: backups on battery are off (backup.on_battery)"
+                    .to_string()
+            }
+            (None, Some(t)) if t <= now && status.held_up == "metered-connection" => {
+                "waiting for a connection that is not metered: backups over metered \
+                 connections are off (backup.on_metered)"
+                    .to_string()
+            }
             (None, Some(t)) if t <= now => "due now".to_string(),
             (None, Some(t)) => format!("{} ({})", format_time(t), relative(t, now)),
             (None, None) => "not scheduled (manual backups only)".to_string(),
@@ -351,6 +364,7 @@ mod tests {
             reason: String::new(),
             since: 0,
             recovery_job: 0,
+            held_up: String::new(),
         }
     }
 
@@ -369,6 +383,7 @@ mod tests {
             "last_backup": 1_700_000_000u64,
             "last_backup_age_seconds": 1_800u64,
             "next_backup": 1_700_003_600u64,
+            "held_up": null,
             "paused": false,
             "paused_until": null,
             "active_job": null,
@@ -555,6 +570,34 @@ mod tests {
         };
         let text = status_human(&status, None, at(1_700_001_800));
         assert!(text.contains("due now"), "got: {text}");
+    }
+
+    #[test]
+    fn a_backup_held_up_on_battery_says_so_and_names_the_setting() {
+        // Keith's laptop, 2026-10-31: "Your files are backed up" and "due
+        // now" all day, with nothing to say why nothing ran.
+        let on_battery = Status {
+            next_backup: 1_700_000_100,
+            held_up: "on-battery".into(),
+            ..status()
+        };
+        let text = status_human(&on_battery, None, at(1_700_001_800));
+        assert!(
+            text.contains(
+                "Next backup   waiting for mains power: backups on battery are off (backup.on_battery)"
+            ),
+            "got: {text}"
+        );
+        assert!(!text.contains("due now"), "got: {text}");
+        let json = status_json(&on_battery, None, at(1_700_001_800));
+        assert_eq!(json["held_up"], "on-battery");
+        let metered = Status {
+            next_backup: 1_700_000_100,
+            held_up: "metered-connection".into(),
+            ..status()
+        };
+        let text = status_human(&metered, None, at(1_700_001_800));
+        assert!(text.contains("(backup.on_metered)"), "got: {text}");
     }
 
     #[test]

@@ -264,8 +264,9 @@ impl Scheduler {
         // Carried across ticks: a deferred catch-up has to be *acted on* next
         // time round, not deferred again. See `ScheduleInput::catch_up_deferred`.
         let mut deferred = false;
+        let mut catch_up = CatchUpLog::default();
         loop {
-            let (sleep_for, defer_now) = self.tick(deferred).await;
+            let (sleep_for, defer_now) = self.tick(deferred, &mut catch_up).await;
             deferred = defer_now;
             tokio::select! {
                 _ = tokio::time::sleep(sleep_for) => {}
@@ -276,7 +277,7 @@ impl Scheduler {
 
     /// One pass: decide, act, and report how long to wait next and whether a
     /// catch-up is now owed.
-    async fn tick(&self, deferred: bool) -> (Duration, bool) {
+    async fn tick(&self, deferred: bool, catch_up: &mut CatchUpLog) -> (Duration, bool) {
         let mut input = self.shared.schedule_input();
         input.catch_up_deferred = deferred;
 
@@ -289,18 +290,27 @@ impl Scheduler {
             self.shared.maybe_check(SystemTime::now());
         }
 
-        match decide(&input, SystemTime::now(), jitter()) {
+        let decision = decide(&input, SystemTime::now(), jitter());
+        let announce = catch_up.note(&decision);
+        match decision {
             Decision::Idle(d) => (d, false),
             Decision::CatchUp(d) => {
-                info!(
-                    delay_secs = d.as_secs(),
-                    "a scheduled backup was missed; catching up shortly"
-                );
+                if announce {
+                    info!(
+                        delay_secs = d.as_secs(),
+                        "a scheduled backup was missed; catching up shortly"
+                    );
+                } else {
+                    debug!(delay_secs = d.as_secs(), "still catching up");
+                }
                 (d, true)
             }
             Decision::Run => {
                 match self.shared.start_scheduled_backup().await {
-                    Ok(Some(job)) => info!(job, "scheduled backup started"),
+                    Ok(Some(job)) => {
+                        catch_up.started();
+                        info!(job, "scheduled backup started")
+                    }
                     // Preflight declined. The reason is logged there; the
                     // attempt clock is deliberately not advanced, so the run
                     // happens as soon as the condition clears rather than an
@@ -319,9 +329,58 @@ impl Scheduler {
     }
 }
 
+/// Whether a catch-up is worth a line in the log: the first of a run, not
+/// each retry while the battery or a metered connection keeps declining the
+/// backup it leads to (S18-T10). On Keith's laptop on battery the line went
+/// out every two minutes, 118 times in four hours, burying everything else;
+/// the daemon logs the reason for the skip once already.
+#[derive(Debug, Default)]
+struct CatchUpLog {
+    announced: bool,
+}
+
+impl CatchUpLog {
+    /// Whether `decision` is a catch-up to announce.
+    fn note(&mut self, decision: &Decision) -> bool {
+        match decision {
+            Decision::CatchUp(_) => !std::mem::replace(&mut self.announced, true),
+            // Nothing is owed any more: the next miss is news again.
+            Decision::Idle(_) => {
+                self.announced = false;
+                false
+            }
+            Decision::Run => false,
+        }
+    }
+
+    /// A backup started: whatever was missed has been caught up.
+    fn started(&mut self) {
+        self.announced = false;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_catch_up_held_up_by_the_battery_is_announced_once() {
+        let mut log = CatchUpLog::default();
+        let catch_up = Decision::CatchUp(Duration::from_secs(60));
+        assert!(log.note(&catch_up), "the first is news");
+        // On battery: each retry runs, is declined, and catches up again.
+        for _ in 0..118 {
+            assert!(!log.note(&Decision::Run));
+            assert!(!log.note(&catch_up), "a retry is not");
+        }
+        // Plugged in: the backup starts, and the next miss is news again.
+        assert!(!log.note(&Decision::Run));
+        log.started();
+        assert!(log.note(&catch_up));
+        // Or nothing was owed any more.
+        assert!(!log.note(&Decision::Idle(MAX_SLEEP)));
+        assert!(log.note(&catch_up));
+    }
 
     const HOUR: Duration = Duration::from_secs(3_600);
 

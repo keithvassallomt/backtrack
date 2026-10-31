@@ -587,6 +587,7 @@ mod tests {
             reason: String::new(),
             since: 0,
             recovery_job: 0,
+            held_up: String::new(),
         }
     }
 

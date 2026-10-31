@@ -44,9 +44,14 @@ pub fn line(status: &Status, now: i64, tz: &glib::TimeZone) -> String {
     if matches!(status.state.as_str(), "AT_RISK" | "BROKEN") {
         return "Backups need your attention".to_string();
     }
+    let held = match status.held_up.as_str() {
+        "on-battery" => " · waiting for mains power",
+        "metered-connection" => " · waiting for an unmetered connection",
+        _ => "",
+    };
     match status.last_backup {
-        0 => "No backups yet".to_string(),
-        last => format!("Last backup: {}", when(last as i64, now, tz)),
+        0 => format!("No backups yet{held}"),
+        last => format!("Last backup: {}{held}", when(last as i64, now, tz)),
     }
 }
 
@@ -143,7 +148,30 @@ mod tests {
             reason: String::new(),
             since: 0,
             recovery_job: 0,
+            held_up: String::new(),
         }
+    }
+
+    #[test]
+    fn a_backup_held_up_by_a_setting_says_by_what() {
+        let tz = utc();
+        let on_battery = Status {
+            held_up: "on-battery".into(),
+            ..status()
+        };
+        assert_eq!(
+            line(&on_battery, NOW, &tz),
+            "Last backup: today 10:00 · waiting for mains power"
+        );
+        let metered = Status {
+            held_up: "metered-connection".into(),
+            last_backup: 0,
+            ..status()
+        };
+        assert_eq!(
+            line(&metered, NOW, &tz),
+            "No backups yet · waiting for an unmetered connection"
+        );
     }
 
     #[test]

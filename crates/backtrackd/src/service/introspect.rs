@@ -37,7 +37,7 @@ pub const METHODS: &[(&str, &str, &str)] = &[
     ("GetRecovery", "", "(stsxttxsa(sts)tts)"),
     ("GetRestorePreview", "t", "(ssuuuuuua(ssbtxtxss)a(ss)as)"),
     ("GetSnapper", "", "(buuasb)"),
-    ("GetStatus", "", "(sttbtsuuttbstt)"),
+    ("GetStatus", "", "(sttbtsuuttbstts)"),
     ("GetStorageInfo", "", "(stttt)"),
     ("ImportRepo", "ss", ""),
     ("InspectDestination", "s", "s"),

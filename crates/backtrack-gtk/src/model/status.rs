@@ -62,7 +62,26 @@ pub fn line(status: &Status, now: i64, tz: &glib::TimeZone) -> String {
         }
     };
 
-    format!("Last backup {}{protection}", ago(last, now, tz))
+    format!(
+        "Last backup {}{protection}{}",
+        ago(last, now, tz),
+        held_up(status)
+    )
+}
+
+/// What is holding the next backup up, when a setting is (S18-T10), naming
+/// the switch in Preferences that would let it run.
+fn held_up(status: &Status) -> &'static str {
+    match status.held_up.as_str() {
+        "on-battery" => {
+            " · waiting for mains power, because Back up on battery power is off in Preferences"
+        }
+        "metered-connection" => {
+            " · waiting for a connection that is not metered, because Back up on metered \
+             connections is off in Preferences"
+        }
+        _ => "",
+    }
 }
 
 /// How long ago, in words. Rounded the way people speak, not the way a clock
@@ -123,12 +142,42 @@ mod tests {
             reason: String::new(),
             since: 0,
             recovery_job: 0,
+            held_up: String::new(),
         }
     }
 
     #[test]
     fn the_quiet_case_says_when_it_last_worked() {
         assert_eq!(line(&status(), NOW, &utc()), "Last backup 2 hours ago");
+    }
+
+    #[test]
+    fn a_backup_held_up_says_by_what_and_which_switch_would_let_it_run() {
+        let on_battery = Status {
+            last_backup: (NOW - 21 * 3_600) as u64,
+            held_up: "on-battery".into(),
+            ..status()
+        };
+        assert_eq!(
+            line(&on_battery, NOW, &utc()),
+            "Last backup 21 hours ago · waiting for mains power, because Back up on battery \
+             power is off in Preferences"
+        );
+        let metered = Status {
+            held_up: "metered-connection".into(),
+            ..status()
+        };
+        assert_eq!(
+            line(&metered, NOW, &utc()),
+            "Last backup 2 hours ago · waiting for a connection that is not metered, because \
+             Back up on metered connections is off in Preferences"
+        );
+        // A backup under way is what the line says, whatever held the last one.
+        let running = Status {
+            active_job: 3,
+            ..on_battery
+        };
+        assert_eq!(line(&running, NOW, &utc()), "Backing up now…");
     }
 
     #[test]
