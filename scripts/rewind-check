@@ -22,6 +22,10 @@
 #                                  (S18-T14)
 #   scripts/rewind-check 6         an upgrade restarts the tray and the
 #                                  service by themselves (S18-T13)
+#   scripts/rewind-check 7         on the GNOME VM: Rewind over GNOME's,
+#                                  Cinnamon's and Xfce's wallpaper, natively
+#                                  and in the Flatpak (S18-T2, T19)
+#   scripts/rewind-check 8         the same on the Plasma VM
 #
 # Run from the checkout.
 
@@ -154,6 +158,37 @@ EOF
      The service waits: the log says "restarts once its work is done", and
      it restarts only after the backup has finished. The tray restarts at
      once, and says "Backing up now…" (or the backup's progress) again.
+EOF
+    ;;
+7 | 8)
+    if [[ "$1" == 7 ]]; then
+        vm="fedora45 (GNOME)"
+        desktops="GNOME, then Cinnamon, then Xfce"
+    else
+        vm="fedora45 (KDE)"
+        desktops="Plasma"
+    fi
+    APP_ID=tools.backtrack.Backtrack
+    say "$1. Rewind over the desktop's wallpaper, on $vm"
+    cat <<EOF
+  For each desktop in turn: $desktops. To change desktop, log out, and on
+  the login screen choose it with the gear at the bottom right before
+  signing in.
+
+  a. Natively: from the laptop, run
+       just vm-app "$vm"
+     Backtrack opens on the VM's screen. Press Ctrl+T: Rewind opens full
+     screen over this desktop's wallpaper, darkened.
+  b. Press Up a few times, then hold it: the cards behind the front one stay
+     whole, and fill in by themselves after each step. Escape.
+  c. Change the wallpaper in the desktop's own settings, then Ctrl+T again:
+     the new wallpaper is behind the stack. Escape, and close Backtrack.
+  d. In the Flatpak: from the laptop, run
+       ssh "\$(scripts/vm address "$vm")" systemd-run --user flatpak run $APP_ID
+     Backtrack opens on the VM's screen again, this time the Flatpak. Press
+     Ctrl+T: the same wallpaper. Escape, and close it.
+
+  Tell me, for each desktop, any of a to d that did not happen.
 EOF
     ;;
 *)
