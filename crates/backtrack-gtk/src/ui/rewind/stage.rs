@@ -3,7 +3,9 @@
 
 //! Rewind's stage: what is behind the stack, and the stack.
 //!
-//! Each card is laid out once as a widget and its drawing kept (see `card`);
+//! At rest, the backup in front is a live window, used as any file view is
+//! (S18-T4). Each card behind it is laid out once as a widget and its drawing
+//! kept (see `folder`), and so is the window in front as the stack sets off;
 //! the stack is those drawings, each scaled and placed as a perspective would
 //! show it (see `model::rewind::scale_at`), so nothing is laid out while the
 //! stack moves. The drawings are kept as GTK's render nodes rather than
@@ -18,14 +20,13 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 
-use backtrack_core::index::Entry;
 use gtk4::prelude::*;
 use gtk4::subclass::prelude::*;
 use gtk4::{gdk, glib, graphene, gsk};
 
 use tracing::debug;
 
-use super::card::{self, Content};
+use super::folder::{self, Actions, Body, Cells, Content, Mode, Pictures};
 use crate::model::rewind::{self, Budget, Layout, Motion, Starfield};
 
 /// The corners of a card, as Adwaita rounds a window's.
@@ -54,10 +55,29 @@ pub enum Background {
     Stars,
 }
 
-/// A card's drawing, and the card size it was made at.
+/// A card's drawing, the card size it was made at, and how cards were drawn
+/// then (see `State::generation`): one made before a change is drawn until
+/// it is made again.
 struct Made {
     node: gsk::RenderNode,
     size: (i32, i32),
+    generation: u64,
+}
+
+/// The live window in front, at rest.
+struct Front {
+    slot: usize,
+    widget: gtk4::Box,
+    cells: Cells,
+    /// The folder's icons or list, which takes the keyboard's focus.
+    view: Option<gtk4::Widget>,
+    size: (i32, i32),
+    laid_out: bool,
+    focused: bool,
+    /// The stack has set off: its drawing is to be kept for the flight, and
+    /// the widget let go.
+    leaving: bool,
+    done: bool,
 }
 
 /// A card being laid out, to be drawn at the next snapshot.
@@ -75,6 +95,15 @@ struct State {
     slots: Vec<Content>,
     made: HashMap<usize, Made>,
     making: Vec<Making>,
+    front: Option<Front>,
+    /// The window in front no longer shows what it should: built again.
+    front_stale: bool,
+    /// What the window in front does when used; none, and there is none.
+    actions: Option<Actions>,
+    mode: Mode,
+    /// The name selected in the folder, shown selected on every card.
+    selected: Option<String>,
+    pictures: Pictures,
     motion: Option<Motion>,
     budget: Budget,
     background: Option<Background>,
@@ -94,8 +123,8 @@ struct State {
     card: (i32, i32),
     /// Hidden files are shown on the cards (S18-T11).
     show_hidden: bool,
-    /// Counts changes to how cards are drawn, so that a card laid out before
-    /// one is not kept after it.
+    /// Counts changes to how cards are drawn (hidden files, icons or list,
+    /// the selection), so that a card laid out before one is made again.
     generation: u64,
 }
 
@@ -116,14 +145,11 @@ mod imp {
 
     impl ObjectImpl for Stage {
         fn dispose(&self) {
-            let making: Vec<gtk4::Box> = self
-                .state
-                .borrow_mut()
-                .making
-                .drain(..)
-                .map(|m| m.widget)
-                .collect();
-            for widget in making {
+            let mut state = self.state.borrow_mut();
+            let mut widgets: Vec<gtk4::Box> = state.making.drain(..).map(|m| m.widget).collect();
+            widgets.extend(state.front.take().map(|f| f.widget));
+            drop(state);
+            for widget in widgets {
                 widget.unparent();
             }
         }
@@ -147,9 +173,25 @@ mod imp {
                     (m.widget.clone(), m.size)
                 })
                 .collect();
+            // The window in front, where the front card is drawn.
+            let front = state.front.as_mut().filter(|f| !f.done).map(|f| {
+                f.laid_out = true;
+                (f.widget.clone(), f.size)
+            });
             drop(state);
             for (widget, (w, h)) in to_lay_out {
+                let _ = widget.measure(gtk4::Orientation::Horizontal, -1);
                 widget.allocate(w, h, -1, None);
+            }
+            if let Some((widget, (w, h))) = front {
+                let (x, y) = front_origin(&layout, (w, h));
+                let _ = widget.measure(gtk4::Orientation::Horizontal, -1);
+                widget.allocate(
+                    w,
+                    h,
+                    -1,
+                    Some(gsk::Transform::new().translate(&graphene::Point::new(x, y))),
+                );
             }
         }
 
@@ -190,20 +232,83 @@ impl Stage {
         let oldest = slots.len().saturating_sub(1);
         state.slots = slots;
         state.made.clear();
+        state.front_stale = true;
         state.motion = Some(Motion::new(at, oldest));
-    }
-
-    /// Show hidden files on the cards, or stop: every card is made again.
-    pub fn set_show_hidden(&self, on: bool) {
-        let mut state = self.imp().state.borrow_mut();
-        if state.show_hidden == on {
-            return;
-        }
-        state.show_hidden = on;
-        state.generation += 1;
-        state.made.clear();
         drop(state);
         self.queue_draw();
+    }
+
+    /// Whether the stack has been laid out yet.
+    pub fn has_slots(&self) -> bool {
+        !self.imp().state.borrow().slots.is_empty()
+    }
+
+    /// What the window in front does when it is used.
+    pub fn set_actions(&self, actions: Actions) {
+        self.imp().state.borrow_mut().actions = Some(actions);
+        self.queue_draw();
+    }
+
+    /// Show the folder as icons or as a list: every card is made again.
+    pub fn set_mode(&self, mode: Mode) {
+        let mut state = self.imp().state.borrow_mut();
+        if state.mode == mode {
+            return;
+        }
+        state.mode = mode;
+        state.generation += 1;
+        state.front_stale = true;
+        drop(state);
+        self.queue_draw();
+    }
+
+    pub fn mode(&self) -> Mode {
+        self.imp().state.borrow().mode
+    }
+
+    /// The name selected in the window in front, shown selected on the cards
+    /// behind it too.
+    pub fn set_selected(&self, name: Option<String>) {
+        let mut state = self.imp().state.borrow_mut();
+        if state.selected == name {
+            return;
+        }
+        state.selected = name;
+        state.generation += 1;
+        drop(state);
+        self.queue_draw();
+    }
+
+    /// The pictures of the files shown, shared by every window.
+    pub fn pictures(&self) -> Pictures {
+        std::rc::Rc::clone(&self.imp().state.borrow().pictures)
+    }
+
+    /// The cells of the window in front, for a picture made for one of them.
+    pub fn front_cells(&self) -> Option<Cells> {
+        self.imp()
+            .state
+            .borrow()
+            .front
+            .as_ref()
+            .map(|f| std::rc::Rc::clone(&f.cells))
+    }
+
+    /// The backup the window in front shows, once it is there.
+    pub fn front_slot(&self) -> Option<usize> {
+        self.imp()
+            .state
+            .borrow()
+            .front
+            .as_ref()
+            .filter(|f| !f.leaving)
+            .map(|f| f.slot)
+    }
+
+    /// Whether hidden files are shown. The folders are listed again with
+    /// them or without (see `set_body`).
+    pub fn set_show_hidden(&self, on: bool) {
+        self.imp().state.borrow_mut().show_hidden = on;
     }
 
     pub fn show_hidden(&self) -> bool {
@@ -211,12 +316,17 @@ impl Stage {
     }
 
     /// What the folder held at one of the backups, once it has been read.
-    pub fn set_entries(&self, slot: usize, entries: Vec<Entry>) {
+    pub fn set_body(&self, slot: usize, body: Body) {
         let mut state = self.imp().state.borrow_mut();
         if let Some(content) = state.slots.get_mut(slot) {
-            content.entries = Some(entries);
+            content.body = body;
             state.made.remove(&slot);
+            if state.front.as_ref().is_some_and(|f| f.slot == slot) {
+                state.front_stale = true;
+            }
         }
+        drop(state);
+        self.queue_draw();
     }
 
     pub fn set_background(&self, background: Background) {
@@ -274,6 +384,11 @@ impl Stage {
         if !animate && after != before {
             motion.jump(after);
             state.fade = Some((before, now));
+        }
+        if after != before {
+            if let Some(front) = state.front.as_mut() {
+                front.leaving = true;
+            }
         }
         drop(state);
         self.queue_draw();
@@ -347,13 +462,16 @@ impl Stage {
         // Cards laid out and drawn are let go; the cards the stack needs next
         // are made, those it comes to rest among first (see
         // `rewind::to_make`).
-        let done: Vec<gtk4::Box> = state
+        let mut done: Vec<gtk4::Box> = state
             .making
             .iter()
             .filter(|m| m.done)
             .map(|m| m.widget.clone())
             .collect();
         state.making.retain(|m| !m.done);
+        if state.front.as_ref().is_some_and(|f| f.done) {
+            done.extend(state.front.take().map(|f| f.widget));
+        }
         let target = state.motion.as_ref().map_or(0, Motion::target);
         let position = state.motion.as_ref().map_or(0.0, Motion::position);
         let deepest = state.budget.deepest();
@@ -362,13 +480,45 @@ impl Stage {
             .made
             .retain(|slot, _| rewind::kept(*slot, position, target) || Some(*slot) == fading);
         let card = state.card;
+        let generation = state.generation;
+        // At rest, the backup in front is the live window: built for it when
+        // there is none, or the one there shows something else.
+        let at_rest = !was_moving && state.fade.is_none() && position == target as f64;
+        let mut new_front = None;
+        if at_rest && card.0 > 0 && card.1 > 0 {
+            let showing = state.front.as_ref().filter(|f| !f.leaving);
+            let wrong =
+                showing.is_none_or(|f| f.slot != target || f.size != card) || state.front_stale;
+            if let (true, Some(actions), Some(content)) = (
+                wrong,
+                state.actions.clone(),
+                state.slots.get(target).cloned(),
+            ) {
+                if let Some(front) = state.front.as_mut() {
+                    // Shows what it should not: let go of, not kept.
+                    front.done = true;
+                }
+                new_front = Some((content, actions));
+                state.front_stale = false;
+            }
+        }
+        let live = state
+            .front
+            .as_ref()
+            .filter(|f| !f.leaving && !f.done)
+            .map(|f| f.slot);
         let mut wanted = Vec::new();
         if card.0 > 0 && card.1 > 0 {
             for slot in rewind::to_make(position, target, deepest, state.slots.len()) {
                 if wanted.len() + state.making.len() >= MAKING {
                     break;
                 }
-                let current = state.made.get(&slot).is_some_and(|m| m.size == card);
+                let current = state
+                    .made
+                    .get(&slot)
+                    .is_some_and(|m| m.size == card && m.generation == generation)
+                    // The live window is drawn as itself.
+                    || (live == Some(slot) && new_front.is_none());
                 let busy = state.making.iter().any(|m| m.slot == slot);
                 if let Some(content) = state.slots.get(slot) {
                     if !current && !busy {
@@ -381,23 +531,73 @@ impl Stage {
             && !state.wallpaper_in.get();
         // Cards coming back at rest are drawn as they come.
         let returning = !was_moving && state.budget.deepest() < rewind::DEEPEST;
+        let front_unfocused = state
+            .front
+            .as_ref()
+            .is_some_and(|f| f.laid_out && !f.focused && !f.leaving);
         let busy = was_moving
             || returning
             || state.fade.is_some()
             || fade_ended
             || state.stars.is_some()
             || !wanted.is_empty()
+            || new_front.is_some()
+            || state.front.as_ref().is_some_and(|f| f.leaving || f.done)
+            || front_unfocused
             || wallpaper_coming;
-        let (show_hidden, generation) = (state.show_hidden, state.generation);
+        let (mode, selected, pictures) = (
+            state.mode,
+            state.selected.clone(),
+            std::rc::Rc::clone(&state.pictures),
+        );
         drop(guard);
         for widget in done {
             widget.unparent();
+        }
+        if let Some((content, actions)) = new_front {
+            let built = folder::build(
+                &content,
+                card,
+                mode,
+                selected.as_deref(),
+                &pictures,
+                Some(&actions),
+            );
+            built.window.set_parent(self);
+            debug!(slot = target, "Rewind's window in front is live");
+            self.imp().state.borrow_mut().front = Some(Front {
+                slot: target,
+                widget: built.window,
+                cells: built.cells,
+                view: built.view,
+                size: card,
+                laid_out: false,
+                focused: false,
+                leaving: false,
+                done: false,
+            });
+            self.queue_allocate();
+        }
+        // Once laid out, the folder's icons or list take the keyboard, so
+        // that Left and Right move among them.
+        if front_unfocused {
+            let mut state = self.imp().state.borrow_mut();
+            if let Some(front) = state.front.as_mut() {
+                front.focused = true;
+                let view = front.view.clone();
+                drop(state);
+                if let Some(view) = view {
+                    view.grab_focus();
+                }
+            }
         }
         if !wanted.is_empty() {
             let mut making = Vec::new();
             debug!(slots = ?wanted.iter().map(|(slot, _)| slot).collect::<Vec<_>>(), "Rewind is making cards");
             for (slot, content) in wanted {
-                let widget = card::build(&content, card.0, card.1, show_hidden);
+                let built =
+                    folder::build(&content, card, mode, selected.as_deref(), &pictures, None);
+                let widget = built.window;
                 widget.set_parent(self);
                 making.push(Making {
                     slot,
@@ -416,8 +616,39 @@ impl Stage {
         }
     }
 
-    /// Keep the drawing of every card that has been laid out.
+    /// Keep the drawing of every card that has been laid out, and of the
+    /// window in front as the stack sets off.
     fn capture(&self) {
+        let leaving = self
+            .imp()
+            .state
+            .borrow()
+            .front
+            .as_ref()
+            .filter(|f| f.leaving && f.laid_out && !f.done)
+            .map(|f| (f.slot, f.widget.clone(), f.size));
+        if let Some((slot, widget, size)) = leaving {
+            let layout = rewind::layout(f64::from(self.width()), f64::from(self.height()));
+            let (x, y) = front_origin(&layout, size);
+            // Allocated where it stands, so drawn from there: brought back to
+            // where a card's drawing starts.
+            let node = self.card_node(&widget, size, (-x, -y));
+            let mut state = self.imp().state.borrow_mut();
+            let generation = state.generation;
+            if let Some(node) = node {
+                state.made.insert(
+                    slot,
+                    Made {
+                        node,
+                        size,
+                        generation,
+                    },
+                );
+            }
+            if let Some(front) = state.front.as_mut() {
+                front.done = true;
+            }
+        }
         let ready: Vec<(usize, gtk4::Box, (i32, i32), u64)> = self
             .imp()
             .state
@@ -428,30 +659,45 @@ impl Stage {
             .map(|m| (m.slot, m.widget.clone(), m.size, m.generation))
             .collect();
         for (slot, widget, size, generation) in ready {
-            let (w, h) = (size.0 as f32, size.1 as f32);
-            let snapshot = gtk4::Snapshot::new();
-            snapshot.translate(&graphene::Point::new(MARGIN, MARGIN));
-            let outline = gsk::RoundedRect::from_rect(graphene::Rect::new(0.0, 0.0, w, h), RADIUS);
-            snapshot.append_outset_shadow(
-                &outline,
-                &gdk::RGBA::new(0.0, 0.0, 0.0, 0.45),
-                0.0,
-                SHADOW_DROP,
-                0.0,
-                SHADOW_BLUR,
-            );
-            self.snapshot_child(&widget, &snapshot);
-            let node = snapshot.to_node();
+            let node = self.card_node(&widget, size, (0.0, 0.0));
             debug!(slot, made = node.is_some(), "Rewind drew a card");
             let mut state = self.imp().state.borrow_mut();
-            // Laid out before hidden files were shown or hidden: made again.
-            if let Some(node) = node.filter(|_| generation == state.generation) {
-                state.made.insert(slot, Made { node, size });
+            // Laid out before a change to how cards are drawn: kept, to be
+            // drawn until it is made again, unless a newer one is there.
+            let newer = state
+                .made
+                .get(&slot)
+                .is_some_and(|m| m.generation > generation);
+            if let Some(node) = node.filter(|_| !newer) {
+                state.made.insert(
+                    slot,
+                    Made {
+                        node,
+                        size,
+                        generation,
+                    },
+                );
             }
             if let Some(m) = state.making.iter_mut().find(|m| m.slot == slot) {
                 m.done = true;
             }
         }
+    }
+
+    /// A card's drawing: its shadow, and `widget` drawn `offset` from where
+    /// it is allocated.
+    fn card_node(
+        &self,
+        widget: &gtk4::Box,
+        (w, h): (i32, i32),
+        offset: (f32, f32),
+    ) -> Option<gsk::RenderNode> {
+        let snapshot = gtk4::Snapshot::new();
+        snapshot.translate(&graphene::Point::new(MARGIN, MARGIN));
+        shadow(&snapshot, w as f32, h as f32);
+        snapshot.translate(&graphene::Point::new(offset.0, offset.1));
+        self.snapshot_child(widget, &snapshot);
+        snapshot.to_node()
     }
 
     fn draw(&self, snapshot: &gtk4::Snapshot) {
@@ -517,7 +763,20 @@ impl Stage {
                 ((now - since) as f64 / CROSSFADE as f64).clamp(0.0, 1.0),
             )
         });
+        let live = state
+            .front
+            .as_ref()
+            .filter(|f| f.laid_out && !f.leaving && !f.done);
         for (slot, d) in order {
+            if let Some(front) = live.filter(|f| f.slot == slot && d == 0.0 && fade.is_none()) {
+                let (x, y) = front_origin(&layout, front.size);
+                snapshot.save();
+                snapshot.translate(&graphene::Point::new(x, y));
+                shadow(snapshot, front.size.0 as f32, front.size.1 as f32);
+                snapshot.restore();
+                self.snapshot_child(&front.widget, snapshot);
+                continue;
+            }
             let opacity = match fade {
                 Some((_, k)) if slot == motion.target() => k,
                 _ => 1.0,
@@ -544,6 +803,27 @@ impl Stage {
             );
         }
     }
+}
+
+/// Where the window in front stands: its top left corner.
+fn front_origin(layout: &Layout, (w, h): (i32, i32)) -> (f32, f32) {
+    (
+        (layout.cx - f64::from(w) / 2.0) as f32,
+        (layout.cy - f64::from(h) / 2.0) as f32,
+    )
+}
+
+/// A card's shadow, under a card `w` by `h` at the origin.
+fn shadow(snapshot: &gtk4::Snapshot, w: f32, h: f32) {
+    let outline = gsk::RoundedRect::from_rect(graphene::Rect::new(0.0, 0.0, w, h), RADIUS);
+    snapshot.append_outset_shadow(
+        &outline,
+        &gdk::RGBA::new(0.0, 0.0, 0.0, 0.45),
+        0.0,
+        SHADOW_DROP,
+        0.0,
+        SHADOW_BLUR,
+    );
 }
 
 /// Where the stars stream from: just above the stack's far end.

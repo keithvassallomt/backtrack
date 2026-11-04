@@ -35,6 +35,7 @@ pub mod restore;
 pub mod rewind;
 pub mod search;
 pub mod status;
+pub mod thumbnail;
 pub mod trash;
 pub mod wallpaper;
 pub mod wizard;

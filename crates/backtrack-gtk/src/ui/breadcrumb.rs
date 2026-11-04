@@ -21,20 +21,34 @@ pub fn build(state: &Rc<AppState>) -> GtkBox {
     row.set_valign(Align::Center);
 
     let home = home_archive_path();
-    render(&row, &state.view().folder, home.as_deref(), state);
+    let owner = Rc::clone(state);
+    let go: Go = Rc::new(move |folder| owner.set_folder(folder));
+    render(&row, &state.view().folder, home.as_deref(), &go);
 
     let watched = row.clone();
-    let owner = Rc::clone(state);
     state.subscribe(move |view, change| {
         if change == Change::Folder {
-            render(&watched, &view.folder, home.as_deref(), &owner);
+            render(&watched, &view.folder, home.as_deref(), &go);
         }
     });
     row
 }
 
+/// What clicking a step of the trail does with the folder it stands for.
+pub type Go = Rc<dyn Fn(String)>;
+
+/// A trail for `folder` that stays as it is, each step handing its folder to
+/// `go`: a window of Rewind's (S18-T4).
+pub fn trail(folder: &str, go: &Go) -> GtkBox {
+    let row = GtkBox::new(Orientation::Horizontal, 0);
+    row.add_css_class("breadcrumb");
+    row.set_valign(Align::Center);
+    render(&row, folder, home_archive_path().as_deref(), go);
+    row
+}
+
 /// Replace the trail's buttons with the ones `folder` calls for.
-fn render(row: &GtkBox, folder: &str, home: Option<&str>, state: &Rc<AppState>) {
+fn render(row: &GtkBox, folder: &str, home: Option<&str>, go: &Go) {
     while let Some(child) = row.first_child() {
         row.remove(&child);
     }
@@ -47,7 +61,7 @@ fn render(row: &GtkBox, folder: &str, home: Option<&str>, state: &Rc<AppState>) 
             separator.add_css_class("separator");
             row.append(&separator);
         }
-        row.append(&self::crumb(crumb, position == last, state));
+        row.append(&self::crumb(crumb, position == last, go));
     }
 }
 
@@ -57,7 +71,7 @@ fn render(row: &GtkBox, folder: &str, home: Option<&str>, state: &Rc<AppState>) 
 /// a button it has to be insensitive — there is nowhere to go — and an
 /// insensitive button is dimmed, which made the one thing the title bar exists
 /// to say the faintest thing in it.
-fn crumb(crumb: &Crumb, is_current: bool, state: &Rc<AppState>) -> gtk4::Widget {
+fn crumb(crumb: &Crumb, is_current: bool, go: &Go) -> gtk4::Widget {
     let content = GtkBox::new(Orientation::Horizontal, 6);
     if crumb.is_home {
         content.append(&gtk4::Image::from_icon_name("user-home-symbolic"));
@@ -82,8 +96,8 @@ fn crumb(crumb: &Crumb, is_current: bool, state: &Rc<AppState>) -> gtk4::Widget 
     button.update_property(&[gtk4::accessible::Property::Label(&crumb.label)]);
     button.set_tooltip_text(Some(&path::to_filesystem(&crumb.path).to_string_lossy()));
     let target = crumb.path.clone();
-    let state = Rc::clone(state);
-    button.connect_clicked(move |_| state.set_folder(target.clone()));
+    let go = Rc::clone(go);
+    button.connect_clicked(move |_| go(target.clone()));
     button.upcast()
 }
 

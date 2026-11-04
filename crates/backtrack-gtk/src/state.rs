@@ -394,6 +394,18 @@ impl AppState {
         self.view.borrow().clone()
     }
 
+    /// A state of its own that starts as this one is, with the listings
+    /// already known: Rewind's (S18-T4), which moves through folders and
+    /// backups without moving the window, and gives the window back its
+    /// folder and selection when it is left. Nobody is subscribed to it yet.
+    pub fn fork(&self) -> Rc<AppState> {
+        Rc::new(AppState {
+            view: RefCell::new(self.view()),
+            subscribers: RefCell::new(Vec::new()),
+            listings: RefCell::new(self.listings.borrow().clone()),
+        })
+    }
+
     /// Watch for changes. There is no unsubscribe: every subscriber is a pane
     /// of the one window and lives exactly as long as the state does.
     pub fn subscribe(&self, on_change: impl Fn(&View, Change) + 'static) {
@@ -907,6 +919,38 @@ mod tests {
             view.listed
         );
         assert!(view.listing_is_current());
+    }
+
+    #[test]
+    fn a_fork_moves_on_its_own_with_the_listings_known() {
+        let window = AppState::new("home".to_string());
+        window.set_catalogue(archives(&[3, 2, 1]), "home", vec![3, 2, 1]);
+        window.set_folder("home/Docs");
+        window.set_listing("home/Docs", window.view().generation, vec![3]);
+        window.set_folder("home");
+        window.set_seq(2);
+        let heard = Rc::new(Cell::new(0));
+        let counter = Rc::clone(&heard);
+        window.subscribe(move |_, _| counter.set(counter.get() + 1));
+
+        let rewind = window.fork();
+        assert_eq!(rewind.view().seq, Some(2));
+        rewind.set_seq(1);
+        rewind.set_folder("home/Docs");
+        assert!(
+            rewind.view().listing_is_current(),
+            "the window's listing of home/Docs came with it"
+        );
+        assert_eq!(
+            rewind.view().seq,
+            Some(3),
+            "landing on what home/Docs lists"
+        );
+        assert_eq!(heard.get(), 0, "the window heard nothing");
+        assert_eq!(
+            (window.view().folder, window.view().seq),
+            ("home".to_string(), Some(2))
+        );
     }
 
     #[test]

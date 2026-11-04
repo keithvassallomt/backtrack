@@ -235,6 +235,40 @@ selection), so leaving the view lands where it was.
   and "changed" on files, "trashed" and "Snapper" (Stages 16 and 17), each
   with the full meaning in its tooltip.
 
+**Keys** (Keith, 2026-11-04): Up and Down, Page Up and Page Down, Home and
+End keep S18-T3's meanings, stepping through time, whatever has the focus;
+Left and Right move among the icons, Enter opens the folder selected, and
+Alt+Up goes up a folder, as in the main window. In the list, a row is chosen
+with the mouse or Tab. Enter on a file is S18-T6's.
+
+**Built** (2026-11-04, in progress):
+- `ui::rewind::folder` builds a window of Rewind's, the one in front and the
+  cards behind alike: the header bar with the folder's trail, the backup's
+  date and the pair of buttons, then the folder as icons (a grid view, each
+  cell the same height, the badge on the icon's foot) or as the main
+  window's list (its columns). The choice holds for as long as Backtrack
+  runs. The selected file is shown selected on every card.
+- At rest, the window in front is live; as the stack sets off, its drawing
+  is kept for the flight, scrolled and selected as it was, and the window is
+  let go. A change to the selection, the view or hidden files makes the cards
+  again, each drawn as it was until it is.
+- Each backup is listed as the main window's file pane lists it, through
+  `ui::files::Lister`, taken out of the pane for both: the Trash's entries,
+  folders only partly backed up, the "not on your disk" answers, hidden
+  files. The folder as it is now is read from the disk, with sizes and dates.
+- Rewind moves in a state of its own, forked from the window's
+  (`AppState::fork`): walking into a folder lists its backups and lands on
+  them as the window would, while the window stays where it was. However
+  Rewind is closed, the window then takes its folder and its selection, the
+  window's own version of the file selected, or none if its backup has no
+  such file.
+- Thumbnails (`model::thumbnail`): the desktop's own, from its cache, where
+  the thumbnail's `Thumb::MTime` is the backed-up version's, for the window
+  in front and the cards behind; for an image whose version the cache does
+  not hold, one made from its copy in the backup (through the daemon, as the
+  preview fetches it), or on the disk for the folder as it is now, in the
+  window in front only, as each comes into sight.
+
 **Accept:** unit tests on which files get a thumbnail and from where; on a VM,
 walking into a folder and back in the view, with thumbnails for images
 unchanged since the backup and icons for the others, and leaving the view at

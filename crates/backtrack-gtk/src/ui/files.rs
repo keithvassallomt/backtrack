@@ -30,33 +30,489 @@ use tracing::{debug, warn};
 
 use crate::daemon::Daemon1Proxy;
 use crate::index::Index;
-use crate::model::empty::{self, Coverage, Empty};
+use crate::model::empty::{self, Coverage};
 use crate::model::{above, file_badge, hidden};
 use crate::path;
-use crate::state::{AppState, Change, Selected};
+use crate::state::{AppState, Change, Selected, View};
 
-/// A row of the pane: the indexed entry plus the strings it is drawn with.
+/// A row of a folder's listing: the indexed entry plus the strings it is
+/// drawn with. The file pane's, and Rewind's (S18-T4).
 #[derive(Clone)]
-struct RowData {
-    entry: Entry,
-    size: String,
-    modified: String,
+pub struct Row {
+    pub entry: Entry,
+    pub size: String,
+    pub modified: String,
     /// What the daemon said about this path being on the computer now: 0
     /// unknown, 1 absent, 2 present. Unknown when the daemon was not there to
     /// ask, which is why the default says nothing rather than "gone".
-    on_disk: u8,
+    pub on_disk: u8,
     /// A folder that is not in the backup itself but leads down to folders
     /// that are (see `model::above`): it has no size or date to show.
-    partly: bool,
+    pub partly: bool,
     /// For something in the Trash, the archive name its bytes are read
     /// through (Stage 16).
-    trash: Option<String>,
+    pub trash: Option<String>,
+}
+
+impl Row {
+    /// Its badge, chosen in `model::file_badge`.
+    pub fn badge(&self) -> file_badge::FileBadge {
+        file_badge::of(file_badge::Facts {
+            folder: self.entry.kind == Kind::Dir,
+            in_trash: self.trash.is_some(),
+            partly: self.partly,
+            deleted_after: self.entry.deleted_after,
+            absent: self.on_disk == ABSENT,
+            changed_since: self.entry.changed_since,
+        })
+    }
+
+    /// The row as the window's selection, in `folder`.
+    pub fn selected(&self, folder: &str) -> Selected {
+        Selected {
+            path: path::join(folder, &self.entry.name),
+            name: self.entry.name.clone(),
+            is_dir: self.entry.kind == Kind::Dir,
+            size: self.entry.size,
+            mtime: self.entry.mtime,
+            on_disk: self.on_disk,
+            archive: self.trash.clone(),
+        }
+    }
 }
 
 /// The daemon's answers about a path being on the computer now. Three-valued,
 /// because "the folder could not be read" is not "the file was deleted".
 const UNKNOWN: u8 = 0;
 const ABSENT: u8 = 1;
+const PRESENT: u8 = 2;
+
+/// A folder at a backup, as listed: its rows, in order, or why there are
+/// none.
+pub enum Listed {
+    /// `notice`, above the rows, for a folder only partly backed up.
+    Rows {
+        rows: Vec<Row>,
+        notice: Option<String>,
+    },
+    /// `add` offers to add the folder to the backups.
+    Empty {
+        title: String,
+        description: String,
+        add: bool,
+    },
+}
+
+impl Listed {
+    fn empty(title: &str, description: &str) -> Listed {
+        Listed::Empty {
+            title: title.to_owned(),
+            description: description.to_owned(),
+            add: false,
+        }
+    }
+}
+
+/// Lists a folder at a backup, from the catalogue, the Trash and the daemon,
+/// for the file pane and for Rewind's windows alike (S18-T4).
+pub struct Lister {
+    index: Index,
+    /// `None` until the daemon answers, and if it never does. Browsing works
+    /// without it; only the "not on your disk" status needs it, and the
+    /// absence of an answer is itself an answer the status column can hold.
+    daemon: Rc<RefCell<Option<Daemon1Proxy<'static>>>>,
+    /// Each backup's top folders, by sequence number, as asked of the index:
+    /// a folder outside the backups needs them on every visit, and they do
+    /// not change until the backups do.
+    roots: RefCell<HashMap<i64, Rc<Vec<String>>>>,
+}
+
+impl Lister {
+    pub fn new(index: &Index, daemon: &Rc<RefCell<Option<Daemon1Proxy<'static>>>>) -> Rc<Lister> {
+        Rc::new(Lister {
+            index: index.clone(),
+            daemon: Rc::clone(daemon),
+            roots: RefCell::new(HashMap::new()),
+        })
+    }
+
+    /// The daemon, if it has answered.
+    pub fn daemon(&self) -> Option<Daemon1Proxy<'static>> {
+        self.daemon.borrow().clone()
+    }
+
+    /// New backups, or fewer: the top folders are asked for again.
+    pub fn forget_roots(&self) {
+        self.roots.borrow_mut().clear();
+    }
+
+    /// `view`'s folder at backup `seq` (its own, or another of its listed
+    /// ones), `newest` when no newer backup is listed.
+    pub async fn list(&self, view: &View, seq: Option<i64>, newest: bool) -> Listed {
+        let Some(seq) = seq else {
+            debug!(folder = view.folder, "no backups catalogued yet");
+            return Listed::empty(
+                "No backups yet",
+                "Backtrack has not catalogued any backups.",
+            );
+        };
+        if crate::model::trash::is_entry(seq) {
+            return self.list_entry(view, seq).await;
+        }
+        let folder = view.folder.clone();
+        let query_folder = folder.clone();
+        let answer = self
+            .index
+            .query(move |reader| {
+                let entries = reader.folder_at(&query_folder, seq)?;
+                // Whether the folder itself is in the backup: if it is, an
+                // empty list means it was empty then, and it is inside the
+                // backups, with nothing above them to lead down to.
+                let here = present_at(reader, &query_folder, seq)?;
+                Ok((entries, here))
+            })
+            .await;
+        // A folder outside the backup may lead down to folders in it.
+        let (leading, partly, ways_down) = match &answer {
+            Ok((entries, false)) => {
+                let roots = self.roots_at(seq).await;
+                let leading: Vec<String> = above::leading_down(&folder, &roots)
+                    .into_iter()
+                    .filter(|name| !entries.iter().any(|e| &e.name == name))
+                    .collect();
+                (
+                    leading,
+                    above::partly(&folder, &roots),
+                    hidden::ways_down(&folder, &roots),
+                )
+            }
+            _ => (Vec::new(), false, Vec::new()),
+        };
+        match answer {
+            Ok((entries, in_backup)) if entries.is_empty() && leading.is_empty() => {
+                let coverage = if in_backup || !newest {
+                    // Settled already: see `empty::why`.
+                    Coverage::Unknown
+                } else {
+                    self.coverage(&folder, seq).await
+                };
+                let why = empty::why(in_backup, newest, coverage);
+                debug!(folder, seq, ?why, "nothing to show");
+                let name = label(&folder).unwrap_or_else(|| path::name(&folder).to_string());
+                Listed::Empty {
+                    title: why.title().to_owned(),
+                    description: why.description(&name),
+                    add: why.offers_to_add(),
+                }
+            }
+            Ok((mut entries, _)) => {
+                // The folders leading down are entries the catalogue does
+                // not have: in no backup, so with no size, date or badge of
+                // their own.
+                entries.extend(leading.iter().map(|name| Entry {
+                    path_id: 0,
+                    name: name.clone(),
+                    kind: Kind::Dir,
+                    size: 0,
+                    mtime: 0,
+                    deleted_after: false,
+                    changed_since: false,
+                }));
+                // Asked before painting rather than after, so the status
+                // column is right the first time it is drawn. It is one
+                // directory read on the other side of a local socket, and a
+                // column that corrects itself a moment later is worse than
+                // one that waits.
+                let on_disk = self.ask_the_disk(&entries, &folder).await;
+                debug!(
+                    folder,
+                    seq,
+                    entries = entries.len(),
+                    deleted_after = entries.iter().filter(|e| e.deleted_after).count(),
+                    changed_since = entries.iter().filter(|e| e.changed_since).count(),
+                    gone_from_disk = on_disk.iter().filter(|a| **a == ABSENT).count(),
+                    leading_down = leading.len(),
+                    partly,
+                    "folder loaded"
+                );
+                Listed::Rows {
+                    rows: rows_of(
+                        entries,
+                        on_disk,
+                        &leading,
+                        &ways_down,
+                        &HashMap::new(),
+                        view.show_hidden,
+                    ),
+                    notice: partly.then(|| above::notice(label(&folder).as_deref())),
+                }
+            }
+            Err(error) => {
+                warn!(%error, folder, seq, "the folder could not be read");
+                Listed::empty("This folder could not be read", &error)
+            }
+        }
+    }
+
+    /// The folder at a Trash entry (Stage 16): the backup before its gap with
+    /// what was moved to the Trash in the gap put back, or, inside a folder
+    /// that went to the Trash whole, the Trash's copy of it.
+    async fn list_entry(&self, view: &View, seq: i64) -> Listed {
+        use crate::model::trash;
+        let folder = view.folder.clone();
+        let rows: Result<Vec<trash::Row>, String> =
+            match trash::trashed_folder(&folder, seq, &view.archives, &view.trash).cloned() {
+                Some(item) => {
+                    let proxy = self.daemon.borrow().clone();
+                    match proxy {
+                        None => Err(
+                            "Backtrack's background service reads the Trash, and it is not running."
+                                .to_string(),
+                        ),
+                        Some(proxy) => proxy
+                            .list_trashed_folder(&item.archive, &folder)
+                            .await
+                            .map_err(|e| e.to_string())
+                            .map(|listed| {
+                                listed
+                                    .into_iter()
+                                    .map(|(name, kind, size, mtime)| trash::Row {
+                                        entry: Entry {
+                                            path_id: 0,
+                                            name,
+                                            kind: Kind::from_token(&kind),
+                                            size,
+                                            mtime,
+                                            deleted_after: false,
+                                            changed_since: false,
+                                        },
+                                        trash: Some(item.archive.clone()),
+                                    })
+                                    .collect()
+                            }),
+                    }
+                }
+                None => {
+                    let base = match trash::base_of(seq).flatten() {
+                        Some(base) => {
+                            let asked = folder.clone();
+                            self.index
+                                .query(move |reader| reader.folder_at(&asked, base))
+                                .await
+                        }
+                        None => Ok(Vec::new()),
+                    };
+                    base.map(|base| trash::overlay(&folder, seq, &view.archives, &view.trash, base))
+                }
+            };
+        match rows {
+            Ok(rows) if rows.is_empty() => Listed::empty(
+                "Nothing from the Trash here",
+                "Nothing moved to the Trash at this time came from this folder.",
+            ),
+            Ok(rows) => {
+                let trashed: HashMap<String, String> = rows
+                    .iter()
+                    .filter_map(|r| r.trash.clone().map(|a| (r.entry.name.clone(), a)))
+                    .collect();
+                let entries: Vec<Entry> = rows.into_iter().map(|r| r.entry).collect();
+                let on_disk = self.ask_the_disk(&entries, &folder).await;
+                debug!(
+                    folder,
+                    seq,
+                    entries = entries.len(),
+                    trashed = trashed.len(),
+                    "Trash entry loaded"
+                );
+                Listed::Rows {
+                    rows: rows_of(entries, on_disk, &[], &[], &trashed, view.show_hidden),
+                    notice: None,
+                }
+            }
+            Err(error) => {
+                warn!(%error, folder, seq, "the folder could not be read");
+                Listed::empty("This folder could not be read", &error)
+            }
+        }
+    }
+
+    /// The folder as it is on the disk now (Rewind's "Today (Now)"), in the
+    /// same order and with the same files hidden. Blocking: read off the
+    /// main loop.
+    pub fn disk(folder: &str, show_hidden: bool) -> Result<Vec<Row>, String> {
+        let entries = std::fs::read_dir(path::to_filesystem(folder)).map_err(|e| e.to_string())?;
+        let entries: Vec<Entry> = entries
+            .filter_map(Result::ok)
+            .map(|entry| {
+                let meta = entry.metadata().ok();
+                let kind = match entry.file_type() {
+                    Ok(t) if t.is_dir() => Kind::Dir,
+                    Ok(t) if t.is_symlink() => Kind::Symlink,
+                    Ok(t) if t.is_file() => Kind::File,
+                    _ => Kind::Other,
+                };
+                let mtime = meta
+                    .as_ref()
+                    .and_then(|m| m.modified().ok())
+                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                    .map_or(0, |d| d.as_micros() as i64);
+                Entry {
+                    path_id: 0,
+                    name: entry.file_name().to_string_lossy().into_owned(),
+                    kind,
+                    size: meta.as_ref().map_or(0, |m| m.len() as i64),
+                    mtime,
+                    deleted_after: false,
+                    changed_since: false,
+                }
+            })
+            .collect();
+        let present = vec![PRESENT; entries.len()];
+        Ok(rows_of(
+            entries,
+            present,
+            &[],
+            &[],
+            &HashMap::new(),
+            show_hidden,
+        ))
+    }
+
+    /// What the daemon says about each of these entries being on the computer.
+    ///
+    /// An empty answer means nobody was asked — the daemon is not there, or it
+    /// refused — and every entry is then unknown. Browsing has never required
+    /// the daemon and must not start to.
+    async fn ask_the_disk(&self, entries: &[Entry], folder: &str) -> Vec<u8> {
+        let unknown = vec![UNKNOWN; entries.len()];
+        let Some(proxy) = self.daemon.borrow().clone() else {
+            return unknown;
+        };
+        let paths: Vec<String> = entries
+            .iter()
+            .map(|entry| path::join(folder, &entry.name))
+            .collect();
+        match proxy.paths_on_disk(&paths).await {
+            Ok(answers) if answers.len() == entries.len() => answers,
+            Ok(answers) => {
+                warn!(
+                    asked = entries.len(),
+                    answered = answers.len(),
+                    "the daemon answered for a different number of paths than were asked about"
+                );
+                unknown
+            }
+            Err(error) => {
+                debug!(%error, folder, "the daemon could not say what is on disk");
+                unknown
+            }
+        }
+    }
+
+    /// Where `folder` stands with the folders Backtrack backs up, and whether
+    /// the one it is in is in backup `seq`.
+    async fn coverage(&self, folder: &str, seq: i64) -> Coverage {
+        let Some(roots) = self.roots().await else {
+            return Coverage::Unknown;
+        };
+        let Some(root) = empty::root_of(folder, &roots) else {
+            return Coverage::Outside;
+        };
+        let root = path::to_archive(root);
+        if root.is_empty() {
+            // The filesystem root is in every backup there is.
+            return Coverage::Inside {
+                root_in_backup: true,
+            };
+        }
+        match self
+            .index
+            .query(move |reader| present_at(reader, &root, seq))
+            .await
+        {
+            Ok(root_in_backup) => Coverage::Inside { root_in_backup },
+            Err(error) => {
+                debug!(%error, folder, "the backed-up folder could not be looked up");
+                Coverage::Unknown
+            }
+        }
+    }
+
+    /// The folders Backtrack backs up, or `None` with no daemon to ask.
+    async fn roots(&self) -> Option<Vec<PathBuf>> {
+        let proxy = self.daemon.borrow().clone()?;
+        let text = match proxy.get_config().await {
+            Ok(text) => text,
+            Err(error) => {
+                debug!(%error, "the backed-up folders could not be read");
+                return None;
+            }
+        };
+        let (config, _) = backtrack_core::config::Config::parse(&text).ok()?;
+        Some(backtrack_core::roots::Roots::of(&config).roots)
+    }
+
+    /// The top folders of backup `seq`, from the index, asked once per
+    /// backup. Empty when the index cannot say, which leads nowhere.
+    async fn roots_at(&self, seq: i64) -> Rc<Vec<String>> {
+        if let Some(roots) = self.roots.borrow().get(&seq) {
+            return Rc::clone(roots);
+        }
+        let roots = match self.index.query(move |r| r.backed_up_roots(seq)).await {
+            Ok(roots) => Rc::new(roots),
+            Err(error) => {
+                debug!(%error, seq, "the backup's top folders could not be read");
+                return Rc::new(Vec::new());
+            }
+        };
+        self.roots.borrow_mut().insert(seq, Rc::clone(&roots));
+        roots
+    }
+}
+
+/// `entries` as rows, folders first, hidden files left out unless shown and
+/// never a way down to what is backed up (S18-T11). `leading` names the ones
+/// that lead down to backed-up folders.
+fn rows_of(
+    entries: Vec<Entry>,
+    on_disk: Vec<u8>,
+    leading: &[String],
+    ways_down: &[String],
+    trashed: &HashMap<String, String>,
+    show_hidden: bool,
+) -> Vec<Row> {
+    let tz = glib::TimeZone::local();
+    // Paired before sorting, because the answers came back in the order the
+    // entries were asked about and the sort is about to destroy it.
+    let mut sorted: Vec<(Entry, u8)> = entries
+        .into_iter()
+        .zip(on_disk.into_iter().chain(std::iter::repeat(UNKNOWN)))
+        .collect();
+    sorted.sort_by(|(a, _), (b, _)| crate::model::folders_first(a, b));
+    sorted.retain(|(entry, _)| hidden::shown(&entry.name, show_hidden, ways_down));
+    sorted
+        .into_iter()
+        .map(|(entry, on_disk)| {
+            let partly = leading.contains(&entry.name);
+            Row {
+                size: if partly {
+                    "—".to_string()
+                } else {
+                    crate::model::format::size(entry.size, entry.kind)
+                },
+                modified: if partly {
+                    "—".to_string()
+                } else {
+                    crate::model::format::modified(entry.mtime, &tz)
+                },
+                trash: trashed.get(&entry.name).cloned(),
+                entry,
+                on_disk,
+                partly,
+            }
+        })
+        .collect()
+}
 
 /// The pane and what it needs to refill itself.
 pub struct Files {
@@ -71,21 +527,16 @@ pub struct Files {
     /// text.
     notice: GtkBox,
     notice_text: Label,
-    /// Each backup's top folders, by sequence number, as asked of the index:
-    /// a folder outside the backups needs them on every visit, and they do
-    /// not change until the backups do.
-    roots: RefCell<HashMap<i64, Rc<Vec<String>>>>,
+    lister: Rc<Lister>,
     state: Rc<AppState>,
-    index: Index,
-    /// `None` until the daemon answers, and if it never does. Browsing works
-    /// without it; only the "not on your disk" status needs it, and the
-    /// absence of an answer is itself an answer the status column can hold.
-    daemon: Rc<RefCell<Option<Daemon1Proxy<'static>>>>,
     /// Which load is current. A load that finishes after a newer one started is
     /// dropped: arrow-keying through time fires these faster than they return,
     /// and the last answer to arrive must not win over the last one asked for.
     generation: Cell<u64>,
     syncing: Cell<bool>,
+    /// A load is on its way, which will select what the state has selected
+    /// when it arrives.
+    loading: Cell<bool>,
 }
 
 /// Build the file pane for `state`. `add_to_backups` is given the folder
@@ -175,19 +626,17 @@ pub fn build(
         add,
         notice,
         notice_text,
-        roots: RefCell::new(HashMap::new()),
+        lister: Lister::new(index, daemon),
         state: Rc::clone(state),
-        index: index.clone(),
-        daemon: Rc::clone(daemon),
         generation: Cell::new(0),
         syncing: Cell::new(false),
+        loading: Cell::new(false),
     });
 
     let watcher = Rc::clone(&files);
-    state.subscribe(move |_, change| {
+    state.subscribe(move |view, change| {
         if change == Change::Archives {
-            // New backups, or fewer: the top folders are asked for again.
-            watcher.roots.borrow_mut().clear();
+            watcher.lister.forget_roots();
         }
         let at_entry = watcher.state.view().at_trash_entry();
         if matches!(
@@ -196,6 +645,10 @@ pub fn build(
         ) || (change == Change::Trash && at_entry)
         {
             watcher.reload();
+        }
+        // Chosen elsewhere: in Rewind (S18-T4).
+        if change == Change::Selection {
+            watcher.follow_selection(view.selected.as_ref().map(|s| s.name.as_str()));
         }
     });
 
@@ -206,18 +659,8 @@ pub fn build(
             if selector.syncing.get() {
                 return;
             }
-            let selected = row_of(selection.selected_item().as_ref()).map(|row| {
-                let folder = selector.state.view().folder;
-                Selected {
-                    path: path::join(&folder, &row.entry.name),
-                    name: row.entry.name.clone(),
-                    is_dir: row.entry.kind == Kind::Dir,
-                    size: row.entry.size,
-                    mtime: row.entry.mtime,
-                    on_disk: row.on_disk,
-                    archive: row.trash.clone(),
-                }
-            });
+            let selected = row_of(selection.selected_item().as_ref())
+                .map(|row| row.selected(&selector.state.view().folder));
             selector.state.set_selected(selected);
         });
 
@@ -250,338 +693,52 @@ impl Files {
         self.stack.clone().upcast()
     }
 
+    /// What lists the folders, for Rewind to list them as the pane does.
+    pub fn lister(&self) -> Rc<Lister> {
+        Rc::clone(&self.lister)
+    }
+
     /// Re-read the folder at the current backup.
     pub fn reload(self: &Rc<Self>) {
         let view = self.state.view();
-        let Some(seq) = view.seq else {
-            debug!(folder = view.folder, "no backups catalogued yet");
-            self.show_empty(
-                "No backups yet",
-                "Backtrack has not catalogued any backups.",
-            );
-            return;
-        };
-        if crate::model::trash::is_entry(seq) {
-            self.reload_entry(&view, seq);
-            return;
-        }
-        let folder = view.folder.clone();
-        let newest = view.newer().is_none();
         let wanted = self.generation.get() + 1;
         self.generation.set(wanted);
-
+        self.loading.set(true);
         let this = Rc::clone(self);
-        let query_folder = folder.clone();
         crate::ui::spawn(async move {
-            let answer = this
-                .index
-                .query(move |reader| {
-                    let entries = reader.folder_at(&query_folder, seq)?;
-                    // Whether the folder itself is in the backup: if it is, an
-                    // empty list means it was empty then, and it is inside the
-                    // backups, with nothing above them to lead down to.
-                    let here = present_at(reader, &query_folder, seq)?;
-                    Ok((entries, here))
-                })
+            let listed = this
+                .lister
+                .list(&view, view.seq, view.newer().is_none())
                 .await;
             if this.generation.get() != wanted {
                 // Superseded while the query was in flight.
                 return;
             }
-            // A folder outside the backup may lead down to folders in it.
-            let (leading, partly, ways_down) = match &answer {
-                Ok((entries, false)) => {
-                    let roots = this.roots_at(seq).await;
-                    if this.generation.get() != wanted {
-                        return;
-                    }
-                    let leading: Vec<String> = above::leading_down(&folder, &roots)
-                        .into_iter()
-                        .filter(|name| !entries.iter().any(|e| &e.name == name))
-                        .collect();
-                    (
-                        leading,
-                        above::partly(&folder, &roots),
-                        hidden::ways_down(&folder, &roots),
-                    )
+            this.loading.set(false);
+            match listed {
+                Listed::Rows { rows, notice } => {
+                    this.show_notice(notice.as_deref());
+                    this.show(rows);
                 }
-                _ => (Vec::new(), false, Vec::new()),
-            };
-            let answer = answer.map(|(entries, here)| (entries, here, leading));
-            match answer {
-                Ok((entries, in_backup, leading)) if entries.is_empty() && leading.is_empty() => {
-                    let coverage = if in_backup || !newest {
-                        // Settled already: see `empty::why`.
-                        Coverage::Unknown
-                    } else {
-                        this.coverage(&folder, seq).await
-                    };
-                    if this.generation.get() != wanted {
-                        return;
-                    }
-                    let why = empty::why(in_backup, newest, coverage);
-                    debug!(folder, seq, ?why, "nothing to show");
-                    this.show_why(why, &folder);
-                }
-                Ok((mut entries, _, leading)) => {
-                    // The folders leading down are entries the catalogue does
-                    // not have: in no backup, so with no size, date or badge
-                    // of their own.
-                    entries.extend(leading.iter().map(|name| Entry {
-                        path_id: 0,
-                        name: name.clone(),
-                        kind: Kind::Dir,
-                        size: 0,
-                        mtime: 0,
-                        deleted_after: false,
-                        changed_since: false,
-                    }));
-                    // Asked before painting rather than after, so the status
-                    // column is right the first time it is drawn. It is one
-                    // directory read on the other side of a local socket, and
-                    // a column that corrects itself a moment later is worse
-                    // than one that waits.
-                    let on_disk = this.ask_the_disk(&entries, &folder).await;
-                    if this.generation.get() != wanted {
-                        return;
-                    }
-                    this.show_notice(partly.then_some(folder.as_str()));
-                    debug!(
-                        folder,
-                        seq,
-                        entries = entries.len(),
-                        deleted_after = entries.iter().filter(|e| e.deleted_after).count(),
-                        changed_since = entries.iter().filter(|e| e.changed_since).count(),
-                        gone_from_disk = on_disk.iter().filter(|a| **a == ABSENT).count(),
-                        leading_down = leading.len(),
-                        partly,
-                        "folder loaded"
-                    );
-                    this.show(entries, on_disk, &leading, &ways_down, &HashMap::new())
-                }
-                Err(error) => {
-                    warn!(%error, folder, seq, "the folder could not be read");
-                    this.show_empty("This folder could not be read", &error);
+                Listed::Empty {
+                    title,
+                    description,
+                    add,
+                } => {
+                    this.show_empty(&title, &description);
+                    this.add.set_visible(add);
                 }
             }
         });
     }
 
-    /// Read the folder at a Trash entry (Stage 16): the backup before its gap
-    /// with what was moved to the Trash in the gap put back, or, inside a
-    /// folder that went to the Trash whole, the Trash's copy of it.
-    fn reload_entry(self: &Rc<Self>, view: &crate::state::View, seq: i64) {
-        use crate::model::trash;
-        let folder = view.folder.clone();
-        let archives = Rc::clone(&view.archives);
-        let items = Rc::clone(&view.trash);
-        let wanted = self.generation.get() + 1;
-        self.generation.set(wanted);
-        let this = Rc::clone(self);
-        crate::ui::spawn(async move {
-            let rows: Result<Vec<trash::Row>, String> = match trash::trashed_folder(
-                &folder, seq, &archives, &items,
-            )
-            .cloned()
-            {
-                Some(item) => {
-                    let proxy = this.daemon.borrow().clone();
-                    match proxy {
-                            None => Err(
-                                "Backtrack's background service reads the Trash, and it is not running."
-                                    .to_string(),
-                            ),
-                            Some(proxy) => proxy
-                                .list_trashed_folder(&item.archive, &folder)
-                                .await
-                                .map_err(|e| e.to_string())
-                                .map(|listed| {
-                                    listed
-                                        .into_iter()
-                                        .map(|(name, kind, size, mtime)| trash::Row {
-                                            entry: Entry {
-                                                path_id: 0,
-                                                name,
-                                                kind: Kind::from_token(&kind),
-                                                size,
-                                                mtime,
-                                                deleted_after: false,
-                                                changed_since: false,
-                                            },
-                                            trash: Some(item.archive.clone()),
-                                        })
-                                        .collect()
-                                }),
-                        }
-                }
-                None => {
-                    let base = match trash::base_of(seq).flatten() {
-                        Some(base) => {
-                            let asked = folder.clone();
-                            this.index
-                                .query(move |reader| reader.folder_at(&asked, base))
-                                .await
-                        }
-                        None => Ok(Vec::new()),
-                    };
-                    base.map(|base| trash::overlay(&folder, seq, &archives, &items, base))
-                }
-            };
-            if this.generation.get() != wanted {
-                return;
-            }
-            match rows {
-                Ok(rows) if rows.is_empty() => this.show_empty(
-                    "Nothing from the Trash here",
-                    "Nothing moved to the Trash at this time came from this folder.",
-                ),
-                Ok(rows) => {
-                    let trashed: HashMap<String, String> = rows
-                        .iter()
-                        .filter_map(|r| r.trash.clone().map(|a| (r.entry.name.clone(), a)))
-                        .collect();
-                    let entries: Vec<Entry> = rows.into_iter().map(|r| r.entry).collect();
-                    let on_disk = this.ask_the_disk(&entries, &folder).await;
-                    if this.generation.get() != wanted {
-                        return;
-                    }
-                    this.show_notice(None);
-                    debug!(
-                        folder,
-                        seq,
-                        entries = entries.len(),
-                        trashed = trashed.len(),
-                        "Trash entry loaded"
-                    );
-                    this.show(entries, on_disk, &[], &[], &trashed);
-                }
-                Err(error) => {
-                    warn!(%error, folder, seq, "the folder could not be read");
-                    this.show_empty("This folder could not be read", &error);
-                }
-            }
-        });
-    }
-
-    /// What the daemon says about each of these entries being on the computer.
-    ///
-    /// An empty answer means nobody was asked — the daemon is not there, or it
-    /// refused — and every entry is then unknown. Browsing has never required
-    /// the daemon and must not start to.
-    async fn ask_the_disk(&self, entries: &[Entry], folder: &str) -> Vec<u8> {
-        let unknown = vec![UNKNOWN; entries.len()];
-        let Some(proxy) = self.daemon.borrow().clone() else {
-            return unknown;
-        };
-        let paths: Vec<String> = entries
-            .iter()
-            .map(|entry| path::join(folder, &entry.name))
-            .collect();
-        match proxy.paths_on_disk(&paths).await {
-            Ok(answers) if answers.len() == entries.len() => answers,
-            Ok(answers) => {
-                warn!(
-                    asked = entries.len(),
-                    answered = answers.len(),
-                    "the daemon answered for a different number of paths than were asked about"
-                );
-                unknown
-            }
-            Err(error) => {
-                debug!(%error, folder, "the daemon could not say what is on disk");
-                unknown
-            }
-        }
-    }
-
-    /// Where `folder` stands with the folders Backtrack backs up, and whether
-    /// the one it is in is in backup `seq`.
-    async fn coverage(&self, folder: &str, seq: i64) -> Coverage {
-        let Some(roots) = self.roots().await else {
-            return Coverage::Unknown;
-        };
-        let Some(root) = empty::root_of(folder, &roots) else {
-            return Coverage::Outside;
-        };
-        let root = path::to_archive(root);
-        if root.is_empty() {
-            // The filesystem root is in every backup there is.
-            return Coverage::Inside {
-                root_in_backup: true,
-            };
-        }
-        match self
-            .index
-            .query(move |reader| present_at(reader, &root, seq))
-            .await
-        {
-            Ok(root_in_backup) => Coverage::Inside { root_in_backup },
-            Err(error) => {
-                debug!(%error, folder, "the backed-up folder could not be looked up");
-                Coverage::Unknown
-            }
-        }
-    }
-
-    /// The folders Backtrack backs up, or `None` with no daemon to ask.
-    async fn roots(&self) -> Option<Vec<PathBuf>> {
-        let proxy = self.daemon.borrow().clone()?;
-        let text = match proxy.get_config().await {
-            Ok(text) => text,
-            Err(error) => {
-                debug!(%error, "the backed-up folders could not be read");
-                return None;
-            }
-        };
-        let (config, _) = backtrack_core::config::Config::parse(&text).ok()?;
-        Some(backtrack_core::roots::Roots::of(&config).roots)
-    }
-
-    /// Put `entries` on screen, keeping the selection if it survived the
-    /// change. `leading` names the ones that lead down to backed-up folders.
-    fn show(
-        self: &Rc<Self>,
-        entries: Vec<Entry>,
-        on_disk: Vec<u8>,
-        leading: &[String],
-        ways_down: &[String],
-        trashed: &HashMap<String, String>,
-    ) {
+    /// Put `rows` on screen, keeping the selection if it survived the change.
+    fn show(self: &Rc<Self>, rows: Vec<Row>) {
         let previously = self.state.view().selected.map(|s| s.name);
-
         self.syncing.set(true);
         self.rows.remove_all();
-        let tz = glib::TimeZone::local();
-        // Paired before sorting, because the answers came back in the order
-        // the entries were asked about and the sort is about to destroy it.
-        let mut sorted: Vec<(Entry, u8)> = entries
-            .into_iter()
-            .zip(on_disk.into_iter().chain(std::iter::repeat(UNKNOWN)))
-            .collect();
-        sorted.sort_by(|(a, _), (b, _)| crate::model::folders_first(a, b));
-        // Hidden files, unless they are shown, and never a way down to what
-        // is backed up (S18-T11).
-        let show_hidden = self.state.view().show_hidden;
-        sorted.retain(|(entry, _)| hidden::shown(&entry.name, show_hidden, ways_down));
-        for (entry, on_disk) in sorted {
-            let partly = leading.contains(&entry.name);
-            let data = RowData {
-                size: if partly {
-                    "—".to_string()
-                } else {
-                    crate::model::format::size(entry.size, entry.kind)
-                },
-                modified: if partly {
-                    "—".to_string()
-                } else {
-                    crate::model::format::modified(entry.mtime, &tz)
-                },
-                trash: trashed.get(&entry.name).cloned(),
-                entry,
-                on_disk,
-                partly,
-            };
-            self.rows.append(&glib::BoxedAnyObject::new(data));
+        for row in rows {
+            self.rows.append(&glib::BoxedAnyObject::new(row));
         }
         self.stack.set_visible_child_name("files");
         self.syncing.set(false);
@@ -597,6 +754,27 @@ impl Files {
         }
     }
 
+    /// Select `name`, chosen somewhere other than the pane (in Rewind, at
+    /// another backup), if it is listed here, and make the selection this
+    /// backup's version of it; if it is not, select nothing.
+    fn follow_selection(&self, name: Option<&str>) {
+        if self.loading.get() {
+            return;
+        }
+        let showing = row_of(self.selection.selected_item().as_ref()).map(|row| row.entry.name);
+        if showing.as_deref() == name {
+            return;
+        }
+        let position = name.and_then(|name| self.position_of(name));
+        self.syncing.set(true);
+        self.selection
+            .set_selected(position.unwrap_or(gtk4::INVALID_LIST_POSITION));
+        self.syncing.set(false);
+        let row = position.and_then(|p| row_of(self.rows.item(p).as_ref()));
+        self.state
+            .set_selected(row.map(|row| row.selected(&self.state.view().folder)));
+    }
+
     fn show_empty(&self, title: &str, description: &str) {
         self.rows.remove_all();
         self.empty.set_title(title);
@@ -605,37 +783,13 @@ impl Files {
         self.stack.set_visible_child_name("empty");
     }
 
-    fn show_why(&self, why: Empty, folder: &str) {
-        let name = label(folder).unwrap_or_else(|| path::name(folder).to_string());
-        self.show_empty(why.title(), &why.description(&name));
-        self.add.set_visible(why.offers_to_add());
-    }
-
-    /// Say above the list that only some of `folder` is backed up, or, with
-    /// `None`, say nothing.
-    fn show_notice(&self, folder: Option<&str>) {
-        if let Some(folder) = folder {
-            self.notice_text
-                .set_text(&above::notice(label(folder).as_deref()));
+    /// Say above the list that only some of the folder is backed up, or,
+    /// with `None`, say nothing.
+    fn show_notice(&self, text: Option<&str>) {
+        if let Some(text) = text {
+            self.notice_text.set_text(text);
         }
-        self.notice.set_visible(folder.is_some());
-    }
-
-    /// The top folders of backup `seq`, from the index, asked once per
-    /// backup. Empty when the index cannot say, which leads nowhere.
-    async fn roots_at(&self, seq: i64) -> Rc<Vec<String>> {
-        if let Some(roots) = self.roots.borrow().get(&seq) {
-            return Rc::clone(roots);
-        }
-        let roots = match self.index.query(move |r| r.backed_up_roots(seq)).await {
-            Ok(roots) => Rc::new(roots),
-            Err(error) => {
-                debug!(%error, seq, "the backup's top folders could not be read");
-                return Rc::new(Vec::new());
-            }
-        };
-        self.roots.borrow_mut().insert(seq, Rc::clone(&roots));
-        roots
+        self.notice.set_visible(text.is_some());
     }
 
     fn position_of(&self, name: &str) -> Option<u32> {
@@ -664,14 +818,14 @@ fn present_at(reader: &IndexReader, path: &str, seq: i64) -> backtrack_core::ind
 }
 
 /// The row behind a list item.
-fn row_of(item: Option<&glib::Object>) -> Option<RowData> {
+pub fn row_of(item: Option<&glib::Object>) -> Option<Row> {
     let boxed = item?.downcast_ref::<glib::BoxedAnyObject>()?;
-    let row = boxed.borrow::<RowData>().clone();
+    let row = boxed.borrow::<Row>().clone();
     Some(row)
 }
 
 /// Name, Size, Modified, Status — the mockup's columns, in its order.
-fn columns() -> Vec<ColumnViewColumn> {
+pub fn columns() -> Vec<ColumnViewColumn> {
     vec![
         // Widths chosen so all four columns fit a pane of about 500 pixels,
         // which is what the window's natural size leaves after the sidebar and
@@ -754,7 +908,7 @@ fn name_factory() -> SignalListItemFactory {
 }
 
 /// A plain text column.
-fn text_factory(text: fn(&RowData) -> String, align: Align) -> SignalListItemFactory {
+fn text_factory(text: fn(&Row) -> String, align: Align) -> SignalListItemFactory {
     let factory = SignalListItemFactory::new();
     factory.connect_setup(move |_, item| {
         let Some(item) = item.downcast_ref::<ListItem>() else {
@@ -805,14 +959,7 @@ fn status_factory() -> SignalListItemFactory {
         for class in file_badge::CLASSES {
             label.remove_css_class(class);
         }
-        let badge = file_badge::of(file_badge::Facts {
-            folder: row.entry.kind == Kind::Dir,
-            in_trash: row.trash.is_some(),
-            partly: row.partly,
-            deleted_after: row.entry.deleted_after,
-            absent: row.on_disk == ABSENT,
-            changed_since: row.entry.changed_since,
-        });
+        let badge = row.badge();
         label.set_text(badge.text);
         if let Some(class) = badge.class {
             label.add_css_class(class);

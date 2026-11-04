@@ -518,7 +518,10 @@ impl Window {
         {
             let this = Rc::clone(self);
             rewind.connect_activate(move |_, _| {
-                ui::rewind::open(&this.window, &this.state.view(), &this.index);
+                let lister = this.files.borrow().as_ref().map(|files| files.lister());
+                if let Some(lister) = lister {
+                    ui::rewind::open(&this.window, &this.state, &this.index, lister);
+                }
             });
         }
         self.window.add_action(&rewind);
