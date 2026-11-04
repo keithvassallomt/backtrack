@@ -724,6 +724,10 @@ Two tests were added after mutants survived: a config that includes itself,
 and a `bg` line commented out inside an `output { }` block; all 16 mutants of
 the parser fail its tests. The check is `scripts/rewind-check 9`.
 
+Checked by Keith on the GNOME VM (`scripts/rewind-check 9`): natively Rewind
+showed Fedora's Sway wallpaper, and after the config was given one of its
+own, that one; the Flatpak showed the config's too.
+
 **Accept:** unit tests on configs with includes, variables, `~`, `*` and named
 outputs; on a VM with Sway, natively and in the Flatpak, Rewind shows the
 wallpaper its config names.
