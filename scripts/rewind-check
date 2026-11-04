@@ -8,7 +8,8 @@
 # so (S18-T10); hidden files, and a quick opening on a large catalogue (S18-T11
 # and T12); a backup on battery that has waited long enough running anyway
 # (S18-T14); the tray and the service restarting after an upgrade (S18-T13);
-# the wallpaper on each desktop's VM (S18-T2, T19, T20).
+# the wallpaper on each desktop's VM (S18-T2, T19, T20); Rewind's window in
+# front (S18-T4).
 # Each step says what to do at the screen.
 #
 #   scripts/rewind-check install   build the AUR packages here and say how to
@@ -32,6 +33,11 @@
 #                                  (S18-T20)
 #   scripts/rewind-check 9 change  give Sway on the VM a wallpaper of its own
 #   scripts/rewind-check 9 done    take it away, and log the VM in to GNOME
+#   scripts/rewind-check 10        on the GNOME VM: Rewind's window in front,
+#                                  its pictures, walking into folders, and
+#                                  leaving where it was (S18-T4)
+#   scripts/rewind-check 10 setup  back up a folder of pictures there for it:
+#                                  two backups, changed in between and since
 #
 # Run from the checkout.
 
@@ -249,6 +255,71 @@ EOF
 EOF
         ;;
     esac
+    ;;
+10)
+    vm="fedora45 (GNOME)"
+    if [[ "${2:-}" == setup ]]; then
+        # ~/Pictures, backed up by the VM's development service: six files,
+        # then stone_bird.jpg replaced by another picture and
+        # tiny_blast_of_red.jpg deleted, backed up again, then ladybugs.jpg
+        # changed on the disk only.
+        ssh "$("$ROOT/scripts/vm" address "$vm")" 'set -e
+            cli() { BACKTRACK_DEV=1 "$HOME/backtrack/target/debug/backtrack" "$@"; }
+            settle() {
+                for _ in $(seq 1 45); do
+                    cli status | grep -qiE "backing up|cataloguing" || return 0
+                    sleep 4
+                done
+            }
+            rm -rf ~/Pictures && mkdir -p ~/Pictures
+            cp /usr/share/backgrounds/images/{earth_from_space,flowers_and_leaves,ladybugs,stone_bird,tiny_blast_of_red}.jpg ~/Pictures/
+            cp /usr/share/backgrounds/sway/Sway_Wallpaper_Blue_1920x1080.png ~/Pictures/sway-blue.png
+            echo "Shopping: milk, bread" > ~/Pictures/notes.txt
+            cli config set backup.include "[\"$HOME/.local/share/backtrack-dev/demo-src\", \"$HOME/Pictures\"]" >/dev/null
+            cli backup-now >/dev/null && sleep 2 && settle
+            cp ~/Pictures/ladybugs.jpg ~/Pictures/stone_bird.jpg
+            rm ~/Pictures/tiny_blast_of_red.jpg
+            cli backup-now >/dev/null && sleep 2 && settle
+            sleep 2
+            cp ~/Pictures/earth_from_space.jpg ~/Pictures/ladybugs.jpg'
+        echo "Pictures, in the VM's home folder, is backed up twice, and changed since."
+        exit 0
+    fi
+    say "10. Rewind's window in front, on $vm (S18-T4)"
+    cat <<EOF
+  ~/Pictures on the VM has two backups (scripts/rewind-check 10 setup made
+  them): between them, stone_bird.jpg was replaced by the ladybugs picture
+  and tiny_blast_of_red.jpg deleted; since the second, ladybugs.jpg has been
+  replaced by the earth picture, on the disk only.
+
+  a. On the VM, open Files at Pictures, wait for its thumbnails, and close
+     it: the desktop's thumbnails are what Rewind shows first. Then, from
+     the laptop:
+       just vm-app "$vm" --select /home/keith/Pictures/stone_bird.jpg
+     Backtrack opens at Pictures with stone_bird.jpg selected.
+  b. Press Ctrl+T. Rewind opens at the newest backup, as icons, with
+     stone_bird.jpg selected, on the cards behind too. Real pictures for
+     earth_from_space, flowers_and_leaves, stone_bird (showing ladybugs) and
+     sway-blue; ladybugs.jpg shows ladybugs after a moment (made from the
+     backup, not the earth now on the disk); notes.txt, its icon. Every
+     cell is the same height.
+  c. Press Up: the first backup comes to the front. tiny_blast_of_red.jpg is
+     back, marked "deleted", and stone_bird.jpg is marked "changed" and
+     shows the stone bird; both pictures arrive a moment after. Hover a
+     badge: its tooltip says the rest. Press Home: the folder as it is
+     now, ladybugs.jpg showing the earth. Press End to go back.
+  d. Press Left and Right: the selection moves among the icons. Up and Down
+     still step through time.
+  e. Click the list button, right of the date: the folder as the main
+     window's list, with its columns and badges. Click the icons button.
+  f. Press Alt+Up: Rewind goes up to your home folder, its backups listed
+     for it. Double-click Pictures (or press Enter on it): back in Pictures.
+     Click "Home" in the window's trail, then walk back in the same way.
+  g. Select flowers_and_leaves.jpg and press Escape. Backtrack's window shows
+     Pictures with flowers_and_leaves.jpg selected.
+
+  Tell me any of a to g that did not happen, or did and looked wrong.
+EOF
     ;;
 *)
     sed -n '/^# Stage 18/,/^# Run from/p' "$0" | sed 's/^# \{0,1\}//'
