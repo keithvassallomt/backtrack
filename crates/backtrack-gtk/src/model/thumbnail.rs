@@ -281,10 +281,22 @@ mod tests {
         assert_eq!(
             cached(root.path(), uri),
             Some(Cached {
-                path,
+                path: path.clone(),
                 mtime: 1_700_000_000
             })
         );
         assert_eq!(cached(root.path(), "file:///home/k/other.jpg"), None);
+
+        // Under this URI's name, but recorded as another file's.
+        std::fs::write(
+            &path,
+            png(&[
+                (b"tEXt", b"Thumb::URI\0file:///home/k/elsewhere.jpg"),
+                (b"tEXt", b"Thumb::MTime\x001700000000"),
+                (b"IEND", b""),
+            ]),
+        )
+        .unwrap();
+        assert_eq!(cached(root.path(), uri), None);
     }
 }
