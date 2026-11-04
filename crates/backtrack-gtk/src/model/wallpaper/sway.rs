@@ -255,6 +255,25 @@ mod tests {
     }
 
     #[test]
+    fn a_line_put_out_of_use_in_a_block_is_not_read() {
+        let config = "output DP-1 {\n    bg /now.png fill\n    # bg /before.png fit\n}\n";
+        assert_eq!(
+            picture(choose(config, Some("DP-1"), &home(), &none)),
+            Some((PathBuf::from("/now.png"), Fit::Cover))
+        );
+    }
+
+    #[test]
+    fn a_config_that_includes_itself_is_read_a_few_times_over() {
+        let config = "include ~/.config/sway/config\noutput * bg /a.png fill\n";
+        let read = |_: &str| vec![config.to_owned()];
+        assert_eq!(
+            picture(choose(config, None, &home(), &read)),
+            Some((PathBuf::from("/a.png"), Fit::Cover))
+        );
+    }
+
+    #[test]
     fn longer_variables_are_substituted_first() {
         let config = "set $wall /x\nset $wallpaper /y.png\noutput * bg $wallpaper fill\n";
         assert_eq!(

@@ -711,6 +711,19 @@ blocks, `bg … solid_color`). Natively it reads the newest `swaybg`'s command
 line first, as on Hyprland, which a change made with `swaymsg` is in; the
 config is what the Flatpak, which cannot see other processes, reads.
 
+**Found on the GNOME VM** (2026-11-04, Sway 1.12 from Fedora 45, with
+`sway-config-upstream`): Fedora's `/etc/sway/config` names
+`Sway_Wallpaper_Blue_1920x1080.png` for `output *` and includes
+`/etc/sway/config.d/*`. `backtrack-gtk --wallpaper-report` read it natively
+from swaybg's command line and in the Flatpak from `/run/host/etc/sway/config`;
+with a user config that includes Fedora's and then sets the wallpaper through
+an `include` of `~/.config/sway/config.d/*` and a `$wallpaper` variable, both
+read the new picture. A change made with `swaymsg output * bg …` was read
+natively and, as expected, not in the Flatpak, which still named the config's.
+Two tests were added after mutants survived: a config that includes itself,
+and a `bg` line commented out inside an `output { }` block; all 16 mutants of
+the parser fail its tests. The check is `scripts/rewind-check 9`.
+
 **Accept:** unit tests on configs with includes, variables, `~`, `*` and named
 outputs; on a VM with Sway, natively and in the Flatpak, Rewind shows the
 wallpaper its config names.

@@ -7,7 +7,8 @@
 # crossfade with animations off (S18-T3); a backup held up on battery saying
 # so (S18-T10); hidden files, and a quick opening on a large catalogue (S18-T11
 # and T12); a backup on battery that has waited long enough running anyway
-# (S18-T14); the tray and the service restarting after an upgrade (S18-T13).
+# (S18-T14); the tray and the service restarting after an upgrade (S18-T13);
+# the wallpaper on each desktop's VM (S18-T2, T19, T20).
 # Each step says what to do at the screen.
 #
 #   scripts/rewind-check install   build the AUR packages here and say how to
@@ -26,6 +27,11 @@
 #                                  Cinnamon's and Xfce's wallpaper, natively
 #                                  and in the Flatpak (S18-T2, T19)
 #   scripts/rewind-check 8         the same on the Plasma VM
+#   scripts/rewind-check 9         on the GNOME VM's Sway: the wallpaper its
+#                                  config names, natively and in the Flatpak
+#                                  (S18-T20)
+#   scripts/rewind-check 9 change  give Sway on the VM a wallpaper of its own
+#   scripts/rewind-check 9 done    take it away, and log the VM in to GNOME
 #
 # Run from the checkout.
 
@@ -190,6 +196,59 @@ EOF
 
   Tell me, for each desktop, any of a to d that did not happen.
 EOF
+    ;;
+9)
+    vm="fedora45 (GNOME)"
+    APP_ID=tools.backtrack.Backtrack
+    case "${2:-}" in
+    change)
+        # A wallpaper as a Sway user sets one: in a config of their own,
+        # here through an include and a variable, read after Fedora's.
+        ssh "$("$ROOT/scripts/vm" address "$vm")" 'set -e
+            mkdir -p ~/.config/sway/config.d
+            printf "%s\n" "# Written by scripts/rewind-check 9 (S18-T20)." \
+                "include /etc/sway/config" "include ~/.config/sway/config.d/*" \
+                > ~/.config/sway/config
+            printf "%s\n" "set \$wallpaper /usr/share/backgrounds/images/ladybugs.jpg" \
+                "output * bg \$wallpaper fill" > ~/.config/sway/config.d/wallpaper.conf
+            SWAYSOCK="$(systemctl --user show-environment | sed -n "s/^SWAYSOCK=//p")" \
+                swaymsg reload >/dev/null'
+        echo "Sway on the VM now shows the ladybugs, from ~/.config/sway/config."
+        ;;
+    done)
+        ssh "$("$ROOT/scripts/vm" address "$vm")" 'set -e
+            rm -rf ~/.config/sway
+            sudo busctl call org.freedesktop.Accounts /org/freedesktop/Accounts/User1000 \
+                org.freedesktop.Accounts.User SetSession s gnome
+            sudo systemctl restart gdm'
+        echo "The VM has Fedora's Sway config again, and is logged in to GNOME."
+        ;;
+    *)
+        say "9. Rewind over Sway's wallpaper, on $vm"
+        cat <<EOF
+  The VM is logged in to Sway: its blue wallpaper, and a bar at the bottom.
+
+  a. Natively: from the laptop, run
+       just vm-app "$vm"
+     Backtrack opens on the VM's screen, filling it. Press Ctrl+T: Rewind
+     opens over Sway's blue wallpaper, darkened. Escape.
+  b. From the laptop, run
+       scripts/rewind-check 9 change
+     The VM's wallpaper becomes ladybugs on leaves. Press Ctrl+T again: the
+     ladybugs are behind the stack. Escape, and close Backtrack with its
+     close button.
+  c. In the Flatpak: from the laptop, run
+       ssh "\$(scripts/vm address "$vm")" systemd-run --user flatpak run $APP_ID
+     Press Ctrl+T: the ladybugs again, which the Flatpak reads from Sway's
+     config. Escape, and close it.
+  d. From the laptop, run
+       scripts/rewind-check 9 done
+     The VM goes back to GNOME.
+
+  Tell me any of a to d that did not happen.
+EOF
+        ;;
+    esac
     ;;
 *)
     sed -n '/^# Stage 18/,/^# Run from/p' "$0" | sed 's/^# \{0,1\}//'
