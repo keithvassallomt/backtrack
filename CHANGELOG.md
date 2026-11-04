@@ -333,6 +333,9 @@ All notable changes to Backtrack are documented here. This project adheres to
   once the last backup is three hours old, it runs anyway, and the window says
   until when it is waiting. Wait for mains power, in Preferences under Back up
   on battery power, sets how long, or Always to wait however long it takes.
+- Cataloguing a backup takes far less memory: for a backup of 2.5 million
+  files, a few megabytes where it took about 300 MB, and none of it is left
+  held by the backup service afterwards.
 - The backup service now announces when a job has finished, so an application
   that started one learns the outcome as it happens instead of asking
   repeatedly whether it is done yet.

@@ -14,7 +14,7 @@ use std::path::Path;
 use rusqlite::{params, OptionalExtension};
 use rusqlite::{Connection, Transaction};
 
-use super::item::{ArchiveMeta, BorgItem, Repo};
+use super::item::{ArchiveMeta, BorgItem, Kind, Repo};
 use super::{open_connection, open_memory_connection, schema, IndexError, Result};
 
 /// The source of a listing could not produce the rest of it.
@@ -237,11 +237,18 @@ fn split_versions_around(tx: &Transaction, seq: i64) -> Result<()> {
 }
 
 /// Resolves `/`-separated paths to `paths.id`, inserting missing components (and
-/// their FTS rows) as it goes. A per-ingest cache keyed by (parent_id, name)
-/// means each directory is touched once no matter how many children it has, so
-/// resolution cost is bounded by the tree, not the listing length.
+/// their FTS rows) as it goes. A per-ingest cache of folders, by parent and
+/// name, means each folder is looked up once no matter how many children it
+/// has, so resolution cost is bounded by the tree, not the listing length.
+///
+/// Only folders are kept (S18-T21). A file is the last part of its own path
+/// and nobody's parent, so it is looked up once and never again: keeping it
+/// held every file's name for the length of the ingest, 280 MB for 2.5
+/// million files.
 struct PathResolver<'a> {
-    cache: HashMap<(i64, String), i64>,
+    /// Each parent's folders, by name; a map per parent so that a name is
+    /// looked up as the `&str` it is, not copied into a key.
+    folders: HashMap<i64, HashMap<Box<str>, i64>>,
     upsert: rusqlite::Statement<'a>,
     lookup: rusqlite::Statement<'a>,
     fts: rusqlite::Statement<'a>,
@@ -250,7 +257,7 @@ struct PathResolver<'a> {
 impl<'a> PathResolver<'a> {
     fn new(tx: &'a Transaction<'a>) -> Result<PathResolver<'a>> {
         Ok(PathResolver {
-            cache: HashMap::new(),
+            folders: HashMap::new(),
             upsert: tx.prepare(
                 "INSERT INTO paths(parent_id, name) VALUES (?1, ?2)
                  ON CONFLICT(parent_id, name) DO NOTHING",
@@ -260,18 +267,22 @@ impl<'a> PathResolver<'a> {
         })
     }
 
-    /// Resolve a full archive-relative path to its leaf `paths.id`.
-    fn resolve(&mut self, path: &str) -> Result<i64> {
+    /// Resolve an item's archive-relative path to its leaf `paths.id`. Every
+    /// part but the last is a folder; the last is one when the item is.
+    fn resolve(&mut self, item: &BorgItem) -> Result<i64> {
+        let folder = item.kind == Kind::Dir;
         // `parent_id = 0` is the virtual root; top-level components hang off it.
         let mut parent = 0i64;
-        for name in path.split('/').filter(|s| !s.is_empty()) {
-            parent = self.resolve_component(parent, name)?;
+        let mut names = item.path.split('/').filter(|s| !s.is_empty()).peekable();
+        while let Some(name) = names.next() {
+            let keep = folder || names.peek().is_some();
+            parent = self.resolve_component(parent, name, keep)?;
         }
         Ok(parent)
     }
 
-    fn resolve_component(&mut self, parent: i64, name: &str) -> Result<i64> {
-        if let Some(&id) = self.cache.get(&(parent, name.to_string())) {
+    fn resolve_component(&mut self, parent: i64, name: &str, keep: bool) -> Result<i64> {
+        if let Some(&id) = self.folders.get(&parent).and_then(|names| names.get(name)) {
             return Ok(id);
         }
         // Insert if absent; a freshly-created row is a path's first appearance,
@@ -283,7 +294,12 @@ impl<'a> PathResolver<'a> {
         if inserted {
             self.fts.execute(params![id, name])?;
         }
-        self.cache.insert((parent, name.to_string()), id);
+        if keep {
+            self.folders
+                .entry(parent)
+                .or_default()
+                .insert(name.into(), id);
+        }
         Ok(id)
     }
 }
@@ -513,7 +529,7 @@ impl IndexWriter {
                 // cut short leaves the catalogue exactly as it was.
                 let item = item.map_err(|_| IndexError::ListingIncomplete { seq })?;
                 stats.items += 1;
-                let path_id = resolver.resolve(&item.path)?;
+                let path_id = resolver.resolve(&item)?;
                 if let Some(mention) = mention.as_mut() {
                     mention.execute(params![path_id])?;
                 }
@@ -1001,7 +1017,6 @@ fn coalesce_versions(tx: &Transaction) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::index::Kind;
     use std::time::Instant;
 
     fn file(path: &str, size: i64, mtime: i64) -> BorgItem {
@@ -1050,6 +1065,59 @@ mod tests {
             .unwrap()
             .map(|r| r.unwrap())
             .collect()
+    }
+
+    #[test]
+    fn the_resolver_keeps_folders_and_not_files() {
+        let mut w = IndexWriter::open_in_memory().unwrap();
+        let tx = w.conn.transaction().unwrap();
+        let mut resolver = PathResolver::new(&tx).unwrap();
+        let kept = |resolver: &PathResolver| {
+            let mut kept: Vec<(i64, String, i64)> = resolver
+                .folders
+                .iter()
+                .flat_map(|(&parent, names)| {
+                    names
+                        .iter()
+                        .map(move |(name, &id)| (parent, name.to_string(), id))
+                })
+                .collect();
+            kept.sort_unstable();
+            kept
+        };
+        let a = resolver.resolve(&file("home/k/a.txt", 1, 1)).unwrap();
+        let b = resolver.resolve(&file("home/k/b.txt", 1, 1)).unwrap();
+        let photos = resolver
+            .resolve(&BorgItem {
+                kind: Kind::Dir,
+                ..file("home/k/Photos", 0, 1)
+            })
+            .unwrap();
+        let parent_of = |id: i64| -> i64 {
+            tx.query_row("SELECT parent_id FROM paths WHERE id = ?1", [id], |r| {
+                r.get(0)
+            })
+            .unwrap()
+        };
+        let k = parent_of(a);
+        let home = parent_of(k);
+        let folders = vec![
+            (0, "home".to_owned(), home),
+            (home, "k".to_owned(), k),
+            (k, "Photos".to_owned(), photos),
+        ];
+        assert_eq!(kept(&resolver), folders, "each folder, under its parent");
+        let c = resolver
+            .resolve(&file("home/k/Photos/c.jpg", 1, 1))
+            .unwrap();
+        assert_eq!(kept(&resolver), folders, "and no file");
+        assert_eq!(parent_of(c), photos);
+        assert_eq!(
+            resolver.resolve(&file("home/k/a.txt", 1, 1)).unwrap(),
+            a,
+            "a file not kept is found again in the catalogue"
+        );
+        assert_ne!(a, b);
     }
 
     #[test]

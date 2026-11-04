@@ -38,6 +38,7 @@ EXEMPT_FILES = {
     # `backtrack-gtk --wallpaper-report` (S18-T2), which says how finding and
     # drawing the desktop's wallpaper went, for checking a desktop by hand.
     "crates/backtrack-gtk/src/wallpaper/report.rs",
+    "crates/backtrack-core/examples/ingest_memory.rs",
 }
 
 

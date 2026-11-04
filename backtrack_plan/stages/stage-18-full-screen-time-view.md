@@ -739,6 +739,28 @@ none of which is looked up again.
 - The resolver keeps only folders; a file is looked up and inserted, not kept.
 - A lookup no longer copies the name it looks up.
 
+**Built** (2026-11-04): the resolver keeps each parent's folders in a map of
+its own, by name, so a name is looked up as the `&str` it is; a path's last
+part is kept only when the item is a folder. Files are looked up and
+inserted as before, so the catalogue's queries per item are unchanged.
+
+**Measured** (2026-11-04) with
+`cargo run --release -p backtrack-core --example ingest_memory`: 2,500,000
+files in 50,000 folders (2,550,250 items with the folders), ingested as a
+first backup and again as the next, unchanged, into a catalogue on disk; the
+peak resident memory of each ingest above what was resident before it:
+
+| Ingest | Before | After |
+|---|---|---|
+| First backup (every item a new version) | +306 MB | +7 MB |
+| Next backup (every item carried on) | +281 MB | +0 MB |
+| Resident after the first | 88 MB | 12 MB |
+
+The 88 MB the old resolver left resident after its ingest was memory the
+allocator kept from the dropped cache, the same shape as the daemon holding
+267 MB after a backup where it had held 152 MB before (S18-T17). The time per
+ingest, 8 to 11 seconds, varied more between runs than between the two.
+
 **Accept:** the catalogue an ingest writes is unchanged (the ingest tests pass
 as they are); a test that the resolver keeps folders and not files; on a
 generated listing of 2.5 million files in 50,000 folders, the ingest's peak
