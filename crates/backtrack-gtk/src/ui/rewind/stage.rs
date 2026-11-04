@@ -563,8 +563,9 @@ impl Stage {
                 &pictures,
                 Some(&actions),
             );
-            built.window.set_parent(self);
-            debug!(slot = target, "Rewind's window in front is live");
+            let widget = built.window.clone();
+            // Known as the window in front before it is put on the stage,
+            // where its cells are bound at once and ask for their pictures.
             self.imp().state.borrow_mut().front = Some(Front {
                 slot: target,
                 widget: built.window,
@@ -576,6 +577,8 @@ impl Stage {
                 leaving: false,
                 done: false,
             });
+            widget.set_parent(self);
+            debug!(slot = target, "Rewind's window in front is live");
             self.queue_allocate();
         }
         // Once laid out, the folder's icons or list take the keyboard, so

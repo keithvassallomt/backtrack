@@ -421,6 +421,10 @@ impl Rewind {
             return;
         }
         let Some(slot) = self.stage.front_slot() else {
+            debug!(
+                name = row.entry.name,
+                "no window in front to make a picture for"
+            );
             self.making.borrow_mut().remove(&key);
             return;
         };
@@ -451,6 +455,13 @@ impl Rewind {
             })
             .await
             .unwrap_or(thumbnail::Source::Icon);
+            debug!(file, ?source, archive, "Rewind is making a picture");
+            let from = match &source {
+                thumbnail::Source::Cache(_) => "the desktop's thumbnail",
+                thumbnail::Source::Backup => "the backup",
+                thumbnail::Source::Disk => "the disk",
+                thumbnail::Source::Icon => "",
+            };
             let texture = match source {
                 thumbnail::Source::Icon => None,
                 thumbnail::Source::Cache(file) => {
@@ -495,6 +506,7 @@ impl Rewind {
             let Some(texture) = texture else {
                 return;
             };
+            debug!(file, from, "Rewind made a picture");
             this.stage
                 .pictures()
                 .borrow_mut()
