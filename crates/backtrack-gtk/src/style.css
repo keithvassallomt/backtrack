@@ -343,6 +343,27 @@ window.rewind {
     padding: 8px 4px 9px;
 }
 
+/* Rewind's step arrows, beside the timeline (S18-T5): round, light on the
+ * wallpaper in either style, and coloured under the pointer as a button is
+ * (Keith, 2026-10-27). */
+button.rewind-step {
+    min-width: 44px;
+    min-height: 44px;
+    padding: 0;
+    border-radius: 9999px;
+    background-color: @popover_bg_color;
+    color: @popover_fg_color;
+    box-shadow: 0 2px 8px alpha(black, 0.35);
+}
+
+button.rewind-step:hover {
+    background-image: image(alpha(currentColor, 0.1));
+}
+
+button.rewind-step:active {
+    background-image: image(alpha(currentColor, 0.2));
+}
+
 /* A badge on an icon's foot: under it, a pill of the card's own colour, so a
  * picture does not show through the badge's tint. */
 .rewind-badge {

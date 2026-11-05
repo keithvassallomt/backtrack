@@ -126,6 +126,10 @@ struct State {
     /// Counts changes to how cards are drawn (hidden files, icons or list,
     /// the selection), so that a card laid out before one is made again.
     generation: u64,
+    /// Told where the stack is, and the backup it is going to, whenever
+    /// either changes: the timeline follows it (S18-T5).
+    moved: Option<std::rc::Rc<dyn Fn(f64, usize)>>,
+    reported: Option<(f64, usize)>,
 }
 
 mod imp {
@@ -361,6 +365,14 @@ impl Stage {
         self.moved(|motion, now| motion.go_to(index, now))
     }
 
+    /// Call `f` with where the stack is drawn, in backups, and the backup it
+    /// is going to, each frame either has changed.
+    pub fn connect_moved(&self, f: impl Fn(f64, usize) + 'static) {
+        let mut state = self.imp().state.borrow_mut();
+        state.moved = Some(std::rc::Rc::new(f));
+        state.reported = None;
+    }
+
     pub fn oldest(&self) -> usize {
         self.imp()
             .state
@@ -428,6 +440,15 @@ impl Stage {
             state.last_moving_frame = None;
             state.budget.at_rest(now as f64 / 1e6);
         }
+        let report = state
+            .motion
+            .as_ref()
+            .map(|motion| (motion.position(), motion.target()))
+            .filter(|now| state.reported != Some(*now));
+        if report.is_some() {
+            state.reported = report;
+        }
+        let moved = report.and(state.moved.clone());
         let since_last = state
             .last_tick
             .map_or(0.0, |last| ((now - last) as f64 / 1e6).min(0.1));
@@ -551,6 +572,9 @@ impl Stage {
             std::rc::Rc::clone(&state.pictures),
         );
         drop(guard);
+        if let (Some(moved), Some((position, target))) = (moved, report) {
+            moved(position, target);
+        }
         for widget in done {
             widget.unparent();
         }

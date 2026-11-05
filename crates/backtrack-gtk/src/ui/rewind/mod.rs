@@ -21,6 +21,7 @@
 
 mod folder;
 mod stage;
+mod timeline;
 
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
@@ -34,11 +35,13 @@ use libadwaita::prelude::*;
 use tracing::{debug, warn};
 
 use crate::index::Index;
-use crate::model::{rewind, thumbnail, trash};
+use crate::model::group::{self, Kept};
+use crate::model::{rewind, thumbnail, timeline as timeline_model, trash};
 use crate::state::{AppState, Change, View};
 use crate::ui::files::{Listed, Lister, Row};
 use folder::{Actions, Body, Content, Mode};
 use stage::{Background, Stage};
+use timeline::{Tick, Timeline};
 
 // How the windows showed their folders when Rewind was last left: icons
 // until the list is chosen, then the list, for as long as Backtrack runs.
@@ -58,6 +61,8 @@ type When = Option<i64>;
 struct Rewind {
     state: Rc<AppState>,
     stage: Stage,
+    /// The backups down the right-hand edge (S18-T5).
+    timeline: Timeline,
     lister: Rc<Lister>,
     index: Index,
     /// What each time held, as listed, for the folder being viewed: kept
@@ -94,9 +99,19 @@ pub fn open(
     stage.set_show_hidden(state.view().show_hidden);
     stage.set_mode(MODE.get());
     stage.set_selected(state.view().selected.map(|s| s.name));
+    let timeline = Timeline::new();
+    {
+        let timeline = timeline.downgrade();
+        stage.connect_moved(move |position, target| {
+            if let Some(timeline) = timeline.upgrade() {
+                timeline.set_position(position, target);
+            }
+        });
+    }
     let rewind = Rc::new(Rewind {
         state: Rc::clone(&state),
         stage: stage.clone(),
+        timeline: timeline.clone(),
         lister,
         index: index.clone(),
         bodies: RefCell::new(HashMap::new()),
@@ -121,6 +136,7 @@ pub fn open(
 
     let overlay = gtk4::Overlay::new();
     overlay.set_child(Some(&stage));
+    overlay.add_overlay(&timeline);
     overlay.add_overlay(&lines);
     shell.set_content(Some(&overlay));
 
@@ -146,6 +162,24 @@ pub fn open(
 
     stage.set_actions(rewind.actions());
     rewind.watch(&say);
+    {
+        let (weak, told) = (Rc::downgrade(&rewind), Rc::clone(&say));
+        timeline.connect_chosen(move |index| {
+            if let Some(rewind) = weak.upgrade() {
+                let to = rewind.stage.go_to(index);
+                rewind.moved_to(to);
+                told(to);
+            }
+        });
+        let (weak, told) = (Rc::downgrade(&rewind), Rc::clone(&say));
+        timeline.connect_step(move |steps| {
+            if let Some(rewind) = weak.upgrade() {
+                let to = rewind.stage.step(steps, false);
+                rewind.moved_to(to);
+                told(to);
+            }
+        });
+    }
     keys(&shell, &rewind, &say, parent);
     // However it is closed, the window gets Rewind's folder and selection.
     {
@@ -298,6 +332,24 @@ impl Rewind {
         self.generation.set(self.generation.get() + 1);
         *self.slots.borrow_mut() = slots;
         self.stage.set_slots(contents, at);
+        let now = glib::DateTime::now_local().map_or(0, |now| now.to_unix());
+        let ticks = std::iter::once(None)
+            .chain(view.listed.iter().map(Some))
+            .map(|backup| {
+                let ts = backup.map(|b| b.ts);
+                let kept = backup.map_or(Kept::Normally, Kept::of);
+                let mut name = timeline_model::name(ts, now, &tz);
+                if let Some(badge) = group::badge(kept, &tz) {
+                    name = format!("{name} \u{b7} {}", badge.text);
+                }
+                Tick {
+                    ts,
+                    mark: timeline_model::mark(kept),
+                    name,
+                }
+            })
+            .collect();
+        self.timeline.set_ticks(ticks, now, &tz);
         true
     }
 
@@ -638,26 +690,32 @@ fn keys(
     }
     shell.add_controller(controller);
 
-    // A notch of the wheel, or the same distance on a touchpad, is a step;
-    // like a held key, it runs at most two backups ahead of the stack. Over
-    // the window in front, the wheel scrolls its folder instead.
+    // Over the window in front, the wheel scrolls its folder instead.
+    rewind.stage.add_controller(wheel(rewind, say));
+    rewind.timeline.add_controller(wheel(rewind, say));
+}
+
+/// A notch of the wheel, or the same distance on a touchpad, is a step; like
+/// a held key, it runs at most two backups ahead of the stack.
+fn wheel(rewind: &Rc<Rewind>, say: &Rc<dyn Fn(usize)>) -> gtk4::EventControllerScroll {
     let wheel = gtk4::EventControllerScroll::new(gtk4::EventControllerScrollFlags::VERTICAL);
     let travelled = Rc::new(Cell::new(0.0));
-    {
-        let (rewind, say) = (Rc::clone(rewind), Rc::clone(say));
-        wheel.connect_scroll(move |_, _, dy| {
-            travelled.set(travelled.get() + dy);
-            if travelled.get().abs() >= 1.0 {
-                let steps = if travelled.get() < 0.0 { 1 } else { -1 };
-                travelled.set(0.0);
-                let to = rewind.stage.step(steps, true);
-                rewind.moved_to(to);
-                say(to);
-            }
-            glib::Propagation::Stop
-        });
-    }
-    rewind.stage.add_controller(wheel);
+    let (weak, say) = (Rc::downgrade(rewind), Rc::clone(say));
+    wheel.connect_scroll(move |_, _, dy| {
+        let Some(rewind) = weak.upgrade() else {
+            return glib::Propagation::Proceed;
+        };
+        travelled.set(travelled.get() + dy);
+        if travelled.get().abs() >= 1.0 {
+            let steps = if travelled.get() < 0.0 { 1 } else { -1 };
+            travelled.set(0.0);
+            let to = rewind.stage.step(steps, true);
+            rewind.moved_to(to);
+            say(to);
+        }
+        glib::Propagation::Stop
+    });
+    wheel
 }
 
 impl Rewind {

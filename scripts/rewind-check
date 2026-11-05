@@ -39,6 +39,11 @@
 #   scripts/rewind-check 10 setup  back up a folder of pictures there for it:
 #                                  two backups, changed in between and since,
 #                                  with the VM's schedule paused for two days
+#   scripts/rewind-check 11        on the GNOME VM: Rewind's timeline, its
+#                                  labels, marks and magnification, and the
+#                                  step arrows (S18-T5)
+#   scripts/rewind-check 11 setup  move a file never backed up to the Trash
+#                                  there, for a marked tick
 #
 # Run from the checkout.
 
@@ -329,6 +334,55 @@ EOF
      Click "Home" in the window's trail, then walk back in the same way.
   g. Select flowers_and_leaves.jpg and press Escape. Backtrack's window shows
      Pictures with flowers_and_leaves.jpg selected.
+
+  Tell me any of a to g that did not happen, or did and looked wrong.
+EOF
+    ;;
+11)
+    vm="fedora45 (GNOME)"
+    if [[ "${2:-}" == setup ]]; then
+        # A file made and moved to the Trash before any backup has it: the
+        # Trash's entry for it is listed for Pictures, after the newest
+        # backup (Stage 16).
+        ssh "$("$ROOT/scripts/vm" address "$vm")" 'set -e
+            echo "A draft, never backed up." > ~/Pictures/draft.txt
+            gio trash ~/Pictures/draft.txt'
+        echo "draft.txt, in Pictures on the VM, is in the Trash and in no backup."
+        exit 0
+    fi
+    say "11. Rewind's timeline, on $vm (S18-T5)"
+    cat <<EOF
+  scripts/rewind-check 11 setup has moved draft.txt, never backed up, from
+  ~/Pictures to the Trash on the VM. Close any Backtrack window open there
+  first: a new one would hand over to it.
+
+  a. From the laptop:
+       just vm-app "$vm" --select /home/keith/Pictures/stone_bird.jpg
+     then press Ctrl+T. Down the right-hand edge, a tick for each backup
+     listed for Pictures: the oldest at the top, "Today (Now)" at the
+     bottom, and "Yesterday" at yesterday's newest backup. The tick of the
+     backup in front is longer and blue, with a blue marker beside it. Just
+     above now's tick, a red one: the Trash's entry for draft.txt.
+  b. Move the pointer slowly up and down the ticks: those near it lengthen
+     and thicken, and labels near it grow, falling off over a few ticks
+     either side; a plain tick under the pointer turns white. Move away:
+     they settle back. Rest on a tick: it names its backup ("Today, 08:26";
+     the red one ends "· trashed").
+  c. Click a tick a few backups back: the stack flies to it, and the marker
+     travels with the stack, between the ticks. The lines under the stack
+     follow. Click "Today (Now)"'s tick to come back.
+  d. Press Up and Down, then turn the wheel with the pointer over the
+     timeline: the marker follows each step.
+  e. The two round arrows left of the timeline: the upper goes one backup
+     older, the lower one newer, and each changes colour under the pointer.
+     At now, the lower is greyed; press End, and at the oldest the upper is.
+  f. Press Escape, then from the laptop:
+       just vm-app "$vm" --path /home/keith/.local/share/backtrack-dev/demo-src
+     and press Ctrl+T. The labels read "Today (Now)", "Yesterday",
+     "October" and "September", each at its group's newest backup.
+  g. In the VM's Settings, Appearance, choose Dark, and open Rewind again:
+     the arrows turn dark, and the timeline stays light on the wallpaper.
+     Choose Light again after.
 
   Tell me any of a to g that did not happen, or did and looked wrong.
 EOF

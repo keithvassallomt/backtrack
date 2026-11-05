@@ -197,7 +197,7 @@ Nothing right now.
 - [x] S18-T2 The desktop's wallpaper as the view's background
 - [x] S18-T3 The full-screen view and its stack
 - [x] S18-T4 The full-screen view's front window
-- [ ] S18-T5 The full-screen view's timeline
+- [/] S18-T5 The full-screen view's timeline
 - [ ] S18-T6 Restore and Cancel in the full-screen view
 - [ ] S18-T7 Ways into the full-screen view
 - [ ] S18-T8 The full-screen view's accessibility

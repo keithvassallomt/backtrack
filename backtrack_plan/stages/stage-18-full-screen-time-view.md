@@ -296,6 +296,26 @@ the step arrows beside it.
 - Local snapshots, the Trash's entries and Snapper's snapshots are marked as
   the sidebar marks them.
 
+**Built** (2026-11-05, in progress):
+- `model::timeline` places the ticks and labels with the prototype's
+  measures: ticks evenly spaced from 7% of the height down to 112 px above
+  the bottom; groups of today (with now), yesterday, this year's months by
+  name and earlier ones with their year; a group labelled at its newest
+  backup unless within 15 px of the label below; magnification falling off
+  as a Gaussian over 40 px; the tick under the pointer found by distance, so
+  it is the one drawn there.
+- `ui::rewind::timeline` draws them in the 230 px Rewind keeps on the right:
+  ticks of 20 px growing to 42, the one in front 40 px in the accent colour
+  with the marker beside it, which the stage moves every frame it flies;
+  Snapper's and local snapshots yellow, the Trash's entries and backups only
+  on this computer red; labels scaled up to 1.3 near the pointer, easing as
+  the prototype's do. Hovering names the backup ("Today, 09:00 · trashed"),
+  and clicking flies the stack to it; the wheel steps over it as over the
+  stack.
+- The step arrows, round, left of the timeline beside the window in front:
+  coloured under the pointer and when pressed, greyed at the oldest and at
+  now.
+
 **Accept:** unit tests on where labels go across a year of uneven backups; on a
 VM, clicking and hovering, and the timeline following the stack as it steps.
 

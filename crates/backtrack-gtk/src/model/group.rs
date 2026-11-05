@@ -74,7 +74,7 @@ pub enum Kept {
 }
 
 impl Kept {
-    fn of(archive: &ArchiveSummary) -> Kept {
+    pub fn of(archive: &ArchiveSummary) -> Kept {
         if archive.repo == super::trash::REPO {
             return Kept::InTrash;
         }
