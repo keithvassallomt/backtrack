@@ -241,7 +241,7 @@ Left and Right move among the icons, Enter opens the folder selected, and
 Alt+Up goes up a folder, as in the main window. In the list, a row is chosen
 with the mouse or Tab. Enter on a file is S18-T6's.
 
-**Built** (2026-11-04, in progress):
+**Built** (2026-11-04):
 - `ui::rewind::folder` builds a window of Rewind's, the one in front and the
   cards behind alike: the header bar with the folder's trail, the backup's
   date and the pair of buttons, then the folder as icons (a grid view, each
@@ -268,6 +268,14 @@ with the mouse or Tab. Enter on a file is S18-T6's.
   not hold, one made from its copy in the backup (through the daemon, as the
   preview fetches it), or on the disk for the folder as it is now, in the
   window in front only, as each comes into sight.
+- A badge on a picture's foot sits on a pill of the card's own colour, as its
+  tint alone let the picture show through.
+
+**Checked by Keith** (2026-11-05, GNOME VM, `scripts/rewind-check 10`): the
+desktop's thumbnails and those made from the backup, the badges and their
+tooltips, stepping through time, Left and Right among the icons, the list,
+walking up and back into a folder, and leaving at the folder and selection
+chosen in Rewind.
 
 **Accept:** unit tests on which files get a thumbnail and from where; on a VM,
 walking into a folder and back in the view, with thumbnails for images
