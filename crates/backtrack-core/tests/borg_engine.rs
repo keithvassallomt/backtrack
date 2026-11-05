@@ -150,6 +150,64 @@ async fn full_round_trip() {
 }
 
 #[tokio::test]
+async fn backups_made_within_the_same_hour_all_survive_the_prune() {
+    // `--keep-hourly` keeps the latest backup in each hour (and borg 1.4 the
+    // oldest backup as well, while the count is short), so of three backups
+    // in one hour the middle one was removed: a backup made by hand removed
+    // the one before it, with any version only it held (S18-T22). The three
+    // are made seconds apart, so they share an hour unless the test runs
+    // just as one turns.
+    let f = fixture().await;
+    let eng = engine(&f).await;
+    eng.init_repo(&RepoSpec {
+        path: f.repo.clone(),
+        encryption: Encryption::RepokeyBlake2,
+    })
+    .await
+    .unwrap();
+    for name in ["scheduled", "by-hand", "by-hand-again"] {
+        std::fs::write(f.src.join("report.txt"), name).unwrap();
+        let spec = CreateSpec {
+            archive_name: name.into(),
+            sources: vec![f.src.clone()],
+            excludes: vec![],
+            compression: Compression::Lz4,
+            upload_limit_kib: None,
+            one_file_system: false,
+            created_at: std::time::SystemTime::now(),
+            paths: Vec::new(),
+        };
+        run_to_finish(eng.create(&spec).await.unwrap())
+            .await
+            .unwrap();
+    }
+
+    // The default retention, as the daemon prunes after every backup.
+    run_to_finish(
+        eng.prune(&PrunePolicy {
+            keep_hourly: 24,
+            keep_daily: 7,
+            keep_weekly: 4,
+            keep_monthly: 6,
+        })
+        .await
+        .unwrap(),
+    )
+    .await
+    .unwrap();
+
+    let mut left: Vec<String> = eng
+        .list_archives()
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|a| a.name)
+        .collect();
+    left.sort();
+    assert_eq!(left, ["by-hand", "by-hand-again", "scheduled"]);
+}
+
+#[tokio::test]
 async fn a_file_that_disappears_mid_backup_still_produces_a_successful_backup() {
     // The race this stands in for is real and common: a backup reads a file
     // that a browser, an editor, or a download has moved or deleted since the

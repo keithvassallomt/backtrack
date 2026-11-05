@@ -800,6 +800,30 @@ as they are); a test that the resolver keeps folders and not files; on a
 generated listing of 2.5 million files in 50,000 folders, the ingest's peak
 memory measured before and after, and recorded in this section.
 
+### S18-T22 — A backup made by hand keeps the one before it
+Found while checking S18-T4 (2026-11-05): every backup ends with the
+retention prune, and `--keep-hourly` keeps only the latest backup in each
+hour. A backup started by hand within the same hour as the one before it
+removes that one at once, with any version of a file only it held. Rewind,
+which shows every backup, makes the loss visible.
+- The prune also keeps every backup from the last `keep_hourly` hours
+  (`borg prune --keep-within`), so the hourly count still applies to the
+  hours before that and nothing kept today is removed.
+- With `keep_hourly` set to 0 there is no such window.
+
+**Checked** (2026-11-05): borg 1.4 also keeps the oldest backup while the
+hourly count is short, so the real-borg test makes three backups in one
+hour; without the window, the middle one is removed. On the GNOME VM,
+before the change, a backup made two seconds after another removed it
+(08:14:20, gone at 08:14:23); after it, two made two seconds apart (08:26:36
+and 08:26:38) are both in the catalogue, and the prune removed nothing.
+
+**Accept:** a test of the prune's arguments, with and without hourly
+backups; a test against real borg that two backups made within the same
+hour both survive the prune with the default retention (and that it fails
+without the change); on the GNOME VM, two backups made seconds apart are
+both in the catalogue after the second one's prune.
+
 ## Definition of Done
 All tasks done; the CHANGELOG's Unreleased section introduces Rewind; mockups 25 and 26 match what was built; the README and the file
 manager documentation (`docs/file-manager-integration.md`) mention the new

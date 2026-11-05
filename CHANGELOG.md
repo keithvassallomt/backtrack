@@ -378,6 +378,11 @@ All notable changes to Backtrack are documented here. This project adheres to
   taken, but not read back.
 
 ### Fixed
+- A backup started by hand no longer removes the backup made earlier in the
+  same hour. Thinning old backups kept only the latest in each hour, so a
+  version of a file that only the earlier backup held was lost. Every backup
+  from the last 24 hours (or however many hours of hourly backups you keep) is
+  now kept, and older ones are thinned as before.
 - Pausing or resuming backups is announced to other programs straight away,
   rather than up to a minute later.
 - A file could be shown as "deleted" while it still existed, in the

@@ -214,6 +214,7 @@ Nothing right now.
 - [x] S18-T19 Rewind shows the wallpaper of COSMIC, Xfce, Cinnamon and MATE
 - [x] S18-T20 Rewind shows Sway's wallpaper
 - [x] S18-T21 Cataloguing a backup holds less memory
+- [x] S18-T22 A backup made by hand keeps the one before it
 
 ## Blocked
 
