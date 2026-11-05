@@ -343,6 +343,14 @@ window.rewind {
     padding: 8px 4px 9px;
 }
 
+/* A badge on an icon's foot: under it, a pill of the card's own colour, so a
+ * picture does not show through the badge's tint. */
+.rewind-badge {
+    border-radius: 9999px;
+    background-color: @view_bg_color;
+    box-shadow: 0 1px 3px 1px @shade_color;
+}
+
 /* The lines under the stack: which backup is in front, and where it is among
  * them. Light on the darkened wallpaper and on the stars alike. */
 .rewind-when,

@@ -291,11 +291,16 @@ fn icon_factory(pictures: &Pictures, cells: &Cells, shown: Option<Shown>) -> Sig
         image.add_css_class("rewind-icon");
         let badge = Label::new(None);
         badge.add_css_class("badge");
-        badge.set_halign(Align::Center);
-        badge.set_valign(Align::End);
+        // A badge's colour is a tint, which a picture under it would show
+        // through; it sits on a pill of the card's own colour instead.
+        let base = GtkBox::new(Orientation::Horizontal, 0);
+        base.add_css_class("rewind-badge");
+        base.set_halign(Align::Center);
+        base.set_valign(Align::End);
+        base.append(&badge);
         let overlay = Overlay::new();
         overlay.set_child(Some(&image));
-        overlay.add_overlay(&badge);
+        overlay.add_overlay(&base);
         overlay.set_size_request(-1, ICON + 8);
         let name = Label::new(None);
         name.add_css_class("rewind-name");
@@ -359,12 +364,19 @@ fn icon_factory(pictures: &Pictures, cells: &Cells, shown: Option<Shown>) -> Sig
                 }
             }
         }
-        if let Some(badge) = overlay.last_child().and_downcast::<Label>() {
+        let base = overlay.last_child();
+        if let Some(badge) = base
+            .as_ref()
+            .and_then(|b| b.first_child())
+            .and_downcast::<Label>()
+        {
             for class in file_badge::CLASSES {
                 badge.remove_css_class(class);
             }
             let chosen = row.badge();
-            badge.set_visible(chosen.class.is_some());
+            if let Some(base) = &base {
+                base.set_visible(chosen.class.is_some());
+            }
             badge.set_text(chosen.text);
             if let Some(class) = chosen.class {
                 badge.add_css_class(class);
