@@ -209,7 +209,7 @@ Nothing right now.
 - [x] S18-T14 On battery, a backup that has waited long enough runs anyway
 - [x] S18-T15 Investigate: the wallpaper on Hyprland and other desktops
 - [x] S18-T16 Container storage is left out of backups by default
-- [/] S18-T17 Investigate: the service's memory use during a backup
+- [x] S18-T17 Investigate: the service's memory use during a backup
 - [x] S18-T18 Rewind shows the wallpaper of Hyprland's shells and wallpaper programs
 - [x] S18-T19 Rewind shows the wallpaper of COSMIC, Xfce, Cinnamon and MATE
 - [x] S18-T20 Rewind shows Sway's wallpaper

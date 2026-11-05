@@ -685,6 +685,11 @@ to 18:10) and read again after the other seven:
   from 306 MB to 7 MB (as measured with the example), which leaves the heaps
   little to keep.
 
+**Decided** (Keith, 2026-11-05): no tasks follow. S18-T21 is the fix for
+the cause. Should the daemon's memory still climb over a day of backups on
+a release with S18-T21, the next step is to cap glibc's heaps for the
+service (`MALLOC_ARENA_MAX=2` in the systemd unit and the Flatpak).
+
 **Accept:** findings recorded in this section: where the memory goes, with
 figures, and whether it grows over backups; tasks added for what Keith picks.
 
