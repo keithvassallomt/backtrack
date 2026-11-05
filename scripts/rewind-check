@@ -37,7 +37,8 @@
 #                                  its pictures, walking into folders, and
 #                                  leaving where it was (S18-T4)
 #   scripts/rewind-check 10 setup  back up a folder of pictures there for it:
-#                                  two backups, changed in between and since
+#                                  two backups, changed in between and since,
+#                                  with the VM's schedule paused for two days
 #
 # Run from the checkout.
 
@@ -262,7 +263,12 @@ EOF
         # ~/Pictures, backed up by the VM's development service: six files,
         # then stone_bird.jpg replaced by another picture and
         # tiny_blast_of_red.jpg deleted, backed up again, then ladybugs.jpg
-        # changed on the disk only.
+        # changed on the disk only. The schedule is paused first (a backup
+        # asked for still runs), so the two stay the newest: an hourly
+        # backup after them would hold the change made since. Both survive
+        # the prune that ends each backup, which keeps every backup from the
+        # last day (S18-T22); a build before that keeps only the latest in
+        # each hour.
         ssh "$("$ROOT/scripts/vm" address "$vm")" 'set -e
             cli() { BACKTRACK_DEV=1 "$HOME/backtrack/target/debug/backtrack" "$@"; }
             settle() {
@@ -271,6 +277,7 @@ EOF
                     sleep 4
                 done
             }
+            cli pause 2d >/dev/null
             rm -rf ~/Pictures && mkdir -p ~/Pictures
             cp /usr/share/backgrounds/images/{earth_from_space,flowers_and_leaves,ladybugs,stone_bird,tiny_blast_of_red}.jpg ~/Pictures/
             cp /usr/share/backgrounds/sway/Sway_Wallpaper_Blue_1920x1080.png ~/Pictures/sway-blue.png
@@ -283,14 +290,18 @@ EOF
             sleep 2
             cp ~/Pictures/earth_from_space.jpg ~/Pictures/ladybugs.jpg'
         echo "Pictures, in the VM's home folder, is backed up twice, and changed since."
+        echo "The VM's scheduled backups are paused for two days."
         exit 0
     fi
     say "10. Rewind's window in front, on $vm (S18-T4)"
     cat <<EOF
-  ~/Pictures on the VM has two backups (scripts/rewind-check 10 setup made
-  them): between them, stone_bird.jpg was replaced by the ladybugs picture
-  and tiny_blast_of_red.jpg deleted; since the second, ladybugs.jpg has been
-  replaced by the earth picture, on the disk only.
+  The two newest backups of ~/Pictures on the VM are the ones
+  scripts/rewind-check 10 setup made: between them, stone_bird.jpg was
+  replaced by the ladybugs picture and tiny_blast_of_red.jpg deleted; since
+  the second, ladybugs.jpg has been replaced by the earth picture, on the
+  disk only. Setup pauses the VM's schedule for two days so that no hourly
+  backup comes after them (the window says backups are paused). If the
+  VM's status shows a backup newer than setup's, run setup again first.
 
   a. On the VM, open Files at Pictures, wait for its thumbnails, and close
      it: the desktop's thumbnails are what Rewind shows first. Then, from
@@ -303,11 +314,12 @@ EOF
      sway-blue; ladybugs.jpg shows ladybugs after a moment (made from the
      backup, not the earth now on the disk); notes.txt, its icon. Every
      cell is the same height.
-  c. Press Up: the first backup comes to the front. tiny_blast_of_red.jpg is
-     back, marked "deleted", and stone_bird.jpg is marked "changed" and
-     shows the stone bird; both pictures arrive a moment after. Hover a
-     badge: its tooltip says the rest. Press Home: the folder as it is
-     now, ladybugs.jpg showing the earth. Press End to go back.
+  c. Press Up: setup's first backup comes to the front.
+     tiny_blast_of_red.jpg is back, marked "deleted", and stone_bird.jpg is
+     marked "changed" and shows the stone bird; both pictures arrive a
+     moment after. Hover a badge: its tooltip says the rest. Press Home:
+     the folder as it is now, ladybugs.jpg showing the earth. Press End:
+     the oldest backup that holds Pictures comes to the front.
   d. Press Left and Right: the selection moves among the icons. Up and Down
      still step through time.
   e. Click the list button, right of the date: the folder as the main
