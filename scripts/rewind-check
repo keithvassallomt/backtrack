@@ -378,8 +378,10 @@ EOF
      At now, the lower is greyed; press End, and at the oldest the upper is.
   f. Press Escape, then from the laptop:
        just vm-app "$vm" --path /home/keith/.local/share/backtrack-dev/demo-src
-     and press Ctrl+T. The labels read "Today (Now)", "Yesterday",
-     "October" and "September", each at its group's newest backup.
+     and press Ctrl+T. Rewind lists only the backups in which the folder
+     changed: demo-src last changed on 31 October, so its eight ticks are
+     now, today's newest backup, five in October and one in September, and
+     the labels read "Today (Now)", "October" (at 31 Oct) and "September".
   g. In the VM's Settings, Appearance, choose Dark, and open Rewind again:
      the arrows turn dark, and the timeline stays light on the wallpaper.
      Choose Light again after.
