@@ -328,12 +328,13 @@ VM, clicking and hovering, and the timeline following the stack as it steps.
 ### S18-T6 — Restore and Cancel in the full-screen view
 - Restore restores the selection, or the folder when nothing is selected,
   through the restore pipeline, with the conflict dialog over the view.
-- After a restore, the view returns to where it was opened from, and Undo is
-  offered there: as a toast in Backtrack's window, or as a notification when
-  the view was opened from elsewhere.
+- After a restore, the view returns to Backtrack's window, and Undo is
+  offered there as a toast. Opened from elsewhere, the view's restore offers
+  Undo as a notification: S18-T7's, with the ways in it builds (Keith,
+  2026-11-05).
 - Cancel, and Escape, return without changing anything.
 
-**Built** (2026-11-05, in progress): Cancel and Restore either side of the
+**Built** (2026-11-05): Cancel and Restore either side of the
 lines under the stack, as the mockups show; Restore greyed at the folder as
 it is now, where there is nothing to restore. Restore, or Enter (but not on
 a folder selected, which Enter opens, nor on a button with the focus), goes
@@ -345,8 +346,14 @@ closes, the window takes its folder and selection, and the window's toast
 offers Undo. While the dialogs are up, the keys, the wheel and the timeline
 leave the stack alone.
 
-**Accept:** on a VM, a restore from the view with a conflict, then Undo, once
-opened from Backtrack's window and once from the file manager.
+**Checked by Keith** (2026-11-05, GNOME VM, `scripts/rewind-check 12`):
+Restore greyed at now; a conflict asked over Rewind, cancelled, then
+replaced, and Undo from the window's toast; a deleted file restored by
+Enter with no question, then undone; a folder's summary over Rewind,
+cancelled; Enter opening a folder; Cancel and Escape.
+
+**Accept:** on a VM, a restore from the view with a conflict, then Undo,
+opened from Backtrack's window.
 
 ### S18-T7 — Ways into the full-screen view
 - **Backtrack's window:** a header bar button, a primary menu item and a
@@ -360,6 +367,8 @@ opened from Backtrack's window and once from the file manager.
 - An application action, so the file managers and the Flatpak open the view
   through the session bus (as S14-T2 does for the window), and a command-line
   option that maps onto it.
+- Opened from elsewhere, the view returns there after a restore, and Undo is
+  offered as a notification (from S18-T6, Keith 2026-11-05).
 
 Not possible, as of 2026-10-20: a toolbar button in Nautilus, whose extension
 API has had no access to its window since Nautilus 43, or in Dolphin, whose
@@ -369,7 +378,9 @@ menus: KDE's developers aimed for 26.04 at the earliest, and what shipped is
 checked here.
 
 **Accept:** each way in tried on both VMs, native and Flatpak, opening at the
-right folder, with the right file selected where one was clicked.
+right folder, with the right file selected where one was clicked; on a VM, a
+restore from the view opened from the file manager, with a conflict, then
+Undo from the notification.
 
 ### S18-T8 — The full-screen view's accessibility
 - The stack and the timeline have accessible roles and names; stepping
