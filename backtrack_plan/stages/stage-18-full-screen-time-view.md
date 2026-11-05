@@ -296,7 +296,7 @@ the step arrows beside it.
 - Local snapshots, the Trash's entries and Snapper's snapshots are marked as
   the sidebar marks them.
 
-**Built** (2026-11-05, in progress):
+**Built** (2026-11-05):
 - `model::timeline` places the ticks and labels with the prototype's
   measures: ticks evenly spaced from 7% of the height down to 112 px above
   the bottom; groups of today (with now), yesterday, this year's months by
@@ -315,6 +315,12 @@ the step arrows beside it.
 - The step arrows, round, left of the timeline beside the window in front:
   coloured under the pointer and when pressed, greyed at the oldest and at
   now.
+
+**Checked by Keith** (2026-11-05, GNOME VM, `scripts/rewind-check 11`): the
+ticks, labels and marks (the Trash's entry red), the magnification and the
+names on hovering, clicking a tick, the marker following the stack by key,
+wheel and arrow, the arrows' colours and their ends, the labels on a folder
+listed over two months, and the dark style.
 
 **Accept:** unit tests on where labels go across a year of uneven backups; on a
 VM, clicking and hovering, and the timeline following the stack as it steps.
