@@ -664,6 +664,27 @@ container storage left out since S18-T16):
   which the kernel takes back when anything needs it. That is most of the
   3.8 GB and 7.1 GB seen earlier.
 
+**Found** (2026-11-05), over eleven hourly backups of about 2.52 million
+files by one daemon process on Keith's laptop (the AUR build, before
+S18-T21), sampled every ten seconds through four of them (2026-11-04, 14:32
+to 18:10) and read again after the other seven:
+- During each backup's catalogue read the daemon rose by 145 to 265 MB for
+  about thirty seconds, then fell back to a level a little above the one
+  before: 267, 275, 346, 349, then 462 MB after the fourth (steps of 8, 71,
+  3 and 113 MB). Over the next seven backups it went from 462 to 479 MB.
+- Borg's create held 791 to 795 MB each time and its prune about 300 MB,
+  the same in every backup. The unit's page cache held 1.3 to 1.6 GB
+  throughout.
+- At 479 MB, 447 MB of the daemon's memory was in glibc's per-thread heaps
+  (sixteen regions of up to 64 MB) and 10 MB in its main heap. The catalogue
+  read runs on Tokio's blocking threads, which come and go; each takes one
+  of glibc's heaps, which keeps the read's high-water mark once it is freed.
+- So the growth is memory the allocator keeps, not a leak: the same work
+  each hour raised the level in uneven steps while one heap after another
+  took its turn, and the level then held. S18-T21 takes the catalogue read
+  from 306 MB to 7 MB (as measured with the example), which leaves the heaps
+  little to keep.
+
 **Accept:** findings recorded in this section: where the memory goes, with
 figures, and whether it grows over backups; tasks added for what Keith picks.
 
