@@ -44,6 +44,8 @@
 #                                  step arrows (S18-T5)
 #   scripts/rewind-check 11 setup  move a file never backed up to the Trash
 #                                  there, for a marked tick
+#   scripts/rewind-check 12        on the GNOME VM: Restore and Cancel in
+#                                  Rewind, a conflict, then Undo (S18-T6)
 #
 # Run from the checkout.
 
@@ -385,6 +387,43 @@ EOF
   g. In the VM's Settings, Appearance, choose Dark, and open Rewind again:
      the arrows turn dark, and the timeline stays light on the wallpaper.
      Choose Light again after.
+
+  Tell me any of a to g that did not happen, or did and looked wrong.
+EOF
+    ;;
+12)
+    vm="fedora45 (GNOME)"
+    say "12. Restore and Cancel in Rewind, on $vm (S18-T6)"
+    cat <<EOF
+  Uses step 10's backups of ~/Pictures on the VM. Close any Backtrack window
+  open there first: a new one would hand over to it.
+
+  a. From the laptop:
+       just vm-app "$vm" --select /home/keith/Pictures/stone_bird.jpg
+     then press Ctrl+T. Under the stack: Cancel, the date and "Backup n of
+     m", and Restore, in blue. Press Home: at "Today (Now)" Restore is
+     greyed. Press Up until stone_bird.jpg shows the stone bird, marked
+     "changed", with tiny_blast_of_red.jpg beside it, marked "deleted":
+     setup's first backup.
+  b. stone_bird.jpg selected, click Restore. Over Rewind, the dialog asking
+     whether to replace stone_bird.jpg, as the window asks. Choose Cancel:
+     Rewind stays, nothing changed.
+  c. Click Restore again and choose Replace. Rewind closes; the window shows
+     Pictures with stone_bird.jpg selected, and a toast says it was
+     restored, with Undo. On the VM, Files shows stone_bird.jpg as the stone
+     bird.
+  d. Click Undo within ten seconds: the toast says it was put back, and
+     stone_bird.jpg is the ladybugs again.
+  e. Ctrl+T, go back to the same backup, select tiny_blast_of_red.jpg and
+     press Enter: nothing is in its way, so it is restored without a
+     question; Rewind closes, and the toast offers Undo. Click Undo: it is
+     gone again.
+  f. Ctrl+T, go to the same backup, and press Alt+Up: Rewind is at your
+     home folder. Select Pictures and click Restore: over Rewind, the
+     summary of what restoring the folder would change. Cancel it: Rewind
+     stays. Press Enter: Pictures opens, as Enter on a folder does.
+  g. Click Cancel: Rewind closes, nothing changed. Ctrl+T again and press
+     Escape: the same.
 
   Tell me any of a to g that did not happen, or did and looked wrong.
 EOF

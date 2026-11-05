@@ -343,25 +343,38 @@ window.rewind {
     padding: 8px 4px 9px;
 }
 
-/* Rewind's step arrows, beside the timeline (S18-T5): round, light on the
- * wallpaper in either style, and coloured under the pointer as a button is
- * (Keith, 2026-10-27). */
-button.rewind-step {
-    min-width: 44px;
-    min-height: 44px;
-    padding: 0;
-    border-radius: 9999px;
+/* Rewind's buttons on the wallpaper: the step arrows beside the timeline
+ * (S18-T5) and Cancel under the stack (S18-T6). Light in either style, and
+ * coloured under the pointer as a button is (Keith, 2026-10-27). */
+button.rewind-step,
+button.rewind-osd {
     background-color: @popover_bg_color;
     color: @popover_fg_color;
     box-shadow: 0 2px 8px alpha(black, 0.35);
 }
 
-button.rewind-step:hover {
+button.rewind-step:hover,
+button.rewind-osd:hover {
     background-image: image(alpha(currentColor, 0.1));
 }
 
-button.rewind-step:active {
+button.rewind-step:active,
+button.rewind-osd:active {
     background-image: image(alpha(currentColor, 0.2));
+}
+
+button.rewind-step {
+    min-width: 44px;
+    min-height: 44px;
+    padding: 0;
+    border-radius: 9999px;
+}
+
+/* Cancel and Restore, either side of the lines under the stack. */
+button.rewind-bar {
+    padding: 10px 26px;
+    font-weight: bold;
+    box-shadow: 0 2px 10px alpha(black, 0.35);
 }
 
 /* A badge on an icon's foot: under it, a pill of the card's own colour, so a

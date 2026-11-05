@@ -333,6 +333,18 @@ VM, clicking and hovering, and the timeline following the stack as it steps.
   the view was opened from elsewhere.
 - Cancel, and Escape, return without changing anything.
 
+**Built** (2026-11-05, in progress): Cancel and Restore either side of the
+lines under the stack, as the mockups show; Restore greyed at the folder as
+it is now, where there is nothing to restore. Restore, or Enter (but not on
+a folder selected, which Enter opens, nor on a button with the focus), goes
+through the window's restore, on Rewind's state at the backup in front,
+with the dialogs over Rewind and what goes wrong said there; a file
+selected in another backup and not in this one leaves the folder to
+restore, as the prototype has it. Once a restore is carried out, Rewind
+closes, the window takes its folder and selection, and the window's toast
+offers Undo. While the dialogs are up, the keys, the wheel and the timeline
+leave the stack alone.
+
 **Accept:** on a VM, a restore from the view with a conflict, then Undo, once
 opened from Backtrack's window and once from the file manager.
 

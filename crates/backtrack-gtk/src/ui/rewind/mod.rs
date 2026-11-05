@@ -39,6 +39,7 @@ use crate::model::group::{self, Kept};
 use crate::model::{rewind, thumbnail, timeline as timeline_model, trash};
 use crate::state::{AppState, Change, View};
 use crate::ui::files::{Listed, Lister, Row};
+use crate::ui::restore::{Asking, Restores};
 use folder::{Actions, Body, Content, Mode};
 use stage::{Background, Stage};
 use timeline::{Tick, Timeline};
@@ -63,6 +64,14 @@ struct Rewind {
     stage: Stage,
     /// The backups down the right-hand edge (S18-T5).
     timeline: Timeline,
+    /// The window's restores, which Restore goes through (S18-T6), and where
+    /// what they say while Rewind is open goes.
+    restores: Option<Rc<Restores>>,
+    toasts: adw::ToastOverlay,
+    shell: glib::WeakRef<adw::Window>,
+    /// A restore's questions are up: the keys and the wheel leave the stack
+    /// alone.
+    restoring: Cell<bool>,
     lister: Rc<Lister>,
     index: Index,
     /// What each time held, as listed, for the folder being viewed: kept
@@ -80,12 +89,13 @@ struct Rewind {
 }
 
 /// Open Rewind over `parent`, at what `window` (its state) shows, listing
-/// folders with `lister`.
+/// folders with `lister` and restoring through `restores`.
 pub fn open(
     parent: &adw::ApplicationWindow,
     window: &Rc<AppState>,
     index: &Index,
     lister: Rc<Lister>,
+    restores: Option<Rc<Restores>>,
 ) {
     let shell = adw::Window::builder()
         .title("Rewind")
@@ -100,6 +110,7 @@ pub fn open(
     stage.set_mode(MODE.get());
     stage.set_selected(state.view().selected.map(|s| s.name));
     let timeline = Timeline::new();
+    let toasts = adw::ToastOverlay::new();
     {
         let timeline = timeline.downgrade();
         stage.connect_moved(move |position, target| {
@@ -112,6 +123,10 @@ pub fn open(
         state: Rc::clone(&state),
         stage: stage.clone(),
         timeline: timeline.clone(),
+        restores,
+        toasts: toasts.clone(),
+        shell: shell.downgrade(),
+        restoring: Cell::new(false),
         lister,
         index: index.clone(),
         bodies: RefCell::new(HashMap::new()),
@@ -127,22 +142,52 @@ pub fn open(
     let where_ = Label::new(None);
     where_.add_css_class("rewind-where");
     let lines = gtk4::Box::new(Orientation::Vertical, 2);
-    lines.set_halign(Align::Center);
-    lines.set_valign(Align::End);
-    lines.set_margin_bottom(26);
+    lines.set_valign(Align::Center);
+    lines.set_size_request(360, -1);
     lines.append(&when);
     lines.append(&where_);
     lines.set_can_target(false);
 
+    // Restore and Cancel, with the backup in front between them, as the
+    // mockups show (S18-T6).
+    let cancel = bar_button("Cancel", "rewind-osd");
+    let restore = bar_button("Restore", "suggested-action");
+    let bar = gtk4::Box::new(Orientation::Horizontal, 18);
+    bar.set_halign(Align::Center);
+    bar.set_valign(Align::End);
+    bar.set_margin_bottom(22);
+    bar.append(&cancel);
+    bar.append(&lines);
+    bar.append(&restore);
+    {
+        let shell = shell.downgrade();
+        cancel.connect_clicked(move |_| {
+            if let Some(shell) = shell.upgrade() {
+                shell.close();
+            }
+        });
+        let weak = Rc::downgrade(&rewind);
+        restore.connect_clicked(move |_| {
+            if let Some(rewind) = weak.upgrade() {
+                rewind.restore();
+            }
+        });
+    }
+
     let overlay = gtk4::Overlay::new();
     overlay.set_child(Some(&stage));
     overlay.add_overlay(&timeline);
-    overlay.add_overlay(&lines);
-    shell.set_content(Some(&overlay));
+    overlay.add_overlay(&bar);
+    toasts.set_child(Some(&overlay));
+    shell.set_content(Some(&toasts));
 
     let say = {
         let state = Rc::clone(&state);
+        // Nothing to restore from the folder as it is now, nor without the
+        // service.
+        let can_restore = rewind.restores.is_some();
         move |index: usize| {
+            restore.set_sensitive(can_restore && index > 0);
             let view = state.view();
             let backup = index.checked_sub(1).and_then(|i| view.listed.get(i));
             let (first, second) = rewind::lines(
@@ -165,7 +210,7 @@ pub fn open(
     {
         let (weak, told) = (Rc::downgrade(&rewind), Rc::clone(&say));
         timeline.connect_chosen(move |index| {
-            if let Some(rewind) = weak.upgrade() {
+            if let Some(rewind) = weak.upgrade().filter(|r| !r.restoring.get()) {
                 let to = rewind.stage.go_to(index);
                 rewind.moved_to(to);
                 told(to);
@@ -173,7 +218,7 @@ pub fn open(
         });
         let (weak, told) = (Rc::downgrade(&rewind), Rc::clone(&say));
         timeline.connect_step(move |steps| {
-            if let Some(rewind) = weak.upgrade() {
+            if let Some(rewind) = weak.upgrade().filter(|r| !r.restoring.get()) {
                 let to = rewind.stage.step(steps, false);
                 rewind.moved_to(to);
                 told(to);
@@ -640,6 +685,10 @@ fn keys(
         let (shell, parent) = (shell.clone(), parent.clone());
         controller.connect_key_pressed(move |_, key, code, modifiers| {
             let repeat = !held.borrow_mut().insert(code);
+            // A restore's questions take the keys.
+            if rewind.restoring.get() {
+                return glib::Propagation::Proceed;
+            }
             let stage = &rewind.stage;
             // Ctrl+H, as in the window, and kept in step with it (S18-T11).
             let control = modifiers.contains(gdk::ModifierType::CONTROL_MASK)
@@ -675,6 +724,25 @@ fn keys(
                     shell.close();
                     return glib::Propagation::Stop;
                 }
+                // Enter restores; but on a folder selected it opens the
+                // folder (S18-T4), and a button with the focus is pressed.
+                gdk::Key::Return | gdk::Key::KP_Enter | gdk::Key::ISO_Enter => {
+                    let on_button =
+                        GtkWindowExt::focus(&shell).is_some_and(|focus| focus.is::<gtk4::Button>());
+                    let on_folder = rewind
+                        .state
+                        .view()
+                        .selected
+                        .as_ref()
+                        .is_some_and(|selected| selected.is_dir);
+                    if on_button || on_folder {
+                        return glib::Propagation::Proceed;
+                    }
+                    if !repeat {
+                        rewind.restore();
+                    }
+                    return glib::Propagation::Stop;
+                }
                 _ => return glib::Propagation::Proceed,
             };
             rewind.moved_to(to);
@@ -702,7 +770,7 @@ fn wheel(rewind: &Rc<Rewind>, say: &Rc<dyn Fn(usize)>) -> gtk4::EventControllerS
     let travelled = Rc::new(Cell::new(0.0));
     let (weak, say) = (Rc::downgrade(rewind), Rc::clone(say));
     wheel.connect_scroll(move |_, _, dy| {
-        let Some(rewind) = weak.upgrade() else {
+        let Some(rewind) = weak.upgrade().filter(|r| !r.restoring.get()) else {
             return glib::Propagation::Proceed;
         };
         travelled.set(travelled.get() + dy);
@@ -719,6 +787,54 @@ fn wheel(rewind: &Rc<Rewind>, say: &Rc<dyn Fn(usize)>) -> gtk4::EventControllerS
 }
 
 impl Rewind {
+    /// Restore the selection, or the folder when nothing is selected, from
+    /// the backup in front, with the questions over Rewind; once it is done,
+    /// leave, and the window offers to undo it (S18-T6). A file selected in
+    /// another backup and not in this one leaves the folder to restore, as
+    /// nothing is selected in front.
+    fn restore(self: &Rc<Self>) {
+        if self.restoring.get() || self.stage.target() == 0 {
+            return;
+        }
+        let (Some(restores), Some(shell)) = (self.restores.clone(), self.shell.upgrade()) else {
+            return;
+        };
+        let state = self.state.fork();
+        let view = state.view();
+        if let Some(selected) = &view.selected {
+            let when: When = self
+                .slots
+                .borrow()
+                .get(self.stage.target())
+                .copied()
+                .flatten();
+            let in_front = match self.bodies.borrow().get(&when) {
+                Some(Body::Rows(rows)) => rows.iter().any(|row| row.entry.name == selected.name),
+                _ => true,
+            };
+            if !in_front {
+                state.set_selected(None);
+            }
+        }
+        self.restoring.set(true);
+        let weak = Rc::downgrade(self);
+        let asking = Asking {
+            parent: shell.upcast(),
+            toasts: self.toasts.clone(),
+        };
+        restores.start_from(state, asking, move |carried_out| {
+            let Some(rewind) = weak.upgrade() else {
+                return;
+            };
+            rewind.restoring.set(false);
+            if carried_out {
+                if let Some(shell) = rewind.shell.upgrade() {
+                    shell.close();
+                }
+            }
+        });
+    }
+
     /// The stack is on its way to `slot`: the state follows it to that
     /// backup, so that a folder walked into lands where the stack is.
     fn moved_to(&self, slot: usize) {
@@ -727,6 +843,17 @@ impl Rewind {
             self.state.set_seq(seq);
         }
     }
+}
+
+/// A button of the bar under the stack.
+fn bar_button(label: &str, class: &str) -> gtk4::Button {
+    let button = gtk4::Button::with_label(label);
+    button.add_css_class("pill");
+    button.add_css_class("rewind-bar");
+    button.add_css_class(class);
+    // The keyboard stays with the window in front.
+    button.set_focus_on_click(false);
+    button
 }
 
 /// Give the window Rewind's folder and selection (S18-T4).

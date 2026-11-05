@@ -35,6 +35,20 @@ use crate::ui::{conflict, summary};
 /// destination that makes those line up is the root.
 const IN_PLACE: &str = "/";
 
+/// Where a restore asks its questions and says what happened: Backtrack's
+/// window, or Rewind over it (S18-T6).
+pub struct Asking {
+    pub parent: gtk4::Widget,
+    pub toasts: adw::ToastOverlay,
+}
+
+/// A restore carried out, which Undo can put back.
+struct Done {
+    job: u64,
+    preview: RestorePreview,
+    name: String,
+}
+
 /// Drives a restore from the window.
 pub struct Restores {
     window: adw::ApplicationWindow,
@@ -75,9 +89,51 @@ impl Restores {
         let this = Rc::clone(self);
         crate::ui::spawn(async move {
             this.busy.set(true);
-            this.run().await;
+            let asking = Asking {
+                parent: this.window.clone().upcast(),
+                toasts: this.toasts.clone(),
+            };
+            let state = Rc::clone(&this.state);
+            if let Some(done) = this.run(&state, &asking).await {
+                this.carried_out(done);
+            }
             this.busy.set(false);
         });
+    }
+
+    /// Restore what `state` (Rewind's) has selected, or its folder, from the
+    /// backup it is at, asking over `asking`. `finished` is told whether it
+    /// was carried out, before Undo is offered in the window.
+    pub fn start_from(
+        self: &Rc<Self>,
+        state: Rc<AppState>,
+        asking: Asking,
+        finished: impl FnOnce(bool) + 'static,
+    ) {
+        if self.busy.get() {
+            finished(false);
+            return;
+        }
+        let this = Rc::clone(self);
+        crate::ui::spawn(async move {
+            this.busy.set(true);
+            match this.run(&state, &asking).await {
+                Some(done) => {
+                    finished(true);
+                    this.carried_out(done);
+                }
+                None => finished(false),
+            }
+            this.busy.set(false);
+        });
+    }
+
+    /// Offer to put it back, and show the folder as it is now.
+    fn carried_out(self: &Rc<Self>, done: Done) {
+        *self.undoable.borrow_mut() = Some((done.job, done.name.clone()));
+        self.offer_undo(&done.preview, &done.name);
+        // The pane is showing a folder whose contents just changed.
+        self.state.disk_changed();
     }
 
     /// Restore what is selected into a folder the user picks.
@@ -139,7 +195,7 @@ impl Restores {
             "restoring into a folder of its own"
         );
 
-        let waiting = self.preparing(&name);
+        let waiting = preparing(self.window.upcast_ref(), &name);
         let done = run_job(&proxy, |p| {
             p.restore_into_with_trash(
                 &restoring.archive,
@@ -165,8 +221,8 @@ impl Restores {
         self.state.view().restoring().is_some() && self.daemon.borrow().is_some()
     }
 
-    async fn run(self: &Rc<Self>) {
-        let view = self.state.view();
+    async fn run(self: &Rc<Self>, state: &AppState, asking: &Asking) -> Option<Done> {
+        let view = state.view();
         let (Some(proxy), Some(taken), Some(restoring), Some(target)) = (
             self.daemon.borrow().clone(),
             view.archive().map(|a| a.ts),
@@ -179,8 +235,11 @@ impl Restores {
                 target = view.change_target().is_some(),
                 "a restore was asked for with something missing"
             );
-            self.toast("Backtrack cannot restore without its background service");
-            return;
+            say(
+                asking,
+                "Backtrack cannot restore without its background service",
+            );
+            return None;
         };
         let name = path::name(&target).to_string();
         info!(
@@ -194,7 +253,7 @@ impl Restores {
         let single_file = view.selected.as_ref().is_some_and(|s| !s.is_dir);
 
         // ── Work it out ──
-        let waiting = self.preparing(&name);
+        let waiting = preparing(&asking.parent, &name);
         let prepared = run_job(&proxy, |p| {
             p.prepare_restore_with_trash(
                 &restoring.archive,
@@ -210,8 +269,8 @@ impl Restores {
             Ok(job) => job,
             Err(error) => {
                 warn!(%error, target, "the restore could not be worked out");
-                self.toast(&error);
-                return;
+                say(asking, &error);
+                return None;
             }
         };
 
@@ -219,103 +278,38 @@ impl Restores {
             Ok(preview) => preview,
             Err(error) => {
                 warn!(%error, job, "the prepared restore could not be read");
-                self.toast(&clean(&error.to_string()));
+                say(asking, &clean(&error.to_string()));
                 let _ = proxy.discard_restore(job).await;
-                return;
+                return None;
             }
         };
 
         // ── Ask, if there is anything to ask ──
-        let Some((blanket, decisions)) = self
-            .decide(
-                &preview,
-                &name,
-                &target,
-                taken,
-                &restoring.origin,
-                single_file,
-            )
-            .await
+        let Some((blanket, decisions)) = decide(
+            asking,
+            &preview,
+            &name,
+            &target,
+            taken,
+            &restoring.origin,
+            single_file,
+        )
+        .await
         else {
             info!(job, "restore cancelled before anything was touched");
             let _ = proxy.discard_restore(job).await;
-            return;
+            return None;
         };
 
         // ── Carry it out ──
         let done = run_job(&proxy, |p| p.execute_restore(job, &blanket, &decisions)).await;
         match done {
-            Ok(_) => {
-                *self.undoable.borrow_mut() = Some((job, name.clone()));
-                self.offer_undo(&preview, &name);
-                // The pane is showing a folder whose contents just changed.
-                self.state.disk_changed();
-            }
+            Ok(_) => Some(Done { job, preview, name }),
             Err(error) => {
                 warn!(%error, job, "the restore did not finish");
-                self.toast(&error);
+                say(asking, &error);
+                None
             }
-        }
-    }
-
-    /// Which dialog to put up, and what it answered.
-    ///
-    /// `None` means the user backed out. An empty decision list means "use the
-    /// blanket answer", which is every conflict but never a change of type.
-    async fn decide(
-        self: &Rc<Self>,
-        preview: &RestorePreview,
-        name: &str,
-        target: &str,
-        taken: i64,
-        origin: &copy::Origin,
-        single_file: bool,
-    ) -> Option<(String, Vec<(String, String)>)> {
-        // What was asked for is not in this backup. Said plainly and first,
-        // because the alternative reading of an empty plan — "everything is
-        // already up to date" — is the opposite of the truth, and is a backup
-        // tool reassuring somebody about a file it could not find.
-        if !preview.missing.is_empty() {
-            warn!(
-                missing = preview.missing.len(),
-                archive = preview.archive,
-                "the backup does not contain what was asked for"
-            );
-            self.toast(&copy::not_in_this_backup(name));
-            return None;
-        }
-
-        // Nothing to ask: no clashes, so the restore is uncontroversial and
-        // asking would be noise.
-        if preview.conflicts == 0 && preview.type_changed == 0 {
-            if preview.only_in_backup == 0 {
-                self.toast("Everything is already up to date");
-                return None;
-            }
-            return Some(("replace".to_string(), Vec::new()));
-        }
-
-        if single_file && preview.conflicts == 1 && preview.type_changed == 0 {
-            let entry = preview.entries.first()?;
-            let folder = path::parent(target)
-                .map(|p| path::name(&p).to_string())
-                .unwrap_or_default();
-            return match conflict::ask(&self.window, entry, name, &folder, origin).await {
-                conflict::Answer::Cancel => None,
-                conflict::Answer::KeepBoth => Some(("keep-both".to_string(), Vec::new())),
-                conflict::Answer::Replace => Some(("replace".to_string(), Vec::new())),
-            };
-        }
-
-        match summary::ask(&self.window, preview, name, target, taken, origin).await {
-            summary::Answer::Cancel => None,
-            summary::Answer::KeepBoth => Some(("keep-both".to_string(), Vec::new())),
-            // A review list answers every path by name, so the blanket has
-            // nothing left to cover.
-            summary::Answer::Replace { decisions } if !decisions.is_empty() => {
-                Some(("skip".to_string(), decisions))
-            }
-            summary::Answer::Replace { .. } => Some(("replace".to_string(), Vec::new())),
         }
     }
 
@@ -355,26 +349,92 @@ impl Restores {
         });
     }
 
-    /// A dialog while the copy is fetched, which for a folder is not instant.
-    fn preparing(&self, name: &str) -> adw::AlertDialog {
-        let dialog = adw::AlertDialog::new(
-            Some(&format!("Working out how to restore “{name}”")),
-            Some("Backtrack is fetching this version and comparing it with what is on your computer. Nothing has been changed yet."),
-        );
-        let spinner = Spinner::builder().spinning(true).build();
-        spinner.set_size_request(32, 32);
-        let content = GtkBox::new(Orientation::Vertical, 12);
-        content.set_halign(Align::Center);
-        content.append(&spinner);
-        content.append(&Label::new(None));
-        dialog.set_extra_child(Some(&content));
-        dialog.present(Some(&self.window));
-        dialog
-    }
-
     fn toast(&self, message: &str) {
         self.toasts.add_toast(crate::ui::toast(message));
     }
+}
+
+/// Which dialog to put up, and what it answered.
+///
+/// `None` means the user backed out. An empty decision list means "use the
+/// blanket answer", which is every conflict but never a change of type.
+async fn decide(
+    asking: &Asking,
+    preview: &RestorePreview,
+    name: &str,
+    target: &str,
+    taken: i64,
+    origin: &copy::Origin,
+    single_file: bool,
+) -> Option<(String, Vec<(String, String)>)> {
+    // What was asked for is not in this backup. Said plainly and first,
+    // because the alternative reading of an empty plan — "everything is
+    // already up to date" — is the opposite of the truth, and is a backup
+    // tool reassuring somebody about a file it could not find.
+    if !preview.missing.is_empty() {
+        warn!(
+            missing = preview.missing.len(),
+            archive = preview.archive,
+            "the backup does not contain what was asked for"
+        );
+        say(asking, &copy::not_in_this_backup(name));
+        return None;
+    }
+
+    // Nothing to ask: no clashes, so the restore is uncontroversial and
+    // asking would be noise.
+    if preview.conflicts == 0 && preview.type_changed == 0 {
+        if preview.only_in_backup == 0 {
+            say(asking, "Everything is already up to date");
+            return None;
+        }
+        return Some(("replace".to_string(), Vec::new()));
+    }
+
+    if single_file && preview.conflicts == 1 && preview.type_changed == 0 {
+        let entry = preview.entries.first()?;
+        let folder = path::parent(target)
+            .map(|p| path::name(&p).to_string())
+            .unwrap_or_default();
+        return match conflict::ask(&asking.parent, entry, name, &folder, origin).await {
+            conflict::Answer::Cancel => None,
+            conflict::Answer::KeepBoth => Some(("keep-both".to_string(), Vec::new())),
+            conflict::Answer::Replace => Some(("replace".to_string(), Vec::new())),
+        };
+    }
+
+    match summary::ask(&asking.parent, preview, name, target, taken, origin).await {
+        summary::Answer::Cancel => None,
+        summary::Answer::KeepBoth => Some(("keep-both".to_string(), Vec::new())),
+        // A review list answers every path by name, so the blanket has
+        // nothing left to cover.
+        summary::Answer::Replace { decisions } if !decisions.is_empty() => {
+            Some(("skip".to_string(), decisions))
+        }
+        summary::Answer::Replace { .. } => Some(("replace".to_string(), Vec::new())),
+    }
+}
+
+/// A dialog while the copy is fetched, which for a folder is not instant.
+fn preparing(parent: &gtk4::Widget, name: &str) -> adw::AlertDialog {
+    let dialog = adw::AlertDialog::new(
+        Some(&format!("Working out how to restore “{name}”")),
+        Some("Backtrack is fetching this version and comparing it with what is on your computer. Nothing has been changed yet."),
+    );
+    let spinner = Spinner::builder().spinning(true).build();
+    spinner.set_size_request(32, 32);
+    let content = GtkBox::new(Orientation::Vertical, 12);
+    content.set_halign(Align::Center);
+    content.append(&spinner);
+    content.append(&Label::new(None));
+    dialog.set_extra_child(Some(&content));
+    dialog.present(Some(parent));
+    dialog
+}
+
+/// Say `message` where the restore is asking.
+fn say(asking: &Asking, message: &str) {
+    asking.toasts.add_toast(crate::ui::toast(message));
 }
 
 /// Start something that returns a job id, and wait for that job to end.
