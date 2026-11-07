@@ -72,6 +72,11 @@ with its shadow through GNOME Shell. The window is 1200 × 780 on a 3840 ×
 | `trash-in-timeline.png` | The Trash's entry above the latest backup |
 | `warning-banner.png` | The banner when Backtrack needs the passphrase again, with Fix… |
 | `wizard-welcome.png`, `-what`, `-where`, `-protect` | The welcome wizard's pages, the passphrase typed on the last |
+| `wizard-key-saved.png` | The wizard's last step with the recovery key saved (by hand) |
+| `wizard-first-backup.png` | The first backup running (by hand) |
+| `new-computer.png` | Backups opened on a new computer, offering to restore everything (by hand) |
+| `dolphin-menu.png` | Dolphin's Backtrack submenu, on the Plasma VM (by hand) |
+| `tray-menu.png` | The tray icon's menu, on the Plasma VM (by hand) |
 
 ## Taken by hand
 
