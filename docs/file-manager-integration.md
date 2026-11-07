@@ -9,46 +9,78 @@ with each GNOME release. See `backtrack_plan/reference/open-questions.md`, Q1.
 
 ## Installing
 
-Preferences → General lists the integration of each file manager on the
-computer. One that is installed shows *Installed* and a switch that takes its
-items away without uninstalling it; one that is not shows **How to
-Install…**, which opens this section. A file manager that is not installed
-has no row, unless Backtrack's integration for it is.
+Pick the steps for how you installed Backtrack. **Preferences → General**
+shows what is installed: *Installed* and a switch, which hides the items
+without uninstalling them.
 
-- **GNOME Files (Nautilus)** needs nautilus-python (`nautilus-python` on
-  Fedora, `python3-nautilus` on Ubuntu, `python-nautilus` on Arch) and
-  Backtrack's Nautilus package. Nautilus loads extensions when it starts, so
-  quit it afterwards: `nautilus -q`.
-- **Dolphin** needs Backtrack's Dolphin package only, and shows the items from
-  the next right-click.
+### From a package
 
-Backtrack's own packages, and their names for each distribution, come with
-the packaging (Stage 13). From a checkout, `just install-nautilus-dev` and
-`just install-dolphin-dev` install the development copies described below.
+If you installed Backtrack from COPR (Fedora), the PPA (Ubuntu) or the AUR
+(Arch).
+
+**GNOME Files**
+
+1. Install Backtrack's GNOME Files package, which brings nautilus-python
+   with it:
+   - Fedora: `sudo dnf install backtrack-nautilus`
+   - Ubuntu: `sudo apt install backtrack-nautilus`
+   - Arch: `backtrack-nautilus` from the AUR, as you installed `backtrack`
+2. Quit GNOME Files so that it loads the new items: `nautilus -q`. Open it
+   again.
+
+**Dolphin**
+
+1. Install Backtrack's Dolphin package:
+   - Fedora: `sudo dnf install backtrack-dolphin`
+   - Ubuntu: `sudo apt install backtrack-dolphin`
+   - Arch: `backtrack-dolphin` from the AUR
+2. Right-click a file. Nothing needs restarting.
 
 ### From the Flatpak
 
-The Flatpak cannot install files outside itself, so Preferences installs its
-own copies in your data folder instead: **Install** puts them in place and
-**Remove** takes them away. They are the files the packages ship, opening
-the window with `flatpak run tools.backtrack.Backtrack`, and the Nautilus
-copy reads the backed-up folders from the Flatpak's data folder under
-`~/.var/app`. Each start of the window brings them up to date with the
-Flatpak.
+**GNOME Files**
 
-- **GNOME Files** still needs nautilus-python from your distribution
-  (package names above); without it, the row says *Needs nautilus-python*
-  and offers **How to Install…** and this page instead. Quit Nautilus after installing: `nautilus -q`.
-- **Dolphin** needs nothing else, and shows the items from the next
-  right-click.
+1. Install nautilus-python from your distribution. GNOME Files needs it to
+   run any extension, and a Flatpak cannot install it for you:
+   - Fedora: `sudo dnf install nautilus-python`
+   - Ubuntu: `sudo apt install python3-nautilus`
+   - Arch: `sudo pacman -S python-nautilus`
+2. In Backtrack, open **Preferences → General** and click **Install** beside
+   GNOME Files.
+3. Quit GNOME Files so that it loads the new items: `nautilus -q`. Open it
+   again.
 
-Preferences finds an integration by its file in the user's data directory
-(`~/.local/share`) or a system one (`/usr/share`; from the Flatpak, the
-host's, which it sees under `/run/host`):
+**Dolphin**
+
+1. In Backtrack, open **Preferences → General** and click **Install** beside
+   Dolphin.
+2. Right-click a file. Nothing needs restarting.
+
+**Remove** in the same place takes the items away again. An update of the
+Flatpak updates them too.
+
+### How Preferences finds them
+
+Preferences lists a file manager that is on the computer, or one whose
+integration is installed. It finds an integration by its file in the user's
+data folder (`~/.local/share`) or a system one (`/usr/share`; from the
+Flatpak, the host's, which it sees under `/run/host`):
 `nautilus-python/extensions/backtrack.py` and
 `kio/servicemenus/backtrack.desktop`. It looks again each time the
-Preferences window comes back into focus, so an integration installed while it
-is open shows when you return to it.
+Preferences window comes back into focus, so an integration installed while
+it is open shows when you return to it.
+
+The Flatpak cannot install files outside itself, so its **Install** puts its
+own copies in the user's data folder: the files the packages ship, opening
+the window with `flatpak run tools.backtrack.Backtrack`, with the Nautilus
+copy reading the backed-up folders from the Flatpak's data folder under
+`~/.var/app`. Each start of the window brings them up to date with the
+Flatpak. Without nautilus-python on the host (its library under
+`/run/host/usr`), the GNOME Files row says *Needs nautilus-python* and offers
+**How to Install…**, which opens the steps above, instead of **Install**.
+
+From a checkout, `just install-nautilus-dev` and `just install-dolphin-dev`
+install development copies; see each file manager's section below.
 
 ## Nautilus
 

@@ -722,7 +722,8 @@ impl Prefs {
         install.set_valign(Align::Center);
         let owner = self.window.clone();
         install.connect_clicked(move |_| {
-            gtk4::UriLauncher::new(&model::install_page()).launch(
+            let page = model::install_page(backtrack_core::host::in_flatpak());
+            gtk4::UriLauncher::new(&page).launch(
                 Some(&owner),
                 gio::Cancellable::NONE,
                 |result: Result<(), glib::Error>| {

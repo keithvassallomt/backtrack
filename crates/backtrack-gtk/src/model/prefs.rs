@@ -362,11 +362,17 @@ impl Plugin {
     }
 }
 
-/// The page How to Install… opens: how to install either integration.
-pub fn install_page() -> String {
+/// The page How to Install… opens: the steps for installing either
+/// integration, those for the Flatpak when Backtrack is one.
+pub fn install_page(flatpak: bool) -> String {
     format!(
-        "{}/blob/main/docs/file-manager-integration.md#installing",
-        env!("CARGO_PKG_REPOSITORY")
+        "{}/blob/main/docs/file-manager-integration.md#{}",
+        env!("CARGO_PKG_REPOSITORY"),
+        if flatpak {
+            "from-the-flatpak"
+        } else {
+            "from-a-package"
+        }
     )
 }
 
@@ -758,13 +764,22 @@ mod tests {
 
     #[test]
     fn the_install_page_is_a_section_of_the_integration_doc() {
+        // GitHub's anchor for a heading: lower case, spaces as hyphens.
         let doc = include_str!("../../../../docs/file-manager-integration.md");
-        let anchor = install_page().rsplit_once('#').unwrap().1.to_string();
-        assert!(
-            doc.lines()
-                .any(|line| line == format!("## {}", capitalised(&anchor))),
-            "docs/file-manager-integration.md has no heading for #{anchor}"
-        );
+        let anchors: Vec<String> = doc
+            .lines()
+            .filter_map(|line| line.trim_start_matches('#').strip_prefix(' '))
+            .map(|heading| heading.to_lowercase().replace(' ', "-"))
+            .collect();
+        for flatpak in [false, true] {
+            let page = install_page(flatpak);
+            let anchor = page.rsplit_once('#').unwrap().1;
+            assert!(
+                anchors.iter().any(|a| a == anchor),
+                "docs/file-manager-integration.md has no heading for #{anchor}"
+            );
+        }
+        assert_ne!(install_page(false), install_page(true));
     }
 
     /// What the daemon finds, on a computer where the setup script would run.
@@ -937,14 +952,6 @@ mod tests {
             "docs/snapper.md has no heading for #{anchor}"
         );
         assert_eq!(anchor, "giving-backtrack-access");
-    }
-
-    fn capitalised(word: &str) -> String {
-        let mut chars = word.chars();
-        chars
-            .next()
-            .map(|first| first.to_uppercase().collect::<String>() + chars.as_str())
-            .unwrap_or_default()
     }
 
     #[test]
