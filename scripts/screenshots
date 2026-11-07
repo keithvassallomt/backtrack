@@ -1,0 +1,335 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-3.0-or-later
+# SPDX-FileCopyrightText: 2026 Keith Vassallo <keith@vassallo.cloud>
+#
+# Backtrack's screenshots for the guides, the website and the software
+# centres, taken on the GNOME development VM as a user of their own, with a
+# home folder that looks like somebody's (S19-T3). docs/screenshots.md says
+# how to take the set again.
+#
+#   scripts/screenshots setup    once per VM: the user, its drive, GNOME Shell's
+#                                unsafe mode for it, and logging it in
+#   scripts/screenshots home     its home folder and four weeks of backups, from nothing
+#   scripts/screenshots take     the home folder again, then the shots a script can
+#                                take, into target/screenshots/
+#   scripts/screenshots images   the set, sized for the guides, into docs/images/
+#
+# The shots a person takes (docs/screenshots.md lists them):
+#
+#   scripts/screenshots wizard   the welcome wizard at step 4, passphrase typed
+#   scripts/screenshots import   the welcome wizard at "Where are your backups?"
+#   scripts/screenshots keep NAME  the newest screenshot taken on the VM's
+#                                screen, as target/screenshots/NAME.png
+#
+#   scripts/screenshots done     log the VM's own user back in
+#
+# The VM is the GNOME one unless BACKTRACK_SHOTS_VM names another. It must
+# have had `just vm-push`, whose build the shots are of.
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+VM="${BACKTRACK_SHOTS_VM:-fedora45 (GNOME)}"
+SHOTS_USER=sam
+SHOTS_NAME="Sam Rivera"
+OPT=/opt/backtrack-screenshots
+DRIVE_IMAGE=/var/lib/backtrack-screenshots/backup-drive.img
+DRIVE="/run/media/$SHOTS_USER/Backup Drive"
+OUT="$ROOT/target/screenshots"
+SSH=(-o BatchMode=yes -o ConnectTimeout=15)
+
+say() { printf '\033[1m%s\033[0m\n' "$*"; }
+
+owner() { "$ROOT/scripts/vm" address "$VM"; }
+host() { local a; a="$(owner)"; echo "${a#*@}"; }
+as_owner() { ssh "${SSH[@]}" "$(owner)" "$@"; }
+as_user() { ssh "${SSH[@]}" "$SHOTS_USER@$(host)" "$@"; }
+shots() { as_user "python3 $OPT/shots.py $(printf '%q ' "$@")"; }
+
+# GDM logs in whoever custom.conf names, after a restart of GDM.
+log_in() {
+    local who="$1"
+    as_owner "sudo sed -i 's/^AutomaticLogin=.*/AutomaticLogin=$who/' /etc/gdm/custom.conf \
+        && sudo systemctl restart gdm"
+    say "Waiting for $who's desktop…"
+    for _ in $(seq 1 60); do
+        if as_owner "loginctl list-sessions --no-legend | awk '\$3 == \"$who\" && \$4 == \"seat0\"' | grep -q ." 2>/dev/null \
+            && as_owner "sudo -u $who env XDG_RUNTIME_DIR=/run/user/\$(id -u $who) \
+                gdbus call --session --dest org.gnome.Shell --object-path /org/gnome/Shell \
+                --method org.gnome.Shell.Eval 1" >/dev/null 2>&1; then
+            sleep 3
+            return 0
+        fi
+        sleep 2
+    done
+    echo "$who's desktop did not come up" >&2
+    exit 1
+}
+
+install_files() {
+    as_owner "sudo install -d -m 755 $OPT/bin \
+        && sudo install -m 755 ~/backtrack/target/debug/backtrackd ~/backtrack/target/debug/backtrack-gtk \
+           ~/backtrack/target/debug/backtrack ~/backtrack/target/debug/backtrack-tray $OPT/bin/"
+    tar -C "$ROOT/scripts/screenshots.d" -cf - . | as_owner "sudo tar -C $OPT -xf - && sudo chmod -R a+rX $OPT"
+    # GNOME Files' items, as just install-nautilus-dev installs them: the
+    # shipped extension, pointed at this build and its development daemon.
+    as_owner "ext=~$SHOTS_USER/.local/share/nautilus-python/extensions
+        sudo -u $SHOTS_USER mkdir -p \$ext
+        sed -e 's|^COMMAND = (.*)\$|COMMAND = (\"$OPT/bin/backtrack-gtk\",)|' \
+            -e 's|^DEVELOPMENT = False\$|DEVELOPMENT = True|' ~/backtrack/integrations/nautilus/backtrack.py \
+            | sudo -u $SHOTS_USER tee \$ext/backtrack.py >/dev/null
+        sudo grep -qx 'DEVELOPMENT = True' \$ext/backtrack.py"
+}
+
+mount_drive() {
+    as_owner "sudo install -d -m 755 /var/lib/backtrack-screenshots
+        if [ ! -f $DRIVE_IMAGE ]; then
+            sudo truncate -s 8G $DRIVE_IMAGE
+            sudo mkfs.ext4 -q -L 'Backup Drive' $DRIVE_IMAGE
+        fi
+        if ! sudo mountpoint -q '$DRIVE'; then
+            sudo install -d -m 750 -o $SHOTS_USER -g $SHOTS_USER /run/media/$SHOTS_USER
+            sudo install -d '$DRIVE'
+            sudo mount -o loop $DRIVE_IMAGE '$DRIVE'
+            sudo chown $SHOTS_USER: '$DRIVE'
+        fi"
+}
+
+setup() {
+    # `scripts/vm start` waits for the VM's own user, whom this logs out.
+    if ! as_owner true 2>/dev/null; then
+        echo "Start the VM first: just vm-start \"$VM\"" >&2
+        exit 1
+    fi
+    install_files
+    say "The user $SHOTS_USER ($SHOTS_NAME)…"
+    as_owner "set -e
+        id $SHOTS_USER >/dev/null 2>&1 || sudo useradd -m -c '$SHOTS_NAME' $SHOTS_USER
+        echo '$SHOTS_USER:backtrack dev' | sudo chpasswd
+        sudo install -d -m 700 -o $SHOTS_USER -g $SHOTS_USER ~$SHOTS_USER/.ssh
+        sudo install -m 600 -o $SHOTS_USER -g $SHOTS_USER ~/.ssh/authorized_keys ~$SHOTS_USER/.ssh/
+        ext=~$SHOTS_USER/.local/share/gnome-shell/extensions
+        sudo -u $SHOTS_USER mkdir -p \$ext ~$SHOTS_USER/.config
+        sudo cp -r $OPT/unsafe-mode@dev.backtrack.tools \$ext/
+        sudo chown -R $SHOTS_USER: \$ext
+        echo yes | sudo -u $SHOTS_USER tee ~$SHOTS_USER/.config/gnome-initial-setup-done >/dev/null
+        # The screen as the VM's own user has it (3840 × 2160 at 5/3), so the
+        # shots are sharp; a user without monitors.xml gets 1280 × 800.
+        sudo install -m 644 -o $SHOTS_USER -g $SHOTS_USER ~/.config/monitors.xml ~$SHOTS_USER/.config/
+        cd / && sudo -u $SHOTS_USER dbus-run-session sh -c \"
+            gsettings set org.gnome.shell enabled-extensions \\\"['unsafe-mode@dev.backtrack.tools']\\\"
+            gsettings set org.gnome.shell welcome-dialog-last-shown-version '999'
+            gsettings set org.gnome.desktop.session idle-delay 0
+            gsettings set org.gnome.desktop.screensaver lock-enabled false
+            gsettings set org.gnome.desktop.notifications show-banners false
+        \""
+    mount_drive
+    log_in "$SHOTS_USER"
+    say "Ready: $SHOTS_USER is logged in on $VM, with GNOME Shell in unsafe mode."
+}
+
+home() {
+    install_files
+    mount_drive
+    shots home
+}
+
+shots_fresh() { as_user "SHOTS_FRESH=1 python3 $OPT/shots.py $(printf '%q ' "$@")"; }
+
+# The window, fresh, on a folder, at the usual size.
+window_on() {
+    shots close
+    shots app "$@"
+    shots window 1200 780
+}
+
+# The welcome wizard on a Backtrack never set up, from the welcome page to
+# step 4 with the passphrase typed: shot on the way with `shoot`.
+wizard_to_step_4() {
+    local shoot="${1:-}"
+    snap() { if [ -n "$shoot" ]; then shots shot "$1"; fi; }
+    shots close
+    shots_fresh daemon
+    shots_fresh app
+    shots window 1000 720
+    snap wizard-welcome
+    shots press "Get Started"
+    snap wizard-what
+    shots press Continue
+    snap wizard-where
+    shots press "External drive"
+    shots press Continue
+    shots fill Passphrase "correct horse battery staple"
+    shots fill Confirm "correct horse battery staple"
+    snap wizard-protect
+}
+
+take() {
+    local h="/home/$SHOTS_USER"
+    # From the same home folder every time: the shots change it (a folder
+    # restored, a file trashed, the passphrase forgotten).
+    home
+    as_user "rm -f /var/tmp/backtrack-screenshots/*.png"
+    shots scheme light
+
+    # The window at an earlier backup: the newsletter before its rewrite,
+    # and what restoring it asks.
+    window_on --path "$h/Documents" --select "$h/Documents/Garden club newsletter.odt"
+    for _ in 1 2 3; do shots action older; done
+    shots shot window-earlier-backup
+    shots scheme dark
+    shots shot window-earlier-backup-dark
+    shots scheme light
+    shots action restore
+    shots shot restore-question
+    shots press Cancel
+
+    # Compare with Today, for notes kept in a text file. (A word processor's
+    # documents cannot be shown side by side.)
+    window_on --path "$h/Documents" --select "$h/Documents/Notes.txt"
+    for _ in 1 2 3; do shots action older; done
+    shots action compare
+    sleep 2
+    shots shot compare-document
+
+    # The holiday photo before it was edited, with its preview, and compared.
+    window_on --path "$h/Pictures/Spain 2026" --select "$h/Pictures/Spain 2026/Parasols at sunset.jpg"
+    shots action older
+    shots shot window-photo
+    shots scheme dark
+    shots shot window-photo-dark
+    shots scheme light
+    shots action compare
+    sleep 2
+    shots shot compare-picture
+
+    # Rewind, over the same folder.
+    shots close
+    shots app --rewind --path "$h/Pictures/Spain 2026" --select "$h/Pictures/Spain 2026/Parasols at sunset.jpg"
+    sleep 6
+    shots screen rewind
+
+    # Search, finding the boarding pass cleared out of Downloads.
+    window_on --path "$h"
+    shots action search
+    shots keys "boarding"
+    sleep 2
+    shots shot search-deleted
+
+    # A whole folder brought back, and the summary with Undo.
+    window_on --path "$h/Pictures" --select "$h/Pictures/Spain 2026"
+    shots action older
+    shots action restore
+    shots shot restore-folder-question
+    shots press "Keep Both Versions"
+    sleep 4
+    shots shot restore-folder-summary
+
+    # Preferences.
+    window_on --path "$h"
+    shots action preferences
+    shots shot preferences
+    shots press Backup
+    shots shot preferences-backup
+    shots press Storage
+    shots shot preferences-storage
+
+    # GNOME Files' right-click menu on a backed-up document.
+    shots close
+    shots files "$h/Documents/Household budget 2026.ods"
+    shots area files-menu org.gnome.Nautilus
+    shots keys "<Escape>"
+    as_user "nautilus -q" || true
+
+    # Something moved to the Trash since the last backup.
+    shots trash "Shopping list.txt"
+    sleep 2
+    window_on --path "$h/Documents"
+    shots action newer
+    shots shot trash-in-timeline
+
+    # A warning: the passphrase not kept, and Backtrack started again.
+    shots close
+    shots forget
+    window_on --path "$h/Documents"
+    sleep 2
+    shots shot warning-banner
+    shots close
+    shots unlock
+
+    # The welcome wizard, on a Backtrack that has never been set up.
+    wizard_to_step_4 shoot
+    shots close
+    shots daemon
+
+    rm -rf "$OUT"
+    mkdir -p "$OUT"
+    scp -q "${SSH[@]}" "$SHOTS_USER@$(host):/var/tmp/backtrack-screenshots/*.png" "$OUT/"
+    say "Taken, into $OUT:"
+    ls "$OUT"
+}
+
+# Downscaled to the window's own size on the screen (5/3 of it was taken),
+# and a whole screen to 1920 wide; the transparent shadow stays.
+images() {
+    local dest="$ROOT/docs/images" f w
+    mkdir -p "$dest"
+    for f in "$OUT"/*.png; do
+        w="$(magick identify -format '%w' "$f")"
+        if [ "$w" -ge 3000 ]; then
+            magick "$f" -resize 1920x -strip "$dest/$(basename "$f")"
+        else
+            magick "$f" -resize 60% -strip "$dest/$(basename "$f")"
+        fi
+    done
+    say "Into $dest:"
+    du -ch "$dest"/*.png | tail -1
+}
+
+wizard() {
+    install_files
+    mount_drive
+    wizard_to_step_4
+    say "Step 4 is on the VM's screen. See docs/screenshots.md for what to take."
+}
+
+import_() {
+    install_files
+    mount_drive
+    shots close
+    as_user "SHOTS_FRESH=1 SHOTS_KEEP_REPO=1 python3 $OPT/shots.py daemon"
+    as_user "SHOTS_FRESH=1 SHOTS_KEEP_REPO=1 python3 $OPT/shots.py app"
+    shots window 1000 720
+    shots press "Already have backups? Import…"
+    say "\"Where are your backups?\" is on the VM's screen. See docs/screenshots.md."
+}
+
+keep() {
+    local name="$1" newest
+    newest="$(as_user 'ls -t ~/Pictures/Screenshots/*.png 2>/dev/null | head -1')"
+    if [ -z "$newest" ]; then
+        echo "No screenshot in $SHOTS_USER's Pictures/Screenshots." >&2
+        exit 1
+    fi
+    mkdir -p "$OUT"
+    scp -q "${SSH[@]}" "$SHOTS_USER@$(host):$newest" "$OUT/$name.png"
+    as_user "rm -f $(printf '%q' "$newest")"
+    say "Kept as $OUT/$name.png"
+}
+
+done_() {
+    log_in "$(owner | cut -d@ -f1)"
+    as_owner "if sudo mountpoint -q '$DRIVE'; then sudo umount '$DRIVE'; fi"
+    say "$VM is back to its own user."
+}
+
+case "${1:-}" in
+    setup) setup ;;
+    home) home ;;
+    take) take ;;
+    images) images ;;
+    wizard) wizard ;;
+    import) import_ ;;
+    keep) keep "${2:?keep NAME}" ;;
+    done) done_ ;;
+    *) sed -n '5,27p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
+esac

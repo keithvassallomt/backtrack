@@ -1,0 +1,6 @@
+{
+  "uuid": "unsafe-mode@dev.backtrack.tools",
+  "name": "Unsafe mode, for a development VM",
+  "description": "Opens GNOME Shell's screenshot and Eval interfaces to scripts, so that scripts/screenshots can take Backtrack's screenshots. For a development VM only: on any other computer it lets every program the user runs take screenshots and drive the Shell.",
+  "shell-version": ["49", "50", "51", "52"]
+}

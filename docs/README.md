@@ -21,6 +21,7 @@ hand. The plan for every stage, the architecture and the design notes are in
 - [The tray icon, and Backtrack running in the background](tray-and-background.md)
 - [The development VMs](development-vms.md)
 - [The disaster recovery drill](disaster-recovery-drill.md)
+- [Taking the screenshots](screenshots.md)
 - [The Borg adapter's design](superpowers/specs/2026-07-08-stage-02-borg-adapter-design.md)
   and [its implementation plan](superpowers/plans/2026-07-08-stage-02-borg-adapter.md),
   from Stage 2

@@ -112,8 +112,8 @@ check-integrations:
         ruff=()
     fi
     if (( ${#ruff[@]} > 0 )); then
-        "${ruff[@]}" check integrations scripts/release.py scripts/release_notes.py scripts/test_release.py scripts/test_release_notes.py scripts/test_snapper_setup.py
-        "${ruff[@]}" format --check integrations scripts/release.py scripts/release_notes.py scripts/test_release.py scripts/test_release_notes.py scripts/test_snapper_setup.py
+        "${ruff[@]}" check integrations scripts/release.py scripts/release_notes.py scripts/test_release.py scripts/test_release_notes.py scripts/test_snapper_setup.py scripts/screenshots.d/shots.py
+        "${ruff[@]}" format --check integrations scripts/release.py scripts/release_notes.py scripts/test_release.py scripts/test_release_notes.py scripts/test_snapper_setup.py scripts/screenshots.d/shots.py
     elif [[ -n "${CI:-}" ]]; then
         echo "ruff not found, and CI must lint the extensions." >&2
         exit 1

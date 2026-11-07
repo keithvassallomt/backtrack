@@ -324,6 +324,21 @@ choosing the exported key file; without the file, the wizard says what is
 missing rather than "Something went wrong"; a CHANGELOG entry under
 Unreleased.
 
+### S19-T17 — Rewind's window belongs to Backtrack
+Rewind's window (`crates/backtrack-gtk/src/ui/rewind/mod.rs`) is an
+`adw::Window` that is not the application's, so on Wayland it has the
+program's name for its application ID (`backtrack-gtk`) rather than
+`tools.backtrack.Backtrack`. GNOME Shell then shows it as a separate
+application, without Backtrack's icon or name, in the dash, the window
+switcher and the overview, whenever Rewind opens on its own: from the file
+manager, the launcher or the tray. Found by S19-T3's screenshot script,
+which looks windows up by their application.
+
+**Accept:** opened from GNOME Files and from the launcher on the GNOME VM,
+Rewind's window is listed under Backtrack, with its icon, in the window
+switcher and the overview; GNOME Shell reports `tools.backtrack.Backtrack`
+as its application ID; a CHANGELOG entry under Unreleased.
+
 ## Definition of Done
 All tasks done; `docs/README.md` lists every guide in the order a new user
 meets them; the README's Documentation section and install table point at
