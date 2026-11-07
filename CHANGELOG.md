@@ -22,6 +22,16 @@ All notable changes to Backtrack are documented here. This project adheres to
   Everything you browse is read from the catalogue on this computer, so it is
   instant and it works with the backup destination switched off, unplugged or
   on the other side of the world.
+- Rewind, a full-screen way back through a folder's history: the folder as
+  it is now in front, its backups receding behind it into the distance over
+  your desktop's wallpaper, and a timeline of them down the side. Step back
+  with the arrow keys, the mouse wheel or the timeline, look through each
+  backup as icons, with pictures, or as a list, and restore what is
+  selected, or the whole folder, from the backup in front. Open it from
+  Backtrack's window (Ctrl+T), from the right-click menu of GNOME Files and
+  Dolphin (Rewind This File…, Rewind This Folder…), from the launcher, or
+  from the tray. A screen reader reads each backup as you step, and all of
+  it works from the keyboard.
 - Backups are listed grouped the way you would think of them — today by the
   hour, then yesterday, this week, last week, and older months you can open
   when you want them. Backups kept on this computer while the destination was
