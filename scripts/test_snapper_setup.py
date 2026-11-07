@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # SPDX-FileCopyrightText: 2026 Keith Vassallo <keith@vassallo.cloud>
-"""docs/snapper.md and backtrack-snapper-setup give the same commands.
+"""docs/snapper-by-hand.md and backtrack-snapper-setup give the same commands.
 
 The guide says what the script does, step by step, for anyone who wants to
 know or to do it by hand (S17-T5). Each was checked on a machine of its
@@ -15,7 +15,7 @@ import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-GUIDE = ROOT / "docs" / "snapper.md"
+GUIDE = ROOT / "docs" / "snapper-by-hand.md"
 SCRIPT = ROOT / "packaging" / "snapper" / "backtrack-snapper-setup"
 
 # The distributions, as the script names them and as the guide's headings do.

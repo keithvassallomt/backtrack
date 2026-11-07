@@ -206,6 +206,9 @@ pub fn status_human(status: &Status, progress: Option<&Progress>, now: SystemTim
 /// The one-line summary, phrased for the state it describes.
 fn headline(status: &Status) -> &'static str {
     match status.state.as_str() {
+        // Healthy only because nothing has failed yet: no backup has run, so
+        // nothing is backed up (S19-T18). The line below says when it is due.
+        "HEALTHY" if status.last_backup == 0 => "Your first backup hasn't run yet.",
         "HEALTHY" => "Your files are backed up.",
         "PROTECTED_LOCALLY" => {
             "The backup destination isn't reachable — changes are being kept on this computer."
@@ -436,6 +439,25 @@ mod tests {
         assert_eq!(json["progress"]["percent"], serde_json::Value::Null);
         // Between backups the daemon answers job 0: nothing under way.
         assert_eq!(Progress::from_reply((0, String::new(), 0, 0)), None);
+    }
+
+    #[test]
+    fn before_the_first_backup_it_does_not_say_the_files_are_backed_up() {
+        let waiting = Status {
+            last_backup: 0,
+            ..status()
+        };
+        let shown = status_human(&waiting, None, at(1_700_001_800));
+        assert!(
+            shown.starts_with("Your first backup hasn't run yet.\n"),
+            "{shown}"
+        );
+        assert!(shown.contains("  Last backup   never\n"), "{shown}");
+        assert!(shown.contains("  Next backup   "), "{shown}");
+        assert!(!shown.contains("backed up."), "{shown}");
+        // Once there has been one, it reads as before.
+        let shown = status_human(&status(), None, at(1_700_001_800));
+        assert!(shown.starts_with("Your files are backed up.\n"), "{shown}");
     }
 
     #[test]

@@ -69,13 +69,28 @@ pub(super) async fn probe_version(bin: &Path) -> Result<()> {
 /// while others need the `::archive` suffix.
 pub(super) fn base_command(bin: &Path, passphrase: &str) -> Command {
     let mut cmd = Command::new(bin);
-    cmd.env("BORG_PASSPHRASE", passphrase)
+    // Nobody answers Borg's questions (an unencrypted repository it has not
+    // seen, one that has moved): with nothing on stdin it takes the safe
+    // answer at once, where a stdin left open, a daemon run from a terminal,
+    // would leave it waiting. The one command that needs input sets its own.
+    cmd.stdin(std::process::Stdio::null());
+    cmd.env("BORG_PASSPHRASE", for_borg(passphrase))
         .env("BORG_RELOCATED_REPO_ACCESS_IS_OK", "no")
         .env("BORG_EXIT_CODES", "modern")
         .env("LC_ALL", "C.UTF-8")
         .env("LANG", "C.UTF-8")
         .arg("--log-json");
     cmd
+}
+
+/// The passphrase as Borg is to be given it: the empty one that
+/// [`NO_PASSPHRASE`](crate::secret::NO_PASSPHRASE) stands for, or itself.
+pub(super) fn for_borg(passphrase: &str) -> &str {
+    if passphrase == crate::secret::NO_PASSPHRASE {
+        ""
+    } else {
+        passphrase
+    }
 }
 
 /// Grace period for borg to checkpoint and exit after SIGTERM before we SIGKILL.
@@ -400,6 +415,13 @@ async fn forward_line(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn backups_that_need_no_passphrase_give_borg_an_empty_one() {
+        assert_eq!(for_borg(crate::secret::NO_PASSPHRASE), "");
+        assert_eq!(for_borg("correct horse"), "correct horse");
+        assert_eq!(for_borg(""), "");
+    }
 
     /// A stand-in for a Borg in the middle of something: it runs `trap` for
     /// SIGTERM, says it is ready, and goes on until stopped.

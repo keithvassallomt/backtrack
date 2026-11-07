@@ -73,6 +73,14 @@ impl BorgCli {
     ///
     /// No passphrase is offered. An encrypted repository then refuses with
     /// `PassphraseWrong`, and that refusal is the answer: something is there.
+    /// One that opens anyway needs no passphrase at all.
+    ///
+    /// This is Borg's first contact with a place the person chose, so it also
+    /// answers Borg's question about an unencrypted repository it has not
+    /// seen before, which nobody is at a terminal to answer (S19-T15). Borg
+    /// then knows the repository, and every later command leaves the
+    /// question unanswered: a different repository put in its place is
+    /// refused.
     pub async fn presence(&self) -> Result<Presence> {
         let local = Path::new(&self.repo);
         if local.is_absolute() {
@@ -89,6 +97,7 @@ impl BorgCli {
         if std::env::var_os("BORG_RSH").is_none() {
             cmd.env("BORG_RSH", "ssh -o BatchMode=yes -o ConnectTimeout=15");
         }
+        cmd.env("BORG_UNKNOWN_UNENCRYPTED_REPO_ACCESS_IS_OK", "yes");
         cmd.arg("list").arg("--json").arg(&self.repo);
         cmd.stdout(Stdio::null()).stderr(Stdio::piped());
         let out = cmd.output().await.map_err(|e| EngineError::BorgFailed {
@@ -97,14 +106,21 @@ impl BorgCli {
         })?;
         let code = out.status.code().unwrap_or(-1);
         if classify::classify_exit(code) != classify::ExitClass::Error {
-            // An unencrypted repository opens without a passphrase.
-            return Ok(Presence::Existing);
+            // An unencrypted repository, or one encrypted with an empty
+            // passphrase, opens without one.
+            return Ok(Presence::Open);
         }
 
         // Whether the server refused us or could not be reached at all is in
         // ssh's own words, which the collection includes.
         let errors = collect_json_errors(&out.stderr);
         let said = |msgid: &str| errors.iter().any(|e| e.msgid.as_deref() == Some(msgid));
+        // Key-file encryption keeps the key on the computer that made the
+        // backups, in that Borg's keys folder, so another computer, or the
+        // Flatpak with a keys folder of its own, has no key to try.
+        if said("KeyfileNotFoundError") {
+            return Ok(Presence::NeedsKeyFile);
+        }
         if said("PassphraseWrong") {
             return Ok(Presence::Existing);
         }
@@ -207,7 +223,7 @@ impl BackupEngine for BorgCli {
         // passphrase always does, and never on its command line, where any
         // other user of the machine could read them.
         let mut cmd = base_command(&self.bin, old);
-        cmd.env("BORG_NEW_PASSPHRASE", new)
+        cmd.env("BORG_NEW_PASSPHRASE", invoke::for_borg(new))
             .arg("key")
             .arg("change-passphrase")
             .arg(&self.repo);
@@ -401,6 +417,7 @@ impl BackupEngine for BorgCli {
         cmd.arg("prune")
             .arg("--progress")
             .arg("--list")
+            .arg(format!("--glob-archives={OWN_ARCHIVES}"))
             .args(keep_args(policy))
             .arg(&self.repo);
         spawn_streamed(cmd)
@@ -465,9 +482,10 @@ impl BackupEngine for BorgCli {
     }
 
     async fn key_import(&self, key: &str) -> Result<()> {
-        // No passphrase: putting the key back only writes it into the
-        // repository's configuration, and using it is what needs one. The key
-        // goes in on stdin so that it is never written to a file on the way.
+        // No passphrase: putting the key back only writes it, into the
+        // repository's configuration or, for key-file encryption, into this
+        // Borg's keys folder, and using it is what needs one. The key goes in
+        // on stdin so that it is never written to a file on the way.
         let mut cmd = base_command(&self.bin, "");
         cmd.arg("key").arg("import").arg(&self.repo).arg("-");
         run_with_input(cmd, key).await.map(|_| ())
@@ -489,6 +507,15 @@ impl BackupEngine for BorgCli {
 /// `keep_hourly` hours is kept as well (S18-T22). Borg does not count the
 /// backups `--keep-within` keeps towards the other rules, so the hourly ones
 /// then reach back as far as before, from the end of that window.
+/// The archives Backtrack's retention may remove: its own, which it names
+/// `bt-{host}-{time}` (and the spool's `bt-local-{time}`). A repository can
+/// hold another program's archives as well: the wizard offers to carry on
+/// backing up into backups it finds at the destination, Vorta's or Pika
+/// Backup's among them. Without this, Borg's prune counts every archive as one
+/// series, and Backtrack's first backup into Vorta's removed 12 of its 51
+/// (S19-T2). Those archives are their own program's to prune.
+const OWN_ARCHIVES: &str = "bt-*";
+
 fn keep_args(policy: &PrunePolicy) -> Vec<String> {
     let mut args = Vec::with_capacity(5);
     // Borg refuses a window of 0 hours; with no hourly backups there is none.

@@ -1,40 +1,53 @@
-# File-manager integration
+# Add Backtrack to your file manager's menu
 
-Backtrack adds a few items to the file manager's right-click menu. Each one
-opens Backtrack's own window, or [Rewind](rewind.md), its full-screen view,
-at the right place and does nothing else. Deeper
-integration is a trap: Nautilus removed the API that let extensions put widgets
-in its window, and Déjà Dup dropped its own Nautilus plugin because it broke
-with each GNOME release. See `backtrack_plan/reference/open-questions.md`, Q1.
+Backtrack can add four items to the right-click menu of GNOME Files and
+Dolphin, so that a file's earlier versions are one click away from wherever
+you are looking at it. This guide adds them, shows what each one does, and
+how to turn them off again.
+
+## See whether they are installed
+
+1. In Backtrack, open the main menu and choose **Preferences**. The first
+   page, **General**, has a section named **File manager integration**.
+2. Look at the row for your file manager, **GNOME Files (Nautilus)** or
+   **Dolphin**.
+   - **Installed**, with a switch: the items are there. Skip to [Use the
+     items](#use-the-items).
+   - **Not installed**, with **How to Install…**: follow the steps below for
+     how you installed Backtrack. **How to Install…** opens them too.
 
 ## Installing
-
-Pick the steps for how you installed Backtrack. **Preferences → General**
-shows what is installed: *Installed* and a switch, which hides the items
-without uninstalling them.
 
 ### From a package
 
 If you installed Backtrack from COPR (Fedora), the PPA (Ubuntu) or the AUR
-(Arch).
+(Arch Linux). On Fedora, the items for your desktop's file manager come with
+Backtrack, so they may be installed already.
 
 **GNOME Files**
 
-1. Install Backtrack's GNOME Files package, which brings nautilus-python
-   with it:
+1. Install Backtrack's package for GNOME Files. In a terminal, run the
+   command for your distribution:
    - Fedora: `sudo dnf install backtrack-nautilus`
    - Ubuntu: `sudo apt install backtrack-nautilus`
-   - Arch: `backtrack-nautilus` from the AUR, as you installed `backtrack`
-2. Quit GNOME Files so that it loads the new items: `nautilus -q`. Open it
-   again.
+   - Arch Linux: install `backtrack-nautilus` from the AUR, as you installed
+     `backtrack`
+2. Quit GNOME Files, so that it loads the new items when it opens again:
+
+   ```sh
+   nautilus -q
+   ```
+
+3. Open GNOME Files again. **Preferences → General** in Backtrack now says
+   **Installed** beside **GNOME Files (Nautilus)**.
 
 **Dolphin**
 
-1. Install Backtrack's Dolphin package:
+1. Install Backtrack's package for Dolphin:
    - Fedora: `sudo dnf install backtrack-dolphin`
    - Ubuntu: `sudo apt install backtrack-dolphin`
-   - Arch: `backtrack-dolphin` from the AUR
-2. Right-click a file. Nothing needs restarting.
+   - Arch Linux: install `backtrack-dolphin` from the AUR
+2. Right-click a file in Dolphin. Nothing needs restarting.
 
 ### From the Flatpak
 
@@ -44,331 +57,74 @@ If you installed Backtrack from COPR (Fedora), the PPA (Ubuntu) or the AUR
    run any extension, and a Flatpak cannot install it for you:
    - Fedora: `sudo dnf install nautilus-python`
    - Ubuntu: `sudo apt install python3-nautilus`
-   - Arch: `sudo pacman -S python-nautilus`
+   - Arch Linux: `sudo pacman -S python-nautilus`
 2. In Backtrack, open **Preferences → General** and click **Install** beside
-   GNOME Files.
-3. Quit GNOME Files so that it loads the new items: `nautilus -q`. Open it
-   again.
+   **GNOME Files (Nautilus)**. It now says **Installed**.
+3. Quit GNOME Files, so that it loads the new items when it opens again:
+
+   ```sh
+   nautilus -q
+   ```
 
 **Dolphin**
 
 1. In Backtrack, open **Preferences → General** and click **Install** beside
-   Dolphin.
-2. Right-click a file. Nothing needs restarting.
+   **Dolphin**.
+2. Right-click a file in Dolphin. Nothing needs restarting.
 
-**Remove** in the same place takes the items away again. An update of the
-Flatpak updates them too.
+When the Flatpak updates, it updates the items too.
 
-### How Preferences finds them
+## Use the items
 
-Preferences lists a file manager that is on the computer, or one whose
-integration is installed. It finds an integration by its file in the user's
-data folder (`~/.local/share`) or a system one (`/usr/share`; from the
-Flatpak, the host's, which it sees under `/run/host`):
-`nautilus-python/extensions/backtrack.py` and
-`kio/servicemenus/backtrack.desktop`. It looks again each time the
-Preferences window comes back into focus, so an integration installed while
-it is open shows when you return to it.
+In GNOME Files, right-click a file or a folder inside the folders Backtrack
+backs up. In Dolphin, the same items are in a **Backtrack** submenu of the
+right-click menu.
 
-The Flatpak cannot install files outside itself, so its **Install** puts its
-own copies in the user's data folder: the files the packages ship, opening
-the window with `flatpak run tools.backtrack.Backtrack`, with the Nautilus
-copy reading the backed-up folders from the Flatpak's data folder under
-`~/.var/app`. Each start of the window brings them up to date with the
-Flatpak. Without nautilus-python on the host (its library under
-`/run/host/usr`), the GNOME Files row says *Needs nautilus-python* and offers
-**How to Install…**, which opens the steps above, instead of **Install**.
+- **Restore Previous Version…**, on a file or a folder, opens Backtrack's
+  window on the folder it is in, with it selected. Step back through the
+  backups to the version you want, and restore it. [Get a file back from an
+  earlier backup](restoring.md) goes through it.
+- **Browse Backups of This Folder…**, on a folder or on the empty space of
+  the folder you are in, opens Backtrack's window on that folder.
+- **Rewind This File…**, on a file, opens [Rewind](rewind.md), Backtrack's
+  full-screen view of a folder's history, on the folder it is in, with the
+  file selected.
+- **Rewind This Folder…**, on a folder or on the empty space of the folder
+  you are in, opens Rewind on that folder.
 
-From a checkout, `just install-nautilus-dev` and `just install-dolphin-dev`
-install development copies; see each file manager's section below.
+In GNOME Files the items appear only where Backtrack has something to show:
+inside the folders it backs up, on this computer's own disks. A file on a
+network location, on a USB stick or in the Trash has none.
 
-## Nautilus
+## Turn them off
 
-`integrations/nautilus/backtrack.py`, a nautilus-python extension (API 4.x).
+To hide the items without uninstalling them, open **Preferences → General**
+in Backtrack and turn off the switch beside **GNOME Files (Nautilus)** or
+**Dolphin**. Turn it on again to bring them back.
 
-| Right-click on | Items |
-|---|---|
-| One file | Restore Previous Version…, Rewind This File… |
-| One folder | Restore Previous Version…, Browse Backups of This Folder…, Rewind This Folder… |
-| The empty space of the folder being shown | Browse Backups of This Folder…, Rewind This Folder… |
-| More than one item | nothing |
+To remove them completely:
 
-*Restore Previous Version…* runs `backtrack-gtk --path <its folder> --select
-<it>`; *Browse Backups of This Folder…* runs `backtrack-gtk --path <folder>`.
-Both go through the window's single-instance launch, so a second right-click
-re-points the window already open. *Rewind This File…* and *Rewind This
-Folder…* run the same with `--rewind`, which opens Rewind there instead, and
-leaves the window, if one is open, as it was (S18-T7).
+- From a package, remove its package, for example with `sudo dnf remove
+  backtrack-nautilus` on Fedora or `sudo apt remove backtrack-nautilus` on
+  Ubuntu.
+- From the Flatpak, click **Remove** beside the file manager in
+  **Preferences → General**.
 
-The items appear only where they would find something:
+## If it did not go as described
 
-- **Inside a backed-up folder.** Nautilus asks for menu items on every
-  right-click and waits, so the extension never calls the daemon. Instead, the
-  daemon writes the backed-up folders to `roots.json` in its data folder, on
-  every start and every configuration change:
+- **GNOME Files shows no items after installing them.** Quit it with
+  `nautilus -q` and open it again: it loads extensions only when it starts.
+- **There are no items on a file.** The file is outside the folders Backtrack
+  backs up, or on a network location or a removable drive. **Preferences →
+  Backup** lists the folders it backs up.
+- **The menu does not change after you flip the switch.** GNOME Files builds
+  the menu when you select something. Click another file, then right-click
+  the one you want.
+- **The Flatpak offers How to Install… for GNOME Files instead of Install.**
+  nautilus-python is not installed. Do step 1 of [From the
+  Flatpak](#from-the-flatpak), then look again.
 
-  ```json
-  { "version": 1, "nautilus": true, "roots": ["/home/keith"] }
-  ```
+## Where to go next
 
-  The extension reads it again only when it changes. `nautilus` is the switch
-  in Preferences → General → File manager integration; off, the extension
-  stays installed and offers nothing.
-- **On the same filesystem as that folder.** Backups stay on the filesystem
-  each backed-up folder starts on, so a USB stick, a network share or another
-  btrfs subvolume mounted inside one is not in them.
-- **On this computer.** Network locations, the trash, Recent and search
-  results' own folder are not files on this computer's disks.
-
-### When a change shows
-
-Nautilus builds the menu when the selection changes, not at each
-right-click, and keeps it until the selection changes again. A change to the
-backed-up folders or to the Preferences switch therefore shows from the next
-click in Nautilus: right-clicking a file that has stayed selected since
-before the change shows the menu as it was.
-
-Nautilus does let an extension say its items have changed (the menu
-provider's `items-updated` signal), but nautilus-python 4.2 cannot use it:
-Nautilus connects to the C object nautilus-python wraps each Python
-extension in, and a signal emitted from Python goes out on the Python
-object, which nothing listens to. Checked against a running Nautilus 50.3
-with a handler count on the Python object (none).
-
-### Installing it for development
-
-```sh
-just install-nautilus-dev     # needs nautilus-python
-nautilus -q                   # Nautilus loads extensions when it starts
-```
-
-The recipe installs the shipped file to
-`~/.local/share/nautilus-python/extensions/backtrack.py` with two lines
-rewritten: `APP` points at this checkout's debug build, and `DEVELOPMENT`
-makes it read the development daemon's `roots.json` and launch the window
-with `BACKTRACK_DEV=1`. `just uninstall-nautilus-dev` removes it.
-
-Packages install it unchanged to `/usr/share/nautilus-python/extensions/`
-(Stage 13). nautilus-python is `nautilus-python` on Fedora,
-`python3-nautilus` on Ubuntu and `python-nautilus` on Arch.
-
-### Tests
-
-`just check-integrations`, which `just check` and CI run: ruff, and the unit
-tests in `integrations/nautilus/test_backtrack.py`. Those run without
-Nautilus, with stand-ins for the GObject modules.
-
-### Manual checklist
-
-`scripts/fm-check` sets up the cases the unit tests cannot reach: the real
-Nautilus, a disk mounted inside the backed-up folder (an unprivileged FUSE
-mount, no sudo), and a backed-up file in the trash. It works against the
-development daemon's demo fixture, whose one backed-up folder is
-`~/.local/share/backtrack-dev/demo-src`.
-
-1. `scripts/fm-check setup`, then `scripts/fm-check nautilus`. Nautilus quits
-   and reopens on the fixture's `home/Documents`, which holds `report.odt`,
-   `invoice-may.pdf` and `notes.txt`.
-2. **A file.** Right-click `report.odt`. *Restore Previous Version…* is in the
-   menu; compare where with mockup 2. Choose it: Backtrack opens on
-   `Documents` with `report.odt` selected.
-3. **The folder being shown.** Right-click the empty space beside the files.
-   *Browse Backups of This Folder…* is in the menu. Choose it: Backtrack's
-   window, still open, comes forward. It is already on `Documents`, so it
-   changes nothing and `report.odt` stays selected; a different folder clears
-   the selection (step 4).
-4. **A folder.** Go up to the fixture's `home` and right-click `Projects`. Restore,
-   Browse and *Rewind This Folder…* are there. *Browse Backups of This
-   Folder…* opens `Projects`; *Restore Previous Version…* opens `home` with
-   `Projects` selected. (Rewind's items are checked by
-   `scripts/rewind-check`, S18-T7.)
-5. **A disk mounted inside the backed-up folder.** In the fixture's `home`, open
-   `usb-stick`. Right-click `holiday.jpg`, then the empty space: no Backtrack
-   items either time.
-6. **Outside the backups.** Go to your own home folder and right-click a
-   file, then the empty space: no Backtrack items.
-7. **The trash.** Open Trash and right-click `backtrack-fm-check-draft.txt`:
-   no Backtrack items, although it came from the backed-up `Documents`.
-8. **The switch.** In Backtrack, Preferences → General, turn off *GNOME Files
-   (Nautilus)*. Back in Nautilus, click `notes.txt`, then right-click
-   `report.odt`: no Backtrack items, without restarting Nautilus. Turn it on
-   again, click `notes.txt`, and right-click `report.odt`: the item is back.
-   The click in between matters; see "When a change shows" above.
-9. `scripts/fm-check reset` unmounts the stick, empties the draft from the
-   trash, uninstalls the extension and quits Nautilus.
-
-Note while doing it whether the clock icon from mockup 2 shows beside the
-items. The extension asks for one, and whether it is drawn is up to the
-Nautilus release.
-
-### Checked
-
-Keith's run on 2026-10-05, on Hyprland with Nautilus 50.3.1 and
-nautilus-python 4.2.0, against the development daemon: every step above
-passed. Nautilus 50 draws no icon beside extension items, so mockup 2's clock
-does not appear. The run found that a change to the switch shows from the
-next click rather than at once, which is now step 8 and "When a change
-shows". Screenshot, on the GNOME VM (Fedora 45, GNOME 51, Nautilus 50) on
-2026-10-06: `backtrack_plan/screenshots/stage-12-nautilus-file-menu.png`.
-
-## Dolphin
-
-Three KDE service menus (KDE Frameworks 6), which put Backtrack's items in a
-**Backtrack** submenu:
-
-| File | Item | Offered on |
-|---|---|---|
-| `integrations/dolphin/backtrack.desktop` | Restore Previous Version… | one file or folder |
-| `integrations/dolphin/backtrack-folder.desktop` | Browse Backups of This Folder…, Rewind This Folder… | one folder |
-| `integrations/dolphin/backtrack-file.desktop` | Rewind This File… | one file |
-
-They are three files because KIO matches file types per file, not per
-action: Browse and Rewind This Folder… are for folders only, Rewind This
-File… for files only. KIO merges submenus of the same name, and sorts a
-submenu's items by action name, so the action names put Restore first as
-mockup 3 does, and Rewind's items (`backtrackTimeView…`) last.
-
-Dolphin 26.04 and later let a service menu's actions have keyboard
-shortcuts, which the user assigns in Dolphin's **Configure Keyboard
-Shortcuts**; a service menu cannot declare one of its own, so Backtrack's
-files carry none. All three are `X-KDE-Priority=TopLevel`: otherwise KIO folds
-every service menu into an **Actions** submenu once there are more than four,
-which a stock Plasma already has, and the Backtrack submenu ends up inside it.
-
-*Restore Previous Version…* runs `backtrack-gtk --select <it>`, which opens
-the window on its folder with it selected; *Browse Backups of This Folder…*
-runs `backtrack-gtk --path <folder>`; *Rewind This File…* runs `backtrack-gtk
---rewind --select <it>`, and *Rewind This Folder…* `backtrack-gtk --rewind
---path <folder>`. Dolphin offers a folder's menus on the empty space of that
-folder too, so the folder's items appear there: Restore opens the folder
-above with this one selected.
-
-None appears on more than one item, outside `file://` (network locations
-and the trash), or anywhere KIO does not offer service menus.
-
-### The switch
-
-A service menu cannot read a setting, but Dolphin keeps its own list of
-service-menu actions to leave out: `~/.config/kservicemenurc`, which its
-Settings → Context Menu page writes. The daemon writes Backtrack's four actions
-there as hidden when the Preferences switch is turned off, and removes them
-when it is turned back on:
-
-```ini
-[Show]
-backtrackPreviousVersion=false
-backtrackThisFolder=false
-backtrackTimeViewFile=false
-backtrackTimeViewFolder=false
-```
-
-It writes only when the switch changes, and at startup only when the switch
-is off (for a configuration edited by hand while the daemon was stopped). A
-switch left on never writes, so an item somebody hid from Dolphin's own
-settings stays hidden.
-
-A running Dolphin reads the list once, when its window is created, and again
-only when a `KConfigWatcher` tells it the file changed. That watcher listens
-for the D-Bus signal KConfig sends for a write made with its notify flag, so
-after each write the daemon sends the same signal itself:
-`org.kde.kconfig.notify.ConfigChanged` on `/kservicemenurc`, naming the two
-keys under `Show`. The change shows from the next right-click, without
-restarting Dolphin.
-
-### Everywhere else, the window explains
-
-A service menu is a fixed file: KIO decides whether to show it from the file
-type, the location's protocol and the number of items, and nothing else. It
-cannot read `roots.json`, so the Dolphin items appear on every local file and
-folder, backed up or not. The window makes up for it: a folder with nothing
-to show says why, and only says what it knows.
-
-| The folder | The window says |
-|---|---|
-| Outside every backed-up folder | *This folder is not backed up*, with **Add to Backups…** |
-| In a backed-up folder that was added since the latest backup | *Not backed up yet*: it will be in the next one |
-| In a backed-up folder, but not in the latest backup | *Not in the latest backup*: it may be newer than that backup, excluded, or on another disk |
-| Empty at the backup being viewed, or not there yet at an older one | *Not in this backup* |
-
-The window cannot tell an exclusion or a mounted disk from a folder created
-since the last backup, because only the daemon applies those rules, so it
-names all three rather than promising the next backup. **Add to Backups…**
-adds the folder to *What to back up* and opens Preferences on the Backup
-page, where the folder's × takes it out again. These states belong to the
-window, so they show however it was opened: `just run-app --path /etc` on
-any desktop shows the first.
-
-### Installing it for development
-
-```sh
-just install-dolphin-dev
-```
-
-The recipe installs both files to `~/.local/share/kio/servicemenus/` with the
-command rewritten to this checkout's debug build and `BACKTRACK_DEV=1`, and
-marks them executable: KIO runs a service menu from the home folder only if
-its file is executable. Dolphin reads service menus each time it builds a
-menu, so there is nothing to restart. `just uninstall-dolphin-dev` removes
-them.
-
-Packages install them unchanged to `/usr/share/kio/servicemenus/` (Stage 13),
-where the executable bit is not needed.
-
-The files use `Type=Application`, not the `Type=Service` of older service
-menus, so that `desktop-file-validate` accepts them: KIO ignores `Type`, and
-`NoDisplay=true` keeps them out of application launchers. `just
-check-integrations` validates them, and CI runs it.
-
-### Manual checklist
-
-On the Plasma development VM (see `docs/development-vms.md`), in a terminal
-on its screen, in its checkout:
-
-1. `scripts/fm-check setup`, then `scripts/fm-check dolphin`. Dolphin opens on
-   the fixture's `home/Documents`.
-2. **A file.** Right-click `report.odt`. The menu has a **Backtrack** submenu
-   holding *Restore Previous Version…*; compare with mockup 3. Choose it:
-   Backtrack opens on `Documents` with `report.odt` selected.
-3. **The folder being shown.** Right-click the empty space beside the files.
-   *Backtrack* holds Restore, Browse and *Rewind This Folder…*, in that
-   order. Choose *Browse Backups of This Folder…*: the window comes forward,
-   still on `Documents`.
-4. **A folder.** Go up to the fixture's `home` and right-click `Pictures`.
-   Restore, Browse and *Rewind This Folder…* are there. *Browse…* opens
-   `Pictures`; *Restore…* opens `home` with `Pictures` selected. (Rewind's
-   items are checked by `scripts/rewind-check`, S18-T7.)
-5. **Outside the backups.** Go to your own home folder, right-click
-   `Downloads` and choose *Browse Backups of This Folder…*. The window says
-   *This folder is not backed up*, with **Add to Backups…**.
-6. **Adding it.** Choose **Add to Backups…**. Preferences opens on Backup with
-   `Downloads` under *What to back up*, and the window now says *Not backed up
-   yet*. Take `Downloads` out again with its ×.
-7. **A disk mounted inside the backed-up folder.** In the fixture's `home`,
-   open `usb-stick`, right-click `holiday.jpg` and choose *Restore Previous
-   Version…*. The window opens on `usb-stick` and says *Not in the latest
-   backup*.
-8. **The trash.** Open Trash and right-click `backtrack-fm-check-draft.txt`:
-   no Backtrack submenu.
-9. **Two items.** Select `report.odt` and `notes.txt` together and
-   right-click: no Backtrack submenu.
-10. **The switch.** In Backtrack, Preferences → General shows Dolphin as
-    *Installed*. Turn its switch off, then right-click `report.odt`: no
-    Backtrack submenu. Turn it on again: the submenu is back at the next
-    right-click.
-11. `scripts/fm-check reset` unmounts the stick, empties the draft from the
-    trash and uninstalls the menu.
-
-KIO takes the submenu's icon from the first of the two files it reads; on
-Fedora 45 that is *Restore Previous Version…*'s document with a clock.
-
-### Checked
-
-Keith's run on 2026-10-06, on the Plasma VM (Fedora 45, Plasma 6.7, Dolphin
-26.08, KDE Frameworks 6.31), against the development daemon: every step
-above passed. The run found two faults, both fixed: the submenu was inside
-**Actions** rather than in the menu itself, until both files were made
-`TopLevel`; and the switch took effect only when Dolphin was restarted, until
-the daemon sent KConfig's change signal. Screenshots:
-`backtrack_plan/screenshots/stage-12-dolphin-file-menu.png`,
-`stage-12-dolphin-folder-menu.png`, `stage-12-outside-backups.png` and
-`stage-12-prefs-integrations.png`.
+[Go back through a folder's history with Rewind](rewind.md), or [Get a file
+back from an earlier backup](restoring.md).

@@ -439,13 +439,19 @@ impl Page {
                 self.wizard.protect.borrow_mut().retarget(&repository);
                 self.wizard.nav.push_by_tag("protect");
             }
-            Ok("existing") => {
+            // Backups already there: carried on into, once whatever opens
+            // them is given.
+            Ok(answer @ ("existing" | "open" | "needs-key-file")) => {
                 if self.offer_existing().await {
                     *self.wizard.import.borrow_mut() = Some(Import {
                         repository,
                         adopting: true,
                     });
-                    self.wizard.nav.push_by_tag("passphrase");
+                    if let Err(message) =
+                        super::import::ask_for_what_opens(&self.wizard, answer).await
+                    {
+                        self.wizard.toast(&message);
+                    }
                 }
             }
             Ok("occupied") => self.wizard.toast(

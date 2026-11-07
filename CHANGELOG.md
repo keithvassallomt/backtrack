@@ -15,6 +15,23 @@ All notable changes to Backtrack are documented here. This project adheres to
 
 ## [Unreleased]
 
+### Fixed
+- Backups that need no passphrase now open from Already have backups?
+  without one: Vorta's unencrypted backups, and Pika Backup's made with
+  Continue Unencrypted. The wizard used to stop at "Something went wrong".
+- When Backtrack carries on backing up into backups another program made,
+  such as Vorta or Pika Backup, thinning out older backups no longer removes
+  some of that program's. Backtrack now thins out only its own.
+- Backups whose key is kept in a file of its own, as Vorta's key-file
+  encryption keeps it, now open from the wizard once you choose that file.
+  The wizard used to stop at "Something went wrong".
+- Rewind opened from the file manager, the launcher or the tray now shows as
+  part of Backtrack, with its name and icon, in GNOME's window switcher and
+  overview. It used to appear there as a separate application with neither.
+- Before the first backup has run, `backtrack status` no longer says your
+  files are backed up: it says the first backup hasn't run yet, and the
+  window's status line says when it is due.
+
 ## [0.1.0] - 2026-11-07
 
 ### Added

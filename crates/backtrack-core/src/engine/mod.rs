@@ -131,5 +131,10 @@ pub trait BackupEngine: Send + Sync {
     /// The key is the repository's own key, encrypted with the passphrase that
     /// was in use when it was saved; afterwards that passphrase opens the
     /// repository. Borg refuses a key saved from any other repository.
+    ///
+    /// For backups whose key is kept in a file of its own (Borg's key-file
+    /// encryption), the key goes where this computer's Borg looks for it
+    /// rather than into the repository, which is how such backups made
+    /// elsewhere are opened here.
     async fn key_import(&self, key: &str) -> Result<()>;
 }

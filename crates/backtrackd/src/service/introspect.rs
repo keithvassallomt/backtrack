@@ -18,6 +18,7 @@
 /// `h` file descriptor, `as` string array, `ay` byte array, `()` struct.
 pub const METHODS: &[(&str, &str, &str)] = &[
     // (name, argument signature, return signature)
+    ("AddKeyFile", "ss", ""),
     ("BackupNow", "", "t"),
     ("CancelJob", "t", ""),
     ("CancelRecovery", "b", "t"),

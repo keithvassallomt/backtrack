@@ -5,8 +5,8 @@
 # beside backtrack.desktop's item: Rewind, the full-screen view, on the folder
 # the file is in, with the file selected (S18-T7). A file of its own because
 # KIO matches file types per file, not per action, and this item is for files
-# only. See docs/file-manager-integration.md, and backtrack.desktop for Type,
-# NoDisplay and TopLevel.
+# only. See docs/file-manager-integration-internals.md, and backtrack.desktop
+# for Type, NoDisplay and TopLevel.
 #
 # The action's name sorts after backtrack-folder.desktop's: KIO orders a
 # submenu by action name, and Rewind's items come last, as in Nautilus.

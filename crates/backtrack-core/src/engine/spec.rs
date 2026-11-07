@@ -115,8 +115,16 @@ impl Encryption {
 pub enum Presence {
     /// Nothing there yet, or an empty folder: a repository can be created.
     Empty,
-    /// A Borg repository is already there.
+    /// A Borg repository is already there, and its passphrase opens it.
     Existing,
+    /// A Borg repository is already there that opens without a passphrase:
+    /// unencrypted, or encrypted with an empty one.
+    Open,
+    /// A Borg repository is already there whose key is kept in a file of its
+    /// own (Borg's key-file encryption), which this computer's Borg does not
+    /// have: [`BackupEngine::key_import`](crate::engine::BackupEngine::key_import)
+    /// puts it in place, and then its passphrase opens it.
+    NeedsKeyFile,
     /// Something that is not a repository is there.
     Occupied,
     /// Nothing is there, and nothing can be put there: a folder on this

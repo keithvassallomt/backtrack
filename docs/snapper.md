@@ -1,305 +1,129 @@
-# Snapshots between backups, with Snapper
+# Take snapshots between backups with Snapper
 
-Backtrack backs up every hour, unless you have chosen otherwise, and not at
-all while your laptop runs on battery or while backups are paused. Anything
-you change and lose in between is in no backup: a good document saved over
-with a bad one at 12:40, or a file deleted with `rm`, is gone from the 13:00
-backup and was never in the 12:00 one.
+Backtrack backs up every hour, so a file you change and lose between two
+backups is in neither of them. If your home folder is on btrfs, a program
+called Snapper can take a snapshot of it every five minutes, and Backtrack
+shows those snapshots in its timeline next to your backups. This guide sets
+Snapper up with one script and ends with its first snapshot in the timeline.
 
-If your home folder is on btrfs, a program called Snapper can fill those
-gaps. This guide takes you from never having heard of it to snapshots every
-few minutes, shown in Backtrack's timeline among your backups.
+## What Snapper adds
 
-## What Snapper is
+A snapshot is a copy of your home folder exactly as it was at one moment.
+btrfs makes one in an instant, and it takes up no space until your files
+change after it. Snapper takes them on a schedule and removes old ones.
 
-btrfs is a filesystem that can take **snapshots**: a copy of a folder exactly
-as it was at one moment, made in an instant. A snapshot takes no extra disk
-space when it is made. It only starts to cost space as your files change,
-because it keeps the versions you have since changed or deleted.
+Backtrack reads Snapper's snapshots but never takes, changes or removes one.
+In the timeline each has the badge **Snapper**, and you can browse it,
+preview its files, compare them and restore from it as from a backup, with
+the backup drive plugged in or not. Snapper also goes on taking snapshots
+while the laptop is on battery and while backups are paused.
 
-Snapper is a program that takes these snapshots on a schedule, every hour to
-begin with, and removes old ones so that they do not fill your disk.
+A snapshot is not a backup. It is kept on the same disk as your files, so if
+that disk fails, or the computer is lost, the snapshots go with it. Your
+backups keep your files safe; Snapper's snapshots are a quick way back to
+the last few hours.
 
-What it adds to Backtrack:
+## Check whether it applies
 
-- **The hours Backtrack skips.** Snapper goes on taking snapshots on battery
-  and while backups are paused, since a snapshot costs next to nothing.
-- **The gaps between backups.** Snapper can take a snapshot every few
-  minutes, so a file overwritten or deleted between two backups can still be
-  found.
+1. In Backtrack, open the main menu, choose **Preferences**, then
+   **Storage**.
+2. Look for a section named **Snapper**.
+   - If it says **Snapper is not set up**, with a **Set Up Snapper…** button,
+     this guide applies. Carry on with [Set it up](#set-it-up).
+   - If it says **Reading** and a number of snapshots taken by Snapper,
+     Snapper is set up already and Backtrack shows its snapshots. There is
+     nothing to do.
+   - If it says **Snapper's snapshots cannot be read**, follow [Giving
+     Backtrack access](#giving-backtrack-access).
+   - If there is no Snapper section, your home folder is not on btrfs, or
+     your distribution is not one the setup script knows (Fedora, openSUSE
+     and Arch Linux). Backtrack works fully without Snapper, and there is
+     nothing to do.
 
-Backtrack reads Snapper's snapshots, and never takes, changes or removes one.
-Each is shown in the timeline with the badge **Snapper**, and can be
-browsed, previewed, compared and restored from like a backup, with or without
-your backup destination.
+## Set it up
 
-**A snapshot is not a backup.** It is kept on the same disk as your files, so
-if that disk fails, or the computer is lost, the snapshots go with it. Snapper
-also removes them on its own schedule. Your backups are what keeps your files
-safe; Snapper's snapshots are a quick way back to the last few hours.
+1. In **Preferences → Storage**, click **Set Up Snapper…**. A terminal opens
+   and runs Backtrack's setup script.
 
-## Whether this applies to you
+   In the Flatpak, a window called **Paste the Command Into a Terminal**
+   shows a command instead. Copy it, open a terminal (search your apps for
+   **Terminal**), paste it with **Ctrl+Shift+V** and press **Enter**.
+2. The script lists what it will do: install Snapper if it is missing, make a
+   Snapper configuration for `/home` named "home", let you read its
+   snapshots, take a snapshot every five minutes and keep a day of them, keep
+   a week of daily snapshots and nothing older, and take a first snapshot
+   now. It asks **Go ahead? [y/N]**. Type `y` and press **Enter**.
+3. When it asks for your password, type it and press **Enter**. Nothing
+   appears on the screen while you type. The script shows each command as it
+   runs it.
+4. It ends with "Done. Snapper takes a snapshot of /home every five minutes,
+   and Backtrack shows them in its timeline". Close the terminal.
+5. Back in Backtrack, the timeline shows the first snapshot, badged
+   **Snapper**, within a few seconds. **Preferences → Storage** says
+   **Reading 1 snapshot taken by Snapper**.
 
-Snapper needs your home folder to be a btrfs **subvolume**: a part of a btrfs
-filesystem that can be snapshotted on its own. Open a terminal and run:
-
-```sh
-stat -f -c %T /home
-stat -c %i /home
-```
-
-If the first line says `btrfs` and the second says `256`, `/home` is a btrfs
-subvolume, and this guide applies. The folders you back up must be inside
-`/home`, as `Documents`, `Pictures` and the rest of your home folder are.
-
-Backtrack works this out too: Preferences → Storage → **Snapper** says
-"Snapper is not set up", and offers to set it up, when your backed-up folders
-are in a `/home` that is a btrfs subvolume, on a distribution the setup script
-knows.
-
-If the first line says anything else (`ext2/ext3`, which is how ext4 shows,
-or `xfs`), your home folder is not on btrfs. This guide does not apply, and
-nothing here converts a filesystem: Backtrack works fully without Snapper.
-
-If the first line says `btrfs` and the second does not say `256`, your home
-folder is an ordinary folder inside a larger subvolume, as Ubuntu's installer
-lays btrfs out. Snapper could take snapshots of that whole subvolume, your
-system included, but that is beyond this guide.
-
-## Setting it up
-
-Backtrack comes with a script that does all of this for you. In Backtrack,
-open Preferences → Storage, and under **Snapper** choose **Set Up Snapper…**:
-it opens a terminal running the script. From the Flatpak, it copies the
-command that runs it instead, for you to paste into a terminal. You can also
-run it yourself, from a terminal:
-
-```sh
-backtrack-snapper-setup
-```
-
-It works on Fedora, openSUSE and Arch Linux. It checks that this guide applies
-to your computer, says what it is about to do, and asks you once.
-Each command is shown as it runs, and `sudo` asks for your password for the
-ones that need the administrator.
-
-Run it again, and it offers to undo what it did. It keeps a note of what it
-changed in `/var/lib/backtrack/snapper-setup`, so that the undo takes back
-only that: a Snapper you had already, or openSUSE's own snapshots of the
-system, are left as they were. If Snapper already takes snapshots of `/home`,
-the script changes nothing but letting you read them, and that is all its
-undo takes back.
-
-The rest of this guide gives the commands the script runs, step by step, for
-anyone who wants to know what changes, or to do it by hand.
-
-## Installing Snapper
-
-### Fedora
-
-```sh
-sudo dnf install -y snapper
-```
-
-### openSUSE
-
-openSUSE installs Snapper for its own snapshots of the system, so there is
-usually nothing to install. If it is not there:
-
-```sh
-sudo zypper --non-interactive install snapper
-```
-
-### Arch Linux
-
-```sh
-sudo pacman -S --needed --noconfirm snapper
-```
-
-## Taking snapshots of your home folder
-
-Tell Snapper to take snapshots of `/home`, in a configuration named `home`,
-and start its two timers: one takes a snapshot every hour, the other removes
-old snapshots once an hour.
-
-```sh
-sudo snapper -c home create-config /home
-sudo systemctl enable --now snapper-timeline.timer snapper-cleanup.timer
-```
-
-Check that both timers are waiting to run:
-
-```sh
-systemctl list-timers 'snapper-*'
-```
-
-Snapper keeps the snapshots in a folder at the top of `/home`, named
-`.snapshots`, and keeps the first snapshot of each of the last 10 hours,
-10 days, 10 months and 10 years; the next sections change both.
-
-At this point, Backtrack's Preferences → Storage → **Snapper** says "Snapper's
-snapshots cannot be read". `.snapshots` belongs to the system administrator,
-and the next step lets you read it.
+From then on a new snapshot appears every five minutes. Snapper keeps every
+snapshot of the last day, then one a day for a week.
 
 ## Giving Backtrack access
 
-Let your own user read Snapper's snapshots of `/home`:
+**Preferences → Storage** says **Snapper's snapshots cannot be read** when
+Snapper takes snapshots of your home folder but keeps them where only the
+system administrator can read them. That happens when Snapper was set up
+some other way than with this guide.
 
-```sh
-sudo snapper -c home set-config ALLOW_USERS="$USER" SYNC_ACL=yes
-```
+1. Click **Set Up Snapper…** in the Snapper section, as in [Set it
+   up](#set-it-up). The script sees that Snapper is set up already, and
+   offers only to let you read its snapshots, leaving the rest as it is.
+2. Answer **Go ahead? [y/N]** with `y`, and type your password when it asks.
+3. Within a few seconds, Backtrack's timeline shows the snapshots, and the
+   Snapper section says how many it is reading.
 
-`ALLOW_USERS` names who may use this configuration, and `SYNC_ACL` gives them
-permission to read `.snapshots`. It also lets you use Snapper for this
-configuration without `sudo`. To check, run this as yourself:
+If more than one person uses this computer and each wants Snapper's
+snapshots in Backtrack, [Setting Snapper up by hand](snapper-by-hand.md#letting-you-read-the-snapshots)
+says how to let each of them read them.
 
-```sh
-snapper -c home list
-```
+## Undo it
 
-It lists the snapshots taken so far. To see one in Backtrack straight away,
-take one by hand:
+Running the setup script again offers to undo what it did: it removes every
+snapshot Snapper has taken of your home folder, and its configuration, and
+removes Snapper if the script installed it. Your files and your backups are
+not touched. A Snapper you had before, or openSUSE's own snapshots of the
+system, are left as they were.
 
-```sh
-snapper -c home create --description "My first snapshot"
-```
+1. Open a terminal and run the script. From Fedora's, Ubuntu's or Arch
+   Linux's package:
 
-Within a few seconds, Backtrack's timeline shows it, badged **Snapper
-snapshot**, and Preferences → Storage → **Snapper** says "Reading 1 snapshot
-taken by Snapper". Snapshots that Snapper takes later appear the same way, as
-they are taken.
+   ```sh
+   backtrack-snapper-setup
+   ```
 
-If more than one person uses this computer, name each of them, separated by
-spaces: `ALLOW_USERS="alice bob"`.
+   From the Flatpak:
 
-## Taking snapshots more often
+   ```sh
+   bash ~/.var/app/tools.backtrack.Backtrack/data/backtrack/backtrack-snapper-setup
+   ```
 
-Every hour adds little to Backtrack's own hourly backups. Every five minutes
-narrows the gap they leave to five minutes. Change the timer's schedule:
+2. It lists what undoing takes away and asks **Undo it? [y/N]**. Type `y`,
+   press **Enter**, and type your password when it asks.
+3. Within a few seconds, Snapper's snapshots leave Backtrack's timeline, and
+   **Preferences → Storage** says **Snapper is not set up**.
 
-```sh
-sudo mkdir -p /etc/systemd/system/snapper-timeline.timer.d
-printf '[Timer]\nOnCalendar=\nOnCalendar=*:0/5\n' | sudo tee /etc/systemd/system/snapper-timeline.timer.d/every-5-minutes.conf
-sudo systemctl daemon-reload
-systemctl list-timers snapper-timeline.timer
-```
+## If it did not go as described
 
-The last command shows the next snapshot due within five minutes. The
-schedule is shared by every Snapper configuration that takes timeline
-snapshots. openSUSE's own configuration for the system takes none, so only
-`/home` gains the extra snapshots.
+- **Set Up Snapper… does nothing, or no terminal opens.** Backtrack copies the
+  command instead and shows it in **Paste the Command Into a Terminal**.
+  Paste it into a terminal yourself.
+- **The script stops and says this computer is not one it knows.** It works
+  on Fedora, openSUSE and Arch Linux only. Backtrack works fully without
+  Snapper.
+- **No snapshot appears in the timeline after setting it up.** Open
+  **Preferences → Storage** and read what the Snapper section says. If it
+  says the snapshots cannot be read, follow [Giving Backtrack
+  access](#giving-backtrack-access).
 
-Snapper's cleanup keeps only the first snapshot of each hour, and removes
-the others once they are an hour old. That would throw the five-minute
-snapshots away before they had been much use. Keep them for a day instead:
+## Where to go next
 
-```sh
-sudo snapper -c home set-config TIMELINE_MIN_AGE=86400
-```
-
-That keeps every snapshot of the last 24 hours (288 of them, at one every five
-minutes), and the first of each hour, day, month and year after that, within
-the limits above.
-
-Five minutes is the shortest interval this guide recommends. Backtrack reads
-every snapshot Snapper takes into its catalogue: under a second for a home
-folder of 55,000 files, longer for a larger one, and while it does, a backup
-waits its turn.
-
-## Disk space
-
-A snapshot costs nothing when it is taken. It starts to cost space as files
-change after it, because it keeps the versions it holds.
-
-**Deleting a file does not free its space until every snapshot holding it is
-gone.** With the limits above, Snapper keeps the first snapshot of each year
-for ten years, so a large file deleted today can stay on your disk for a
-decade. Backtrack already keeps your long history, at your backup
-destination, so Snapper only needs to keep the recent past. To keep a week of
-daily snapshots and nothing older:
-
-```sh
-sudo snapper -c home set-config TIMELINE_LIMIT_DAILY=7 TIMELINE_LIMIT_MONTHLY=0 TIMELINE_LIMIT_YEARLY=0
-```
-
-To see what each snapshot holds that nothing else does, which is what
-removing it would free (the `Exclusive` column), run the command below. It
-reads every file in `/home`, so on a large home folder it can take many
-minutes:
-
-```sh
-sudo btrfs filesystem du -s --human-readable /home/.snapshots/*/snapshot
-```
-
-To see how much room is left on the disk:
-
-```sh
-df -h /home
-```
-
-To remove a snapshot now, give its number from `snapper -c home list`:
-
-```sh
-snapper -c home delete 42
-```
-
-## Undoing all of it
-
-To stop taking snapshots and remove every one Snapper has taken of `/home`,
-with its configuration:
-
-```sh
-sudo systemctl stop snapperd.service
-sudo snapper -c home delete-config
-sudo rm -f /etc/systemd/system/snapper-timeline.timer.d/every-5-minutes.conf
-sudo rmdir --ignore-fail-on-non-empty /etc/systemd/system/snapper-timeline.timer.d
-sudo systemctl daemon-reload
-```
-
-Stopping Snapper's background service first works around a fault in Snapper
-0.13: when its settings were changed since the service started, it writes the
-configuration back as it deletes it.
-
-Then stop Snapper's timers, if you started them for this. On openSUSE, leave
-them on: they take the system's own snapshots too.
-
-```sh
-sudo systemctl disable --now snapper-timeline.timer snapper-cleanup.timer
-```
-
-Then remove Snapper itself, if you installed it for this.
-
-On Fedora:
-
-```sh
-sudo dnf remove -y snapper
-```
-
-On openSUSE:
-
-Keep Snapper unless you installed it yourself for this guide, since openSUSE
-uses it for its snapshots of the system. Removing it also removes what it was
-installed with:
-
-```sh
-sudo zypper --non-interactive remove --clean-deps snapper
-```
-
-On Arch Linux:
-
-```sh
-sudo pacman -Rns --noconfirm snapper
-```
-
-Check that no configuration is left:
-
-```sh
-ls /etc/snapper/configs
-```
-
-It prints nothing, or says there is no such folder. If it lists `home`,
-remove what is left by hand with `sudo rm /etc/snapper/configs/home`.
-
-Within a few seconds, Snapper's snapshots leave Backtrack's timeline, and
-Preferences → Storage → **Snapper** says "Snapper is not set up". Your backups
-are not touched.
+[Setting Snapper up by hand](snapper-by-hand.md) gives every command the
+script runs, for anyone who wants to know exactly what it changes or to do
+it without the script.

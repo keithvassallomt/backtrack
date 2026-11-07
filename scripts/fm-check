@@ -4,7 +4,7 @@
 #
 # The Stage 12 file-manager checks: the Nautilus extension and the Dolphin
 # menu against the development daemon's demo fixture. See
-# docs/file-manager-integration.md for the checklists this sets up.
+# docs/file-manager-integration-internals.md for the checklists this sets up.
 #
 # `setup` installs the development integration for whichever of the two file
 # managers is here, and gives the backed-up folder the two things the menus
@@ -90,7 +90,8 @@ setup() {
     echo "  $base"
     echo
     echo "Next: scripts/fm-check nautilus or scripts/fm-check dolphin, then work"
-    echo "through that file manager's checklist in docs/file-manager-integration.md."
+    echo "through that file manager's checklist in"
+    echo "docs/file-manager-integration-internals.md."
 }
 
 nautilus_here() {

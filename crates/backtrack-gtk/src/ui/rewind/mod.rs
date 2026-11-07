@@ -144,6 +144,11 @@ pub fn open(
         .title("Rewind")
         .transient_for(parent)
         .build();
+    // The application's, as the window is. Without it, GTK names the window
+    // after the program (`backtrack-gtk`) on Wayland, and GNOME Shell lists
+    // Rewind opened on its own as an application of its own, without
+    // Backtrack's name or icon (S19-T17).
+    shell.set_application(parent.application().as_ref());
     shell.add_css_class("rewind");
 
     let state = window.fork();

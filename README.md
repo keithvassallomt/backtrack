@@ -7,11 +7,11 @@ themselves stay quietly out of the way.
 
 ## Installing
 
-From the first release:
+[Install Backtrack](docs/installing.md) walks through each way, step by step.
 
 | Where | How |
 |---|---|
-| Any distribution | The Flatpak, from FriendlyHub: [packaging/flatpak/FRIENDLYHUB.md](packaging/flatpak/FRIENDLYHUB.md) |
+| Any distribution | [The Flatpak, from FriendlyHub](docs/installing.md#any-distribution-the-flatpak) |
 | Fedora 44 and later | COPR: `sudo dnf copr enable keithvassallo/backtrack`, then `sudo dnf install backtrack` |
 | Ubuntu 26.04 and later | PPA: `sudo add-apt-repository ppa:keithvassallomt/backtrack`, then `sudo apt install backtrack` |
 | Arch | AUR: `backtrack` |
@@ -37,13 +37,8 @@ just check    # fmt, clippy, and tests — the full quality gate
 
 ## Documentation
 
-For people using Backtrack: [Rewind](docs/rewind.md), the full-screen way back
-through a folder's history, opened from Backtrack's window, from the file
-manager's right-click menu (**Rewind This File…**, **Rewind This Folder…**),
-from the launcher and from the tray; [getting things back from the
-Trash](docs/trash.md); and [snapshots between backups, with
-Snapper](docs/snapper.md), on btrfs. How the file managers' items are
-installed: [file-manager integration](docs/file-manager-integration.md).
+[Backtrack's guides](docs/README.md) walk you through using it, one task at a
+time.
 
 The full implementation plan, architecture, and design docs live in
 [`backtrack_plan/`](backtrack_plan/README.md). Start with the

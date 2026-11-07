@@ -330,3 +330,59 @@ async fn a_saved_key_restores_the_passphrase_it_was_saved_with() {
         EngineError::NotARecoveryKey
     );
 }
+
+/// S19-T15: backups made elsewhere that need no passphrase, as Vorta makes
+/// unencrypted ones and Pika Backup's Continue Unencrypted makes ones with
+/// an empty passphrase, open without one. The first contact alone admits an
+/// unencrypted repository Borg has not seen, so another put in its place
+/// afterwards is refused.
+#[tokio::test]
+async fn backups_that_need_no_passphrase_open_without_one() {
+    use backtrack_core::engine::Presence;
+    use backtrack_core::secret::NO_PASSPHRASE;
+
+    let dir = tempfile::tempdir().unwrap();
+    // Made by another computer's Borg, so this one has never seen them.
+    let made_elsewhere = |path: &std::path::Path, encryption: &str| {
+        let made = std::process::Command::new("borg")
+            .env("BORG_BASE_DIR", dir.path().join("elsewhere"))
+            .env("BORG_NEW_PASSPHRASE", "")
+            .arg("init")
+            .arg(format!("--encryption={encryption}"))
+            .arg(path)
+            .output()
+            .unwrap();
+        assert!(made.status.success(), "{made:?}");
+    };
+    let unencrypted = dir.path().join("vorta");
+    made_elsewhere(&unencrypted, "none");
+    let empty_passphrase = dir.path().join("pika");
+    made_elsewhere(&empty_passphrase, "repokey-blake2");
+
+    let secrets = store(dir.path()).await;
+    for repo in [&unencrypted, &empty_passphrase] {
+        let path = repo.to_str().unwrap().to_string();
+        secrets.set(&path, NO_PASSPHRASE).await.unwrap();
+        let eng = BorgCli::new(path.clone(), path.clone(), Arc::clone(&secrets))
+            .await
+            .unwrap();
+        assert_eq!(eng.presence().await, Ok(Presence::Open), "{path}");
+        // As imported: with the stand-in for an empty passphrase.
+        eng.repo_info()
+            .await
+            .unwrap_or_else(|e| panic!("{path} opens without a passphrase: {e:?}"));
+    }
+
+    // Another unencrypted repository in the first one's place: Borg knows the
+    // first, and nothing answers its question about this one.
+    std::fs::remove_dir_all(&unencrypted).unwrap();
+    made_elsewhere(&unencrypted, "none");
+    let path = unencrypted.to_str().unwrap().to_string();
+    let eng = BorgCli::new(path.clone(), path, Arc::clone(&secrets))
+        .await
+        .unwrap();
+    assert!(
+        eng.repo_info().await.is_err(),
+        "a repository swapped in afterwards is refused"
+    );
+}

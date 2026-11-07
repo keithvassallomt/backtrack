@@ -123,8 +123,10 @@ pub trait Daemon1 {
     /// Change one setting: a dotted key and a TOML literal.
     fn set_config(&self, key: &str, value: &str) -> zbus::Result<()>;
     /// What is at a destination before anything is created there: `empty`,
-    /// `existing`, `occupied` or `unwritable`.
+    /// `existing`, `open`, `needs-key-file`, `occupied` or `unwritable`.
     fn inspect_destination(&self, repository: &str) -> zbus::Result<String>;
+    /// Give backups whose key is in a file of its own that file's contents.
+    fn add_key_file(&self, repository: &str, key: &str) -> zbus::Result<()>;
     /// Create a repository and make it the destination.
     fn setup_repo(&self, path: &str, passphrase: &str) -> zbus::Result<()>;
     /// Adopt an existing repository. Returns once its newest backup can be

@@ -44,6 +44,10 @@ so a set that builds this way is complete.
 
 ## Installing from FriendlyHub
 
+[Install Backtrack](../../docs/installing.md#any-distribution-the-flatpak)
+is the guide for people installing it. This section records why it is
+installed the way it is.
+
 Backtrack runs on the GNOME 51 runtime, which comes from Flathub. The app's
 `.flatpakref`, which FriendlyHub's Install button opens, names Flathub as its
 `RuntimeRepo`, so installing from it adds both remotes by itself:
