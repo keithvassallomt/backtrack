@@ -51,6 +51,13 @@
 #   scripts/rewind-check 13 setup  a launcher for the development build, and
 #                                  Nautilus restarted onto its extension
 #   scripts/rewind-check 13 done   take the launcher away again
+#   scripts/rewind-check 14        on the GNOME VM, the Flatpak: every way
+#                                  into Rewind there (S18-T7)
+#   scripts/rewind-check 14 setup  install this checkout's Flatpak build
+#                                  there, take the development Nautilus
+#                                  extension out, and give the Flatpak a
+#                                  file to restore over
+#   scripts/rewind-check 14 done   put the development extension back
 #
 # Run from the checkout.
 
@@ -515,6 +522,80 @@ EOF
      Escape.
 
   Then: scripts/rewind-check 13 done. Tell me any of a to f that did not
+  happen, or did and looked wrong.
+EOF
+    ;;
+14)
+    vm="fedora45 (GNOME)"
+    case "${2:-}" in
+    setup)
+        # The Flatpak built by flatpak-builder --repo into target/flatpak/repo
+        # (never installed on the laptop), installed for the VM's user. The
+        # helper uninstalls before installing, which deletes the folder the
+        # service watches for upgrades (S18-T13), so the service is started
+        # again on the new build here.
+        BT_VM="$vm" "$ROOT/target/helpers/t13-flatpak.sh" send >/dev/null
+        BT_VM="$vm" "$ROOT/target/helpers/t13-flatpak.sh" install user
+        ssh "$("$ROOT/scripts/vm" address "$vm")" 'flatpak kill tools.backtrack.Backtrack 2>/dev/null || true
+            sleep 2
+            systemctl --user stop t13-backtrackd 2>/dev/null || true
+            systemctl --user reset-failed t13-backtrackd 2>/dev/null || true
+            systemd-run --user --quiet --unit=t13-backtrackd \
+                flatpak run --command=backtrackd tools.backtrack.Backtrack --supervise
+            sleep 8'
+        # The Flatpak backs up ~/Smoke/Documents: a file there whose newest
+        # backup differs from the disk, for the restore in step d.
+        ssh "$("$ROOT/scripts/vm" address "$vm")" 'set -e
+            cli() { flatpak run --command=backtrack tools.backtrack.Backtrack "$@"; }
+            settle() {
+                for _ in $(seq 1 45); do
+                    cli status | grep -qiE "backing up|cataloguing" || return 0
+                    sleep 4
+                done
+            }
+            cd ~/backtrack && just uninstall-nautilus-dev >/dev/null
+            nautilus -q 2>/dev/null || true
+            settle
+            echo "The first draft, as backed up." > ~/Smoke/Documents/rewind-check.txt
+            cli backup-now >/dev/null && sleep 2 && settle
+            echo "The second draft, on the disk only." > ~/Smoke/Documents/rewind-check.txt
+            flatpak ps --columns=application,commit'
+        echo "The Flatpak is this checkout's; the development Nautilus extension is out."
+        exit 0
+        ;;
+    done)
+        ssh "$("$ROOT/scripts/vm" address "$vm")" 'cd ~/backtrack && just install-nautilus-dev >/dev/null
+            nautilus -q 2>/dev/null || true'
+        echo "The development Nautilus extension is back (the Flatpak's copy is replaced)."
+        exit 0
+        ;;
+    esac
+    say "14. Every way into Rewind, on $vm, the Flatpak (S18-T7)"
+    cat <<EOF
+  Run scripts/rewind-check 14 setup first, and close any Backtrack window
+  open on the VM. The Flatpak backs up ~/Smoke/Documents, where setup left
+  rewind-check.txt: its newest backup has the first draft, the disk the
+  second.
+
+  a. Backtrack's window. On the VM, open Backtrack from the app grid (the
+     Flatpak's). The Rewind button in the header bar, with its icon, opens
+     Rewind; Escape. "Rewind…" is first in the main menu. In Preferences,
+     General, install the GNOME Files integration (Install), then close
+     Backtrack and, in a terminal on the VM, run: nautilus -q
+  b. Nautilus. Open Files at Smoke/Documents. Right-click rewind-check.txt:
+     "Rewind This File…" opens Rewind at "Today (Now)" with it selected.
+     Escape: back in Files, no Backtrack window left. Right-click the empty
+     space: "Rewind This Folder…" opens Rewind at Documents. Escape.
+  c. A restore from Files. "Rewind This File…" on rewind-check.txt, press
+     Up to its newest backup, click Restore and choose Replace. Rewind
+     closes, back in Files; a notification says it was restored, with Undo.
+     Open rewind-check.txt: the first draft. Click Undo in the notification
+     (in the list under the clock if it has gone): it says it was put back,
+     and the file is the second draft again.
+  d. The launcher. Right-click Backtrack in the app grid: "Rewind" opens
+     Rewind on the folders the Flatpak backs up. Escape.
+
+  Then: scripts/rewind-check 14 done. Tell me any of a to d that did not
   happen, or did and looked wrong.
 EOF
     ;;
