@@ -43,7 +43,25 @@ pub fn line(status: &Status, now: i64, tz: &glib::TimeZone) -> String {
     }
 
     let last = match status.last_backup {
-        0 => return "No backups yet".to_string(),
+        // Said with when the first one is due (S19-T18), unless a setting is
+        // what it waits for, which then says so instead.
+        0 => {
+            let waiting = held_up(status, now, tz);
+            let due = status.next_backup as i64;
+            return if !waiting.is_empty() || due <= now {
+                format!("No backups yet{waiting}")
+            } else {
+                let at = if super::local_day(due, tz) == super::local_day(now, tz) {
+                    "at "
+                } else {
+                    ""
+                };
+                format!(
+                    "No backups yet · the first is due {at}{}",
+                    when(due, now, tz)
+                )
+            };
+        }
         seconds => seconds as i64,
     };
 
@@ -75,18 +93,23 @@ pub fn line(status: &Status, now: i64, tz: &glib::TimeZone) -> String {
 fn held_up(status: &Status, now: i64, tz: &glib::TimeZone) -> String {
     match status.held_up.as_str() {
         "on-battery" if status.next_backup as i64 > now => {
-            let end = status.next_backup as i64;
-            let clock = super::format::clock(end, tz);
-            let until = match super::local_day(end, tz) - super::local_day(now, tz) {
-                0 => clock,
-                1 => format!("tomorrow {clock}"),
-                _ => super::format::weekday_day_and_clock(end, tz),
-            };
+            let until = when(status.next_backup as i64, now, tz);
             format!(" · waiting for charger until {until}")
         }
         "on-battery" => " · waiting for charger".to_string(),
         "metered-connection" => " · waiting for an unmetered network".to_string(),
         _ => String::new(),
+    }
+}
+
+/// A time to come, as the status line says one: "17:00" today, "tomorrow
+/// 09:00", or the day and the time further off.
+fn when(then: i64, now: i64, tz: &glib::TimeZone) -> String {
+    let clock = super::format::clock(then, tz);
+    match super::local_day(then, tz) - super::local_day(now, tz) {
+        0 => clock,
+        1 => format!("tomorrow {clock}"),
+        _ => super::format::weekday_day_and_clock(then, tz),
     }
 }
 
@@ -150,6 +173,33 @@ mod tests {
             recovery_job: 0,
             held_up: String::new(),
         }
+    }
+
+    #[test]
+    fn before_the_first_backup_it_says_when_the_first_is_due() {
+        let never = |next: i64| Status {
+            last_backup: 0,
+            next_backup: next as u64,
+            ..status()
+        };
+        assert_eq!(
+            line(&never(NOW + 3_600), NOW, &utc()),
+            "No backups yet · the first is due at 13:00"
+        );
+        assert_eq!(
+            line(&never(NOW + 22 * 3_600), NOW, &utc()),
+            "No backups yet · the first is due tomorrow 10:00"
+        );
+        // Overdue, or waiting for a setting: no time to give, or the setting's.
+        assert_eq!(line(&never(NOW - 60), NOW, &utc()), "No backups yet");
+        let metered = Status {
+            held_up: "metered-connection".into(),
+            ..never(NOW + 3_600)
+        };
+        assert_eq!(
+            line(&metered, NOW, &utc()),
+            "No backups yet · waiting for an unmetered network"
+        );
     }
 
     #[test]

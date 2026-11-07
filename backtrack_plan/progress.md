@@ -234,7 +234,7 @@ Nothing right now.
 - [x] S19-T15 Unencrypted backups made by other programs open from the wizard
 - [x] S19-T16 Backups whose key is in a key file can be opened with it
 - [x] S19-T17 Rewind's window belongs to Backtrack
-- [ ] S19-T18 The status does not say the files are backed up before the first backup
+- [x] S19-T18 The status does not say the files are backed up before the first backup
 
 ## Stage 20 — The website at backtrack.tools ([stage file](stages/stage-20-the-website.md))
 - [ ] S20-T1 The website built with Zola (NOPE. New Plan. Ask me.)

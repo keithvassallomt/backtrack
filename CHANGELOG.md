@@ -28,6 +28,9 @@ All notable changes to Backtrack are documented here. This project adheres to
 - Rewind opened from the file manager, the launcher or the tray now shows as
   part of Backtrack, with its name and icon, in GNOME's window switcher and
   overview. It used to appear there as a separate application with neither.
+- Before the first backup has run, `backtrack status` no longer says your
+  files are backed up: it says the first backup hasn't run yet, and the
+  window's status line says when it is due.
 
 ## [0.1.0] - 2026-11-07
 
