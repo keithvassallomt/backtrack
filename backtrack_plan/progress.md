@@ -18,8 +18,8 @@ Nothing right now.
 > tasks: add them here + to the stage file, then `just provision-board-apply`.
 > See [../CLAUDE.md](../CLAUDE.md) for the full workflow.
 
-**Current stage:** 18
-**Last updated:** 2026-10-27
+**Current stage:** 19
+**Last updated:** 2026-11-07
 
 ## Stage 0 — Bootstrap ([stage file](stages/stage-00-bootstrap.md))
 - [x] S00-T1 Git repo, license, .gitignore, README skeleton
@@ -215,6 +215,35 @@ Nothing right now.
 - [x] S18-T20 Rewind shows Sway's wallpaper
 - [x] S18-T21 Cataloguing a backup holds less memory
 - [x] S18-T22 A backup made by hand keeps the one before it
+
+## Stage 19 — Guides anyone can follow ([stage file](stages/stage-19-guides-anyone-can-follow.md))
+- [ ] S19-T1 An index of the guides, with developer notes moved out of them
+- [ ] S19-T2 Investigate: opening backups made by Vorta or Pika Backup
+- [ ] S19-T3 Screenshots of Backtrack for the guides, the site and the software centres
+- [ ] S19-T4 A guide to installing Backtrack
+- [ ] S19-T5 A guide to setting up your backups
+- [ ] S19-T6 A guide to getting a file back from an earlier backup
+- [ ] S19-T7 A guide to finding a lost file with search
+- [ ] S19-T8 A guide to moving to a new computer
+- [ ] S19-T9 A guide to what Backtrack's warnings mean
+- [ ] S19-T10 The Rewind guide as a walk-through
+- [ ] S19-T11 The Trash guide as a walk-through
+- [ ] S19-T12 The Snapper guide as a walk-through
+- [ ] S19-T13 The file-manager guide as a walk-through
+
+## Stage 20 — The website at backtrack.tools ([stage file](stages/stage-20-the-website.md))
+- [ ] S20-T1 The website built with Zola
+- [ ] S20-T2 Pages below the top level, and a real 404, on CloudFront
+- [ ] S20-T3 Stage 19's guides published under /guides/
+- [ ] S20-T4 The website's look
+- [ ] S20-T5 The home page
+- [ ] S20-T6 Rewind, moving, on the home page
+- [ ] S20-T7 The install page
+- [ ] S20-T8 The changelog page
+- [ ] S20-T9 Search engines and shared links
+- [ ] S20-T10 Software centres show screenshots served from backtrack.tools
+- [ ] S20-T11 Preferences opens the guides on backtrack.tools
+- [ ] S20-T12 The website goes live with the release
 
 ## Blocked
 
