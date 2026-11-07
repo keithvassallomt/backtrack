@@ -34,6 +34,15 @@ CHANGELOG = """# Changelog
 - The first release.
 
 ## [0.0.9] - TBD
+
+## [0.0.1] - 2026-10-01
+
+### Added
+
+- The last section, with a [guide](https://example.org/guide.md) in it.
+
+[Unreleased]: https://example.org/compare/v0.2.0...HEAD
+[0.2.0]: https://example.org/releases/tag/v0.2.0
 """
 
 
@@ -44,6 +53,22 @@ class ReleaseNotes(unittest.TestCase):
         self.assertIn("A banner that said <nothing>.", body)
         self.assertNotIn("The first release.", body)
         self.assertNotIn("not released yet", body)
+
+    def test_the_last_section_ends_before_the_links_at_the_foot(self):
+        # Keep a Changelog's footer belongs to no release: in the notes, its
+        # URLs would be a release's last lines, and appstreamcli refuses a
+        # plain URL in a description.
+        date, body = release_notes.section(CHANGELOG, "0.0.1")
+        self.assertEqual(date, "2026-10-01")
+        self.assertTrue(body.endswith("in it."), body)
+        self.assertNotIn("example.org/compare", body)
+
+    def test_a_link_is_its_text_in_appstream(self):
+        release = release_notes.appstream(
+            "0.0.1", "2026-10-01", "### Added\n\n- A [guide](https://example.org/guide.md) here."
+        )
+        self.assertIn("<li>A guide here.</li>", release)
+        self.assertNotIn("example.org", release)
 
     def test_an_undated_or_missing_version_is_refused(self):
         with self.assertRaises(release_notes.NotReleased):
@@ -62,9 +87,12 @@ class ReleaseNotes(unittest.TestCase):
     def test_the_history_runs_from_a_version_back(self):
         history = release_notes.released(CHANGELOG, "0.2.0")
         self.assertEqual(
-            [(v, d) for v, d, _ in history], [("0.2.0", "2026-12-01"), ("0.1.0", "2026-11-01")]
+            [(v, d) for v, d, _ in history],
+            [("0.2.0", "2026-12-01"), ("0.1.0", "2026-11-01"), ("0.0.1", "2026-10-01")],
         )
-        self.assertEqual([v for v, _, _ in release_notes.released(CHANGELOG, "0.1.0")], ["0.1.0"])
+        self.assertEqual(
+            [v for v, _, _ in release_notes.released(CHANGELOG, "0.1.0")], ["0.1.0", "0.0.1"]
+        )
         with self.assertRaises(release_notes.NotReleased):
             release_notes.released(CHANGELOG, "0.0.9")
 

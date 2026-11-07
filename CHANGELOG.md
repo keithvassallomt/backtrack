@@ -68,9 +68,12 @@ All notable changes to Backtrack are documented here. This project adheres to
   everything works from the keyboard, and high contrast is honoured.
 - Packages for Fedora (COPR), Ubuntu (PPA) and Arch Linux (AUR), and a Flatpak
   on FriendlyHub, for x86_64 and 64-bit ARM.
-- Guides to [Rewind](docs/rewind.md), [the Trash](docs/trash.md),
-  [Snapper](docs/snapper.md) and the
-  [file manager items](docs/file-manager-integration.md).
+- Guides to
+  [Rewind](https://github.com/keithvassallomt/backtrack/blob/main/docs/rewind.md),
+  [the Trash](https://github.com/keithvassallomt/backtrack/blob/main/docs/trash.md),
+  [Snapper](https://github.com/keithvassallomt/backtrack/blob/main/docs/snapper.md)
+  and the
+  [file manager items](https://github.com/keithvassallomt/backtrack/blob/main/docs/file-manager-integration.md).
 
 [Unreleased]: https://github.com/keithvassallomt/backtrack/compare/v0.1.0...HEAD
 [0.1.0]: https://github.com/keithvassallomt/backtrack/releases/tag/v0.1.0

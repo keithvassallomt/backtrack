@@ -23,6 +23,11 @@ from xml.sax.saxutils import escape
 CHANGELOG = Path(__file__).resolve().parent.parent / "CHANGELOG.md"
 HEADING = re.compile(r"^## \[(?P<version>[^\]]+)\](?: - (?P<date>\S+))?\s*$")
 DATE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+# Keep a Changelog's footer, the link each heading's version stands for
+# ("[0.1.0]: https://…"): after the last section, and part of none.
+LINK_REFERENCE = re.compile(r"^\[[^\]]+\]:\s*\S+")
+# A Markdown link, [text](target).
+LINK = re.compile(r"\[([^\]]+)\]\(([^)\s]+)\)")
 
 
 class NotReleased(Exception):
@@ -47,12 +52,18 @@ def section(text, version):
     if not DATE.match(date):
         undated = date or "no date"
         raise NotReleased(f"CHANGELOG.md's section for {version} is not dated ({undated})")
+    return date, body_from(lines[start + 1 :])
+
+
+def body_from(lines):
+    """A section's body: its lines up to the next version's heading, or the
+    links at the foot of the file."""
     body = []
-    for line in lines[start + 1 :]:
-        if HEADING.match(line):
+    for line in lines:
+        if HEADING.match(line) or LINK_REFERENCE.match(line):
             break
         body.append(line)
-    return date, "\n".join(body).strip()
+    return "\n".join(body).strip()
 
 
 def notes(text, version):
@@ -67,12 +78,7 @@ def notes(text, version):
     start = next((i for i, line in enumerate(lines) if line.strip() == "## [Unreleased]"), None)
     if start is None:
         raise NotReleased(f"CHANGELOG.md has no section for {version}, and no [Unreleased]")
-    body = []
-    for line in lines[start + 1 :]:
-        if HEADING.match(line):
-            break
-        body.append(line)
-    return today.today().isoformat(), "\n".join(body).strip()
+    return today.today().isoformat(), body_from(lines[start + 1 :])
 
 
 def released(text, up_to):
@@ -102,8 +108,9 @@ def entries(body):
 
 
 def inline(text):
-    """Markdown emphasis and code, in the markup AppStream allows."""
-    text = escape(text)
+    """Markdown emphasis and code, in the markup AppStream allows; a link,
+    which it does not allow, as its text."""
+    text = escape(LINK.sub(r"\1", text))
     text = re.sub(r"`([^`]+)`", r"<code>\1</code>", text)
     text = re.sub(r"\*\*([^*]+)\*\*", r"<em>\1</em>", text)
     return re.sub(r"\*([^*]+)\*", r"<em>\1</em>", text)
