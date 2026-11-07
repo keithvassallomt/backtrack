@@ -536,7 +536,13 @@ EOF
         # again on the new build here.
         BT_VM="$vm" "$ROOT/target/helpers/t13-flatpak.sh" send >/dev/null
         BT_VM="$vm" "$ROOT/target/helpers/t13-flatpak.sh" install user
-        ssh "$("$ROOT/scripts/vm" address "$vm")" 'flatpak kill tools.backtrack.Backtrack 2>/dev/null || true
+        # The development build has the same application ID: one still
+        # running (after a restore it waits ten minutes for the
+        # notification's Undo) would take the Flatpak's launches.
+        ssh "$("$ROOT/scripts/vm" address "$vm")" 'for pid in $(pgrep -u "$USER" -f "^$HOME/backtrack/target/debug/backtrack-gtk"); do
+                kill "$pid"
+            done
+            flatpak kill tools.backtrack.Backtrack 2>/dev/null || true
             sleep 2
             systemctl --user stop t13-backtrackd 2>/dev/null || true
             systemctl --user reset-failed t13-backtrackd 2>/dev/null || true
@@ -572,8 +578,9 @@ EOF
     esac
     say "14. Every way into Rewind, on $vm, the Flatpak (S18-T7)"
     cat <<EOF
-  Run scripts/rewind-check 14 setup first, and close any Backtrack window
-  open on the VM. The Flatpak backs up ~/Smoke/Documents, where setup left
+  Run scripts/rewind-check 14 setup first; it closes the development build's
+  windows, which would take the Flatpak's launches (they share an
+  application ID). The Flatpak backs up ~/Smoke/Documents, where setup left
   rewind-check.txt: its newest backup has the first draft, the disk the
   second.
 
