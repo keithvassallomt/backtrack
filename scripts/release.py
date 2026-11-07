@@ -780,11 +780,7 @@ def aur(r):
         r.outcome("AUR", "built from this checkout; nothing pushed")
         return
     work = ROOT / "target/release/aur"
-    if (work / ".git").exists():
-        r.run("git", "-C", work, "pull", "--quiet", "--rebase")
-    else:
-        shutil.rmtree(work, ignore_errors=True)
-        r.run("git", "clone", "--quiet", r.config["aur"]["repository"], work)
+    aur_clone(r.run, r.config["aur"]["repository"], work)
     srcinfo = work / ".SRCINFO"
     if srcinfo.exists() and f"\tpkgver = {r.version.replace('-', '')}\n" in srcinfo.read_text():
         r.outcome("AUR", "already at this version")
@@ -810,10 +806,28 @@ def aur(r):
         "docker.io/library/archlinux:latest",
         "/build.sh",
     )
-    r.run("git", "-C", work, "add", "PKGBUILD", ".SRCINFO")
-    r.run("git", "-C", work, "commit", "--quiet", "--message", f"Backtrack {r.version}")
-    r.run("git", "-C", work, "push", "--quiet")
+    aur_push(r.run, work, r.version)
     r.outcome("AUR", "pushed", "https://aur.archlinux.org/pkgbase/backtrack")
+
+
+def aur_clone(run, repository, work):
+    """A clone of the AUR package's repository at `work`, fresh each run: the
+    repository is a couple of files, and a clone left by a run that stopped
+    part way may hold a commit it never pushed."""
+    shutil.rmtree(work, ignore_errors=True)
+    run("git", "clone", "--quiet", repository, work)
+
+
+def aur_push(run, work, version):
+    """Commit the PKGBUILD and .SRCINFO in `work`, and push them to master.
+
+    The AUR takes pushes to master only, named here: the package's repository
+    is empty before its first release, and its clone is then on whatever
+    branch git's own setting names (init.defaultBranch, often main).
+    """
+    run("git", "-C", work, "add", "PKGBUILD", ".SRCINFO")
+    run("git", "-C", work, "commit", "--quiet", "--message", f"Backtrack {version}")
+    run("git", "-C", work, "push", "--quiet", "origin", "HEAD:master")
 
 
 # ─── 6. FriendlyHub ────────────────────────────────────────────────────────

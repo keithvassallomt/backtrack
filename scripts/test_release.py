@@ -5,6 +5,9 @@ python3 -m unittest discover -s scripts."""
 
 import contextlib
 import io
+import os
+import shutil
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -201,6 +204,64 @@ class Tags(unittest.TestCase):
                 lines[1:], [f"{label} Build 1: running", f"{label} Build 1: succeeded"]
             )
             self.assertEqual(log.read_text().splitlines(), lines)
+
+
+class Aur(unittest.TestCase):
+    """The AUR's own git, played by a bare repository: it takes master only."""
+
+    def setUp(self):
+        self.dir = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.dir)
+        config = self.dir / "gitconfig"
+        # As on a machine whose git names a new repository's branch main.
+        config.write_text("[init]\n\tdefaultBranch = main\n")
+        self.env = {
+            **os.environ,
+            "GIT_CONFIG_GLOBAL": str(config),
+            "GIT_CONFIG_NOSYSTEM": "1",
+            "GIT_AUTHOR_NAME": "Test",
+            "GIT_AUTHOR_EMAIL": "test@example.org",
+            "GIT_COMMITTER_NAME": "Test",
+            "GIT_COMMITTER_EMAIL": "test@example.org",
+        }
+        # The AUR's repository: on master, and saying nothing of its HEAD while
+        # it is empty, so the first clone is on the branch git names itself.
+        self.aur = self.dir / "aur.git"
+        self.git("init", "--quiet", "--bare", self.aur)
+        self.git("-C", self.aur, "symbolic-ref", "HEAD", "refs/heads/master")
+        self.git("-C", self.aur, "config", "lsrefs.unborn", "ignore")
+        self.work = self.dir / "work"
+
+    def git(self, *args):
+        return subprocess.run(
+            ["git", *map(str, args)], env=self.env, check=True, capture_output=True, text=True
+        ).stdout
+
+    def run_git(self, *args, **_):
+        return self.git(*args[1:])
+
+    def release(self, version):
+        release.aur_clone(self.run_git, self.aur, self.work)
+        (self.work / "PKGBUILD").write_text(f"pkgver={version}\n")
+        (self.work / ".SRCINFO").write_text(f"\tpkgver = {version}\n")
+        release.aur_push(self.run_git, self.work, version)
+
+    def test_the_first_release_goes_to_master_whatever_git_calls_a_new_branch(self):
+        self.release("0.1.0")
+        heads = self.git("-C", self.aur, "for-each-ref", "--format=%(refname)", "refs/heads")
+        self.assertEqual(heads.split(), ["refs/heads/master"])
+
+    def test_a_later_release_follows_it_and_a_stale_clone_is_not_used(self):
+        self.release("0.1.0")
+        # A run that stopped after committing, before pushing.
+        (self.work / "stray").write_text("never pushed")
+        self.git("-C", self.work, "add", "stray")
+        self.git("-C", self.work, "commit", "--quiet", "-m", "stray")
+        self.release("0.1.1")
+        files = self.git("-C", self.aur, "ls-tree", "--name-only", "master").split()
+        self.assertNotIn("stray", files)
+        log = self.git("-C", self.aur, "log", "--format=%s", "master").split("\n")
+        self.assertEqual(log[:2], ["Backtrack 0.1.1", "Backtrack 0.1.0"])
 
 
 class Rerun(unittest.TestCase):
