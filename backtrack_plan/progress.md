@@ -222,14 +222,14 @@ Nothing right now.
 - [x] S19-T3 Screenshots of Backtrack for the guides, the site and the software centres
 - [x] S19-T4 A guide to installing Backtrack
 - [x] S19-T5 A guide to setting up your backups
-- [/] S19-T6 A guide to getting a file back from an earlier backup
-- [/] S19-T7 A guide to finding a lost file with search
-- [/] S19-T8 A guide to moving to a new computer
-- [/] S19-T9 A guide to what Backtrack's warnings mean
-- [/] S19-T10 The Rewind guide as a walk-through
-- [/] S19-T11 The Trash guide as a walk-through
-- [/] S19-T12 The Snapper guide as a walk-through
-- [/] S19-T13 The file-manager guide as a walk-through
+- [x] S19-T6 A guide to getting a file back from an earlier backup
+- [x] S19-T7 A guide to finding a lost file with search
+- [x] S19-T8 A guide to moving to a new computer
+- [x] S19-T9 A guide to what Backtrack's warnings mean
+- [x] S19-T10 The Rewind guide as a walk-through
+- [x] S19-T11 The Trash guide as a walk-through
+- [x] S19-T12 The Snapper guide as a walk-through
+- [x] S19-T13 The file-manager guide as a walk-through
 - [x] S19-T14 Backtrack prunes only its own backups
 - [x] S19-T15 Unencrypted backups made by other programs open from the wizard
 - [x] S19-T16 Backups whose key is in a key file can be opened with it
