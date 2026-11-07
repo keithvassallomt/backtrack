@@ -286,7 +286,13 @@ fn main() -> glib::ExitCode {
 /// Show `target` and the fix for `fix`: in the window already open, or in a
 /// first one.
 fn show(app: &adw::Application, target: Option<Target>, fix: Option<backtrack_core::dbus::Reason>) {
-    match app.active_window() {
+    // The window, the most recently used if there are several, rather than
+    // Rewind's, which belongs to the application as well.
+    let window = app
+        .windows()
+        .into_iter()
+        .find(|window| window.is::<adw::ApplicationWindow>());
+    match window {
         Some(existing) => {
             // Launched again with nothing to show: bring the window forward as
             // it is, rather than moving it somewhere.

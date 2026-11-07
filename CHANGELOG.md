@@ -25,6 +25,9 @@ All notable changes to Backtrack are documented here. This project adheres to
 - Backups whose key is kept in a file of its own, as Vorta's key-file
   encryption keeps it, now open from the wizard once you choose that file.
   The wizard used to stop at "Something went wrong".
+- Rewind opened from the file manager, the launcher or the tray now shows as
+  part of Backtrack, with its name and icon, in GNOME's window switcher and
+  overview. It used to appear there as a separate application with neither.
 
 ## [0.1.0] - 2026-11-07
 

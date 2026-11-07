@@ -233,7 +233,7 @@ Nothing right now.
 - [x] S19-T14 Backtrack prunes only its own backups
 - [x] S19-T15 Unencrypted backups made by other programs open from the wizard
 - [x] S19-T16 Backups whose key is in a key file can be opened with it
-- [ ] S19-T17 Rewind's window belongs to Backtrack
+- [x] S19-T17 Rewind's window belongs to Backtrack
 
 ## Stage 20 — The website at backtrack.tools ([stage file](stages/stage-20-the-website.md))
 - [ ] S20-T1 The website built with Zola (NOPE. New Plan. Ask me.)
