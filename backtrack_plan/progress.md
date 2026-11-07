@@ -2,9 +2,7 @@
 
 ## For Keith to do
 
-- Follow the Arch Linux steps in `docs/installing.md` (S19-T4) on an Arch
-  machine, installing and then uninstalling, and say whether each step went
-  as written.
+Nothing right now.
 
 ## Notes
 
@@ -222,7 +220,7 @@
 - [x] S19-T1 An index of the guides, with developer notes moved out of them
 - [x] S19-T2 Investigate: opening backups made by Vorta or Pika Backup
 - [x] S19-T3 Screenshots of Backtrack for the guides, the site and the software centres
-- [/] S19-T4 A guide to installing Backtrack
+- [x] S19-T4 A guide to installing Backtrack
 - [x] S19-T5 A guide to setting up your backups
 - [ ] S19-T6 A guide to getting a file back from an earlier backup
 - [ ] S19-T7 A guide to finding a lost file with search
@@ -236,6 +234,7 @@
 - [x] S19-T15 Unencrypted backups made by other programs open from the wizard
 - [x] S19-T16 Backups whose key is in a key file can be opened with it
 - [x] S19-T17 Rewind's window belongs to Backtrack
+- [ ] S19-T18 The status does not say the files are backed up before the first backup
 
 ## Stage 20 — The website at backtrack.tools ([stage file](stages/stage-20-the-website.md))
 - [ ] S20-T1 The website built with Zola (NOPE. New Plan. Ask me.)

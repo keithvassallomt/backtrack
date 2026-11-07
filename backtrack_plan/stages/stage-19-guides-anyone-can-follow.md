@@ -341,6 +341,19 @@ Rewind's window is listed under Backtrack, with its icon, in the window
 switcher and the overview; GNOME Shell reports `tools.backtrack.Backtrack`
 as its application ID; a CHANGELOG entry under Unreleased.
 
+### S19-T18 — The status does not say the files are backed up before the first backup
+With backups set up but none made yet, `backtrack status` says "Your files
+are backed up." above "Last backup never", and the health it reads from is
+healthy for the same reason: nothing has failed. Found by S19-T5's checks,
+when the wizard was closed before its first backup started and the first
+backup was left to the schedule. Until a backup has finished, the status
+says that the first backup is still to come, and when it is due.
+
+**Accept:** with a repository set up and no backup made, `backtrack status`
+and the window's status say the first backup has not run yet and when it
+will; after the first backup they read as before; a test for each; a
+CHANGELOG entry under Unreleased.
+
 ## Definition of Done
 All tasks done; `docs/README.md` lists every guide in the order a new user
 meets them; the README's Documentation section and install table point at
