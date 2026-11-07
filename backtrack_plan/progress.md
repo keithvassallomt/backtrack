@@ -2,7 +2,7 @@
 
 ## For Keith to do
 
-Nothing right now.
+- Choose how S19-T3's screenshots are taken on the GNOME VM (see Blocked).
 
 ## Notes
 
@@ -219,7 +219,7 @@ Nothing right now.
 ## Stage 19 — Guides anyone can follow ([stage file](stages/stage-19-guides-anyone-can-follow.md))
 - [x] S19-T1 An index of the guides, with developer notes moved out of them
 - [x] S19-T2 Investigate: opening backups made by Vorta or Pika Backup
-- [ ] S19-T3 Screenshots of Backtrack for the guides, the site and the software centres
+- [!] S19-T3 Screenshots of Backtrack for the guides, the site and the software centres
 - [ ] S19-T4 A guide to installing Backtrack
 - [ ] S19-T5 A guide to setting up your backups
 - [ ] S19-T6 A guide to getting a file back from an earlier backup
@@ -250,5 +250,8 @@ Nothing right now.
 
 ## Blocked
 
-
-Nothing is blocked.
+- **S19-T3:** a script cannot take a screenshot on the GNOME VM. `virsh
+  screenshot` gets no picture from its virtio GL display, and GNOME Shell
+  refuses its screenshot interface to every caller outside its own list.
+  A Shell extension that turns on unsafe mode at login, on that VM only,
+  would open it; turning off that protection is Keith's decision.
