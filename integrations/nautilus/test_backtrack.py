@@ -113,14 +113,19 @@ class Fixture(unittest.TestCase):
 
 
 class TheItems(Fixture):
-    def test_a_file_offers_its_previous_versions(self):
+    def test_a_file_offers_its_previous_versions_and_rewind(self):
         items = self.menu.get_file_items([FileInfo(self.report)])
-        self.assertEqual(self.labels(items), ["Restore Previous Version…"])
+        self.assertEqual(self.labels(items), ["Restore Previous Version…", "Rewind This File…"])
 
         items[0].activate()
+        items[1].activate()
+        folder = os.path.dirname(self.report)
         self.assertEqual(
             self.launched,
-            [["--path", os.path.dirname(self.report), "--select", self.report]],
+            [
+                ["--path", folder, "--select", self.report],
+                ["--rewind", "--path", folder, "--select", self.report],
+            ],
         )
 
     def test_a_folder_offers_its_previous_versions_and_its_backups(self):
@@ -128,27 +133,40 @@ class TheItems(Fixture):
         items = self.menu.get_file_items([FileInfo(designs, directory=True)])
         self.assertEqual(
             self.labels(items),
-            ["Restore Previous Version…", "Browse Backups of This Folder…"],
+            [
+                "Restore Previous Version…",
+                "Browse Backups of This Folder…",
+                "Rewind This Folder…",
+            ],
         )
 
         items[1].activate()
-        self.assertEqual(self.launched, [["--path", designs]])
+        items[2].activate()
+        self.assertEqual(self.launched, [["--path", designs], ["--rewind", "--path", designs]])
 
     def test_the_folder_being_shown_offers_its_backups(self):
         projects = os.path.join(self.home, "Projects")
         items = self.menu.get_background_items(FileInfo(projects, directory=True))
-        self.assertEqual(self.labels(items), ["Browse Backups of This Folder…"])
+        self.assertEqual(
+            self.labels(items),
+            ["Browse Backups of This Folder…", "Rewind This Folder…"],
+        )
 
         items[0].activate()
-        self.assertEqual(self.launched, [["--path", projects]])
+        items[1].activate()
+        self.assertEqual(self.launched, [["--path", projects], ["--rewind", "--path", projects]])
 
     def test_a_backup_root_itself_is_offered(self):
         items = self.menu.get_background_items(FileInfo(self.home, directory=True))
-        self.assertEqual(self.labels(items), ["Browse Backups of This Folder…"])
+        self.assertEqual(
+            self.labels(items),
+            ["Browse Backups of This Folder…", "Rewind This Folder…"],
+        )
 
     def test_the_item_names_are_the_extensions_own(self):
         items = self.menu.get_file_items([FileInfo(self.report)])
-        self.assertTrue(items[0].properties["name"].startswith("Backtrack::"))
+        for entry in items:
+            self.assertTrue(entry.properties["name"].startswith("Backtrack::"))
 
     def test_more_than_one_file_offers_nothing(self):
         other = os.path.join(self.home, "Projects", "designs")

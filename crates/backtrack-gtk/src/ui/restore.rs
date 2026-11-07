@@ -19,7 +19,7 @@ use std::rc::Rc;
 use backtrack_core::dbus::RestorePreview;
 use futures::StreamExt;
 use gtk4::prelude::*;
-use gtk4::{glib, Align, Box as GtkBox, Label, Orientation, Spinner};
+use gtk4::{gio, glib, Align, Box as GtkBox, Label, Orientation, Spinner};
 use libadwaita as adw;
 use libadwaita::prelude::*;
 use tracing::{info, warn};
@@ -41,6 +41,23 @@ pub struct Asking {
     pub parent: gtk4::Widget,
     pub toasts: adw::ToastOverlay,
 }
+
+/// How a restore offers Undo: in the window's toast, or, for a restore from
+/// Rewind opened from outside the window, in a notification (S18-T7).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UndoBy {
+    Toast,
+    Notification,
+}
+
+/// The notification a restore from outside the window offers Undo in, and
+/// then says it was put back in.
+const UNDO_NOTIFICATION: &str = "restore-undo";
+
+/// How long Backtrack keeps running for that notification's Undo, after
+/// which the notification is withdrawn. Not every desktop can start
+/// Backtrack again to answer a notification's button.
+const UNDO_MINUTES: u32 = 10;
 
 /// A restore carried out, which Undo can put back.
 struct Done {
@@ -95,7 +112,7 @@ impl Restores {
             };
             let state = Rc::clone(&this.state);
             if let Some(done) = this.run(&state, &asking).await {
-                this.carried_out(done);
+                this.carried_out(done, UndoBy::Toast);
             }
             this.busy.set(false);
         });
@@ -103,11 +120,12 @@ impl Restores {
 
     /// Restore what `state` (Rewind's) has selected, or its folder, from the
     /// backup it is at, asking over `asking`. `finished` is told whether it
-    /// was carried out, before Undo is offered in the window.
+    /// was carried out, before Undo is offered as `undo` says.
     pub fn start_from(
         self: &Rc<Self>,
         state: Rc<AppState>,
         asking: Asking,
+        undo: UndoBy,
         finished: impl FnOnce(bool) + 'static,
     ) {
         if self.busy.get() {
@@ -120,7 +138,7 @@ impl Restores {
             match this.run(&state, &asking).await {
                 Some(done) => {
                     finished(true);
-                    this.carried_out(done);
+                    this.carried_out(done, undo);
                 }
                 None => finished(false),
             }
@@ -129,9 +147,12 @@ impl Restores {
     }
 
     /// Offer to put it back, and show the folder as it is now.
-    fn carried_out(self: &Rc<Self>, done: Done) {
+    fn carried_out(self: &Rc<Self>, done: Done, undo: UndoBy) {
         *self.undoable.borrow_mut() = Some((done.job, done.name.clone()));
-        self.offer_undo(&done.preview, &done.name);
+        match undo {
+            UndoBy::Toast => self.offer_undo(&done.preview, &done.name),
+            UndoBy::Notification => self.notify_undo(&done),
+        }
         // The pane is showing a folder whose contents just changed.
         self.state.disk_changed();
     }
@@ -326,6 +347,28 @@ impl Restores {
         self.toasts.add_toast(toast);
     }
 
+    /// The same offer in a notification, for a restore from Rewind opened
+    /// from outside the window, which has gone back there (S18-T7).
+    fn notify_undo(&self, done: &Done) {
+        let Some(app) = self.window.application() else {
+            return;
+        };
+        let preview = &done.preview;
+        let moved = (preview.conflicts + preview.only_in_backup + preview.type_changed) as usize;
+        let notification = gio::Notification::new(&copy::restored_toast(moved, &done.name));
+        notification.add_button_with_target_value(
+            "Undo",
+            &format!("app.{}", backtrack_core::dbus::APP_ACTION_UNDO_RESTORE),
+            Some(&(done.job, done.name.clone()).to_variant()),
+        );
+        app.send_notification(Some(UNDO_NOTIFICATION), &notification);
+        let hold = app.hold();
+        glib::timeout_add_seconds_local_once(UNDO_MINUTES * 60, move || {
+            app.withdraw_notification(UNDO_NOTIFICATION);
+            drop(hold);
+        });
+    }
+
     /// Put back the restore that was just carried out.
     fn undo(self: &Rc<Self>) {
         let undoable = self.undoable.borrow().clone();
@@ -430,6 +473,32 @@ fn preparing(parent: &gtk4::Widget, name: &str) -> adw::AlertDialog {
     dialog.set_extra_child(Some(&content));
     dialog.present(Some(parent));
     dialog
+}
+
+/// Put back restore `job`, which restored `name`, from its notification's
+/// Undo (S18-T7), and say how it went in the same notification. No window
+/// is needed: Rewind's may have closed, with the window made for it.
+pub fn undo_from_notification(app: &adw::Application, job: u64, name: String) {
+    let hold = app.hold();
+    let app = app.clone();
+    crate::ui::spawn(async move {
+        let done = match crate::daemon::connect().await {
+            Ok(proxy) => run_job(&proxy, |p| p.undo_restore(job)).await,
+            Err(error) => Err(error),
+        };
+        let said = match done {
+            Ok(_) => {
+                info!(job, "restore undone from its notification");
+                copy::put_back_toast(&name)
+            }
+            Err(error) => {
+                warn!(%error, job, "the restore could not be undone");
+                error
+            }
+        };
+        app.send_notification(Some(UNDO_NOTIFICATION), &gio::Notification::new(&said));
+        drop(hold);
+    });
 }
 
 /// Say `message` where the restore is asking.

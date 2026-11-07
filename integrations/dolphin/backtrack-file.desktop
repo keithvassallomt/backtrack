@@ -1,0 +1,27 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# SPDX-FileCopyrightText: 2026 Keith Vassallo <keith@vassallo.cloud>
+#
+# "Rewind This File…" on a selected file in Dolphin, in the Backtrack submenu
+# beside backtrack.desktop's item: Rewind, the full-screen view, on the folder
+# the file is in, with the file selected (S18-T7). A file of its own because
+# KIO matches file types per file, not per action, and this item is for files
+# only. See docs/file-manager-integration.md, and backtrack.desktop for Type,
+# NoDisplay and TopLevel.
+#
+# The action's name sorts after backtrack-folder.desktop's: KIO orders a
+# submenu by action name, and Rewind's items come last, as in Nautilus.
+[Desktop Entry]
+Type=Application
+Name=Backtrack
+NoDisplay=true
+MimeType=application/octet-stream;
+X-KDE-Submenu=Backtrack
+X-KDE-Priority=TopLevel
+X-KDE-Protocols=file
+X-KDE-RequiredNumberOfUrls=1
+Actions=backtrackTimeViewFile
+
+[Desktop Action backtrackTimeViewFile]
+Name=Rewind This File…
+Icon=media-seek-backward
+Exec=backtrack-gtk --rewind --select %f

@@ -39,10 +39,23 @@ use crate::model::group::{self, Kept};
 use crate::model::{rewind, thumbnail, timeline as timeline_model, trash};
 use crate::state::{AppState, Change, View};
 use crate::ui::files::{Listed, Lister, Row};
-use crate::ui::restore::{Asking, Restores};
+use crate::ui::restore::{Asking, Restores, UndoBy};
 use folder::{Actions, Body, Content, Mode};
 use stage::{Background, Stage};
 use timeline::{Tick, Timeline};
+
+/// Where Rewind was opened from, which is where it returns.
+pub enum Origin {
+    /// Backtrack's window: Rewind opens at the folder, backup and file on
+    /// screen there, and leaving gives the window its folder and selection.
+    /// Undo is offered in the window's toast.
+    Window,
+    /// The file manager, the launcher or the tray (S18-T7), at `target`:
+    /// Rewind opens at the folder as it is now, and leaves the window as it
+    /// was, closing it too when it was made only for Rewind (`own`). Undo is
+    /// offered in a notification.
+    Elsewhere { target: crate::Target, own: bool },
+}
 
 // How the windows showed their folders when Rewind was last left: icons
 // until the list is chosen, then the list, for as long as Backtrack runs.
@@ -72,6 +85,8 @@ struct Rewind {
     /// A restore's questions are up: the keys and the wheel leave the stack
     /// alone.
     restoring: Cell<bool>,
+    /// Opened from outside the window (S18-T7).
+    elsewhere: bool,
     lister: Rc<Lister>,
     index: Index,
     /// What each time held, as listed, for the folder being viewed: kept
@@ -96,6 +111,7 @@ pub fn open(
     index: &Index,
     lister: Rc<Lister>,
     restores: Option<Rc<Restores>>,
+    origin: Origin,
 ) {
     let shell = adw::Window::builder()
         .title("Rewind")
@@ -104,6 +120,20 @@ pub fn open(
     shell.add_css_class("rewind");
 
     let state = window.fork();
+    if let Origin::Elsewhere { target, .. } = &origin {
+        state.set_folder(target.folder.clone());
+        if let Some(select) = &target.select {
+            state.set_selected(Some(crate::state::Selected {
+                path: select.clone(),
+                name: crate::path::name(select).to_string(),
+                is_dir: false,
+                size: -1,
+                mtime: 0,
+                on_disk: 0,
+                archive: None,
+            }));
+        }
+    }
     let stage = Stage::new();
     stage.set_background(Background::Waiting);
     stage.set_show_hidden(state.view().show_hidden);
@@ -127,6 +157,7 @@ pub fn open(
         toasts: toasts.clone(),
         shell: shell.downgrade(),
         restoring: Cell::new(false),
+        elsewhere: matches!(origin, Origin::Elsewhere { .. }),
         lister,
         index: index.clone(),
         bodies: RefCell::new(HashMap::new()),
@@ -207,6 +238,9 @@ pub fn open(
 
     stage.set_actions(rewind.actions());
     rewind.watch(&say);
+    // Opened at another folder than the window's: its backups to list may
+    // not be known yet.
+    rewind.ask_listing(&state.view());
     {
         let (weak, told) = (Rc::downgrade(&rewind), Rc::clone(&say));
         timeline.connect_chosen(move |index| {
@@ -230,8 +264,19 @@ pub fn open(
     {
         let (rewind, window, parent) = (Rc::clone(&rewind), Rc::clone(window), parent.clone());
         shell.connect_close_request(move |_| {
-            leave(&rewind, &window);
-            parent.present();
+            match &origin {
+                Origin::Window => {
+                    leave(&rewind, &window);
+                    parent.present();
+                }
+                // Made only for Rewind, and never shown: it goes too, once
+                // Rewind has gone.
+                Origin::Elsewhere { own: true, .. } => {
+                    let parent = parent.clone();
+                    glib::idle_add_local_once(move || parent.close());
+                }
+                Origin::Elsewhere { own: false, .. } => {}
+            }
             glib::Propagation::Proceed
         });
     }
@@ -348,7 +393,8 @@ impl Rewind {
         if kept && *self.slots.borrow() == slots && self.stage.has_slots() {
             return false;
         }
-        let at_now = kept && self.stage.target() == 0;
+        // From elsewhere, Rewind starts at the folder as it is now.
+        let at_now = (kept && self.stage.target() == 0) || (!kept && self.elsewhere);
         let at = if at_now {
             0
         } else {
@@ -822,7 +868,12 @@ impl Rewind {
             parent: shell.upcast(),
             toasts: self.toasts.clone(),
         };
-        restores.start_from(state, asking, move |carried_out| {
+        let undo = if self.elsewhere {
+            UndoBy::Notification
+        } else {
+            UndoBy::Toast
+        };
+        restores.start_from(state, asking, undo, move |carried_out| {
             let Some(rewind) = weak.upgrade() else {
                 return;
             };

@@ -103,5 +103,6 @@ package_backtrack-dolphin() {
 
   cd "$pkgbase-$_version"
   install -Dm644 -t "$pkgdir/usr/share/kio/servicemenus" \
-    integrations/dolphin/backtrack.desktop integrations/dolphin/backtrack-folder.desktop
+    integrations/dolphin/backtrack.desktop integrations/dolphin/backtrack-folder.desktop \
+    integrations/dolphin/backtrack-file.desktop
 }

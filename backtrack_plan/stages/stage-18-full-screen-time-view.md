@@ -377,6 +377,41 @@ service menu item is added if Dolphin now supports shortcuts for service
 menus: KDE's developers aimed for 26.04 at the earliest, and what shipped is
 checked here.
 
+**Decided** (Keith, 2026-11-07): the file managers' items are **Rewind This
+File…** (on a file: its folder, the file selected) and **Rewind This
+Folder…** (on a folder, or the folder being shown), after the existing two.
+Opened from outside the window, Rewind leaves an open window as it was. The
+header bar button gets an icon of its own, drawn for it; until then a stock
+stand-in.
+
+**Built** (2026-11-07, in progress):
+- `backtrack-gtk --rewind`, with `--path` and `--select` as the window takes
+  them, and the application action `rewind` (folder, file), which the
+  Flatpak's tray uses; with neither, where the window would open (the home
+  folder, or the folders backed up when the home folder is not).
+- Opened from outside the window, Rewind opens at the folder as it is now, on
+  its own copy of the window's state, over the window already open (which it
+  leaves as it was) or over one made for it and never shown, which closes
+  with it once its catalogue has been read (or is shown, should it not be).
+  After a restore, Undo is a notification's button, `app.undo-restore`, which
+  needs no window; Backtrack stays running ten minutes for it, then withdraws
+  it.
+- Backtrack's window: a header bar button, **Rewind…** first in the main menu,
+  Ctrl+T as before, and an entry in the shortcuts dialog.
+- Nautilus: the two items, in the extension and its tests. Dolphin: **Rewind
+  This Folder…** in `backtrack-folder.desktop`, and **Rewind This File…** in a
+  third file, `backtrack-file.desktop`, as KIO filters by type per file; their
+  action names sort them last; the Preferences switch hides them too; the
+  packages and the Flatpak's copies install the third file.
+- The launcher: a **Rewind** desktop action. The tray: **Rewind…** beside
+  **Open Backtrack**.
+- Dolphin 26.04 shipped keyboard shortcuts for service menu actions
+  (Dolphin MR !1167), which the user assigns in Configure Keyboard Shortcuts;
+  a service menu cannot declare one, so Backtrack's files carry none, and the
+  documentation says where to set it.
+- `docs/rewind.md`, for people using Backtrack, linked from the README;
+  `docs/file-manager-integration.md` lists the new items.
+
 **Accept:** each way in tried on both VMs, native and Flatpak, opening at the
 right folder, with the right file selected where one was clicked; on a VM, a
 restore from the view opened from the file manager, with a conflict, then

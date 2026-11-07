@@ -219,6 +219,14 @@ impl ksni::Tray for Tray {
                 ..Default::default()
             }
             .into(),
+            // Rewind, the full-screen view, where the window would open
+            // (S18-T7).
+            StandardItem {
+                label: "Rewind…".to_string(),
+                activate: Box::new(|_: &mut Self| open_rewind()),
+                ..Default::default()
+            }
+            .into(),
             // Not "Quit": backups carry on without the icon, and the label
             // should not suggest otherwise.
             StandardItem {
@@ -260,6 +268,58 @@ fn open_window() {
         Ok(_) => info!(path = %window.display(), "opening the window from the tray"),
         Err(error) => warn!(%error, path = %window.display(), "the window could not be opened"),
     }
+}
+
+/// Open Rewind, as `open_window` opens the window: `backtrack-gtk --rewind`,
+/// or inside a Flatpak its `rewind` action over the session bus.
+fn open_rewind() {
+    if backtrack_core::host::in_flatpak() {
+        tokio::spawn(async {
+            match activate_rewind().await {
+                Ok(()) => info!("asked the session bus for Rewind"),
+                Err(error) => warn!(%error, "Rewind could not be opened through the session bus"),
+            }
+        });
+        return;
+    }
+    let window = std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(|dir| dir.join("backtrack-gtk")))
+        .filter(|path| path.is_file())
+        .unwrap_or_else(|| PathBuf::from("backtrack-gtk"));
+    match tokio::process::Command::new(&window)
+        .arg("--rewind")
+        .spawn()
+    {
+        Ok(_) => info!(path = %window.display(), "opening Rewind from the tray"),
+        Err(error) => warn!(%error, path = %window.display(), "Rewind could not be opened"),
+    }
+}
+
+/// Activate the window's `rewind` action over `org.freedesktop.Application`,
+/// with no folder named: where the window would open.
+async fn activate_rewind() -> zbus::Result<()> {
+    let connection = zbus::Connection::session().await?;
+    let platform_data: std::collections::HashMap<&str, zbus::zvariant::Value<'_>> =
+        std::collections::HashMap::new();
+    let parameter = zbus::zvariant::Value::from(zbus::zvariant::Structure::from((
+        String::new(),
+        String::new(),
+    )));
+    connection
+        .call_method(
+            Some(backtrack_core::dbus::APP_ID),
+            backtrack_core::dbus::APP_OBJECT_PATH,
+            Some("org.freedesktop.Application"),
+            "ActivateAction",
+            &(
+                backtrack_core::dbus::APP_ACTION_REWIND,
+                vec![parameter],
+                platform_data,
+            ),
+        )
+        .await?;
+    Ok(())
 }
 
 /// Activate the window over `org.freedesktop.Application`, which starts it in

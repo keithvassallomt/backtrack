@@ -2,8 +2,9 @@
 # SPDX-FileCopyrightText: 2026 Keith Vassallo <keith@vassallo.cloud>
 #
 # "Restore Previous Version…" on a selected file or folder in Dolphin, in a
-# Backtrack submenu. backtrack-folder.desktop adds the folder-only item to the
-# same submenu. See docs/file-manager-integration.md.
+# Backtrack submenu. backtrack-folder.desktop adds the folder-only items to the
+# same submenu, and backtrack-file.desktop the file-only one. See
+# docs/file-manager-integration.md.
 #
 # Type is Application, not the Service of older service menus, so that
 # desktop-file-validate accepts the file. KIO reads the actions and filters

@@ -258,7 +258,31 @@ impl Window {
         });
         header.pack_end(search);
 
+        // Rewind, the full-screen view (S18-T7).
+        let rewind = Button::from_icon_name(REWIND_ICON);
+        rewind.set_action_name(Some("win.rewind"));
+        rewind.set_tooltip_text(Some("Rewind"));
+        rewind.update_property(&[gtk4::accessible::Property::Label("Rewind")]);
+        header.pack_end(&rewind);
+
         header
+    }
+
+    /// Open Rewind over this window, borrowing its file pane's way of
+    /// listing folders and its restores.
+    fn open_rewind(self: &Rc<Self>, origin: ui::rewind::Origin) {
+        let lister = self.files.borrow().as_ref().map(|files| files.lister());
+        let restores = self.restores.borrow().clone();
+        if let Some(lister) = lister {
+            ui::rewind::open(
+                &self.window,
+                &self.state,
+                &self.index,
+                lister,
+                restores,
+                origin,
+            );
+        }
     }
 
     fn body(self: &Rc<Self>) -> adw::OverlaySplitView {
@@ -513,17 +537,11 @@ impl Window {
         }
 
         // Rewind, the full-screen view (Stage 18), at the folder and backup
-        // on screen. S18-T7 adds the header bar button and the menu item.
+        // on screen: from the header bar's button, the main menu and Ctrl+T.
         let rewind = gio::SimpleAction::new("rewind", None);
         {
             let this = Rc::clone(self);
-            rewind.connect_activate(move |_, _| {
-                let lister = this.files.borrow().as_ref().map(|files| files.lister());
-                let restores = this.restores.borrow().clone();
-                if let Some(lister) = lister {
-                    ui::rewind::open(&this.window, &this.state, &this.index, lister, restores);
-                }
-            });
+            rewind.connect_activate(move |_, _| this.open_rewind(ui::rewind::Origin::Window));
         }
         self.window.add_action(&rewind);
         if let Some(app) = self.window.application() {
@@ -1609,6 +1627,52 @@ pub fn fix(window: &gtk4::Window, reason: Reason) {
     });
 }
 
+/// Open Rewind at `target` over the window already open, for a caller outside
+/// it (S18-T7); the window stays as it is. Whether there was one.
+pub fn rewind_over_open(target: &Target) -> bool {
+    let open = OPEN.with(|open| open.borrow().first().cloned());
+    let Some(window) = open else {
+        return false;
+    };
+    window.open_rewind(ui::rewind::Origin::Elsewhere {
+        target: target.clone(),
+        own: false,
+    });
+    true
+}
+
+/// Open Rewind at `target` over `window`, just made for it and not shown, once
+/// its catalogue has been read; Rewind closes it as it leaves (S18-T7). Should
+/// the catalogue not be read, the window is shown instead, as a launch with
+/// no Rewind would show it, saying why.
+pub fn rewind_over_new(window: &adw::ApplicationWindow, target: Target) {
+    let found = OPEN.with(|open| open.borrow().iter().find(|w| &w.window == window).cloned());
+    let Some(found) = found else { return };
+    let pending = Rc::new(RefCell::new(Some(target)));
+    let opener = Rc::clone(&found);
+    let waiting = Rc::clone(&pending);
+    found.state.subscribe(move |_, change| {
+        if !matches!(change, Change::Archives) {
+            return;
+        }
+        let Some(target) = waiting.borrow_mut().take() else {
+            return;
+        };
+        // After the state has finished telling everyone, so that Rewind's
+        // copy of it is taken whole.
+        let opener = Rc::clone(&opener);
+        glib::idle_add_local_once(move || {
+            opener.open_rewind(ui::rewind::Origin::Elsewhere { target, own: true });
+        });
+    });
+    glib::timeout_add_seconds_local_once(CATALOGUE_WAIT_SECONDS, move || {
+        if pending.borrow_mut().take().is_some() {
+            warn!("the catalogue was not read in time for Rewind; showing the window");
+            found.window.present();
+        }
+    });
+}
+
 /// Point an already-open window at `target`.
 pub fn retarget(window: &gtk4::Window, target: &Target) {
     OPEN.with(|open| {
@@ -1630,6 +1694,13 @@ const ON_DISK_PRESENT: u8 = 2;
 const ON_DISK_ABSENT: u8 = 1;
 
 const STATUS_TICK_SECONDS: u32 = 30;
+
+/// How long Rewind, opened from outside the window, waits for the catalogue
+/// before the window is shown instead.
+const CATALOGUE_WAIT_SECONDS: u32 = 15;
+
+/// The icon of Rewind's button: a stand-in until its own is drawn.
+const REWIND_ICON: &str = "media-seek-backward-symbolic";
 
 /// What the window says when something needs the daemon and there isn't one.
 const NO_SERVICE: &str = "The Backtrack service is not running, so this cannot be done from here";

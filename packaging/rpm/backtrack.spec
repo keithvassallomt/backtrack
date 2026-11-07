@@ -103,7 +103,8 @@ install -Dm644 -t %{buildroot}%{_datadir}/icons/hicolor/symbolic/apps \
 install -Dm644 -t %{buildroot}%{_sysconfdir}/xdg/autostart packaging/autostart/backtrack-tray.desktop
 install -Dm644 -t %{buildroot}%{_datadir}/nautilus-python/extensions integrations/nautilus/backtrack.py
 install -Dm644 -t %{buildroot}%{_datadir}/kio/servicemenus \
-    integrations/dolphin/backtrack.desktop integrations/dolphin/backtrack-folder.desktop
+    integrations/dolphin/backtrack.desktop integrations/dolphin/backtrack-folder.desktop \
+    integrations/dolphin/backtrack-file.desktop
 
 %check
 desktop-file-validate %{buildroot}%{_datadir}/applications/tools.backtrack.Backtrack.desktop
@@ -142,6 +143,7 @@ appstreamcli validate --no-net %{buildroot}%{_metainfodir}/tools.backtrack.Backt
 %files dolphin
 %{_datadir}/kio/servicemenus/backtrack.desktop
 %{_datadir}/kio/servicemenus/backtrack-folder.desktop
+%{_datadir}/kio/servicemenus/backtrack-file.desktop
 
 %changelog
 * Sun Oct 18 2026 Keith Vassallo <keith@vassallo.cloud> - 0.1.0~rc4-1

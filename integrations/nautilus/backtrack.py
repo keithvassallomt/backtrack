@@ -3,17 +3,22 @@
 
 """Backtrack's items in the Nautilus right-click menu.
 
-Two items, and nothing else:
+Four items, and nothing else:
 
 - "Restore Previous Version…" on a selected file or folder, which opens
   Backtrack's window on the folder it is in with it selected.
 - "Browse Backups of This Folder…" on a selected folder, or on the empty
   space of the folder being shown, which opens the window on that folder.
+- "Rewind This File…" on a selected file, which opens Rewind, Backtrack's
+  full-screen view, on the folder it is in with it selected.
+- "Rewind This Folder…" on a selected folder, or on the empty space of the
+  folder being shown, which opens Rewind on that folder.
 
 The extension is a launcher and does no more than that. Nautilus's extension
 API has changed under every plugin that tried to do more, so this one only
 adds menu items and leaves the rest to the window, through the launch
-contract the window documents (`backtrack-gtk --path DIR --select FILE`).
+contract the window documents (`backtrack-gtk [--rewind] --path DIR
+--select FILE`).
 
 The items appear only where they would find something: inside the folders
 Backtrack backs up, on this computer's own disks. Nautilus asks for items on
@@ -40,6 +45,8 @@ ROOTS = None
 
 RESTORE = "Restore Previous Version…"
 BROWSE = "Browse Backups of This Folder…"
+REWIND_FILE = "Rewind This File…"
+REWIND_FOLDER = "Rewind This Folder…"
 # The clock beside both items in the mockups. Some Nautilus releases draw
 # icons on extension items and some do not; where they do not, this is unused.
 ICON = "document-open-recent-symbolic"
@@ -164,6 +171,16 @@ def browse(folder):
     launch("--path", folder)
 
 
+def rewind_file(path):
+    """Open Rewind on the folder `path` is in, with `path` selected."""
+    launch("--rewind", "--path", os.path.dirname(path), "--select", path)
+
+
+def rewind_folder(folder):
+    """Open Rewind on `folder`."""
+    launch("--rewind", "--path", folder)
+
+
 def item(name, label, action, path):
     """A menu item that runs `action(path)` when chosen."""
     entry = Nautilus.MenuItem(name=f"Backtrack::{name}", label=label, icon=ICON)
@@ -187,10 +204,16 @@ class BacktrackMenu(GObject.GObject, Nautilus.MenuProvider):
         items = [item("Restore", RESTORE, restore, path)]
         if files[0].is_directory():
             items.append(item("Browse", BROWSE, browse, path))
+            items.append(item("RewindFolder", REWIND_FOLDER, rewind_folder, path))
+        else:
+            items.append(item("RewindFile", REWIND_FILE, rewind_file, path))
         return items
 
     def get_background_items(self, current_folder):
         path = local_path(current_folder)
         if path is None or not backed_up(path, self.published.current()):
             return []
-        return [item("BrowseHere", BROWSE, browse, path)]
+        return [
+            item("BrowseHere", BROWSE, browse, path),
+            item("RewindHere", REWIND_FOLDER, rewind_folder, path),
+        ]

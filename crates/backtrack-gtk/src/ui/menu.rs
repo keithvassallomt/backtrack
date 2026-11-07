@@ -21,6 +21,11 @@ use crate::model::pause;
 pub fn model() -> gio::Menu {
     let menu = gio::Menu::new();
 
+    // Rewind, the full-screen view, first: Stage 18's headline (S18-T7).
+    let rewind = gio::Menu::new();
+    rewind.append(Some("Rewind…"), Some("win.rewind"));
+    menu.append_section(None, &rewind);
+
     let actions = gio::Menu::new();
     actions.append(Some("Back Up Now"), Some("win.backup-now"));
 
@@ -90,6 +95,10 @@ pub fn shortcuts_dialog() -> adw::ShortcutsDialog {
     time.add(adw::ShortcutsItem::from_action(
         "Show all backups",
         "win.show-all-backups",
+    ));
+    time.add(adw::ShortcutsItem::from_action(
+        "Rewind, the full-screen view",
+        "win.rewind",
     ));
     dialog.add(time);
 
