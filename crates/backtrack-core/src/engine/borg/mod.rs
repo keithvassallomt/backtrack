@@ -401,6 +401,7 @@ impl BackupEngine for BorgCli {
         cmd.arg("prune")
             .arg("--progress")
             .arg("--list")
+            .arg(format!("--glob-archives={OWN_ARCHIVES}"))
             .args(keep_args(policy))
             .arg(&self.repo);
         spawn_streamed(cmd)
@@ -489,6 +490,15 @@ impl BackupEngine for BorgCli {
 /// `keep_hourly` hours is kept as well (S18-T22). Borg does not count the
 /// backups `--keep-within` keeps towards the other rules, so the hourly ones
 /// then reach back as far as before, from the end of that window.
+/// The archives Backtrack's retention may remove: its own, which it names
+/// `bt-{host}-{time}` (and the spool's `bt-local-{time}`). A repository can
+/// hold another program's archives as well: the wizard offers to carry on
+/// backing up into backups it finds at the destination, Vorta's or Pika
+/// Backup's among them. Without this, Borg's prune counts every archive as one
+/// series, and Backtrack's first backup into Vorta's removed 12 of its 51
+/// (S19-T2). Those archives are their own program's to prune.
+const OWN_ARCHIVES: &str = "bt-*";
+
 fn keep_args(policy: &PrunePolicy) -> Vec<String> {
     let mut args = Vec::with_capacity(5);
     // Borg refuses a window of 0 hours; with no hourly backups there is none.

@@ -15,6 +15,11 @@ All notable changes to Backtrack are documented here. This project adheres to
 
 ## [Unreleased]
 
+### Fixed
+- When Backtrack carries on backing up into backups another program made,
+  such as Vorta or Pika Backup, thinning out older backups no longer removes
+  some of that program's. Backtrack now thins out only its own.
+
 ## [0.1.0] - 2026-11-07
 
 ### Added

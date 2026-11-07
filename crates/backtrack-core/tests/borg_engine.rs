@@ -80,7 +80,7 @@ async fn full_round_trip() {
     .unwrap();
 
     // two archives
-    for name in ["arch-1", "arch-2"] {
+    for name in ["bt-arch-1", "bt-arch-2"] {
         let spec = CreateSpec {
             archive_name: name.into(),
             sources: vec![f.src.clone()],
@@ -98,7 +98,7 @@ async fn full_round_trip() {
 
     // list streams the fixture files
     let items: Vec<_> = eng
-        .list_archive(&ArchiveId("arch-1".into()))
+        .list_archive(&ArchiveId("bt-arch-1".into()))
         .await
         .unwrap()
         .collect()
@@ -123,7 +123,7 @@ async fn full_round_trip() {
         "expected list to report {rel:?}, got {paths:?}"
     );
     let mut reader = eng
-        .extract_stdout(&ArchiveId("arch-1".into()), &rel)
+        .extract_stdout(&ArchiveId("bt-arch-1".into()), &rel)
         .await
         .unwrap();
     let mut buf = Vec::new();
@@ -165,7 +165,7 @@ async fn backups_made_within_the_same_hour_all_survive_the_prune() {
     })
     .await
     .unwrap();
-    for name in ["scheduled", "by-hand", "by-hand-again"] {
+    for name in ["bt-scheduled", "bt-by-hand", "bt-by-hand-again"] {
         std::fs::write(f.src.join("report.txt"), name).unwrap();
         let spec = CreateSpec {
             archive_name: name.into(),
@@ -204,7 +204,77 @@ async fn backups_made_within_the_same_hour_all_survive_the_prune() {
         .map(|a| a.name)
         .collect();
     left.sort();
-    assert_eq!(left, ["by-hand", "by-hand-again", "scheduled"]);
+    assert_eq!(left, ["bt-by-hand", "bt-by-hand-again", "bt-scheduled"]);
+}
+
+#[tokio::test]
+async fn the_prune_leaves_archives_another_program_made_alone() {
+    // The wizard offers to carry on backing up into backups it finds at the
+    // destination, Vorta's or Pika Backup's among them. Borg's prune counts
+    // every archive in the repository as one series unless told which are
+    // whose, and Backtrack's first backup into Vorta's removed 12 of its 51
+    // (S19-T2).
+    let f = fixture().await;
+    let eng = engine(&f).await;
+    eng.init_repo(&RepoSpec {
+        path: f.repo.clone(),
+        encryption: Encryption::RepokeyBlake2,
+    })
+    .await
+    .unwrap();
+
+    // Vorta's names, Pika Backup's, and Backtrack's, weeks apart. Borg's own
+    // --timestamp dates them; Backtrack never backdates an archive.
+    let archives = [
+        ("fedora-2026-08-03-120000", "2026-08-03T12:00:00"),
+        ("bt-fedora-20260810T100000Z", "2026-08-10T10:00:00"),
+        ("fedora-2026-08-24-120000", "2026-08-24T12:00:00"),
+        ("bt-fedora-20260831T100000Z", "2026-08-31T10:00:00"),
+        ("be4bea-610b4f99", "2026-09-14T12:00:00"),
+        ("bt-fedora-20260921T100000Z", "2026-09-21T10:00:00"),
+    ];
+    for (name, at) in archives {
+        let made = std::process::Command::new("borg")
+            .env("BORG_PASSPHRASE", PASS)
+            .args(["create", "--timestamp", at])
+            .arg(format!("{}::{name}", f.repo))
+            .arg(&f.src)
+            .output()
+            .unwrap();
+        assert!(made.status.success(), "{name}: {made:?}");
+    }
+
+    // One a month: of Backtrack's three, only September's stays.
+    run_to_finish(
+        eng.prune(&PrunePolicy {
+            keep_hourly: 0,
+            keep_daily: 0,
+            keep_weekly: 0,
+            keep_monthly: 1,
+        })
+        .await
+        .unwrap(),
+    )
+    .await
+    .unwrap();
+
+    let mut left: Vec<String> = eng
+        .list_archives()
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|a| a.name)
+        .collect();
+    left.sort();
+    assert_eq!(
+        left,
+        [
+            "be4bea-610b4f99",
+            "bt-fedora-20260921T100000Z",
+            "fedora-2026-08-03-120000",
+            "fedora-2026-08-24-120000",
+        ]
+    );
 }
 
 #[tokio::test]
