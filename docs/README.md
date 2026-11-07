@@ -7,6 +7,7 @@ what you should see after each step. They are listed in the order you are
 likely to need them.
 
 - [Install Backtrack](installing.md)
+- [Set up your backups](getting-started.md)
 - [Go back through a folder's history with Rewind](rewind.md)
 - [Get back a file you deleted between two backups](trash.md)
 - [Take snapshots between backups with Snapper](snapper.md)

@@ -223,7 +223,7 @@
 - [x] S19-T2 Investigate: opening backups made by Vorta or Pika Backup
 - [x] S19-T3 Screenshots of Backtrack for the guides, the site and the software centres
 - [/] S19-T4 A guide to installing Backtrack
-- [ ] S19-T5 A guide to setting up your backups
+- [x] S19-T5 A guide to setting up your backups
 - [ ] S19-T6 A guide to getting a file back from an earlier backup
 - [ ] S19-T7 A guide to finding a lost file with search
 - [ ] S19-T8 A guide to moving to a new computer
