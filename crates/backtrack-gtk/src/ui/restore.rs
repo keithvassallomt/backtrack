@@ -392,6 +392,7 @@ impl Restores {
     /// restored `name`, in the banner, saying `said`, until it is used or
     /// another restore takes its place.
     pub fn offer(&self, job: u64, name: &str, said: &str) {
+        info!(job, name, "offering to undo a restore");
         *self.undoable.borrow_mut() = Some((job, name.to_string()));
         self.banner.set_title(said);
         self.banner.set_revealed(true);
