@@ -87,6 +87,7 @@ Each `stages/stage-NN-*.md` contains: **Objective** (what exists at the end),
 | 18 | [stage-18-full-screen-time-view.md](stages/stage-18-full-screen-time-view.md) | A full-screen view through the history in the spirit of Time Machine's, opened from the app, the file managers, the launcher and the tray |
 | 19 | [stage-19-guides-anyone-can-follow.md](stages/stage-19-guides-anyone-can-follow.md) | The guides in `docs/` as step-by-step walk-throughs, and the missing ones written: installing, setting up, getting a file back, search, a new computer, warnings |
 | 20 | [stage-20-the-website.md](stages/stage-20-the-website.md) | backtrack.tools: home, install, guides and changelog, built with Zola from the release tag |
+| 21 | [stage-21-telling-people-about-backtrack.md](stages/stage-21-telling-people-about-backtrack.md) | New screenshots for the FriendlyHub listing and the README, and ideas for blog posts |
 
 ## Reference documents (in `reference/`)
 

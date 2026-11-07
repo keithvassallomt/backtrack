@@ -248,6 +248,10 @@
 - [ ] S20-T11 Preferences opens the guides on backtrack.tools
 - [ ] S20-T12 The website goes live with the release
 
+## Stage 21 — Telling people about Backtrack ([stage file](stages/stage-21-telling-people-about-backtrack.md))
+- [ ] S21-T1 New screenshots for the FriendlyHub listing and the README
+- [ ] S21-T2 Ideas for blog posts about Backtrack
+
 ## Blocked
 
 - **S19-T3:** a script cannot take a screenshot on the GNOME VM. `virsh
