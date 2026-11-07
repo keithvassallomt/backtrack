@@ -384,7 +384,7 @@ Opened from outside the window, Rewind leaves an open window as it was. The
 header bar button gets an icon of its own: Keith's design (a window with a
 folder, a window behind, the timeline's ticks), snapped to the 16 px grid.
 
-**Built** (2026-11-07, in progress):
+**Built** (2026-11-07):
 - `backtrack-gtk --rewind`, with `--path` and `--select` as the window takes
   them, and the application action `rewind` (folder, file), which the
   Flatpak's tray uses; with neither, where the window would open (the home
@@ -421,6 +421,23 @@ folder, a window behind, the timeline's ticks), snapped to the 16 px grid.
   documentation says where to set it.
 - `docs/rewind.md`, for people using Backtrack, linked from the README;
   `docs/file-manager-integration.md` lists the new items.
+
+**Checked by Keith** (2026-11-07, `scripts/rewind-check` 13 to 16): every
+way in, on the GNOME VM (Fedora 45, Nautilus) and the Plasma VM (Fedora 45,
+Plasma 6.7, Dolphin 26.08), each with the development build and with this
+branch's Flatpak (its own Nautilus and Dolphin copies installed from
+Preferences): the window's button, menu item and shortcut; the file
+managers' items on a file, a folder and the folder shown, at the right
+folder with the right file selected; a second way in while Rewind is open;
+the window left as it was; the launcher's action; the tray's item on
+Plasma; a keyboard shortcut given to Rewind This Folder… in Dolphin. A
+restore from the file manager with a conflict on each: undone from the
+notification's button (the GNOME Flatpak), and on Plasma by clicking the
+notification, which opened the window with Undo in its banner. On the GNOME
+VM, `app.undo-restore` and `app.show-restore` were also called over D-Bus as
+the notification calls them, after restores from the command line: three
+restores put back, and the window opened at the file restored with Undo
+offered for it.
 
 **Accept:** each way in tried on both VMs, native and Flatpak, opening at the
 right folder, with the right file selected where one was clicked; on a VM, a

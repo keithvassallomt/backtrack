@@ -199,7 +199,7 @@ Nothing right now.
 - [x] S18-T4 The full-screen view's front window
 - [x] S18-T5 The full-screen view's timeline
 - [x] S18-T6 Restore and Cancel in the full-screen view
-- [/] S18-T7 Ways into the full-screen view
+- [x] S18-T7 Ways into the full-screen view
 - [ ] S18-T8 The full-screen view's accessibility
 - [x] S18-T9 Brief badges in the main window
 - [x] S18-T10 A backup held up by the battery or the network says so
