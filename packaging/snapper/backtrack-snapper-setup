@@ -187,7 +187,7 @@ set_up() {
     if [[ $mode == run ]]; then
         say ""
         say "Done. Snapper takes a snapshot of $SUBVOLUME every five minutes, and Backtrack"
-        say "shows them in its timeline, badged \"Snapper snapshot\". Run this again to undo it."
+        say "shows them in its timeline, badged \"Snapper\". Run this again to undo it."
     fi
 }
 

@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- SPDX-License-Identifier: GPL-3.0-or-later -->
+<!-- SPDX-FileCopyrightText: 2026 Keith Vassallo <keith@vassallo.cloud> -->
+<!-- Built into the window's binary (build.rs), so its own icons show in every -->
+<!-- build: GtkApplication looks for icons under the resource base path its -->
+<!-- application ID gives, /tools/backtrack/Backtrack/icons. The files are the -->
+<!-- ones the packages install, from packaging/icons. -->
+<gresources>
+  <gresource prefix="/tools/backtrack/Backtrack/icons/scalable/actions">
+    <file>tools.backtrack.Backtrack-rewind-symbolic.svg</file>
+  </gresource>
+</gresources>

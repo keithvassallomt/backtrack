@@ -18,7 +18,7 @@ Nothing right now.
 > tasks: add them here + to the stage file, then `just provision-board-apply`.
 > See [../CLAUDE.md](../CLAUDE.md) for the full workflow.
 
-**Current stage:** 17 (complete)
+**Current stage:** 18
 **Last updated:** 2026-10-27
 
 ## Stage 0 — Bootstrap ([stage file](stages/stage-00-bootstrap.md))
@@ -193,14 +193,28 @@ Nothing right now.
 - [x] S17-T9 Giving up a listing or a preview part way leaves no lock behind
 
 ## Stage 18 — The full-screen time view ([stage file](stages/stage-18-full-screen-time-view.md))
-- [ ] S18-T1 Mockups of the full-screen view, to choose a design
-- [ ] S18-T2 The desktop's wallpaper as the view's background
-- [ ] S18-T3 The full-screen view and its stack
-- [ ] S18-T4 The full-screen view's front window
-- [ ] S18-T5 The full-screen view's timeline
-- [ ] S18-T6 Restore and Cancel in the full-screen view
-- [ ] S18-T7 Ways into the full-screen view
-- [ ] S18-T8 The full-screen view's accessibility
+- [x] S18-T1 Mockups of the full-screen view, to choose a design
+- [x] S18-T2 The desktop's wallpaper as the view's background
+- [x] S18-T3 The full-screen view and its stack
+- [x] S18-T4 The full-screen view's front window
+- [x] S18-T5 The full-screen view's timeline
+- [x] S18-T6 Restore and Cancel in the full-screen view
+- [x] S18-T7 Ways into the full-screen view
+- [x] S18-T8 The full-screen view's accessibility
+- [x] S18-T9 Brief badges in the main window
+- [x] S18-T10 A backup held up by the battery or the network says so
+- [x] S18-T11 Hidden files are hidden, as file managers hide them
+- [x] S18-T12 The window and Rewind open quickly on a large catalogue
+- [x] S18-T13 An upgrade restarts the running tray and service
+- [x] S18-T14 On battery, a backup that has waited long enough runs anyway
+- [x] S18-T15 Investigate: the wallpaper on Hyprland and other desktops
+- [x] S18-T16 Container storage is left out of backups by default
+- [x] S18-T17 Investigate: the service's memory use during a backup
+- [x] S18-T18 Rewind shows the wallpaper of Hyprland's shells and wallpaper programs
+- [x] S18-T19 Rewind shows the wallpaper of COSMIC, Xfce, Cinnamon and MATE
+- [x] S18-T20 Rewind shows Sway's wallpaper
+- [x] S18-T21 Cataloguing a backup holds less memory
+- [x] S18-T22 A backup made by hand keeps the one before it
 
 ## Blocked
 

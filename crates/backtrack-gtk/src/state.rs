@@ -45,6 +45,8 @@ pub enum Change {
     /// What the desktop's Trash holds changed, so a Trash entry being shown
     /// may show something else (Stage 16).
     Trash,
+    /// Hidden files are now shown, or no longer (S18-T11).
+    Hidden,
 }
 
 /// The entry the file pane has selected, if any.
@@ -95,6 +97,8 @@ pub struct View {
     pub generation: u64,
     /// Every backup is listed, whatever the listing says (Show All Backups).
     pub show_all: bool,
+    /// Hidden files are shown (Show Hidden Files, S18-T11).
+    pub show_hidden: bool,
     /// What the desktop's Trash holds from the backed-up folders, as the
     /// daemon lists it (Stage 16).
     pub trash: Rc<Vec<TrashedItem>>,
@@ -390,6 +394,18 @@ impl AppState {
         self.view.borrow().clone()
     }
 
+    /// A state of its own that starts as this one is, with the listings
+    /// already known: Rewind's (S18-T4), which moves through folders and
+    /// backups without moving the window, and gives the window back its
+    /// folder and selection when it is left. Nobody is subscribed to it yet.
+    pub fn fork(&self) -> Rc<AppState> {
+        Rc::new(AppState {
+            view: RefCell::new(self.view()),
+            subscribers: RefCell::new(Vec::new()),
+            listings: RefCell::new(self.listings.borrow().clone()),
+        })
+    }
+
     /// Watch for changes. There is no unsubscribe: every subscriber is a pane
     /// of the one window and lives exactly as long as the state does.
     pub fn subscribe(&self, on_change: impl Fn(&View, Change) + 'static) {
@@ -577,6 +593,15 @@ impl AppState {
         }
         self.view.borrow_mut().selected = selected;
         self.announce(Change::Selection);
+    }
+
+    /// Show hidden files, or stop showing them.
+    pub fn set_show_hidden(&self, on: bool) {
+        if self.view.borrow().show_hidden == on {
+            return;
+        }
+        self.view.borrow_mut().show_hidden = on;
+        self.announce(Change::Hidden);
     }
 
     /// Say that what is on this computer changed under the folder being
@@ -768,6 +793,26 @@ mod tests {
         assert!(state.view().selected.is_some(), "the selection is kept");
     }
 
+    #[test]
+    fn showing_hidden_files_is_announced_once_and_keeps_the_place() {
+        let state = AppState::new("home".into());
+        let seen = Rc::new(RefCell::new(Vec::new()));
+        let changes = Rc::clone(&seen);
+        state.subscribe(move |_, change| changes.borrow_mut().push(change));
+        assert!(!state.view().show_hidden, "hidden by default");
+        state.set_show_hidden(true);
+        state.set_show_hidden(true);
+        assert_eq!(
+            *seen.borrow(),
+            [Change::Hidden],
+            "the same again says nothing"
+        );
+        assert!(state.view().show_hidden);
+        state.set_show_hidden(false);
+        assert_eq!(*seen.borrow(), [Change::Hidden, Change::Hidden]);
+        assert_eq!(state.view().folder, "home");
+    }
+
     /// Nine backups, seq 9 the newest, with "home/Docs" listing only 9 and 4:
     /// Stage 15's worked example.
     fn docs_listing_9_and_4() -> Rc<AppState> {
@@ -874,6 +919,38 @@ mod tests {
             view.listed
         );
         assert!(view.listing_is_current());
+    }
+
+    #[test]
+    fn a_fork_moves_on_its_own_with_the_listings_known() {
+        let window = AppState::new("home".to_string());
+        window.set_catalogue(archives(&[3, 2, 1]), "home", vec![3, 2, 1]);
+        window.set_folder("home/Docs");
+        window.set_listing("home/Docs", window.view().generation, vec![3]);
+        window.set_folder("home");
+        window.set_seq(2);
+        let heard = Rc::new(Cell::new(0));
+        let counter = Rc::clone(&heard);
+        window.subscribe(move |_, _| counter.set(counter.get() + 1));
+
+        let rewind = window.fork();
+        assert_eq!(rewind.view().seq, Some(2));
+        rewind.set_seq(1);
+        rewind.set_folder("home/Docs");
+        assert!(
+            rewind.view().listing_is_current(),
+            "the window's listing of home/Docs came with it"
+        );
+        assert_eq!(
+            rewind.view().seq,
+            Some(3),
+            "landing on what home/Docs lists"
+        );
+        assert_eq!(heard.get(), 0, "the window heard nothing");
+        assert_eq!(
+            (window.view().folder, window.view().seq),
+            ("home".to_string(), Some(2))
+        );
     }
 
     #[test]

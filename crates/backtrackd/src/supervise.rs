@@ -34,6 +34,9 @@ const CLEAN_SIGNALS: [i32; 4] = [1, 2, 13, 15];
 pub enum Next {
     Restart,
     Stop,
+    /// Start the newest installed version in a sandbox of its own, and stop
+    /// (S18-T13).
+    Upgrade,
 }
 
 /// `Restart=on-failure`: start it again after a non-zero exit or death by a
@@ -45,6 +48,11 @@ pub fn after(status: ExitStatus) -> Next {
     // autostart starts one in a new sandbox instead.
     if status.success() || status.code() == Some(i32::from(crate::daemon::BUS_LOST)) {
         return Next::Stop;
+    }
+    // A newer version has been installed. Started again here, the daemon
+    // would be the old one: this sandbox's `/app` does not change.
+    if status.code() == Some(i32::from(crate::daemon::UPGRADED)) {
+        return Next::Upgrade;
     }
     match status.signal() {
         Some(signal) if CLEAN_SIGNALS.contains(&signal) => Next::Stop,
@@ -93,6 +101,21 @@ pub async fn run() -> ExitCode {
             Next::Stop => {
                 info!(%status, "the daemon stopped, and so does its supervisor");
                 return ExitCode::SUCCESS;
+            }
+            Next::Upgrade => {
+                match backtrack_core::upgrade::start_latest(&daemon, &["--supervise"]).await {
+                    Ok(pid) => {
+                        info!(
+                            pid,
+                            "the new version of the daemon is starting; its supervisor leaves"
+                        );
+                        return ExitCode::SUCCESS;
+                    }
+                    // The old version, rather than none.
+                    Err(error) => {
+                        warn!(%error, "the new version could not be started; starting this one again");
+                    }
+                }
             }
             Next::Restart => {
                 warn!(%status, delay = ?RESTART_DELAY, "the daemon failed; starting it again");
@@ -148,6 +171,14 @@ mod tests {
         assert_eq!(
             after(exited(i32::from(crate::daemon::BUS_LOST))),
             Next::Stop
+        );
+    }
+
+    #[test]
+    fn an_upgraded_daemon_is_started_as_the_new_version() {
+        assert_eq!(
+            after(exited(i32::from(crate::daemon::UPGRADED))),
+            Next::Upgrade
         );
     }
 

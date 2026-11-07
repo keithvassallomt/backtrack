@@ -184,6 +184,7 @@ fn schedule_expander(wizard: &Rc<Wizard>) -> adw::ExpanderRow {
         &schedule::Values {
             frequency: choices.frequency,
             on_battery: choices.on_battery,
+            on_battery_after: choices.on_battery_after,
             on_metered: choices.on_metered,
             retention: choices.retention,
         },
@@ -194,6 +195,7 @@ fn schedule_expander(wizard: &Rc<Wizard>) -> adw::ExpanderRow {
                 let mut choices = wizard.choices.borrow_mut();
                 choices.frequency = values.frequency;
                 choices.on_battery = values.on_battery;
+                choices.on_battery_after = values.on_battery_after;
                 choices.on_metered = values.on_metered;
                 choices.retention = values.retention;
                 drop(choices);

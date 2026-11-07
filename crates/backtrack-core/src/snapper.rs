@@ -26,6 +26,7 @@ use tracing::debug;
 
 use crate::btrfs;
 use crate::index::parse_borg_mtime;
+use crate::xml::{children, element, unescape};
 
 /// The folder at the top of a subvolume holding Snapper's snapshots of it.
 pub const FOLDER: &str = ".snapshots";
@@ -244,7 +245,7 @@ struct Info {
 /// None when `<num>`, `<type>` or `<date>` is missing or unreadable.
 fn parse_info(text: &str) -> Option<Info> {
     let body = element(text, "snapshot")?;
-    let field = |name: &str| children(body).find(|(n, _)| *n == name).map(|(_, v)| v);
+    let field = |name: &str| children(body).find(|e| e.name == name).map(|e| e.body);
     let number = unescape(field("num")?)?.trim().parse().ok()?;
     let kind = match unescape(field("type")?)?.trim() {
         "single" => Type::Single,
@@ -266,76 +267,6 @@ fn parse_info(text: &str) -> Option<Info> {
         date,
         description,
     })
-}
-
-/// What is between `<name>` and `</name>`, the first such element in `text`.
-fn element<'a>(text: &'a str, name: &str) -> Option<&'a str> {
-    let open = format!("<{name}>");
-    let start = text.find(&open)? + open.len();
-    let end = start + text[start..].find(&format!("</{name}>"))?;
-    Some(&text[start..end])
-}
-
-/// The elements directly inside `body`, as names and their unescaped-to-be
-/// contents; an element written `<name/>` has none. Anything that is not an
-/// element (the whitespace between them, a comment) is passed over.
-fn children(body: &str) -> impl Iterator<Item = (&str, &str)> {
-    let mut rest = body;
-    std::iter::from_fn(move || loop {
-        let open = rest.find('<')?;
-        rest = &rest[open + 1..];
-        if let Some(after) = rest.strip_prefix("!--") {
-            rest = &after[after.find("-->")? + 3..];
-            continue;
-        }
-        let tag_end = rest.find('>')?;
-        let tag = &rest[..tag_end];
-        rest = &rest[tag_end + 1..];
-        if let Some(name) = tag.strip_suffix('/') {
-            return Some((name.trim(), ""));
-        }
-        if tag.starts_with(['/', '?', '!']) {
-            continue;
-        }
-        let name = tag.split_whitespace().next()?;
-        let close = format!("</{name}>");
-        let end = rest.find(&close)?;
-        let value = &rest[..end];
-        rest = &rest[end + close.len()..];
-        return Some((name, value));
-    })
-}
-
-/// XML's escapes undone: the five named ones and character references, which
-/// libxml2 writes for every character outside ASCII when, as here, the file
-/// names no encoding. None for any other `&`.
-fn unescape(text: &str) -> Option<String> {
-    let mut out = String::with_capacity(text.len());
-    let mut rest = text;
-    while let Some(at) = rest.find('&') {
-        out.push_str(&rest[..at]);
-        rest = &rest[at + 1..];
-        let end = rest.find(';')?;
-        let entity = &rest[..end];
-        rest = &rest[end + 1..];
-        let c = match entity {
-            "lt" => '<',
-            "gt" => '>',
-            "amp" => '&',
-            "quot" => '"',
-            "apos" => '\'',
-            _ => {
-                let code = match entity.strip_prefix("#x") {
-                    Some(hex) => u32::from_str_radix(hex, 16).ok()?,
-                    None => entity.strip_prefix('#')?.parse().ok()?,
-                };
-                char::from_u32(code)?
-            }
-        };
-        out.push(c);
-    }
-    out.push_str(rest);
-    Some(out)
 }
 
 #[cfg(test)]

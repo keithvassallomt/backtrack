@@ -5,7 +5,9 @@
 # is how the desktop matches a running window or a background app to it:
 # GNOME's quick settings look a background app up as `<app ID>.desktop` and
 # launch this to open it. Packages install it to /usr/share/applications
-# (Stage 13).
+# (Stage 13). Its one action, Rewind, is what GNOME's dock and Plasma's task
+# manager offer on a right-click (S18-T7); the Flatpak's export rewrites its
+# Exec as it does the entry's own.
 [Desktop Entry]
 Type=Application
 Name=Backtrack
@@ -16,3 +18,9 @@ Terminal=false
 Categories=Utility;Archiving;
 Keywords=backup;restore;history;snapshot;borg;
 StartupNotify=true
+Actions=rewind;
+
+[Desktop Action rewind]
+Name=Rewind
+Icon=tools.backtrack.Backtrack-rewind-symbolic
+Exec=backtrack-gtk --rewind

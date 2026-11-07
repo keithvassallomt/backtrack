@@ -37,8 +37,13 @@ just check    # fmt, clippy, and tests — the full quality gate
 
 ## Documentation
 
-For people using Backtrack: [getting things back from the Trash](docs/trash.md),
-and [snapshots between backups, with Snapper](docs/snapper.md), on btrfs.
+For people using Backtrack: [Rewind](docs/rewind.md), the full-screen way back
+through a folder's history, opened from Backtrack's window, from the file
+manager's right-click menu (**Rewind This File…**, **Rewind This Folder…**),
+from the launcher and from the tray; [getting things back from the
+Trash](docs/trash.md); and [snapshots between backups, with
+Snapper](docs/snapper.md), on btrfs. How the file managers' items are
+installed: [file-manager integration](docs/file-manager-integration.md).
 
 The full implementation plan, architecture, and design docs live in
 [`backtrack_plan/`](backtrack_plan/README.md). Start with the

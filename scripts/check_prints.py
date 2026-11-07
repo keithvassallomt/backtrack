@@ -32,6 +32,17 @@ FILE_CFG_TEST = re.compile(r"#!\[cfg\((all\()?test\b")
 # Crates whose job is to write to a terminal.
 EXEMPT_CRATES = {"backtrack-cli"}
 
+# Single files elsewhere whose job is the same: a command run from a terminal,
+# whose output is what it is for.
+EXEMPT_FILES = {
+    # `backtrack-gtk --wallpaper-report` (S18-T2), which says how finding and
+    # drawing the desktop's wallpaper went, for checking a desktop by hand.
+    "crates/backtrack-gtk/src/wallpaper/report.rs",
+    "crates/backtrack-core/examples/ingest_memory.rs",
+    # A build script talks to Cargo through its standard output.
+    "crates/backtrack-gtk/build.rs",
+}
+
 
 def offending_lines(text: str) -> list[tuple[int, str]]:
     """Lines using a print macro outside `#[cfg(test)]` code."""
@@ -79,6 +90,8 @@ def main() -> int:
 
     for path in sorted((root / "crates").rglob("*.rs")):
         if any(part in EXEMPT_CRATES for part in path.parts):
+            continue
+        if path.relative_to(root).as_posix() in EXEMPT_FILES:
             continue
         checked += 1
         for number, line in offending_lines(path.read_text(encoding="utf-8")):

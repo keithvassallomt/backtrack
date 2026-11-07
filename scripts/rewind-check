@@ -1,0 +1,823 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-3.0-or-later
+# SPDX-FileCopyrightText: 2026 Keith Vassallo <keith@vassallo.cloud>
+#
+# Stage 18's checks on this computer, by hand: whether Rewind's motion looks
+# smooth on real hardware, which no virtual machine can say, and its
+# crossfade with animations off (S18-T3); a backup held up on battery saying
+# so (S18-T10); hidden files, and a quick opening on a large catalogue (S18-T11
+# and T12); a backup on battery that has waited long enough running anyway
+# (S18-T14); the tray and the service restarting after an upgrade (S18-T13);
+# the wallpaper on each desktop's VM (S18-T2, T19, T20); Rewind's window in
+# front (S18-T4).
+# Each step says what to do at the screen.
+#
+#   scripts/rewind-check install   build the AUR packages here and say how to
+#                                  install them
+#   scripts/rewind-check 1         the motion, through a real folder's backups
+#   scripts/rewind-check 2         with animations off: a crossfade instead;
+#                                  puts animations back on afterwards
+#   scripts/rewind-check 3         on battery: why no backup runs (S18-T10)
+#   scripts/rewind-check 4         hidden files, and how fast it all opens
+#                                  (S18-T11 and T12)
+#   scripts/rewind-check 5         on battery: how long a backup waits
+#                                  (S18-T14)
+#   scripts/rewind-check 6         an upgrade restarts the tray and the
+#                                  service by themselves (S18-T13)
+#   scripts/rewind-check 7         on the GNOME VM: Rewind over GNOME's,
+#                                  Cinnamon's and Xfce's wallpaper, natively
+#                                  and in the Flatpak (S18-T2, T19)
+#   scripts/rewind-check 8         the same on the Plasma VM
+#   scripts/rewind-check 9         on the GNOME VM's Sway: the wallpaper its
+#                                  config names, natively and in the Flatpak
+#                                  (S18-T20)
+#   scripts/rewind-check 9 change  give Sway on the VM a wallpaper of its own
+#   scripts/rewind-check 9 done    take it away, and log the VM in to GNOME
+#   scripts/rewind-check 10        on the GNOME VM: Rewind's window in front,
+#                                  its pictures, walking into folders, and
+#                                  leaving where it was (S18-T4)
+#   scripts/rewind-check 10 setup  back up a folder of pictures there for it:
+#                                  two backups, changed in between and since,
+#                                  with the VM's schedule paused for two days
+#   scripts/rewind-check 11        on the GNOME VM: Rewind's timeline, its
+#                                  labels, marks and magnification, and the
+#                                  step arrows (S18-T5)
+#   scripts/rewind-check 11 setup  move a file never backed up to the Trash
+#                                  there, for a marked tick
+#   scripts/rewind-check 12        on the GNOME VM: Restore and Cancel in
+#                                  Rewind, a conflict, then Undo (S18-T6)
+#   scripts/rewind-check 13        on the GNOME VM, the development build:
+#                                  every way into Rewind there (S18-T7)
+#   scripts/rewind-check 13 setup  a launcher for the development build, and
+#                                  Nautilus restarted onto its extension
+#   scripts/rewind-check 13 done   take the launcher away again
+#   scripts/rewind-check 14        on the GNOME VM, the Flatpak: every way
+#                                  into Rewind there (S18-T7)
+#   scripts/rewind-check 14 setup  install this checkout's Flatpak build
+#                                  there, take the development Nautilus
+#                                  extension out, and give the Flatpak a
+#                                  file to restore over
+#   scripts/rewind-check 14 done   put the development extension back
+#   scripts/rewind-check 15        on the Plasma VM, the development build:
+#                                  every way into Rewind there (S18-T7)
+#   scripts/rewind-check 15 setup  a launcher for the development build, its
+#                                  tray icon alone, and a folder to restore in
+#   scripts/rewind-check 15 done   take the launcher away again
+#   scripts/rewind-check 16        on the Plasma VM, the Flatpak (S18-T7)
+#   scripts/rewind-check 16 setup  install this checkout's Flatpak build
+#                                  there, its tray icon alone, the development
+#                                  Dolphin menus out, a file to restore over
+#   scripts/rewind-check 16 done   the development build's menus and tray back
+#   scripts/rewind-check 17        on the GNOME VM, with Orca: what Rewind
+#                                  says, a restore by keyboard alone, and
+#                                  high contrast (S18-T8)
+#
+# Run from the checkout.
+
+set -euo pipefail
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+
+say() { printf '\n\033[1m%s\033[0m\n' "$*"; }
+
+case "${1:-}" in
+install)
+    say "Building the AUR packages from this checkout…"
+    just --justfile "$ROOT/Justfile" aur-build >/dev/null
+    package="$(ls "$ROOT"/target/aur/backtrack-[0-9]*-x86_64.pkg.tar.zst)"
+    cat <<EOF
+Built. Install it, and restart the daemon so it runs the same build:
+
+  sudo pacman -U $package
+  systemctl --user restart backtrackd.service
+
+Then close Backtrack's window if it is open, and run: scripts/rewind-check 1
+EOF
+    ;;
+1)
+    say "1. Rewind's motion (S18-T3)"
+    cat <<'EOF'
+  a. Open Backtrack, and go to a folder with many backups (Documents, say).
+  b. Press Ctrl+T. Rewind opens full screen over the starfield: Backtrack
+     does not read Hyprland's wallpaper yet (S18-T15), so the stars are its
+     own.
+  c. Press Up a few times, one at a time: each step goes back one backup,
+     slow, fast, then slow. Then Down to come forward again.
+  d. Hold Up for three seconds: the stack glides back through the backups
+     without stopping at each one, and settles on one when you let go.
+  e. Home goes to the folder as it is now; End to the oldest backup.
+  f. The mouse wheel steps too.
+  g. Escape: back to Backtrack's window, at the backup it showed.
+
+What I would like to know: does the motion look smooth to you, stepping
+and gliding? Anything that stutters, or the stack drawn wrongly anywhere?
+EOF
+    ;;
+2)
+    say "2. With animations off (S18-T3)"
+    gsettings set org.gnome.desktop.interface enable-animations false
+    cat <<'EOF'
+Animations are now off for GTK applications.
+
+  a. In Backtrack's window, press Ctrl+T.
+  b. Press Up, then Down: the backups crossfade in place, with no flight.
+  c. Escape.
+
+Press Enter here when done, and animations go back on.
+EOF
+    read -r _
+    gsettings reset org.gnome.desktop.interface enable-animations
+    echo "Animations are on again ($(gsettings get org.gnome.desktop.interface enable-animations))."
+    ;;
+3)
+    say "3. A backup held up on battery says so (S18-T10)"
+    if [[ "$(cat /sys/class/power_supply/A*/online 2>/dev/null | head -n 1)" == 1 ]]; then
+        echo "Unplug the charger first: this is about running on battery."
+    fi
+    echo "What backtrack status says now:"
+    echo
+    backtrack status | sed 's/^/    /'
+    cat <<'EOF'
+
+  With backups on battery off (the default), once a backup is due it should
+  say "Next backup   waiting for mains power", where it said "due now"
+  before, and name the setting.
+
+  a. Open Backtrack: the line at the bottom of the window ends "· waiting for
+     charger".
+  b. The tray's first line says "Last: 1h ago. Waiting for charger." (with
+     the hours since your last backup).
+  c. Plug the charger in: within a couple of minutes a backup runs, and the
+     waiting is no longer mentioned.
+EOF
+    ;;
+4)
+    say "4. Hidden files, and how fast it opens (S18-T11 and T12)"
+    cat <<'EOF'
+  a. Open Backtrack at your home folder. It should show its contents at once,
+     where it took about seven seconds before, and no dotfiles.
+  b. Ctrl+H shows the hidden files; Ctrl+H again hides them. Show Hidden
+     Files in the main menu is the same switch.
+  c. Ctrl+Shift+H is Show All Backups now (it was Ctrl+H).
+  d. Ctrl+T for Rewind at your home folder: its cards fill at once (five
+     seconds before), with no dotfiles; Ctrl+H there shows them, and the
+     window's switch moves with it.
+EOF
+    ;;
+5)
+    say "5. On battery, a backup that has waited long enough runs anyway (S18-T14)"
+    cat <<'EOF'
+  a. In Preferences, Backup page: under Back up on battery power (off) is
+     "Wait for mains power", set to "Up to 3 hours". Turn Back up on battery
+     power on: that row goes. Turn it off again: it is back.
+  b. Unplug the charger, and wait until a backup is due (backtrack status
+     says when). Then:
+     - the window's bottom line ends "· waiting for charger until HH:MM",
+       three hours after the last backup;
+     - backtrack status says "Next backup   waiting for mains power until
+       <that time> (in …), then backs up on battery anyway
+       (backup.on_battery_after)";
+     - the tray says "Last: 1h ago. Waiting for charger."
+  c. In Preferences, set Wait for mains power to "Up to 1 hour". Within about
+     two minutes a backup starts, on battery.
+  d. Set it back to "Up to 3 hours", and plug the charger in.
+EOF
+    ;;
+6)
+    say "6. An upgrade restarts the tray and the service (S18-T13)"
+    package="$(ls "$ROOT"/target/aur/backtrack-[0-9]*-x86_64.pkg.tar.zst)"
+    cat <<EOF
+  The tray and the service running now are from before this, so after the
+  first install below they are restarted by hand, for the last time.
+
+  a. Install it, and restart both:
+       sudo pacman -U $package
+       systemctl --user restart backtrackd.service
+       pkill -x backtrack-tray; setsid -f backtrack-tray >/dev/null 2>&1
+  b. Install the same package again (pacman says it is reinstalling):
+       sudo pacman -U $package
+     Within a minute, with no command: the tray icon goes and comes back, and
+       systemctl --user status backtrackd.service
+     says it has been running since after the install. Its log says why:
+       journalctl --user -u backtrackd.service --since -5min | grep -i upgraded
+  c. Back Up Now from the tray, and while it runs, install it a third time.
+     The service waits: the log says "restarts once its work is done", and
+     it restarts only after the backup has finished. The tray restarts at
+     once, and says "Backing up now…" (or the backup's progress) again.
+EOF
+    ;;
+7 | 8)
+    if [[ "$1" == 7 ]]; then
+        vm="fedora45 (GNOME)"
+        desktops="GNOME, then Cinnamon, then Xfce"
+    else
+        vm="fedora45 (KDE)"
+        desktops="Plasma"
+    fi
+    APP_ID=tools.backtrack.Backtrack
+    say "$1. Rewind over the desktop's wallpaper, on $vm"
+    cat <<EOF
+  For each desktop in turn: $desktops. To change desktop, log out, and on
+  the login screen choose it with the gear at the bottom right before
+  signing in.
+
+  a. Natively: from the laptop, run
+       just vm-app "$vm"
+     Backtrack opens on the VM's screen. Press Ctrl+T: Rewind opens full
+     screen over this desktop's wallpaper, darkened.
+  b. Press Up a few times, then hold it: the cards behind the front one stay
+     whole, and fill in by themselves after each step. Escape.
+  c. Change the wallpaper in the desktop's own settings, then Ctrl+T again:
+     the new wallpaper is behind the stack. Escape, and close Backtrack.
+  d. In the Flatpak: from the laptop, run
+       ssh "\$(scripts/vm address "$vm")" systemd-run --user flatpak run $APP_ID
+     Backtrack opens on the VM's screen again, this time the Flatpak. Press
+     Ctrl+T: the same wallpaper. Escape, and close it.
+
+  Tell me, for each desktop, any of a to d that did not happen.
+EOF
+    ;;
+9)
+    vm="fedora45 (GNOME)"
+    APP_ID=tools.backtrack.Backtrack
+    case "${2:-}" in
+    change)
+        # A wallpaper as a Sway user sets one: in a config of their own,
+        # here through an include and a variable, read after Fedora's.
+        ssh "$("$ROOT/scripts/vm" address "$vm")" 'set -e
+            mkdir -p ~/.config/sway/config.d
+            printf "%s\n" "# Written by scripts/rewind-check 9 (S18-T20)." \
+                "include /etc/sway/config" "include ~/.config/sway/config.d/*" \
+                > ~/.config/sway/config
+            printf "%s\n" "set \$wallpaper /usr/share/backgrounds/images/ladybugs.jpg" \
+                "output * bg \$wallpaper fill" > ~/.config/sway/config.d/wallpaper.conf
+            SWAYSOCK="$(systemctl --user show-environment | sed -n "s/^SWAYSOCK=//p")" \
+                swaymsg reload >/dev/null'
+        echo "Sway on the VM now shows the ladybugs, from ~/.config/sway/config."
+        ;;
+    done)
+        ssh "$("$ROOT/scripts/vm" address "$vm")" 'set -e
+            rm -rf ~/.config/sway
+            sudo busctl call org.freedesktop.Accounts /org/freedesktop/Accounts/User1000 \
+                org.freedesktop.Accounts.User SetSession s gnome
+            sudo systemctl restart gdm'
+        echo "The VM has Fedora's Sway config again, and is logged in to GNOME."
+        ;;
+    *)
+        say "9. Rewind over Sway's wallpaper, on $vm"
+        cat <<EOF
+  The VM is logged in to Sway: its blue wallpaper, and a bar at the bottom.
+
+  a. Natively: from the laptop, run
+       just vm-app "$vm"
+     Backtrack opens on the VM's screen, filling it. Press Ctrl+T: Rewind
+     opens over Sway's blue wallpaper, darkened. Escape.
+  b. From the laptop, run
+       scripts/rewind-check 9 change
+     The VM's wallpaper becomes ladybugs on leaves. Press Ctrl+T again: the
+     ladybugs are behind the stack. Escape, and close Backtrack with its
+     close button.
+  c. In the Flatpak: from the laptop, run
+       ssh "\$(scripts/vm address "$vm")" systemd-run --user flatpak run $APP_ID
+     Press Ctrl+T: the ladybugs again, which the Flatpak reads from Sway's
+     config. Escape, and close it.
+  d. From the laptop, run
+       scripts/rewind-check 9 done
+     The VM goes back to GNOME.
+
+  Tell me any of a to d that did not happen.
+EOF
+        ;;
+    esac
+    ;;
+10)
+    vm="fedora45 (GNOME)"
+    if [[ "${2:-}" == setup ]]; then
+        # ~/Pictures, backed up by the VM's development service: six files,
+        # then stone_bird.jpg replaced by another picture and
+        # tiny_blast_of_red.jpg deleted, backed up again, then ladybugs.jpg
+        # changed on the disk only. The schedule is paused first (a backup
+        # asked for still runs), so the two stay the newest: an hourly
+        # backup after them would hold the change made since. Both survive
+        # the prune that ends each backup, which keeps every backup from the
+        # last day (S18-T22); a build before that keeps only the latest in
+        # each hour.
+        ssh "$("$ROOT/scripts/vm" address "$vm")" 'set -e
+            cli() { BACKTRACK_DEV=1 "$HOME/backtrack/target/debug/backtrack" "$@"; }
+            settle() {
+                for _ in $(seq 1 45); do
+                    cli status | grep -qiE "backing up|cataloguing" || return 0
+                    sleep 4
+                done
+            }
+            cli pause 2d >/dev/null
+            rm -rf ~/Pictures && mkdir -p ~/Pictures
+            cp /usr/share/backgrounds/images/{earth_from_space,flowers_and_leaves,ladybugs,stone_bird,tiny_blast_of_red}.jpg ~/Pictures/
+            cp /usr/share/backgrounds/sway/Sway_Wallpaper_Blue_1920x1080.png ~/Pictures/sway-blue.png
+            echo "Shopping: milk, bread" > ~/Pictures/notes.txt
+            cli config set backup.include "[\"$HOME/.local/share/backtrack-dev/demo-src\", \"$HOME/Pictures\"]" >/dev/null
+            cli backup-now >/dev/null && sleep 2 && settle
+            cp ~/Pictures/ladybugs.jpg ~/Pictures/stone_bird.jpg
+            rm ~/Pictures/tiny_blast_of_red.jpg
+            cli backup-now >/dev/null && sleep 2 && settle
+            sleep 2
+            cp ~/Pictures/earth_from_space.jpg ~/Pictures/ladybugs.jpg'
+        echo "Pictures, in the VM's home folder, is backed up twice, and changed since."
+        echo "The VM's scheduled backups are paused for two days."
+        exit 0
+    fi
+    say "10. Rewind's window in front, on $vm (S18-T4)"
+    cat <<EOF
+  The two newest backups of ~/Pictures on the VM are the ones
+  scripts/rewind-check 10 setup made: between them, stone_bird.jpg was
+  replaced by the ladybugs picture and tiny_blast_of_red.jpg deleted; since
+  the second, ladybugs.jpg has been replaced by the earth picture, on the
+  disk only. Setup pauses the VM's schedule for two days so that no hourly
+  backup comes after them (the window says backups are paused). If the
+  VM's status shows a backup newer than setup's, run setup again first.
+
+  a. On the VM, open Files at Pictures, wait for its thumbnails, and close
+     it: the desktop's thumbnails are what Rewind shows first. Then, from
+     the laptop:
+       just vm-app "$vm" --select /home/keith/Pictures/stone_bird.jpg
+     Backtrack opens at Pictures with stone_bird.jpg selected.
+  b. Press Ctrl+T. Rewind opens at the newest backup, as icons, with
+     stone_bird.jpg selected, on the cards behind too. Real pictures for
+     earth_from_space, flowers_and_leaves, stone_bird (showing ladybugs) and
+     sway-blue; ladybugs.jpg shows ladybugs after a moment (made from the
+     backup, not the earth now on the disk); notes.txt, its icon. Every
+     cell is the same height.
+  c. Press Up: setup's first backup comes to the front.
+     tiny_blast_of_red.jpg is back, marked "deleted", and stone_bird.jpg is
+     marked "changed" and shows the stone bird; both pictures arrive a
+     moment after. Hover a badge: its tooltip says the rest. Press Home:
+     the folder as it is now, ladybugs.jpg showing the earth. Press End:
+     the oldest backup that holds Pictures comes to the front.
+  d. Press Left and Right: the selection moves among the icons. Up and Down
+     still step through time.
+  e. Click the list button, right of the date: the folder as the main
+     window's list, with its columns and badges. Click the icons button.
+  f. Press Alt+Up: Rewind goes up to your home folder, its backups listed
+     for it. Double-click Pictures (or press Enter on it): back in Pictures.
+     Click "Home" in the window's trail, then walk back in the same way.
+  g. Select flowers_and_leaves.jpg and press Escape. Backtrack's window shows
+     Pictures with flowers_and_leaves.jpg selected.
+
+  Tell me any of a to g that did not happen, or did and looked wrong.
+EOF
+    ;;
+11)
+    vm="fedora45 (GNOME)"
+    if [[ "${2:-}" == setup ]]; then
+        # A file made and moved to the Trash before any backup has it: the
+        # Trash's entry for it is listed for Pictures, after the newest
+        # backup (Stage 16).
+        ssh "$("$ROOT/scripts/vm" address "$vm")" 'set -e
+            echo "A draft, never backed up." > ~/Pictures/draft.txt
+            gio trash ~/Pictures/draft.txt'
+        echo "draft.txt, in Pictures on the VM, is in the Trash and in no backup."
+        exit 0
+    fi
+    say "11. Rewind's timeline, on $vm (S18-T5)"
+    cat <<EOF
+  scripts/rewind-check 11 setup has moved draft.txt, never backed up, from
+  ~/Pictures to the Trash on the VM. Close any Backtrack window open there
+  first: a new one would hand over to it.
+
+  a. From the laptop:
+       just vm-app "$vm" --select /home/keith/Pictures/stone_bird.jpg
+     then press Ctrl+T. Down the right-hand edge, a tick for each backup
+     listed for Pictures: the oldest at the top, "Today (Now)" at the
+     bottom, and "Yesterday" at yesterday's newest backup. The tick of the
+     backup in front is longer and blue, with a blue marker beside it. Just
+     above now's tick, a red one: the Trash's entry for draft.txt.
+  b. Move the pointer slowly up and down the ticks: those near it lengthen
+     and thicken, and labels near it grow, falling off over a few ticks
+     either side; a plain tick under the pointer turns white. Move away:
+     they settle back. Rest on a tick: it names its backup ("Today, 08:26";
+     the red one ends "· trashed").
+  c. Click a tick a few backups back: the stack flies to it, and the marker
+     travels with the stack, between the ticks. The lines under the stack
+     follow. Click "Today (Now)"'s tick to come back.
+  d. Press Up and Down, then turn the wheel with the pointer over the
+     timeline: the marker follows each step.
+  e. The two round arrows left of the timeline: the upper goes one backup
+     older, the lower one newer, and each changes colour under the pointer.
+     At now, the lower is greyed; press End, and at the oldest the upper is.
+  f. Press Escape, then from the laptop:
+       just vm-app "$vm" --path /home/keith/.local/share/backtrack-dev/demo-src
+     and press Ctrl+T. Rewind lists only the backups in which the folder
+     changed: demo-src last changed on 31 October, so its eight ticks are
+     now, today's newest backup, five in October and one in September, and
+     the labels read "Today (Now)", "October" (at 31 Oct) and "September".
+  g. In the VM's Settings, Appearance, choose Dark, and open Rewind again:
+     the arrows turn dark, and the timeline stays light on the wallpaper.
+     Choose Light again after.
+
+  Tell me any of a to g that did not happen, or did and looked wrong.
+EOF
+    ;;
+12)
+    vm="fedora45 (GNOME)"
+    say "12. Restore and Cancel in Rewind, on $vm (S18-T6)"
+    cat <<EOF
+  Uses step 10's backups of ~/Pictures on the VM. Close any Backtrack window
+  open there first: a new one would hand over to it.
+
+  a. From the laptop:
+       just vm-app "$vm" --select /home/keith/Pictures/stone_bird.jpg
+     then press Ctrl+T. Under the stack: Cancel, the date and "Backup n of
+     m", and Restore, in blue. Press Home: at "Today (Now)" Restore is
+     greyed. Press Up until stone_bird.jpg shows the stone bird, marked
+     "changed", with tiny_blast_of_red.jpg beside it, marked "deleted":
+     setup's first backup.
+  b. stone_bird.jpg selected, click Restore. Over Rewind, the dialog asking
+     whether to replace stone_bird.jpg, as the window asks. Choose Cancel:
+     Rewind stays, nothing changed.
+  c. Click Restore again and choose Replace. Rewind closes; the window shows
+     Pictures with stone_bird.jpg selected, and a bar under its header bar
+     says it was restored, with Undo. On the VM, Files shows stone_bird.jpg
+     as the stone bird.
+  d. Click Undo in the bar: it goes, a message says it was put back, and
+     stone_bird.jpg is the ladybugs again.
+  e. Ctrl+T, go back to the same backup, select tiny_blast_of_red.jpg and
+     press Enter: nothing is in its way, so it is restored without a
+     question; Rewind closes, and the bar offers Undo. Click Undo: it is
+     gone again.
+  f. Ctrl+T, go to the same backup, and press Alt+Up: Rewind is at your
+     home folder. Select Pictures and click Restore: over Rewind, the
+     summary of what restoring the folder would change. Cancel it: Rewind
+     stays. Press Enter: Pictures opens, as Enter on a folder does.
+  g. Click Cancel: Rewind closes, nothing changed. Ctrl+T again and press
+     Escape: the same.
+
+  Tell me any of a to g that did not happen, or did and looked wrong.
+EOF
+    ;;
+13)
+    vm="fedora45 (GNOME)"
+    launcher='$HOME/.local/share/applications/tools.backtrack.Backtrack.desktop'
+    case "${2:-}" in
+    setup)
+        # The development build's launcher, with its Rewind action, in place
+        # of the Flatpak's (the same application ID): the user's own
+        # applications folder comes first. Nautilus loads extensions when it
+        # starts.
+        ssh "$("$ROOT/scripts/vm" address "$vm")" "set -e
+            mkdir -p \$HOME/.local/share/applications
+            sed 's|^Exec=backtrack-gtk|Exec=env BACKTRACK_DEV=1 '\$HOME'/backtrack/target/debug/backtrack-gtk|' \
+                \$HOME/backtrack/packaging/desktop/tools.backtrack.Backtrack.desktop > $launcher
+            update-desktop-database \$HOME/.local/share/applications 2>/dev/null || true
+            nautilus -q 2>/dev/null || true"
+        # For step d, a version of stone_bird.jpg that differs from the one
+        # on the disk, in a backup made now: the stone bird, backed up, then
+        # the ladybugs copied over it again. Retention keeps every backup of
+        # the last day, so it stays for one.
+        ssh "$("$ROOT/scripts/vm" address "$vm")" 'set -e
+            cli() { BACKTRACK_DEV=1 "$HOME/backtrack/target/debug/backtrack" "$@"; }
+            settle() {
+                for _ in $(seq 1 45); do
+                    cli status | grep -qiE "backing up|cataloguing" || return 0
+                    sleep 4
+                done
+            }
+            settle
+            cp /usr/share/backgrounds/images/stone_bird.jpg ~/Pictures/stone_bird.jpg
+            cli backup-now >/dev/null && sleep 2 && settle
+            cp /usr/share/backgrounds/images/ladybugs.jpg ~/Pictures/stone_bird.jpg'
+        echo "The development build has a launcher on the VM, and Nautilus has quit."
+        echo "Pictures' newest backup has the stone bird as stone_bird.jpg; the disk, the ladybugs."
+        exit 0
+        ;;
+    done)
+        ssh "$("$ROOT/scripts/vm" address "$vm")" "rm -f $launcher
+            update-desktop-database \$HOME/.local/share/applications 2>/dev/null || true"
+        echo "The development launcher is gone; the Flatpak's shows again."
+        exit 0
+        ;;
+    esac
+    say "13. Every way into Rewind, on $vm, the development build (S18-T7)"
+    cat <<EOF
+  Run scripts/rewind-check 13 setup first, and close any Backtrack window
+  open on the VM. Rewind's button has its own icon: a window with a folder,
+  a window behind it, and the timeline's ticks.
+
+  a. Backtrack's window. From the laptop:
+       just vm-app "$vm" --path /home/keith/Pictures
+     In the header bar, left of the search button, the Rewind button: it
+     opens Rewind at Pictures, at the backup the window shows. Escape. The
+     main menu has "Rewind…" first, which does the same; Keyboard Shortcuts
+     lists "Rewind, the full-screen view" with Ctrl+T. Close the window.
+  b. Nautilus, a file. On the VM, open Files at Pictures and right-click
+     stone_bird.jpg: "Rewind This File…" after "Restore Previous Version…".
+     Choose it: Rewind opens at "Today (Now)" with stone_bird.jpg selected.
+     Press Escape: you are back in Files, and no Backtrack window is left
+     open.
+  c. Nautilus, the folder. Right-click the empty space: "Rewind This
+     Folder…" after "Browse Backups of This Folder…". Choose it: Rewind at
+     Pictures, nothing selected. Leave it open, switch to Files (Alt+Tab),
+     go to your home folder and right-click Pictures: "Rewind This Folder…"
+     is there too. Choose it: the same Rewind comes forward, not a second
+     one. Escape.
+  d. A restore from Files. Right-click stone_bird.jpg, "Rewind This File…",
+     then press Up until stone_bird.jpg shows the stone bird, marked
+     "changed". Click Restore and choose Replace. Rewind closes, back in
+     Files, which shows stone_bird.jpg as the stone bird, and a notification
+     says it was restored. Click the notification itself: Backtrack's window
+     opens at Pictures, stone_bird.jpg selected, with a bar under its header
+     bar offering Undo. Click Undo: stone_bird.jpg is the ladybugs again.
+  e. The window left alone. From the laptop:
+       just vm-app "$vm" --path /home/keith/.local/share/backtrack-dev/demo-src
+     Backtrack's window shows demo-src. In Files, right-click Pictures in
+     your home folder, "Rewind This Folder…": Rewind opens at Pictures.
+     Escape: Backtrack's window still shows demo-src. Close it.
+  f. The launcher. Open Activities and the app grid, right-click Backtrack:
+     "Rewind". Choose it: Rewind opens on your home folder, at now.
+     Escape.
+
+  Then: scripts/rewind-check 13 done. Tell me any of a to f that did not
+  happen, or did and looked wrong.
+EOF
+    ;;
+14)
+    vm="fedora45 (GNOME)"
+    case "${2:-}" in
+    setup)
+        # The Flatpak built by flatpak-builder --repo into target/flatpak/repo
+        # (never installed on the laptop), installed for the VM's user. The
+        # helper uninstalls before installing, which deletes the folder the
+        # service watches for upgrades (S18-T13), so the service is started
+        # again on the new build here.
+        BT_VM="$vm" "$ROOT/target/helpers/t13-flatpak.sh" send >/dev/null
+        BT_VM="$vm" "$ROOT/target/helpers/t13-flatpak.sh" install user
+        # The development build has the same application ID: one still
+        # running (after a restore it waits ten minutes for the
+        # notification's Undo) would take the Flatpak's launches.
+        ssh "$("$ROOT/scripts/vm" address "$vm")" 'for pid in $(pgrep -u "$USER" -f "^$HOME/backtrack/target/debug/backtrack-gtk"); do
+                kill "$pid"
+            done
+            flatpak kill tools.backtrack.Backtrack 2>/dev/null || true
+            sleep 2
+            systemctl --user stop t13-backtrackd 2>/dev/null || true
+            systemctl --user reset-failed t13-backtrackd 2>/dev/null || true
+            systemd-run --user --quiet --unit=t13-backtrackd \
+                flatpak run --command=backtrackd tools.backtrack.Backtrack --supervise
+            sleep 8'
+        # The Flatpak backs up ~/Smoke/Documents: a file there whose newest
+        # backup differs from the disk, for the restore in step d.
+        ssh "$("$ROOT/scripts/vm" address "$vm")" 'set -e
+            cli() { flatpak run --command=backtrack tools.backtrack.Backtrack "$@"; }
+            settle() {
+                for _ in $(seq 1 45); do
+                    cli status | grep -qiE "backing up|cataloguing" || return 0
+                    sleep 4
+                done
+            }
+            cd ~/backtrack && just uninstall-nautilus-dev >/dev/null
+            nautilus -q 2>/dev/null || true
+            settle
+            echo "The first draft, as backed up." > ~/Smoke/Documents/rewind-check.txt
+            cli backup-now >/dev/null && sleep 2 && settle
+            echo "The second draft, on the disk only." > ~/Smoke/Documents/rewind-check.txt
+            flatpak ps --columns=application,commit'
+        echo "The Flatpak is this checkout's; the development Nautilus extension is out."
+        exit 0
+        ;;
+    done)
+        ssh "$("$ROOT/scripts/vm" address "$vm")" 'cd ~/backtrack && just install-nautilus-dev >/dev/null
+            nautilus -q 2>/dev/null || true'
+        echo "The development Nautilus extension is back (the Flatpak's copy is replaced)."
+        exit 0
+        ;;
+    esac
+    say "14. Every way into Rewind, on $vm, the Flatpak (S18-T7)"
+    cat <<EOF
+  Run scripts/rewind-check 14 setup first; it closes the development build's
+  windows, which would take the Flatpak's launches (they share an
+  application ID). The Flatpak backs up ~/Smoke/Documents, where setup left
+  rewind-check.txt: its newest backup has the first draft, the disk the
+  second.
+
+  a. Backtrack's window. On the VM, open Backtrack from the app grid (the
+     Flatpak's). The Rewind button in the header bar, with its icon, opens
+     Rewind; Escape. "Rewind…" is first in the main menu. In Preferences,
+     General, install the GNOME Files integration (Install), then close
+     Backtrack and, in a terminal on the VM, run: nautilus -q
+  b. Nautilus. Open Files at Smoke/Documents. Right-click rewind-check.txt:
+     "Rewind This File…" opens Rewind at "Today (Now)" with it selected.
+     Escape: back in Files, no Backtrack window left. Right-click the empty
+     space: "Rewind This Folder…" opens Rewind at Documents. Escape.
+  c. A restore from Files. "Rewind This File…" on rewind-check.txt, press
+     Up to its newest backup, click Restore and choose Replace. Rewind
+     closes, back in Files; a notification says it was restored. Open
+     rewind-check.txt: the first draft. Click the notification itself:
+     Backtrack's window opens at Documents with rewind-check.txt selected,
+     and a bar under its header bar offers Undo. Click Undo: the file is the
+     second draft again.
+  d. The launcher. Right-click Backtrack in the app grid: "Rewind" opens
+     Rewind on the folders the Flatpak backs up. Escape.
+
+  Then: scripts/rewind-check 14 done. Tell me any of a to d that did not
+  happen, or did and looked wrong.
+EOF
+    ;;
+15)
+    vm="fedora45 (KDE)"
+    launcher='$HOME/.local/share/applications/tools.backtrack.Backtrack.desktop'
+    case "${2:-}" in
+    setup)
+        # The development build's launcher with its Rewind action, in place of
+        # the Flatpak's (the same application ID), and its tray icon alone:
+        # the Flatpak's looks the same. Then ~/Rewind-check, backed up by the
+        # development service with a draft whose backup differs from the disk.
+        ssh "$("$ROOT/scripts/vm" address "$vm")" "set -e
+            for pid in \$(pgrep -u \$USER -f '^/app/bin/backtrack-tray') \$(pgrep -u \$USER -f \"^\$HOME/backtrack/target/debug/backtrack-gtk\"); do
+                kill \$pid
+            done
+            mkdir -p \$HOME/.local/share/applications
+            sed 's|^Exec=backtrack-gtk|Exec=env BACKTRACK_DEV=1 '\$HOME'/backtrack/target/debug/backtrack-gtk|' \
+                \$HOME/backtrack/packaging/desktop/tools.backtrack.Backtrack.desktop > $launcher
+            kbuildsycoca6 >/dev/null 2>&1 || true"
+        ssh "$("$ROOT/scripts/vm" address "$vm")" 'set -e
+            cli() { BACKTRACK_DEV=1 "$HOME/backtrack/target/debug/backtrack" "$@"; }
+            settle() {
+                for _ in $(seq 1 45); do
+                    cli status | grep -qiE "backing up|cataloguing" || return 0
+                    sleep 4
+                done
+            }
+            mkdir -p ~/Rewind-check
+            picture=$(find /usr/share/wallpapers -name "*.png" | head -1)
+            cp "$picture" ~/Rewind-check/wallpaper.png
+            echo "The first draft, as backed up." > ~/Rewind-check/draft.txt
+            cli config set backup.include "[\"$HOME/.local/share/backtrack-dev/demo-src\", \"$HOME/Rewind-check\"]" >/dev/null
+            settle
+            cli backup-now >/dev/null && sleep 2 && settle
+            echo "The second draft, on the disk only." > ~/Rewind-check/draft.txt'
+        echo "The development build has a launcher and the only tray icon on the VM;"
+        echo "~/Rewind-check is backed up, and its draft.txt changed since."
+        exit 0
+        ;;
+    done)
+        ssh "$("$ROOT/scripts/vm" address "$vm")" "rm -f $launcher; kbuildsycoca6 >/dev/null 2>&1 || true"
+        echo "The development launcher is gone; the Flatpak's shows again."
+        exit 0
+        ;;
+    esac
+    say "15. Every way into Rewind, on $vm, the development build (S18-T7)"
+    cat <<EOF
+  Run scripts/rewind-check 15 setup first. It backs up ~/Rewind-check, with
+  draft.txt (backed up as the first draft, the second on the disk) and a
+  picture.
+
+  a. Backtrack's window. From the laptop:
+       just vm-app "$vm" --path /home/keith/Rewind-check
+     The Rewind button in the header bar, with its icon, opens Rewind;
+     Escape. "Rewind…" is first in the main menu. Close the window.
+  b. Dolphin, a file. Open Dolphin at ~/Rewind-check and right-click
+     draft.txt: the Backtrack submenu has "Restore Previous Version…" and
+     "Rewind This File…", with Rewind's icon. Choose it: Rewind opens at
+     "Today (Now)" with draft.txt selected. Escape: back in Dolphin, no
+     Backtrack window left.
+  c. Dolphin, the folder. Right-click the empty space: the submenu has
+     Restore, Browse and "Rewind This Folder…", in that order. Choose it:
+     Rewind at Rewind-check. Escape.
+  d. A shortcut. In Dolphin, Settings, Configure Keyboard Shortcuts: search
+     for Rewind. "Rewind This File…" and "Rewind This Folder…" are listed.
+     Give "Rewind This Folder…" Ctrl+Alt+R, and press it in Rewind-check:
+     Rewind opens there. Escape.
+  e. A restore from Dolphin. "Rewind This File…" on draft.txt, press Up to
+     its backup, click Restore and choose Replace. Rewind closes, back in
+     Dolphin; a notification says it was restored. Click the notification
+     itself: Backtrack's window opens at Rewind-check with draft.txt
+     selected, and a bar under its header bar offers Undo. Click Undo:
+     draft.txt is the second draft again. Close the window.
+  f. The tray. Click Backtrack's tray icon's menu: "Rewind…", beside "Open
+     Backtrack". Choose it: Rewind opens on your home folder. Escape.
+  g. The launcher. In the application launcher, right-click Backtrack:
+     "Rewind", with its icon. Choose it: Rewind opens on your home folder.
+     Escape.
+
+  Then: scripts/rewind-check 15 done. Tell me any of a to g that did not
+  happen, or did and looked wrong.
+EOF
+    ;;
+16)
+    vm="fedora45 (KDE)"
+    case "${2:-}" in
+    setup)
+        # This checkout's Flatpak, its service and tray icon started again on
+        # it (the helper's uninstall deletes the folder they watch for
+        # upgrades), the development build's windows and tray icon closed (the
+        # same application ID; the same icon), and the development Dolphin
+        # menus out, so the Flatpak's own are installed from Preferences.
+        BT_VM="$vm" "$ROOT/target/helpers/t13-flatpak.sh" send >/dev/null
+        BT_VM="$vm" "$ROOT/target/helpers/t13-flatpak.sh" install user
+        ssh "$("$ROOT/scripts/vm" address "$vm")" 'for pid in $(pgrep -u "$USER" -f "^$HOME/backtrack/target/debug/backtrack-(gtk|tray)"); do
+                kill "$pid"
+            done
+            flatpak kill tools.backtrack.Backtrack 2>/dev/null || true
+            sleep 2
+            for unit in t13-backtrackd t13-backtrack-tray; do
+                systemctl --user stop $unit 2>/dev/null || true
+                systemctl --user reset-failed $unit 2>/dev/null || true
+            done
+            systemd-run --user --quiet --unit=t13-backtrackd \
+                flatpak run --command=backtrackd tools.backtrack.Backtrack --supervise
+            systemd-run --user --quiet --unit=t13-backtrack-tray \
+                flatpak run --command=backtrack-tray tools.backtrack.Backtrack
+            sleep 8
+            cd ~/backtrack && just uninstall-dolphin-dev >/dev/null'
+        # The Flatpak backs up ~/Smoke/Documents: a file there whose newest
+        # backup differs from the disk.
+        ssh "$("$ROOT/scripts/vm" address "$vm")" 'set -e
+            cli() { flatpak run --command=backtrack tools.backtrack.Backtrack "$@"; }
+            settle() {
+                for _ in $(seq 1 45); do
+                    cli status | grep -qiE "backing up|cataloguing" || return 0
+                    sleep 4
+                done
+            }
+            settle
+            echo "The first draft, as backed up." > ~/Smoke/Documents/rewind-check.txt
+            cli backup-now >/dev/null && sleep 2 && settle
+            echo "The second draft, on the disk only." > ~/Smoke/Documents/rewind-check.txt
+            flatpak ps --columns=application,commit | sort -u'
+        echo "The Flatpak is this checkout's, with the only tray icon; the development"
+        echo "Dolphin menus are out."
+        exit 0
+        ;;
+    done)
+        # The development build's menus and tray icon, as vm push leaves them.
+        "$ROOT/scripts/vm" push "$vm" >/dev/null
+        echo "The development build's Dolphin menus and tray icon are back."
+        exit 0
+        ;;
+    esac
+    say "16. Every way into Rewind, on $vm, the Flatpak (S18-T7)"
+    cat <<EOF
+  Run scripts/rewind-check 15 done, then scripts/rewind-check 16 setup. The
+  Flatpak backs up ~/Smoke/Documents, where setup left rewind-check.txt: its
+  newest backup has the first draft, the disk the second.
+
+  a. Backtrack's window. Open Backtrack from the application launcher (the
+     Flatpak's). The Rewind button, with its icon, opens Rewind; Escape. In
+     Preferences, General, click Install beside Dolphin. Close Backtrack.
+  b. Dolphin. Open Dolphin at ~/Smoke/Documents. Right-click
+     rewind-check.txt: the Backtrack submenu has "Rewind This File…", with
+     Rewind's icon; it opens Rewind at "Today (Now)" with the file selected.
+     Escape. Right-click the empty space: "Rewind This Folder…" opens
+     Rewind at Documents. Escape.
+  c. A restore from Dolphin. "Rewind This File…" on rewind-check.txt, press
+     Up to its newest backup, click Restore and choose Replace. Rewind
+     closes; a notification says it was restored. Click the notification
+     itself: Backtrack's window opens at Documents with rewind-check.txt
+     selected, and a bar under its header bar offers Undo. Click Undo: the
+     file is the second draft again. Close the window.
+  d. The tray. The tray icon's menu has "Rewind…": it opens Rewind on the
+     folders the Flatpak backs up. Escape.
+  e. The launcher. In the application launcher, right-click Backtrack:
+     "Rewind", with its icon, opens Rewind. Escape.
+
+  Then: scripts/rewind-check 16 done. Tell me any of a to e that did not
+  happen, or did and looked wrong.
+EOF
+    ;;
+17)
+    vm="fedora45 (GNOME)"
+    say "17. Rewind with a screen reader and the keyboard alone, on $vm (S18-T8)"
+    cat <<EOF
+  Close any Backtrack window open on the VM.
+
+  a. On the VM, turn Orca on: Super+Alt+S. From the laptop:
+       just vm-app "$vm" --select /home/keith/Pictures/stone_bird.jpg
+     and press Ctrl+T. Orca says Rewind's window.
+  b. Press Up. Once the stack settles, Orca says the backup in front, as
+     the lines under the stack say it ("Thu 5 Nov 2026, 08:26. Backup 2 of
+     6"). Hold Up for a second: Orca says only the backup it stops at.
+     Press Home: "Today (Now). The folder as it is now".
+  c. Press Tab until Orca says "Backups", a list. Press Up and Down: Orca
+     reads each backup as the list's item, once each, and the stack steps.
+  d. The rest by Tab: the step arrows are "Older" and "Newer", the bar's
+     "Cancel" and "Restore", and in the window in front's title bar "Show
+     as icons" and "Show as a list". In the icons, Left and Right move
+     among them, and Orca reads each as its name and badge ("stone_bird.jpg,
+     changed").
+  e. A restore, keyboard alone. Step to a backup where stone_bird.jpg is
+     marked "changed", select it with Left and Right, and press Enter. In
+     the dialog, Tab to Replace and press Enter. Rewind closes; in the
+     window, Tab to the bar under the header bar and its Undo, and press
+     Enter: it is put back.
+  f. Turn Orca off: Super+Alt+S. In Settings, Accessibility, turn High
+     Contrast on, and open Rewind again: the timeline's ticks and labels
+     and the lines under the stack are solid white, the wallpaper darker.
+     Turn High Contrast off.
+
+  Tell me any of a to f that did not happen, or did and sounded or looked
+  wrong.
+EOF
+    ;;
+*)
+    sed -n '/^# Stage 18/,/^# Run from/p' "$0" | sed 's/^# \{0,1\}//'
+    exit 2
+    ;;
+esac

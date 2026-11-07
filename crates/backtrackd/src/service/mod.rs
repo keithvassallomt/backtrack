@@ -937,6 +937,29 @@ impl Shared {
         let configured = self.config().is_configured();
         let since = self.state_since(health, now);
         let recovery_job = self.recovery_job().unwrap_or(0);
+        // Learnt when a due backup is declined, so said only while one is due
+        // and none is running: a hold from yesterday is not a reason today.
+        let held_up = self
+            .last_skip
+            .lock()
+            .unwrap()
+            .as_ref()
+            .filter(|skip| matches!(skip, preflight::Skip::OnBattery | preflight::Skip::Metered))
+            .filter(|_| active_job == 0 && next.is_some_and(|due| due <= now))
+            .map_or("", preflight::Skip::as_str)
+            .to_owned();
+        // Held up on battery, the next backup is when the wait ends (S18-T14),
+        // if it does: on mains power it runs sooner.
+        let next = match next {
+            Some(due) if held_up == preflight::Skip::OnBattery.as_str() => {
+                let hours = self.config().backup.on_battery_after;
+                Some(
+                    preflight::battery_wait_ends(last_backup, hours)
+                        .map_or(due, |end| end.max(due)),
+                )
+            }
+            other => other,
+        };
         Status {
             state: health.state.as_str().to_string(),
             last_backup: to_epoch(last_backup),
@@ -952,6 +975,7 @@ impl Shared {
             reason: health.reason_str().to_string(),
             since,
             recovery_job,
+            held_up,
         }
     }
 
@@ -1271,10 +1295,15 @@ impl Shared {
             .until(SystemTime::now())
             .is_some();
         let destination_reachable = self.probe_destination().await.definite();
+        let last_backup = *self.last_backup.lock().unwrap();
+        let battery_wait_over =
+            preflight::battery_wait_ends(last_backup, config.backup.on_battery_after)
+                .is_some_and(|end| end <= SystemTime::now());
         Facts {
             paused,
             on_battery,
             allow_on_battery: config.backup.on_battery,
+            battery_wait_over,
             metered,
             allow_on_metered: config.backup.on_metered,
             destination_is_remote: preflight::destination_is_remote(&repository),
@@ -1307,6 +1336,12 @@ impl Shared {
 
         match preflight::evaluate(&facts) {
             Verdict::Go => {
+                if facts.on_battery == Some(true) && !facts.allow_on_battery {
+                    info!(
+                        hours = self.config().backup.on_battery_after,
+                        "on battery, but the last backup is old enough to back up anyway"
+                    );
+                }
                 self.announce_skip(None);
                 Ok(Some(self.submit_backup().await?))
             }
@@ -1348,6 +1383,8 @@ impl Shared {
         if *last == reason {
             return;
         }
+        // The status says why a backup is held up (S18-T10), so the line
+        // that shows it is worked out again, once the lock is let go.
         match &reason {
             Some(skip) => info!(
                 reason = skip.as_str(),
@@ -1360,6 +1397,8 @@ impl Shared {
             None => {}
         }
         *last = reason;
+        drop(last);
+        self.update_status_line();
     }
 
     /// Queue a backup and record the attempt.
@@ -5044,6 +5083,102 @@ mod tests {
             None,
             "a skip must not advance the attempt clock"
         );
+    }
+
+    #[tokio::test]
+    async fn the_status_says_a_backup_is_waiting_for_power_and_stops_once_plugged_in() {
+        let dir = tempfile::tempdir().unwrap();
+        let shared = configured(dir.path());
+        assert_eq!(
+            shared.status_at(SystemTime::now()).held_up,
+            "",
+            "nothing yet"
+        );
+        shared.set_probe(Arc::new(FixedProbe {
+            on_battery: Some(true),
+            metered: Some(false),
+        }));
+        assert_eq!(shared.start_scheduled_backup().await.unwrap(), None);
+        assert_eq!(shared.status_at(SystemTime::now()).held_up, "on-battery");
+
+        // Not due, the last attempt a moment ago: a hold is said only while a
+        // backup is due.
+        let moment_ago = SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        shared.persisted.lock().unwrap().last_attempt = Some(moment_ago);
+        assert_eq!(shared.status_at(SystemTime::now()).held_up, "", "not due");
+        shared.persisted.lock().unwrap().last_attempt = None;
+
+        shared.set_probe(Arc::new(FixedProbe {
+            on_battery: Some(true),
+            metered: Some(true),
+        }));
+        assert_eq!(shared.start_scheduled_backup().await.unwrap(), None);
+        assert_eq!(
+            shared.status_at(SystemTime::now()).held_up,
+            "on-battery",
+            "the battery is asked about first"
+        );
+
+        shared.set_probe(Arc::new(FixedProbe {
+            on_battery: Some(false),
+            metered: Some(false),
+        }));
+        let job = shared
+            .start_scheduled_backup()
+            .await
+            .unwrap()
+            .expect("on mains, the backup runs");
+        assert_eq!(shared.status_at(SystemTime::now()).held_up, "", "running");
+        shared.jobs.cancel(job).unwrap();
+    }
+
+    #[tokio::test]
+    async fn on_battery_a_backup_waits_as_long_as_it_may_and_the_status_says_until_when() {
+        // S18-T14: with backups on battery off, a backup that has waited
+        // `backup.on_battery_after` hours since the last runs anyway.
+        let dir = tempfile::tempdir().unwrap();
+        let shared = configured(dir.path());
+        shared.set_probe(Arc::new(FixedProbe {
+            on_battery: Some(true),
+            metered: Some(false),
+        }));
+        let now = SystemTime::now();
+        let hours = |h: u64| Duration::from_secs(h * 3600);
+
+        // The last backup two hours ago: held, until an hour from now.
+        *shared.last_backup.lock().unwrap() = Some(now - hours(2));
+        assert_eq!(shared.start_scheduled_backup().await.unwrap(), None);
+        let status = shared.status_at(now);
+        assert_eq!(status.held_up, "on-battery");
+        assert_eq!(status.next_backup, to_epoch(Some(now + hours(1))));
+
+        // With no limit, as before: held, and due now.
+        shared.config.lock().unwrap().backup.on_battery_after = 0;
+        let status = shared.status_at(now);
+        assert_eq!(status.held_up, "on-battery");
+        assert!(
+            status.next_backup <= to_epoch(Some(now)),
+            "due, and no end said"
+        );
+
+        // The last backup over three hours ago: it runs, on battery.
+        shared.config.lock().unwrap().backup.on_battery_after = 3;
+        *shared.last_backup.lock().unwrap() = Some(now - hours(3) - Duration::from_secs(60));
+        let job = shared
+            .start_scheduled_backup()
+            .await
+            .unwrap()
+            .expect("waited long enough: it runs on battery");
+        assert_eq!(shared.status_at(SystemTime::now()).held_up, "", "running");
+        shared.jobs.cancel(job).unwrap();
+
+        // Never with no limit, however old the last backup.
+        shared.config.lock().unwrap().backup.on_battery_after = 0;
+        *shared.last_backup.lock().unwrap() = Some(now - hours(48));
+        assert_eq!(shared.start_scheduled_backup().await.unwrap(), None);
     }
 
     #[tokio::test]

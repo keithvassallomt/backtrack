@@ -1,0 +1,36 @@
+<!-- A timed slideshow in GNOME's format, as gnome-backgrounds writes them:
+     a day picture from 07:00 for eleven hours, a dusk transition of one hour,
+     a night picture for eleven hours, a dawn transition of one hour. The night
+     picture comes in three sizes. -->
+<background>
+  <starttime>
+    <year>2026</year>
+    <month>1</month>
+    <day>1</day>
+    <hour>7</hour>
+    <minute>00</minute>
+    <second>00</second>
+  </starttime>
+  <static>
+    <duration>39600.0</duration>
+    <file>/usr/share/backgrounds/timed/day.jxl</file>
+  </static>
+  <transition type="overlay">
+    <duration>3600.0</duration>
+    <from>/usr/share/backgrounds/timed/day.jxl</from>
+    <to>/usr/share/backgrounds/timed/night.jxl</to>
+  </transition>
+  <static>
+    <duration>39600.0</duration>
+    <file>
+      <size width="1920" height="1080">/usr/share/backgrounds/timed/night-1920x1080.jxl</size>
+      <size width="3840" height="2160">/usr/share/backgrounds/timed/night-3840x2160.jxl</size>
+      <size width="5120" height="2880">/usr/share/backgrounds/timed/night-5120x2880.jxl</size>
+    </file>
+  </static>
+  <transition type="overlay">
+    <duration>3600.0</duration>
+    <from>/usr/share/backgrounds/timed/night.jxl</from>
+    <to>/usr/share/backgrounds/timed/day.jxl</to>
+  </transition>
+</background>

@@ -3,26 +3,33 @@
 
 //! The Dolphin switch in Preferences → General.
 //!
-//! Backtrack's Dolphin items are two fixed service-menu files
+//! Backtrack's Dolphin items are three fixed service-menu files
 //! (`integrations/dolphin`), which cannot read a setting the way the Nautilus
 //! extension reads `roots.json`. Dolphin keeps its own list of service-menu
 //! actions to leave out, though: `kservicemenurc`, which its Settings →
 //! Context Menu page writes, and which KIO reads each time it builds a menu.
 //! An action listed as `false` under `[Show]` is not offered. The switch
-//! writes those entries for Backtrack's two actions, and takes them out again
+//! writes those entries for Backtrack's actions, and takes them out again
 //! when it is turned back on.
 //!
 //! ```ini
 //! [Show]
 //! backtrackPreviousVersion=false
 //! backtrackThisFolder=false
+//! backtrackTimeViewFile=false
+//! backtrackTimeViewFolder=false
 //! ```
 
 use std::path::Path;
 
 /// The action names in `integrations/dolphin/*.desktop`, which are the keys
 /// Dolphin lists them under.
-pub const ACTIONS: [&str; 2] = ["backtrackPreviousVersion", "backtrackThisFolder"];
+pub const ACTIONS: [&str; 4] = [
+    "backtrackPreviousVersion",
+    "backtrackThisFolder",
+    "backtrackTimeViewFile",
+    "backtrackTimeViewFolder",
+];
 
 const GROUP: &str = "[Show]";
 
@@ -100,7 +107,7 @@ mod tests {
     fn hiding_into_no_file_writes_the_group() {
         assert_eq!(
             with_shown("", false),
-            "[Show]\nbacktrackPreviousVersion=false\nbacktrackThisFolder=false\n"
+            "[Show]\nbacktrackPreviousVersion=false\nbacktrackThisFolder=false\nbacktrackTimeViewFile=false\nbacktrackTimeViewFolder=false\n"
         );
     }
 
@@ -114,7 +121,7 @@ mod tests {
         let before = "[Show]\ncompressfileitemaction=false\n\n[Other]\nkey=value\n";
         assert_eq!(
             with_shown(before, false),
-            "[Show]\nbacktrackPreviousVersion=false\nbacktrackThisFolder=false\n\
+            "[Show]\nbacktrackPreviousVersion=false\nbacktrackThisFolder=false\nbacktrackTimeViewFile=false\nbacktrackTimeViewFolder=false\n\
              compressfileitemaction=false\n\n[Other]\nkey=value\n"
         );
     }
@@ -124,7 +131,7 @@ mod tests {
         let before = "[Other]\nkey=value\n";
         assert_eq!(
             with_shown(before, false),
-            "[Other]\nkey=value\n\n[Show]\nbacktrackPreviousVersion=false\nbacktrackThisFolder=false\n"
+            "[Other]\nkey=value\n\n[Show]\nbacktrackPreviousVersion=false\nbacktrackThisFolder=false\nbacktrackTimeViewFile=false\nbacktrackTimeViewFolder=false\n"
         );
     }
 
@@ -178,6 +185,7 @@ mod tests {
         let menus = concat!(
             include_str!("../../../integrations/dolphin/backtrack.desktop"),
             include_str!("../../../integrations/dolphin/backtrack-folder.desktop"),
+            include_str!("../../../integrations/dolphin/backtrack-file.desktop"),
         );
         for action in ACTIONS {
             assert!(

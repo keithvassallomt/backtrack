@@ -26,6 +26,8 @@ const NAUTILUS: &str = include_str!("../../../../integrations/nautilus/backtrack
 const DOLPHIN_FILE: &str = include_str!("../../../../integrations/dolphin/backtrack.desktop");
 const DOLPHIN_FOLDER: &str =
     include_str!("../../../../integrations/dolphin/backtrack-folder.desktop");
+const DOLPHIN_FILE_ONLY: &str =
+    include_str!("../../../../integrations/dolphin/backtrack-file.desktop");
 
 /// How a Flatpak copy opens the window.
 fn flatpak_run() -> String {
@@ -77,6 +79,7 @@ impl Plugin {
             Plugin::Dolphin => [
                 ("kio/servicemenus/backtrack.desktop", DOLPHIN_FILE),
                 ("kio/servicemenus/backtrack-folder.desktop", DOLPHIN_FOLDER),
+                ("kio/servicemenus/backtrack-file.desktop", DOLPHIN_FILE_ONLY),
             ]
             .into_iter()
             .map(|(path, shipped)| CopiedFile {
@@ -239,7 +242,7 @@ mod tests {
     #[test]
     fn the_dolphin_copies_open_the_flatpak_and_are_executable() {
         let copies = Plugin::Dolphin.flatpak_copy(Path::new(ROOTS));
-        assert_eq!(copies.len(), 2);
+        assert_eq!(copies.len(), 3);
         for copy in copies {
             assert!(copy.executable, "{}", copy.path);
             assert!(

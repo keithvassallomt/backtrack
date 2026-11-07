@@ -18,11 +18,13 @@
 //! "Browse Backups of This Folder…" twice is a thing people do.
 
 mod daemon;
+mod host;
 mod index;
 mod model;
 mod path;
 mod state;
 mod ui;
+mod wallpaper;
 mod window;
 
 use std::path::PathBuf;
@@ -54,11 +56,19 @@ struct Args {
     /// Open the fix for a problem Backtrack has told you about.
     #[arg(long, value_name = "REASON")]
     fix: Option<String>,
+    /// Open Rewind, the full-screen view of a folder's backups, at --path
+    /// (with --select selected), or where the window would open.
+    #[arg(long)]
+    rewind: bool,
     /// GApplication's own flag, passed when the session bus starts the window
     /// to answer an activation (S14-T2). GApplication acts on it; it is
     /// accepted here only so that parsing does not refuse it.
     #[arg(long = "gapplication-service", hide = true)]
     gapplication_service: bool,
+    /// Find the desktop's wallpaper as Rewind would, draw it, say how it
+    /// went, and exit without opening a window. For checking a desktop.
+    #[arg(long, hide = true)]
+    wallpaper_report: bool,
 }
 
 /// What the window is being asked to show, in archive-relative paths.
@@ -114,13 +124,23 @@ fn main() -> glib::ExitCode {
     // parses the arguments again — see `connect_command_line` — because with a
     // single-instance application they may have come from a different process
     // than this one.
-    let _validated = Args::parse();
+    let validated = Args::parse();
+    if validated.wallpaper_report {
+        return wallpaper::report();
+    }
 
     info!(
         version = backtrack_core::VERSION,
         app_id = APP_ID,
         "backtrack-gtk starting"
     );
+
+    // The window's own icons (build.rs). GtkApplication adds their folder,
+    // under the resource base path the application ID gives, to the icon
+    // theme as it starts.
+    if let Err(error) = gio::resources_register_include!("backtrack.gresource") {
+        warn!(%error, "the window's own icons could not be registered");
+    }
 
     let app = adw::Application::builder()
         .application_id(APP_ID)
@@ -158,6 +178,10 @@ fn main() -> glib::ExitCode {
             ui::apply_theme_override(command_line.getenv("BACKTRACK_THEME").as_deref());
 
             let target = Target::resolve(&args);
+            if args.rewind {
+                rewind(app, target);
+                return glib::ExitCode::SUCCESS;
+            }
             let fix = args.fix.as_deref().and_then(parse_fix);
             show(app, target, fix);
             glib::ExitCode::SUCCESS
@@ -194,11 +218,65 @@ fn main() -> glib::ExitCode {
             path: given(path),
             select: given(select),
             fix: None,
+            rewind: false,
             gapplication_service: false,
+            wallpaper_report: false,
         };
         show(&browser, Target::resolve(&args), None);
     });
     app.add_action(&browse);
+    let rewinding = gio::SimpleAction::new(
+        backtrack_core::dbus::APP_ACTION_REWIND,
+        Some(glib::VariantTy::new("(ss)").expect("a valid variant type")),
+    );
+    let rewinder = app.clone();
+    rewinding.connect_activate(move |_, parameter| {
+        let Some((path, select)) = parameter.and_then(|value| value.get::<(String, String)>())
+        else {
+            return;
+        };
+        let given = |path: String| (!path.is_empty()).then(|| PathBuf::from(path));
+        let args = Args {
+            path: given(path),
+            select: given(select),
+            fix: None,
+            rewind: true,
+            gapplication_service: false,
+            wallpaper_report: false,
+        };
+        rewind(&rewinder, Target::resolve(&args));
+    });
+    app.add_action(&rewinding);
+    let undo = gio::SimpleAction::new(
+        backtrack_core::dbus::APP_ACTION_UNDO_RESTORE,
+        Some(glib::VariantTy::new(ui::restore::UNDO_TARGET).expect("a valid variant type")),
+    );
+    let undoer = app.clone();
+    undo.connect_activate(move |_, parameter| {
+        if let Some((job, name)) = parameter.and_then(|value| value.get::<(u64, String)>()) {
+            ui::restore::undo_from_notification(&undoer, job, name);
+        }
+    });
+    app.add_action(&undo);
+    let showing = gio::SimpleAction::new(
+        backtrack_core::dbus::APP_ACTION_SHOW_RESTORE,
+        Some(glib::VariantTy::new(ui::restore::SHOW_TARGET).expect("a valid variant type")),
+    );
+    let shower = app.clone();
+    showing.connect_activate(move |_, parameter| {
+        let Some((job, name, said, path)) =
+            parameter.and_then(|value| value.get::<(u64, String, String, String)>())
+        else {
+            return;
+        };
+        let target = Target {
+            folder: crate::path::parent(&path).unwrap_or_default(),
+            select: Some(path),
+        };
+        window::offer_undo(job, name, said);
+        show(&shower, Some(target), None);
+    });
+    app.add_action(&showing);
 
     // The user's own argv, forwarded to whichever instance is primary: that is
     // what lets a second `--path` re-point the window already on screen.
@@ -220,8 +298,36 @@ fn show(app: &adw::Application, target: Option<Target>, fix: Option<backtrack_co
                 window::fix(&existing, reason);
             }
         }
-        None => open_first_window(app, target, fix),
+        None => open_first_window(app, target, fix, false),
     }
+}
+
+/// Open Rewind at `target` for a caller outside the window (S18-T7): the file
+/// manager, the launcher or the tray. Over the window already open, which
+/// Rewind leaves as it is; or over one made for it and never shown, which
+/// closes with it, so leaving Rewind returns to where it was opened from.
+/// With no target, where the window would open.
+fn rewind(app: &adw::Application, target: Option<Target>) {
+    if let Some(target) = &target {
+        if window::rewind_over_open(target) {
+            return;
+        }
+    }
+    let hold = app.hold();
+    let app = app.clone();
+    glib::spawn_future_local(async move {
+        let target = match target {
+            Some(target) => target,
+            None => {
+                let daemon = daemon::connect().await.ok();
+                window::backed_up_target(daemon.as_ref()).await
+            }
+        };
+        if !window::rewind_over_open(&target) {
+            open_first_window(&app, Some(target), None, true);
+        }
+        drop(hold);
+    });
 }
 
 /// Inside a Flatpak, bring the file-manager integrations it installed up to
@@ -259,10 +365,13 @@ fn parse_fix(token: &str) -> Option<backtrack_core::dbus::Reason> {
 /// backs up, so its answer is the one that counts. With no daemon to ask, the
 /// timeline opens anyway. Browsing needs only the catalogue, and the wizard
 /// could not create anything without the daemon behind it.
+/// Open the first window, or the wizard while nothing is set up. With
+/// `rewind`, the window is not shown: Rewind opens over it (S18-T7).
 fn open_first_window(
     app: &adw::Application,
     target: Option<Target>,
     fix: Option<backtrack_core::dbus::Reason>,
+    rewind: bool,
 ) {
     // Nothing is on screen while the daemon is asked, and an application with
     // no window and nothing holding it would quit in the meantime.
@@ -301,6 +410,11 @@ fn open_first_window(
                     None => window::backed_up_target(daemon.as_ref()).await,
                 };
                 let window = window::Window::build(&app, &target);
+                if rewind {
+                    window::rewind_over_new(&window, target);
+                    drop(hold);
+                    return;
+                }
                 window.present();
                 if let Some(reason) = fix {
                     window::fix(window.upcast_ref(), reason);
@@ -320,8 +434,28 @@ mod tests {
             path: path.map(PathBuf::from),
             select: select.map(PathBuf::from),
             fix: None,
+            rewind: false,
             gapplication_service: false,
+            wallpaper_report: false,
         }
+    }
+
+    #[test]
+    fn rewind_takes_the_same_folder_and_file() {
+        // "Rewind This File…" passes the file; "Rewind This Folder…" the
+        // folder; the launcher and the tray neither.
+        let file = Args::try_parse_from(["backtrack-gtk", "--rewind", "--select", "/home/k/a.odt"])
+            .unwrap();
+        assert!(file.rewind);
+        let target = Target::resolve(&file).unwrap();
+        assert_eq!(target.folder, "home/k");
+        assert_eq!(target.select.as_deref(), Some("home/k/a.odt"));
+        let folder =
+            Args::try_parse_from(["backtrack-gtk", "--rewind", "--path", "/home/k/Docs"]).unwrap();
+        assert_eq!(Target::resolve(&folder).unwrap().folder, "home/k/Docs");
+        let plain = Args::try_parse_from(["backtrack-gtk", "--rewind"]).unwrap();
+        assert!(plain.rewind);
+        assert_eq!(Target::resolve(&plain), None);
     }
 
     #[test]

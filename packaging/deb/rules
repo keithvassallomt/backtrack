@@ -43,11 +43,14 @@ override_dh_auto_install:
 	install -Dm644 -t debian/backtrack/usr/share/icons/hicolor/symbolic/apps \
 	    packaging/icons/hicolor/symbolic/apps/tools.backtrack.Backtrack-symbolic.svg \
 	    packaging/icons/hicolor/symbolic/apps/tools.backtrack.Backtrack-tray-symbolic.svg
+	install -Dm644 -t debian/backtrack/usr/share/icons/hicolor/symbolic/actions \
+	    packaging/icons/hicolor/symbolic/actions/tools.backtrack.Backtrack-rewind-symbolic.svg
 	install -Dm644 -t debian/backtrack/etc/xdg/autostart packaging/autostart/backtrack-tray.desktop
 	install -Dm644 -t debian/backtrack-nautilus/usr/share/nautilus-python/extensions \
 	    integrations/nautilus/backtrack.py
 	install -Dm644 -t debian/backtrack-dolphin/usr/share/kio/servicemenus \
-	    integrations/dolphin/backtrack.desktop integrations/dolphin/backtrack-folder.desktop
+	    integrations/dolphin/backtrack.desktop integrations/dolphin/backtrack-folder.desktop \
+	    integrations/dolphin/backtrack-file.desktop
 
 # dwz cannot read the debug information rustc writes.
 override_dh_dwz:

@@ -401,10 +401,7 @@ impl BackupEngine for BorgCli {
         cmd.arg("prune")
             .arg("--progress")
             .arg("--list")
-            .arg(format!("--keep-hourly={}", policy.keep_hourly))
-            .arg(format!("--keep-daily={}", policy.keep_daily))
-            .arg(format!("--keep-weekly={}", policy.keep_weekly))
-            .arg(format!("--keep-monthly={}", policy.keep_monthly))
+            .args(keep_args(policy))
             .arg(&self.repo);
         spawn_streamed(cmd)
     }
@@ -484,6 +481,27 @@ impl BackupEngine for BorgCli {
 /// the next run consumes it: it is scaffolding, not a snapshot, and showing one
 /// in the timeline would offer the user a restore from a backup that was never
 /// finished.
+/// `borg prune`'s rules for `policy`.
+///
+/// `--keep-hourly` keeps only the latest backup in each hour, so a backup
+/// made within the same hour as the one before it would remove that one, and
+/// any version of a file only it held. Every backup from the last
+/// `keep_hourly` hours is kept as well (S18-T22). Borg does not count the
+/// backups `--keep-within` keeps towards the other rules, so the hourly ones
+/// then reach back as far as before, from the end of that window.
+fn keep_args(policy: &PrunePolicy) -> Vec<String> {
+    let mut args = Vec::with_capacity(5);
+    // Borg refuses a window of 0 hours; with no hourly backups there is none.
+    if policy.keep_hourly > 0 {
+        args.push(format!("--keep-within={}H", policy.keep_hourly));
+    }
+    args.push(format!("--keep-hourly={}", policy.keep_hourly));
+    args.push(format!("--keep-daily={}", policy.keep_daily));
+    args.push(format!("--keep-weekly={}", policy.keep_weekly));
+    args.push(format!("--keep-monthly={}", policy.keep_monthly));
+    args
+}
+
 fn parse_archive_line(line: &str) -> Option<ArchiveMeta> {
     let mut fields = line.splitn(4, '\t');
     let id = fields.next()?.trim();
@@ -618,6 +636,50 @@ fn collect_json_errors(stderr: &[u8]) -> Vec<classify::ErrLine> {
             _ => None,
         })
         .collect()
+}
+
+#[cfg(test)]
+mod prune_tests {
+    use super::*;
+
+    #[test]
+    fn every_backup_from_the_hourly_hours_is_kept() {
+        let policy = PrunePolicy {
+            keep_hourly: 24,
+            keep_daily: 7,
+            keep_weekly: 4,
+            keep_monthly: 6,
+        };
+        assert_eq!(
+            keep_args(&policy),
+            [
+                "--keep-within=24H",
+                "--keep-hourly=24",
+                "--keep-daily=7",
+                "--keep-weekly=4",
+                "--keep-monthly=6",
+            ]
+        );
+    }
+
+    #[test]
+    fn with_no_hourly_backups_there_is_no_window() {
+        let policy = PrunePolicy {
+            keep_hourly: 0,
+            keep_daily: 7,
+            keep_weekly: 4,
+            keep_monthly: 6,
+        };
+        assert_eq!(
+            keep_args(&policy),
+            [
+                "--keep-hourly=0",
+                "--keep-daily=7",
+                "--keep-weekly=4",
+                "--keep-monthly=6",
+            ]
+        );
+    }
 }
 
 #[cfg(test)]

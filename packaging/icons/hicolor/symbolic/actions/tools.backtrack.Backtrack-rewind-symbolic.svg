@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16">
+  <!-- SPDX-License-Identifier: GPL-3.0-or-later -->
+  <!-- SPDX-FileCopyrightText: 2026 Keith Vassallo <keith@vassallo.cloud> -->
+  <!-- Rewind's icon (S18-T7): the window in front with a folder in it, the -->
+  <!-- window behind, and the timeline's ticks with the one in front longer. -->
+  <!-- Drawn on the 16 px grid: 1 px lines, whole-pixel edges, 1 px gaps. -->
+  <!-- Plasma recolours what is drawn in ColorScheme-Text to its text colour; -->
+  <!-- GTK paints a symbolic icon in its own colour anyway. -->
+  <style id="current-color-scheme" type="text/css">.ColorScheme-Text { color: #2e3436; }</style>
+  <path class="ColorScheme-Text" fill="currentColor" fill-opacity="0.78" d="M2 2h7v1H2v7H1V3a1 1 0 0 1 1-1z"/>
+  <path class="ColorScheme-Text" fill="currentColor" fill-rule="evenodd" d="M4 4h6a1 1 0 0 1 1 1v6a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1zM4 6v5h6V6z"/>
+  <path class="ColorScheme-Text" fill="currentColor" d="M5 7h2v1h2v2H5z"/>
+  <rect class="ColorScheme-Text" fill="currentColor" x="12" y="2" width="2" height="1" rx="0.5"/>
+  <rect class="ColorScheme-Text" fill="currentColor" x="12" y="4" width="2" height="1" rx="0.5"/>
+  <rect class="ColorScheme-Text" fill="currentColor" x="12" y="6" width="2" height="1" rx="0.5"/>
+  <rect class="ColorScheme-Text" fill="currentColor" x="12" y="8" width="3" height="2" rx="0.5"/>
+  <rect class="ColorScheme-Text" fill="currentColor" x="12" y="11" width="2" height="1" rx="0.5"/>
+  <rect class="ColorScheme-Text" fill="currentColor" x="12" y="13" width="2" height="1" rx="0.5"/>
+</svg>

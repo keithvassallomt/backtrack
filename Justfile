@@ -686,6 +686,11 @@ install-dolphin-dev:
         mv "${dir}/${name}.tmp" "${dir}/${name}"
         echo "Installed ${dir}/${name}"
     done
+    # Rewind's items name Backtrack's own icon, which packages install.
+    icons="${XDG_DATA_HOME:-${HOME}/.local/share}/icons/hicolor/symbolic/actions"
+    install -Dm644 -t "${icons}" \
+        "${root}"/packaging/icons/hicolor/symbolic/actions/tools.backtrack.Backtrack-rewind-symbolic.svg
+    echo "Installed ${icons}/tools.backtrack.Backtrack-rewind-symbolic.svg"
     echo
     echo "Dolphin reads its menus each time it opens one; there is nothing to restart."
 
@@ -697,6 +702,7 @@ uninstall-dolphin-dev:
     for file in "{{justfile_directory()}}"/integrations/dolphin/*.desktop; do
         rm -f "${dir}/$(basename "${file}")"
     done
+    rm -f "${XDG_DATA_HOME:-${HOME}/.local/share}/icons/hicolor/symbolic/actions/tools.backtrack.Backtrack-rewind-symbolic.svg"
     echo "Removed."
 
 # Render the tray icon's pixmaps from the application icon, at the sizes

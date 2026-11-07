@@ -44,9 +44,19 @@ pub fn line(status: &Status, now: i64, tz: &glib::TimeZone) -> String {
     if matches!(status.state.as_str(), "AT_RISK" | "BROKEN") {
         return "Backups need your attention".to_string();
     }
-    match status.last_backup {
-        0 => "No backups yet".to_string(),
-        last => format!("Last backup: {}", when(last as i64, now, tz)),
+    // Held up by a setting (S18-T10), in Keith's words (2026-10-31): short,
+    // as a tray menu cuts a longer line off. The window and `backtrack
+    // status` say why, and until when.
+    let held = match status.held_up.as_str() {
+        "on-battery" => Some("Waiting for charger."),
+        "metered-connection" => Some("Waiting for an unmetered network."),
+        _ => None,
+    };
+    match (status.last_backup, held) {
+        (0, Some(held)) => format!("No backups yet. {held}"),
+        (0, None) => "No backups yet".to_string(),
+        (last, Some(held)) => format!("Last: {} ago. {held}", short_ago(last as i64, now)),
+        (last, None) => format!("Last backup: {}", when(last as i64, now, tz)),
     }
 }
 
@@ -68,6 +78,17 @@ pub fn at(ts: i64, tz: &glib::TimeZone, pattern: &str) -> String {
 /// `ts` as a day and a time of day, the day in words when it is close to
 /// `now`: "today 16:00", "yesterday 22:00", "tomorrow 09:00", "Mon 8 Jun
 /// 14:00".
+/// How long ago `ts` was, as briefly as a tray has room for: "25m", "2h",
+/// "3d".
+fn short_ago(ts: i64, now: i64) -> String {
+    let seconds = (now - ts).max(0);
+    match seconds {
+        s if s < 3_600 => format!("{}m", (s / 60).max(1)),
+        s if s < 48 * 3_600 => format!("{}h", s / 3_600),
+        s => format!("{}d", s / 86_400),
+    }
+}
+
 fn when(ts: i64, now: i64, tz: &glib::TimeZone) -> String {
     let clock = at(ts, tz, "%H:%M");
     match days_from(now, ts, tz) {
@@ -143,7 +164,44 @@ mod tests {
             reason: String::new(),
             since: 0,
             recovery_job: 0,
+            held_up: String::new(),
         }
+    }
+
+    #[test]
+    fn a_backup_held_up_by_a_setting_says_by_what() {
+        let tz = utc();
+        // Short enough for a tray menu, in Keith's words (2026-10-31).
+        let on_battery = Status {
+            held_up: "on-battery".into(),
+            ..status()
+        };
+        assert_eq!(
+            line(&on_battery, NOW, &tz),
+            "Last: 2h ago. Waiting for charger."
+        );
+        let minutes = Status {
+            last_backup: (NOW - 25 * 60) as u64,
+            ..on_battery.clone()
+        };
+        assert_eq!(
+            line(&minutes, NOW, &tz),
+            "Last: 25m ago. Waiting for charger."
+        );
+        let days = Status {
+            last_backup: (NOW - 3 * 86_400) as u64,
+            ..on_battery
+        };
+        assert_eq!(line(&days, NOW, &tz), "Last: 3d ago. Waiting for charger.");
+        let metered = Status {
+            held_up: "metered-connection".into(),
+            last_backup: 0,
+            ..status()
+        };
+        assert_eq!(
+            line(&metered, NOW, &tz),
+            "No backups yet. Waiting for an unmetered network."
+        );
     }
 
     #[test]

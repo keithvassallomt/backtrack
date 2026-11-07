@@ -22,15 +22,25 @@ All notable changes to Backtrack are documented here. This project adheres to
   Everything you browse is read from the catalogue on this computer, so it is
   instant and it works with the backup destination switched off, unplugged or
   on the other side of the world.
+- Rewind, a full-screen way back through a folder's history: the folder as
+  it is now in front, its backups receding behind it into the distance over
+  your desktop's wallpaper, and a timeline of them down the side. Step back
+  with the arrow keys, the mouse wheel or the timeline, look through each
+  backup as icons, with pictures, or as a list, and restore what is
+  selected, or the whole folder, from the backup in front. Open it from
+  Backtrack's window (Ctrl+T), from the right-click menu of GNOME Files and
+  Dolphin (Rewind This File…, Rewind This Folder…), from the launcher, or
+  from the tray. A screen reader reads each backup as you step, and all of
+  it works from the keyboard.
 - Backups are listed grouped the way you would think of them — today by the
   hour, then yesterday, this week, last week, and older months you can open
   when you want them. Backups kept on this computer while the destination was
   away are marked as such, and one still being catalogued says so rather than
   pretending to be empty.
-- Files that were deleted later reappear as you step back, marked "deleted
-  after this"; files you have changed since are marked "changed since then".
-  Both are words as well as colour, so they are still readable in a screenshot
-  or with colour-blindness.
+- Files that were deleted later reappear as you step back, marked "deleted";
+  files you have changed since are marked "changed". Both are words as well
+  as colour, so they are still readable in a screenshot or with
+  colour-blindness.
 - Step one backup at a time with the Older and Newer buttons or Ctrl+Left and
   Ctrl+Right, and use the arrow beside them to skip straight to the next time
   the selected file actually changed — which saves stepping through forty
@@ -114,9 +124,9 @@ All notable changes to Backtrack are documented here. This project adheres to
   way unless you say otherwise.
 - Replacing a file is never destructive. The version that was there is kept
   for 30 days, and "Recently Replaced Files" in the menu lists them grouped by
-  the restore that displaced them, with a button to put any of them back. The
-  toast's Undo puts a whole restore back; this is for when you notice on
-  Friday what went wrong on Tuesday.
+  the restore that displaced them, with a button to put any of them back.
+  Undo, in the bar under the header bar after a restore, puts a whole restore
+  back; this is for when you notice on Friday what went wrong on Tuesday.
 - Restore To… puts the files in a folder you choose instead of over the
   originals, in a new folder named for the backup they came from. Nothing on
   your computer is touched and there is nothing to decide, so it is the way to
@@ -266,14 +276,19 @@ All notable changes to Backtrack are documented here. This project adheres to
   is left out never hides anything you could restore, because everything in it
   is also in the next one listed. On the strip, a day with backups but nothing
   new says "nothing changed here", and a day without any says "no backups".
-- Show All Backups in the main menu (Ctrl+H) lists every backup again. It is
-  off to begin with, and Backtrack remembers which you chose.
+- Show All Backups in the main menu (Ctrl+Shift+H) lists every backup again.
+  It is off to begin with, and Backtrack remembers which you chose.
+- Hidden files, whose names begin with a dot, are left out of the file list,
+  as file managers leave them out, unless Show Hidden Files in the main menu
+  (Ctrl+H) is on. Backtrack starts from your desktop's own choice, the one the
+  file chooser and Files share. A hidden folder that leads to a folder you
+  back up is always shown.
 - What you move to the Trash from a backed-up folder now appears in the
   timeline while it is still in the Trash, at the time you deleted it. A file
   made after one backup and deleted before the next was in no backup at all,
   and now it can still be got back; so can a version the backups have since
   thinned out. The entry shows the folder as it was, with what went to the
-  Trash back in its place and marked "in the Trash". It is not a backup, and
+  Trash back in its place and marked "trashed". It is not a backup, and
   it goes when the Trash is emptied, which its badge says.
 - Restoring something from a Trash entry takes it out of the Trash, as the
   file manager's own Restore does, and Undo puts it back there with the time
@@ -289,7 +304,7 @@ All notable changes to Backtrack are documented here. This project adheres to
   [docs/trash.md](docs/trash.md).
 - Where your home folder is on btrfs and Snapper takes snapshots of it,
   Backtrack shows those snapshots in the timeline among your backups, marked
-  "Snapper snapshot". Snapper goes on taking them on battery and while backups
+  "Snapper". Snapper goes on taking them on battery and while backups
   are paused, and can take one every few minutes, so a file overwritten or
   deleted between two backups can still be found. They can be browsed,
   previewed, compared and restored from, with the backup destination away. A
@@ -309,7 +324,31 @@ All notable changes to Backtrack are documented here. This project adheres to
   [docs/snapper.md](docs/snapper.md).
 
 ### Changed
+- After a restore, Undo stays in a bar under the window's header bar until
+  you use it or restore something else, instead of in a message that went
+  away after ten seconds.
 - Backtrack now requires GNOME 50 or newer (GTK 4.22, libadwaita 1.9).
+- A backup that is due but held up because the computer is on battery, or on a
+  metered connection, now says so in the window ("waiting for charger"), the
+  tray and `backtrack status`, which also names the setting that would let it
+  run. Before, the window said only how long ago the last backup was, and
+  `backtrack status` that the next one was "due now".
+- Podman's and rootless Docker's storage are left out of backups by default:
+  container images rebuild from their registries, and a copy of container
+  volumes' files is neither whole nor consistent (`podman volume export` is
+  the way to back them up). Existing setups keep their own exclusion list;
+  add "Container storage" in Preferences → Backup.
+- After an upgrade, the tray icon and the backup service restart as the new
+  version by themselves, the service once it has finished any backup under
+  way. Before, they ran on as the old version until restarted by hand, and the
+  tray said the service was not running.
+- On battery, a scheduled backup no longer waits for the charger indefinitely:
+  once the last backup is three hours old, it runs anyway, and the window says
+  until when it is waiting. Wait for mains power, in Preferences under Back up
+  on battery power, sets how long, or Always to wait however long it takes.
+- Cataloguing a backup takes far less memory: for a backup of 2.5 million
+  files, a few megabytes where it took about 300 MB, and none of it is left
+  held by the backup service afterwards.
 - The backup service now announces when a job has finished, so an application
   that started one learns the outcome as it happens instead of asking
   repeatedly whether it is done yet.
@@ -332,9 +371,9 @@ All notable changes to Backtrack are documented here. This project adheres to
 - Snapshots kept on this computer now say whether your backup destination has
   them. Until it catches up they are marked "local backup only", in red.
   Afterwards, one that still holds versions of files the destination never
-  got is marked "local snapshot", in yellow, and says when it will be
+  got is marked "local", in yellow, and says when it will be
   removed; one holding nothing of its own is no longer marked at all.
-- A folder is marked "changed since then" when something inside it, at any
+- A folder is marked "changed" when something inside it, at any
   depth, is different or gone in the newest backup, so the marks lead down to
   the file that changed. The mark used to follow the folder's own modification
   time, which moves whenever a file is added and says nothing about changes
@@ -352,9 +391,14 @@ All notable changes to Backtrack are documented here. This project adheres to
   taken, but not read back.
 
 ### Fixed
+- A backup started by hand no longer removes the backup made earlier in the
+  same hour. Thinning old backups kept only the latest in each hour, so a
+  version of a file that only the earlier backup held was lost. Every backup
+  from the last 24 hours (or however many hours of hourly backups you keep) is
+  now kept, and older ones are thinned as before.
 - Pausing or resuming backups is announced to other programs straight away,
   rather than up to a minute later.
-- A file could be shown as "deleted after this" while it still existed, in the
+- A file could be shown as "deleted" while it still existed, in the
   window between a backup finishing and its file list being read. On a first
   run, which reads that list for every backup in turn, this could have been the
   first thing shown about an entire folder.
@@ -412,6 +456,11 @@ All notable changes to Backtrack are documented here. This project adheres to
   accumulated, and with the square of the number of files: six and a half
   seconds for 55,000 files after a week of hourly backups, and far longer for
   more files. It now takes a fraction of a second.
+- With a large catalogue, the window took seconds to show anything: about 7
+  seconds for a home folder of 3.3 million files, and Rewind 5 seconds more
+  for its backups. Both now take a few milliseconds, however much lies below
+  the folder. The catalogue's log of recent changes is also no longer left
+  hundreds of megabytes long.
 - Cataloguing stopped part way through a backup, or a preview closed before
   its file had arrived, could leave the backup destination locked, so that
   every backup after it failed with "the repository is locked by another

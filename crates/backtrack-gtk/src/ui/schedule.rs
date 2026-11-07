@@ -11,10 +11,12 @@
 
 use std::rc::Rc;
 
-use backtrack_core::config::{Frequency, Retention};
+use backtrack_core::config::{Backup, Frequency, Retention};
 use gtk4::prelude::*;
 use libadwaita as adw;
 use libadwaita::prelude::*;
+
+use crate::model::prefs as model;
 
 /// The frequencies the menu offers, in order, with what each one says.
 pub const FREQUENCIES: [(Frequency, &str); 4] = [
@@ -51,6 +53,30 @@ pub fn battery_row(on: bool) -> adw::SwitchRow {
         .title("Back up on battery power")
         .active(on)
         .build()
+}
+
+/// How long a backup waits for mains power with backups on battery off
+/// (S18-T14). Shown only then: with them on, nothing waits.
+pub fn battery_wait_row(on_battery: bool) -> adw::ComboRow {
+    adw::ComboRow::builder()
+        .title("Wait for mains power")
+        .subtitle("Counted from the last backup")
+        .visible(!on_battery)
+        .build()
+}
+
+/// Show `hours` in a [`battery_wait_row`], offering what
+/// [`model::battery_waits`] offers; returns what each choice stands for.
+pub fn show_battery_wait(row: &adw::ComboRow, hours: u32) -> Vec<u32> {
+    let waits = model::battery_waits(hours);
+    let labels: Vec<String> = waits
+        .iter()
+        .map(|h| model::battery_wait_label(*h))
+        .collect();
+    let labels: Vec<&str> = labels.iter().map(String::as_str).collect();
+    row.set_model(Some(&gtk4::StringList::new(&labels)));
+    row.set_selected(waits.iter().position(|h| *h == hours).unwrap_or(0) as u32);
+    waits
 }
 
 pub fn metered_row(on: bool) -> adw::SwitchRow {
@@ -95,6 +121,7 @@ pub fn keep_rows(retention: &Retention) -> [adw::SpinRow; 4] {
 pub struct Values {
     pub frequency: Frequency,
     pub on_battery: bool,
+    pub on_battery_after: u32,
     pub on_metered: bool,
     pub retention: Retention,
 }
@@ -103,6 +130,9 @@ pub struct Values {
 pub struct Rows {
     frequency: adw::ComboRow,
     battery: adw::SwitchRow,
+    battery_wait: adw::ComboRow,
+    /// What each of `battery_wait`'s choices stands for, in hours.
+    waits: Vec<u32>,
     metered: adw::SwitchRow,
     automatic: adw::SwitchRow,
     keep: [adw::SpinRow; 4],
@@ -111,17 +141,22 @@ pub struct Rows {
 
 impl Rows {
     pub fn build(values: &Values, changed: impl Fn(&Values) + 'static) -> Rc<Rows> {
+        let battery_wait = battery_wait_row(values.on_battery);
+        let waits = show_battery_wait(&battery_wait, values.on_battery_after);
         let rows = Rc::new(Rows {
             frequency: frequency_row(values.frequency),
             battery: battery_row(values.on_battery),
+            battery_wait,
+            waits,
             metered: metered_row(values.on_metered),
             automatic: automatic_row(values.retention.automatic),
             keep: keep_rows(&values.retention),
             changed: Box::new(changed),
         });
-        let this = Rc::clone(&rows);
-        rows.frequency
-            .connect_selected_notify(move |_| this.report());
+        for combo in [&rows.frequency, &rows.battery_wait] {
+            let this = Rc::clone(&rows);
+            combo.connect_selected_notify(move |_| this.report());
+        }
         for switch in [&rows.battery, &rows.metered, &rows.automatic] {
             let this = Rc::clone(&rows);
             switch.connect_active_notify(move |_| this.report());
@@ -138,6 +173,7 @@ impl Rows {
         let mut rows: Vec<gtk4::Widget> = vec![
             self.frequency.clone().upcast(),
             self.battery.clone().upcast(),
+            self.battery_wait.clone().upcast(),
             self.metered.clone().upcast(),
             self.automatic.clone().upcast(),
         ];
@@ -150,10 +186,16 @@ impl Rows {
         for row in &self.keep {
             row.set_visible(!automatic);
         }
+        self.battery_wait.set_visible(!self.battery.is_active());
         let count = |row: &adw::SpinRow| row.value().max(0.0) as u32;
         (self.changed)(&Values {
             frequency: frequency_of(&self.frequency),
             on_battery: self.battery.is_active(),
+            on_battery_after: self
+                .waits
+                .get(self.battery_wait.selected() as usize)
+                .copied()
+                .unwrap_or_else(|| Backup::default().on_battery_after),
             on_metered: self.metered.is_active(),
             retention: Retention {
                 automatic,

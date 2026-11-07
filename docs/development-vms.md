@@ -59,7 +59,12 @@ anything away.
      for your password in the VM, once, and changes the login keyring's to
      the development password, `backtrack dev`. `just vm-start` opens it
      with that after every boot. If you ever log in at the screen with your
-     own password, the keyring asks for `backtrack dev`.
+     own password, the keyring asks for `backtrack dev`. gnome-keyring must
+     not be installed beside it: its login module starts it as you log in,
+     it takes the Secret Service's name first, and oo7-daemon gives up,
+     leaving a keyring nothing unlocks (seen after oo7-daemon 0.7's update on
+     2026-11-05). `sudo dnf remove gnome-keyring` takes it away with its
+     login module; nothing else needs it.
    - Plasma: in KDE Wallet Manager, select `kdewallet`, choose **Change
      Password**, and leave the new one empty. KWallet opens a wallet with
      an empty password without asking.

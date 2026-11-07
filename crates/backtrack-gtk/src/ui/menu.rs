@@ -21,6 +21,11 @@ use crate::model::pause;
 pub fn model() -> gio::Menu {
     let menu = gio::Menu::new();
 
+    // Rewind, the full-screen view, first: Stage 18's headline (S18-T7).
+    let rewind = gio::Menu::new();
+    rewind.append(Some("Rewind…"), Some("win.rewind"));
+    menu.append_section(None, &rewind);
+
     let actions = gio::Menu::new();
     actions.append(Some("Back Up Now"), Some("win.backup-now"));
 
@@ -36,6 +41,7 @@ pub fn model() -> gio::Menu {
     // action is a stateful boolean.
     let view = gio::Menu::new();
     view.append(Some("Show All Backups"), Some("win.show-all-backups"));
+    view.append(Some("Show Hidden Files"), Some("win.show-hidden"));
     menu.append_section(None, &view);
 
     let stash = gio::Menu::new();
@@ -90,6 +96,10 @@ pub fn shortcuts_dialog() -> adw::ShortcutsDialog {
         "Show all backups",
         "win.show-all-backups",
     ));
+    time.add(adw::ShortcutsItem::from_action(
+        "Rewind, the full-screen view",
+        "win.rewind",
+    ));
     dialog.add(time);
 
     let files = adw::ShortcutsSection::new(Some("Files"));
@@ -112,6 +122,10 @@ pub fn shortcuts_dialog() -> adw::ShortcutsDialog {
     files.add(adw::ShortcutsItem::from_action(
         "Search every backup",
         "win.search",
+    ));
+    files.add(adw::ShortcutsItem::from_action(
+        "Show hidden files",
+        "win.show-hidden",
     ));
     // The one key that belongs to the list widget rather than to an action.
     files.add(adw::ShortcutsItem::new(

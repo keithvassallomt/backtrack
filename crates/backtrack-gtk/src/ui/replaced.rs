@@ -3,8 +3,8 @@
 
 //! "Recently Replaced Files": the safety stash, where a person can reach it.
 //!
-//! The toast's Undo covers the ten seconds after a restore. This covers the
-//! thirty days after it, which is the timescale on which people actually
+//! The banner's Undo covers the last restore, until another takes its place.
+//! This covers the thirty days after it, which is the timescale on which people actually
 //! notice — the file was replaced on Tuesday, and what was wrong about that is
 //! only obvious on Friday.
 //!

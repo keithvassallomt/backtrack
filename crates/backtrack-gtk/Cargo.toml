@@ -11,7 +11,7 @@ repository.workspace = true
 workspace = true
 
 [dependencies]
-backtrack-core = { workspace = true, features = ["glib"] }
+backtrack-core = { workspace = true, features = ["glib", "upgrade"] }
 gtk4.workspace = true
 libadwaita.workspace = true
 # The same GLib `gtk4` re-exports, named directly by the modules the tray
@@ -36,6 +36,8 @@ similar.workspace = true
 # Preferences hands settings to the daemon as TOML literals, which core
 # renders from anything serialisable.
 serde.workspace = true
+serde_json.workspace = true
+toml.workspace = true
 # The wizard's passphrase strength meter. A port of Dropbox's estimator rather
 # than a length-and-character-classes count, which rates "Password1!" strong.
 # The derive-builder feature is only for constructing its options, which the

@@ -17,11 +17,11 @@ as well, at the time you deleted it.
 **An entry in the timeline.** Each gap between two backups (and the time since
 the newest) in which something went to the Trash gets one entry, timed at the
 last thing deleted in it. It sits among the backups in the sidebar, the strip
-and the calendar, with the badge **in the Trash**.
+and the calendar, with the badge **trashed**.
 
 **The folder as it was.** Opening the entry shows the folder as the backup
 before it had it, with everything moved to the Trash since put back in its
-place and badged **in the Trash**. If you had A and B at 12:00, wrote C, and
+place and badged **trashed**. If you had A and B at 12:00, wrote C, and
 moved C to the Trash at 12:45, the entry shows A, B and C, because that is
 what the folder held at 12:44. A and B are shown as the 12:00 backup has them,
 which is the nearest record there is; each row's own modification time says

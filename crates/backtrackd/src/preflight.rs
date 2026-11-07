@@ -22,7 +22,7 @@
 
 use std::path::Path;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 use async_trait::async_trait;
 use tracing::{debug, info, warn};
@@ -109,6 +109,9 @@ pub struct Facts {
     pub paused: bool,
     pub on_battery: Option<bool>,
     pub allow_on_battery: bool,
+    /// Whether a backup held up on battery has waited as long as it may
+    /// (`backup.on_battery_after`, S18-T14); see [`battery_wait_ends`].
+    pub battery_wait_over: bool,
     pub metered: Option<bool>,
     pub allow_on_metered: bool,
     /// Whether reaching the destination costs network traffic. A local disk over
@@ -133,7 +136,7 @@ pub fn evaluate(facts: &Facts) -> Verdict {
 
     // `== Some(true)` throughout, never `!= Some(false)`: an absent UPower must
     // open the gate, not close it.
-    if facts.on_battery == Some(true) && !facts.allow_on_battery {
+    if facts.on_battery == Some(true) && !facts.allow_on_battery && !facts.battery_wait_over {
         return Verdict::Skip(Skip::OnBattery);
     }
 
@@ -152,6 +155,17 @@ pub fn evaluate(facts: &Facts) -> Verdict {
     }
 
     Verdict::Go
+}
+
+/// When a backup held up on battery runs anyway: `hours` after the last
+/// backup (`backup.on_battery_after`, S18-T14). Never when `hours` is 0, and
+/// never before a first backup, which is by far the largest and the one most
+/// worth leaving for mains power.
+pub fn battery_wait_ends(last_backup: Option<SystemTime>, hours: u32) -> Option<SystemTime> {
+    if hours == 0 {
+        return None;
+    }
+    last_backup.map(|last| last + Duration::from_secs(u64::from(hours) * 3600))
 }
 
 /// Whether the local disk is low enough to be worth mentioning, without being
@@ -433,6 +447,7 @@ mod tests {
             paused: false,
             on_battery: Some(false),
             allow_on_battery: false,
+            battery_wait_over: false,
             metered: Some(false),
             allow_on_metered: false,
             destination_is_remote: false,
@@ -468,6 +483,32 @@ mod tests {
             ..on_battery
         };
         assert_eq!(evaluate(&allowed), Verdict::Go);
+
+        let waited = Facts {
+            battery_wait_over: true,
+            ..on_battery
+        };
+        assert_eq!(evaluate(&waited), Verdict::Go, "waited long enough");
+    }
+
+    #[test]
+    fn a_backup_held_up_on_battery_runs_once_the_last_is_old_enough() {
+        let last = SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_000);
+        let ends = battery_wait_ends(Some(last), 3).expect("a limit");
+        assert_eq!(ends, last + Duration::from_secs(3 * 3600));
+        let over =
+            |at: Duration| battery_wait_ends(Some(last), 3).is_some_and(|end| end <= last + at);
+        assert!(
+            !over(Duration::from_secs(2 * 3600 + 59 * 60)),
+            "held at 2 h 59 min"
+        );
+        assert!(over(Duration::from_secs(3 * 3600 + 60)), "run at 3 h 1 min");
+        assert_eq!(
+            battery_wait_ends(Some(last), 0),
+            None,
+            "0 waits for mains power"
+        );
+        assert_eq!(battery_wait_ends(None, 3), None, "a first backup waits");
     }
 
     #[test]

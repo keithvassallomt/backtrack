@@ -4,9 +4,9 @@
 //! Whether a catalogued path is still on this computer.
 //!
 //! Every status the timeline shows is otherwise measured inside the catalogue:
-//! "deleted after this" means absent from the newest catalogued archive, and
-//! "changed since then" means a newer version opens after the one being looked
-//! at. Both are false by construction at the newest backup, which leaves the
+//! "deleted" (after this backup) means absent from the newest catalogued
+//! archive, and "changed" (since it) means a newer version opens after the one
+//! being looked at. Both are false by construction at the newest backup, which leaves the
 //! one question a person actually arrives with — *is the thing I lost still
 //! gone?* — unanswered at the only point in time where it can be asked.
 //!

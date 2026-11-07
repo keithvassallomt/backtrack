@@ -39,7 +39,8 @@ pub struct Status {
     pub state: String,
     /// When the last backup succeeded.
     pub last_backup: u64,
-    /// When the next scheduled backup is due; 0 when manual or paused.
+    /// When the next scheduled backup is due; 0 when manual or paused. While
+    /// one is held up on battery, when it runs anyway (S18-T14), if it does.
     pub next_backup: u64,
     /// Whether the destination answered the last time it was probed. `false`
     /// is what "offline" means everywhere in the interface — there is no
@@ -81,6 +82,11 @@ pub struct Status {
     /// The disaster recovery under way, running or paused, or 0. What a window
     /// opened in the middle of one reattaches to.
     pub recovery_job: u64,
+    /// Why a backup that is due is not running, when it is a setting holding
+    /// it up (S18-T10): `on-battery` or `metered-connection`; empty when
+    /// nothing is. Without it, a laptop on battery all day reads as "backed
+    /// up" while its last backup grows older.
+    pub held_up: String,
 }
 
 /// One step of a disaster recovery, as `GetRecovery` reports it.
@@ -488,9 +494,18 @@ pub const APP_OBJECT_PATH: &str = "/tools/backtrack/Backtrack";
 /// The window's application actions, which a caller with no window of its own
 /// activates over `org.freedesktop.Application` (S14-T2): `fix` takes a
 /// [`Reason`] token, `browse` a folder and a file to select, either of them
-/// empty for none.
+/// empty for none. `rewind` takes the same as `browse` and opens Rewind, the
+/// full-screen view, there (S18-T7); both empty, where the window would open.
+/// `undo-restore` takes a restore's job and what it restored, and puts it
+/// back: the Undo button of the notification a restore from Rewind sends when
+/// Rewind was opened from outside the window (S18-T7). `show-restore` takes
+/// the same, what the notification says and the path restored, and opens the
+/// window there with Undo offered: the notification, clicked.
 pub const APP_ACTION_FIX: &str = "fix";
 pub const APP_ACTION_BROWSE: &str = "browse";
+pub const APP_ACTION_REWIND: &str = "rewind";
+pub const APP_ACTION_UNDO_RESTORE: &str = "undo-restore";
+pub const APP_ACTION_SHOW_RESTORE: &str = "show-restore";
 
 /// The prefix for the daemon's named D-Bus errors, which mirror the engine's
 /// error taxonomy (e.g. `tools.backtrack.Backtrack.Error.PassphraseMissing`).

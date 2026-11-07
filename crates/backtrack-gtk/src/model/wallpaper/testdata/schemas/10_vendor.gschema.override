@@ -1,0 +1,4 @@
+# A distribution's default, as Fedora's 10_org.gnome.desktop.background.fedora.gschema.override sets it.
+[org.gnome.desktop.background]
+picture-uri='file:///usr/share/backgrounds/f45/default/f45-01-day.jxl'
+picture-uri-dark='file:///usr/share/backgrounds/f45/default/f45-01-night.jxl'

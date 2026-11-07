@@ -24,6 +24,13 @@ finish-args:
   # without this every other Flatpak's data (mail, settings, saves) would be
   # left out of every backup, with no warning.
   - --filesystem=~/.var/app
+  # Backtrack's own installation, read-only, installed per user or for the
+  # whole system: its `active` link names the version installed, so that a
+  # daemon still running the last one restarts as the new one (S18-T13).
+  # Flatpak hides its installations as it hides ~/.var/app; the portal's own
+  # update monitor, the alternative, looks only twice an hour.
+  - --filesystem=~/.local/share/flatpak/app/tools.backtrack.Backtrack:ro
+  - --filesystem=/var/lib/flatpak/app/tools.backtrack.Backtrack:ro
   # SSH destinations, signed in with the user's agent.
   - --share=network
   - --socket=ssh-auth
@@ -38,6 +45,10 @@ finish-args:
   - --talk-name=org.freedesktop.secrets
   # The tray icon on desktops that have a system tray (S14-T3).
   - --talk-name=org.kde.StatusNotifierWatcher
+  # Plasma's wallpaper, which its shell says on the session bus and Rewind
+  # shows behind its windows (S18-T2). GNOME's is read from dconf's files,
+  # which --filesystem=host already reaches.
+  - --talk-name=org.kde.plasmashell
   # The battery and metered-network checks before a scheduled backup. Without
   # them both read as unknown, and backups run anyway.
   - --system-talk-name=org.freedesktop.UPower
@@ -107,6 +118,8 @@ modules:
       - install -Dm644 -t /app/share/icons/hicolor/symbolic/apps
           packaging/icons/hicolor/symbolic/apps/tools.backtrack.Backtrack-symbolic.svg
           packaging/icons/hicolor/symbolic/apps/tools.backtrack.Backtrack-tray-symbolic.svg
+      - install -Dm644 -t /app/share/icons/hicolor/symbolic/actions
+          packaging/icons/hicolor/symbolic/actions/tools.backtrack.Backtrack-rewind-symbolic.svg
       - install -Dm644 -t /app/share/dbus-1/services
           packaging/flatpak/tools.backtrack.Backtrack.Daemon1.service
       # The window's activation file (S14-T2), with the binary where the

@@ -33,6 +33,10 @@ use crate::Target;
 // without `unsafe`, and the workspace forbids that.
 thread_local! {
     static OPEN: RefCell<Vec<Rc<Window>>> = const { RefCell::new(Vec::new()) };
+    // An Undo to offer in the next window to open: a restore's notification
+    // clicked with none open (S18-T7). The job, what it restored, and what
+    // the notification said.
+    static PENDING_UNDO: RefCell<Option<(u64, String, String)>> = const { RefCell::new(None) };
 }
 
 /// One Backtrack window and everything it is wired to.
@@ -55,6 +59,9 @@ pub struct Window {
     /// The line under that one while a backup runs, saying how far it has
     /// got (S06-T12).
     progress: adw::Banner,
+    /// What the last restore did, with Undo, until it is used or another
+    /// restore takes its place (S18-T7).
+    restored: adw::Banner,
     /// What the person calls the place backups go, for the one banner that
     /// names it. Read when that banner is showing.
     destination: RefCell<String>,
@@ -98,6 +105,13 @@ impl Window {
     /// Build a window showing `target`, and start loading the index behind it.
     pub fn build(app: &adw::Application, target: &Target) -> adw::ApplicationWindow {
         let state = AppState::new(target.folder.clone());
+        state.set_show_hidden(crate::model::hidden::from_desktop(
+            crate::host::Host::here().setting(
+                crate::model::hidden::SCHEMA,
+                crate::model::hidden::PATH,
+                crate::model::hidden::KEY,
+            ),
+        ));
         let index = Index::spawn(backtrack_core::paths::index_db());
 
         let window = adw::ApplicationWindow::builder()
@@ -143,6 +157,7 @@ impl Window {
             banner: adw::Banner::new(""),
             banner_action: Cell::new(None),
             progress: adw::Banner::new(""),
+            restored: adw::Banner::new(""),
             destination: RefCell::new(String::new()),
             pending_fix: RefCell::new(None),
             older,
@@ -202,6 +217,7 @@ impl Window {
             });
         layout.add_top_bar(&self.banner);
         layout.add_top_bar(&self.progress);
+        layout.add_top_bar(&self.restored);
         layout.set_content(Some(&self.body()));
         layout.add_bottom_bar(&self.actions());
 
@@ -251,7 +267,31 @@ impl Window {
         });
         header.pack_end(search);
 
+        // Rewind, the full-screen view (S18-T7).
+        let rewind = Button::from_icon_name(REWIND_ICON);
+        rewind.set_action_name(Some("win.rewind"));
+        rewind.set_tooltip_text(Some("Rewind"));
+        rewind.update_property(&[gtk4::accessible::Property::Label("Rewind")]);
+        header.pack_end(&rewind);
+
         header
+    }
+
+    /// Open Rewind over this window, borrowing its file pane's way of
+    /// listing folders and its restores.
+    fn open_rewind(self: &Rc<Self>, origin: ui::rewind::Origin) {
+        let lister = self.files.borrow().as_ref().map(|files| files.lister());
+        let restores = self.restores.borrow().clone();
+        if let Some(lister) = lister {
+            ui::rewind::open(
+                &self.window,
+                &self.state,
+                &self.index,
+                lister,
+                restores,
+                origin,
+            );
+        }
     }
 
     fn body(self: &Rc<Self>) -> adw::OverlaySplitView {
@@ -412,7 +452,8 @@ impl Window {
 
         // Every backup, or only those in which the folder differs (Stage 15).
         // Stateful and boolean, so the menu draws it as a check item and
-        // activating it toggles it. Ctrl+H, as Show Hidden Files in Nautilus.
+        // activating it toggles it. Ctrl+Shift+H: Ctrl+H is Show Hidden Files,
+        // as in Nautilus (S18-T11).
         let show_all =
             gio::SimpleAction::new_stateful("show-all-backups", None, &false.to_variant());
         let shower = Rc::clone(self);
@@ -426,7 +467,27 @@ impl Window {
         });
         self.window.add_action(&show_all);
         if let Some(app) = self.window.application() {
-            app.set_accels_for_action("win.show-all-backups", &["<Control>h"]);
+            app.set_accels_for_action("win.show-all-backups", &["<Control><Shift>h"]);
+        }
+
+        // Hidden files, as file managers have them: left out unless asked
+        // for, starting from the desktop's own choice (S18-T11).
+        let show_hidden = gio::SimpleAction::new_stateful(
+            "show-hidden",
+            None,
+            &self.state.view().show_hidden.to_variant(),
+        );
+        let shower = Rc::clone(self);
+        show_hidden.connect_change_state(move |action, value| {
+            let Some(on) = value.and_then(|v| v.get::<bool>()) else {
+                return;
+            };
+            action.set_state(&on.to_variant());
+            shower.state.set_show_hidden(on);
+        });
+        self.window.add_action(&show_hidden);
+        if let Some(app) = self.window.application() {
+            app.set_accels_for_action("win.show-hidden", &["<Control>h"]);
         }
 
         // Up a folder, the way every file manager spells it. The breadcrumb
@@ -484,6 +545,18 @@ impl Window {
             app.set_accels_for_action("win.search", &["<Control>f"]);
         }
 
+        // Rewind, the full-screen view (Stage 18), at the folder and backup
+        // on screen: from the header bar's button, the main menu and Ctrl+T.
+        let rewind = gio::SimpleAction::new("rewind", None);
+        {
+            let this = Rc::clone(self);
+            rewind.connect_activate(move |_, _| this.open_rewind(ui::rewind::Origin::Window));
+        }
+        self.window.add_action(&rewind);
+        if let Some(app) = self.window.application() {
+            app.set_accels_for_action("win.rewind", &["<Control>t"]);
+        }
+
         let compare = gio::SimpleAction::new("compare", None);
         compare.set_enabled(false);
         let comparer = Rc::clone(self);
@@ -534,8 +607,8 @@ impl Window {
         self.window.add_action(&resume);
 
         // The safety stash, which is what makes Replace a decision rather than
-        // a commitment: the toast's Undo covers ten seconds, this covers
-        // thirty days.
+        // a commitment: the banner's Undo covers the last restore, this
+        // covers thirty days.
         let replaced = gio::SimpleAction::new("recently-replaced", None);
         let owner = self.window.clone();
         let service = Rc::clone(&self.daemon);
@@ -1110,7 +1183,18 @@ impl Window {
         self.preview_slot.append(&preview.widget());
         *self.preview.borrow_mut() = Some(preview);
 
-        let restores = ui::restore::build(&self.window, &self.toasts, &self.state, &self.daemon);
+        let restores = ui::restore::build(
+            &self.window,
+            &self.toasts,
+            &self.restored,
+            &self.state,
+            &self.daemon,
+        );
+        // An offer the window was opened to make: a restore's notification,
+        // clicked with no window open.
+        if let Some((job, name, said)) = PENDING_UNDO.with(|pending| pending.borrow_mut().take()) {
+            restores.offer(job, &name, &said);
+        }
         *self.restores.borrow_mut() = Some(Rc::clone(&restores));
         let this = Rc::clone(self);
         self.state.subscribe(move |_, change| {
@@ -1563,6 +1647,76 @@ pub fn fix(window: &gtk4::Window, reason: Reason) {
     });
 }
 
+/// Offer Undo for restore `job`, which restored `name`, saying `said`, in the
+/// window open, or in the next one to open: a restore's notification has been
+/// clicked (S18-T7).
+pub fn offer_undo(job: u64, name: String, said: String) {
+    let open = OPEN.with(|open| open.borrow().first().cloned());
+    let restores = open.and_then(|window| window.restores.borrow().clone());
+    match restores {
+        Some(restores) => restores.offer(job, &name, &said),
+        None => PENDING_UNDO.with(|pending| *pending.borrow_mut() = Some((job, name, said))),
+    }
+}
+
+/// Restore `job` has been put back from its notification: no window offers
+/// it any longer, and each shows the disk as it is now.
+pub fn undone(job: u64) {
+    let open: Vec<Rc<Window>> = OPEN.with(|open| open.borrow().clone());
+    for window in open {
+        let restores = window.restores.borrow().clone();
+        if let Some(restores) = restores {
+            restores.forget(job);
+        }
+    }
+}
+
+/// Open Rewind at `target` over the window already open, for a caller outside
+/// it (S18-T7); the window stays as it is. Whether there was one.
+pub fn rewind_over_open(target: &Target) -> bool {
+    let open = OPEN.with(|open| open.borrow().first().cloned());
+    let Some(window) = open else {
+        return false;
+    };
+    window.open_rewind(ui::rewind::Origin::Elsewhere {
+        target: target.clone(),
+        own: false,
+    });
+    true
+}
+
+/// Open Rewind at `target` over `window`, just made for it and not shown, once
+/// its catalogue has been read; Rewind closes it as it leaves (S18-T7). Should
+/// the catalogue not be read, the window is shown instead, as a launch with
+/// no Rewind would show it, saying why.
+pub fn rewind_over_new(window: &adw::ApplicationWindow, target: Target) {
+    let found = OPEN.with(|open| open.borrow().iter().find(|w| &w.window == window).cloned());
+    let Some(found) = found else { return };
+    let pending = Rc::new(RefCell::new(Some(target)));
+    let opener = Rc::clone(&found);
+    let waiting = Rc::clone(&pending);
+    found.state.subscribe(move |_, change| {
+        if !matches!(change, Change::Archives) {
+            return;
+        }
+        let Some(target) = waiting.borrow_mut().take() else {
+            return;
+        };
+        // After the state has finished telling everyone, so that Rewind's
+        // copy of it is taken whole.
+        let opener = Rc::clone(&opener);
+        glib::idle_add_local_once(move || {
+            opener.open_rewind(ui::rewind::Origin::Elsewhere { target, own: true });
+        });
+    });
+    glib::timeout_add_seconds_local_once(CATALOGUE_WAIT_SECONDS, move || {
+        if pending.borrow_mut().take().is_some() {
+            warn!("the catalogue was not read in time for Rewind; showing the window");
+            found.window.present();
+        }
+    });
+}
+
 /// Point an already-open window at `target`.
 pub fn retarget(window: &gtk4::Window, target: &Target) {
     OPEN.with(|open| {
@@ -1584,6 +1738,13 @@ const ON_DISK_PRESENT: u8 = 2;
 const ON_DISK_ABSENT: u8 = 1;
 
 const STATUS_TICK_SECONDS: u32 = 30;
+
+/// How long Rewind, opened from outside the window, waits for the catalogue
+/// before the window is shown instead.
+const CATALOGUE_WAIT_SECONDS: u32 = 15;
+
+/// The icon of Rewind's button, built into the window (build.rs).
+const REWIND_ICON: &str = "tools.backtrack.Backtrack-rewind-symbolic";
 
 /// What the window says when something needs the daemon and there isn't one.
 const NO_SERVICE: &str = "The Backtrack service is not running, so this cannot be done from here";

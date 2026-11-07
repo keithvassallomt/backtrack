@@ -309,7 +309,7 @@ impl Search {
         // The Trash's copy is the newest: on this computer, and only until the
         // Trash is emptied, which the tag says as the timeline's does.
         if card.in_trash {
-            let tag = Label::new(Some("in the Trash"));
+            let tag = Label::new(Some("trashed"));
             tag.add_css_class("badge");
             tag.add_css_class("in-trash");
             tag.set_tooltip_text(Some(crate::model::group::IN_TRASH_TOOLTIP));

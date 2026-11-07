@@ -26,6 +26,10 @@ const GROUPS: &[(&str, &[&str])] = &[
             "**/.owncloudsync.log",
         ],
     ),
+    (
+        "Container storage",
+        &["**/.local/share/containers", "**/.local/share/docker"],
+    ),
 ];
 
 /// One row of the list.
@@ -131,7 +135,8 @@ mod tests {
                 "target/debug",
                 "*.iso",
                 "VM images",
-                "Nextcloud sync files"
+                "Nextcloud sync files",
+                "Container storage"
             ]
         );
     }
