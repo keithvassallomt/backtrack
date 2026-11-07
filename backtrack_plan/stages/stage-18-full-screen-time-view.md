@@ -450,6 +450,25 @@ Undo from the notification.
 - Everything the view does can be done from the keyboard alone.
 - High contrast is honoured; the motion follows S18-T3's crossfade rule.
 
+**Built** (2026-11-07, in progress):
+- Stepping is announced (GTK's accessible announcement) as the lines under
+  the stack say it, once the stack has been still for 400 ms, so a held key
+  says only where it stops, and never the same twice running.
+- The stack is a group named for its folder ("Backups of Pictures"). The
+  timeline, drawn rather than made of widgets, gives a screen reader a list,
+  "Backups": an item at each tick, named as hovering names it, the one in
+  front selected and the list's active item. The list is a Tab stop; with it
+  focused, stepping is read as its item and the announcement keeps quiet.
+- Names for what shows only an icon: the step arrows ("Older", "Newer"), the
+  window in front's "Show as icons" and "Show as a list"; each icon cell is
+  read as its name and badge ("report.odt, changed").
+- High contrast: the timeline's ticks and labels solid, the second line under
+  the stack unfaded, the wallpaper dimmed further. With animations off, the
+  crossfade of S18-T3, and the timeline's magnification without easing.
+- Checked on the GNOME VM through AT-SPI, as Orca sees it: the "Backups"
+  list and its items, the one in front selected, the group, and the named,
+  focusable buttons, greyed where they do nothing.
+
 **Accept:** with Orca on the GNOME VM, stepping reads out each backup and the
 timeline reads as a list of them; the whole of S18-T6's restore done with the
 keyboard alone.

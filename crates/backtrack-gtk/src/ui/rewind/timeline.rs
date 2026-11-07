@@ -7,6 +7,13 @@
 //! with a marker that follows the stack as it moves; and beside it the two
 //! step arrows. Where each thing goes is `model::timeline`'s; this draws it
 //! and answers the pointer.
+//!
+//! The ticks are drawn, not widgets, so a screen reader is given a list of
+//! the backups instead: an item at each tick, named as hovering names it, the
+//! one in front selected and the list's active item (S18-T8). The list takes
+//! the keyboard in its turn, so Tab reaches it, and stepping with it focused
+//! reads each backup as the list's item. In high contrast the ticks and
+//! labels are drawn solid.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -78,6 +85,13 @@ mod imp {
     pub struct Timeline {
         pub(super) state: RefCell<State>,
         pub(super) arrows: RefCell<Option<gtk4::Box>>,
+        /// The backups as a list, for a screen reader: an item at each tick.
+        pub(super) list: RefCell<Option<gtk4::Fixed>>,
+        pub(super) items: RefCell<Vec<gtk4::Box>>,
+        /// The size the items were last placed for.
+        pub(super) placed: std::cell::Cell<(i32, i32)>,
+        /// Redrawing when high contrast is switched, until this goes.
+        pub(super) contrast: RefCell<Option<glib::SignalHandlerId>>,
         pub(super) older: RefCell<Option<gtk4::Button>>,
         pub(super) newer: RefCell<Option<gtk4::Button>>,
     }
@@ -92,11 +106,19 @@ mod imp {
     impl ObjectImpl for Timeline {
         fn constructed(&self) {
             self.parent_constructed();
-            let older = step_button("pan-up-symbolic", "Older (Up)");
-            let newer = step_button("pan-down-symbolic", "Newer (Down)");
+            let older = step_button("pan-up-symbolic", "Older (Up)", "Older");
+            let newer = step_button("pan-down-symbolic", "Newer (Down)", "Newer");
             let arrows = gtk4::Box::new(gtk4::Orientation::Vertical, 12);
             arrows.append(&older);
             arrows.append(&newer);
+            let list = gtk4::Fixed::builder()
+                .accessible_role(gtk4::AccessibleRole::List)
+                .can_target(false)
+                .focusable(true)
+                .build();
+            list.update_property(&[gtk4::accessible::Property::Label("Backups")]);
+            list.set_parent(&*self.obj());
+            *self.list.borrow_mut() = Some(list);
             arrows.set_parent(&*self.obj());
             *self.arrows.borrow_mut() = Some(arrows);
             *self.older.borrow_mut() = Some(older);
@@ -106,6 +128,12 @@ mod imp {
         fn dispose(&self) {
             if let Some(arrows) = self.arrows.borrow_mut().take() {
                 arrows.unparent();
+            }
+            if let Some(list) = self.list.borrow_mut().take() {
+                list.unparent();
+            }
+            if let Some(handler) = self.contrast.borrow_mut().take() {
+                adw::StyleManager::default().disconnect(handler);
             }
         }
     }
@@ -119,6 +147,21 @@ mod imp {
         }
 
         fn size_allocate(&self, width: i32, height: i32, _baseline: i32) {
+            if let Some(list) = self.list.borrow().clone() {
+                let _ = list.measure(gtk4::Orientation::Horizontal, -1);
+                list.allocate(width, height, -1, None);
+                // The items go where the ticks are, which depends on the
+                // size; moved after this allocation, not during it.
+                if self.placed.get() != (width, height) {
+                    self.placed.set((width, height));
+                    let timeline = self.obj().downgrade();
+                    glib::idle_add_local_once(move || {
+                        if let Some(timeline) = timeline.upgrade() {
+                            timeline.place_items();
+                        }
+                    });
+                }
+            }
             let Some(arrows) = self.arrows.borrow().clone() else {
                 return;
             };
@@ -141,6 +184,9 @@ mod imp {
 
         fn snapshot(&self, snapshot: &gtk4::Snapshot) {
             self.obj().draw(snapshot);
+            if let Some(list) = self.list.borrow().as_ref() {
+                self.obj().snapshot_child(list, snapshot);
+            }
             if let Some(arrows) = self.arrows.borrow().as_ref() {
                 self.obj().snapshot_child(arrows, snapshot);
             }
@@ -160,10 +206,11 @@ impl Default for Timeline {
     }
 }
 
-fn step_button(icon: &str, tooltip: &str) -> gtk4::Button {
+fn step_button(icon: &str, tooltip: &str, name: &str) -> gtk4::Button {
     let button = gtk4::Button::from_icon_name(icon);
     button.add_css_class("rewind-step");
     button.set_tooltip_text(Some(tooltip));
+    button.update_property(&[gtk4::accessible::Property::Label(name)]);
     // The keyboard stays with the window in front.
     button.set_focus_on_click(false);
     button
@@ -189,6 +236,13 @@ impl Timeline {
         timeline.set_vexpand(true);
         timeline.set_has_tooltip(true);
         timeline.listen();
+        let weak = timeline.downgrade();
+        let handler = adw::StyleManager::default().connect_high_contrast_notify(move |_| {
+            if let Some(timeline) = weak.upgrade() {
+                timeline.queue_draw();
+            }
+        });
+        *timeline.imp().contrast.borrow_mut() = Some(handler);
         timeline
     }
 
@@ -205,17 +259,101 @@ impl Timeline {
         state.hovered = None;
         state.target = state.target.min(state.ticks.len().saturating_sub(1));
         drop(state);
+        self.list_ticks();
         self.arrows_follow();
         self.ease();
         self.queue_draw();
+    }
+
+    /// An item in the list for each tick, named for its backup.
+    fn list_ticks(&self) {
+        let Some(list) = self.imp().list.borrow().clone() else {
+            return;
+        };
+        for item in self.imp().items.borrow_mut().drain(..) {
+            list.remove(&item);
+        }
+        let state = self.imp().state.borrow();
+        let items: Vec<gtk4::Box> = state
+            .ticks
+            .iter()
+            .enumerate()
+            .map(|(index, tick)| {
+                let item = gtk4::Box::builder()
+                    .accessible_role(gtk4::AccessibleRole::ListItem)
+                    .can_target(false)
+                    .width_request(TICK_REACH as i32)
+                    .height_request(8)
+                    .build();
+                item.update_property(&[gtk4::accessible::Property::Label(&tick.name)]);
+                item.update_state(&[gtk4::accessible::State::Selected(Some(
+                    index == state.target,
+                ))]);
+                list.put(&item, 0.0, 0.0);
+                item
+            })
+            .collect();
+        drop(state);
+        *self.imp().items.borrow_mut() = items;
+        self.place_items();
+        self.point_at_front();
+    }
+
+    /// The list's active item: the backup in front.
+    fn point_at_front(&self) {
+        let target = self.imp().state.borrow().target;
+        if let (Some(list), Some(item)) = (
+            self.imp().list.borrow().as_ref(),
+            self.imp().items.borrow().get(target),
+        ) {
+            list.update_relation(&[gtk4::accessible::Relation::ActiveDescendant(
+                item.upcast_ref(),
+            )]);
+        }
+    }
+
+    /// Whether the list of backups has the keyboard, where stepping is read
+    /// as its items.
+    pub fn list_has_focus(&self) -> bool {
+        self.imp()
+            .list
+            .borrow()
+            .as_ref()
+            .is_some_and(|list| list.has_focus())
+    }
+
+    /// Each item where its tick is drawn.
+    fn place_items(&self) {
+        let Some(list) = self.imp().list.borrow().clone() else {
+            return;
+        };
+        let band = self.band();
+        let right = f64::from(self.width()) - f64::from(EDGE);
+        let items = self.imp().items.borrow();
+        let count = items.len();
+        for (index, item) in items.iter().enumerate() {
+            let y = timeline::y_of(index, count, band) - 4.0;
+            list.move_(item, (right - TICK_REACH).max(0.0), y.max(0.0));
+        }
     }
 
     /// Where the stack is drawn, in backups, and the backup it is going to.
     pub fn set_position(&self, position: f64, target: usize) {
         let mut state = self.imp().state.borrow_mut();
         state.position = position;
-        state.target = target;
+        let before = std::mem::replace(&mut state.target, target);
         drop(state);
+        if before != target {
+            let items = self.imp().items.borrow();
+            for (index, item) in [(before, false), (target, true)]
+                .into_iter()
+                .filter_map(|(index, on)| items.get(index).map(|item| (on, item)))
+            {
+                item.update_state(&[gtk4::accessible::State::Selected(Some(index))]);
+            }
+            drop(items);
+            self.point_at_front();
+        }
         self.arrows_follow();
         self.queue_draw();
     }
@@ -403,7 +541,10 @@ impl Timeline {
         let band = self.band();
         let spacing = timeline::spacing(count, band);
         let right = self.width() as f32 - EDGE;
-        let accent = adw::StyleManager::default().accent_color_rgba();
+        let style = adw::StyleManager::default();
+        let accent = style.accent_color_rgba();
+        // High contrast: solid ticks and labels, nothing faded.
+        let solid = style.is_high_contrast();
         let white = rgba(1.0, 1.0, 1.0, 1.0);
         let shown = |index: usize| state.shown.get(index).copied().unwrap_or(0.0) as f32;
         let y_of = |index: usize| timeline::y_of(index, count, band) as f32;
@@ -428,7 +569,11 @@ impl Timeline {
             snapshot.save();
             snapshot.translate(&graphene::Point::new(right - LABEL_SET_BACK, y_of(index)));
             snapshot.scale(scale, scale);
-            snapshot.push_opacity(if now { 1.0 } else { f64::from(0.85 + 0.15 * m) });
+            snapshot.push_opacity(if now || solid {
+                1.0
+            } else {
+                f64::from(0.85 + 0.15 * m)
+            });
             snapshot.push_shadow(&[gsk::Shadow::new(rgba(0.0, 0.0, 0.0, 0.7), 0.0, 1.0, 3.0)]);
             snapshot.translate(&graphene::Point::new(-(w as f32), -(h as f32) / 2.0));
             snapshot.append_layout(&layout, &white);
@@ -454,7 +599,7 @@ impl Timeline {
             } else if state.hovered == Some(index) {
                 white
             } else {
-                rgba(1.0, 1.0, 1.0, 0.45)
+                rgba(1.0, 1.0, 1.0, if solid { 1.0 } else { 0.45 })
             };
             let rect = graphene::Rect::new(right - w, y_of(index) - h / 2.0, w, h);
             snapshot.push_rounded_clip(&gsk::RoundedRect::from_rect(rect, 1.0));

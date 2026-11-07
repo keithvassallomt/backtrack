@@ -75,6 +75,15 @@ const PICTURES_AHEAD: usize = 64;
 /// backup.
 type When = Option<i64>;
 
+/// How long after the stack's last step the backup in front is announced.
+const ANNOUNCE_AFTER: std::time::Duration = std::time::Duration::from_millis(400);
+
+/// What a screen reader is told of the backup in front: the two lines under
+/// the stack (S18-T8).
+fn announcement(when: &str, where_: &str) -> String {
+    format!("{when}. {where_}")
+}
+
 /// Sets what the lines under the stack say, for the slot in front.
 type Say = Rc<dyn Fn(usize)>;
 
@@ -236,6 +245,12 @@ pub fn open(
         // Nothing to restore from the folder as it is now, nor without the
         // service.
         let can_restore = rewind.restores.is_some();
+        // What a screen reader was last told, and which change of the lines
+        // is the latest (S18-T8).
+        let told = Rc::new(RefCell::new(String::new()));
+        let turn = Rc::new(Cell::new(0u32));
+        let teller = shell.downgrade();
+        let listing = timeline.downgrade();
         move |index: usize| {
             restore.set_sensitive(can_restore && index > 0);
             let view = state.view();
@@ -250,6 +265,26 @@ pub fn open(
             );
             when.set_text(&first);
             where_.set_text(&second);
+            // Said once the stack has come to rest, or a held key would
+            // queue up a backup for every one it passed.
+            let this_turn = turn.get().wrapping_add(1);
+            turn.set(this_turn);
+            let spoken = announcement(&first, &second);
+            let (told, turn, teller) = (Rc::clone(&told), Rc::clone(&turn), teller.clone());
+            let listing = listing.clone();
+            glib::timeout_add_local_once(ANNOUNCE_AFTER, move || {
+                if turn.get() != this_turn || *told.borrow() == spoken {
+                    return;
+                }
+                // With the list of backups focused, its item is read instead.
+                if listing.upgrade().is_some_and(|t| t.list_has_focus()) {
+                    return;
+                }
+                if let Some(shell) = teller.upgrade() {
+                    shell.announce(&spoken, gtk4::AccessibleAnnouncementPriority::Medium);
+                }
+                *told.borrow_mut() = spoken;
+            });
         }
     };
     let say: Rc<dyn Fn(usize)> = Rc::new(say);
@@ -447,6 +482,12 @@ impl Rewind {
         self.generation.set(self.generation.get() + 1);
         *self.slots.borrow_mut() = slots;
         self.stage.set_slots(contents, at);
+        let named = match crate::path::name(&view.folder) {
+            "" => "Backups".to_owned(),
+            name => format!("Backups of {name}"),
+        };
+        self.stage
+            .update_property(&[gtk4::accessible::Property::Label(&named)]);
         let now = glib::DateTime::now_local().map_or(0, |now| now.to_unix());
         let ticks = std::iter::once(None)
             .chain(view.listed.iter().map(Some))
@@ -988,8 +1029,13 @@ fn find_background(stage: &Stage, monitor: Option<gdk::Monitor>) {
                 match gio::spawn_blocking(move || crate::wallpaper::draw(&wallpaper, screen)).await
                 {
                     Ok(Ok(drawn)) => {
-                        // Darkened more in dark style, as the prototype does.
-                        let dim = if adw::StyleManager::default().is_dark() {
+                        // Darkened more in dark style, as the prototype does,
+                        // and most in high contrast, under the light timeline
+                        // and lines (S18-T8).
+                        let style = adw::StyleManager::default();
+                        let dim = if style.is_high_contrast() {
+                            0.65
+                        } else if style.is_dark() {
                             0.5
                         } else {
                             0.3
@@ -1015,4 +1061,17 @@ fn find_background(stage: &Stage, monitor: Option<gdk::Monitor>) {
             stage.set_background(background);
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_backup_in_front_is_announced_as_its_lines_say() {
+        assert_eq!(
+            announcement("Thu 5 Nov 2026, 08:26", "Backup 3 of 8"),
+            "Thu 5 Nov 2026, 08:26. Backup 3 of 8"
+        );
+    }
 }

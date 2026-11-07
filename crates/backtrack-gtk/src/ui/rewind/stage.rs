@@ -220,7 +220,10 @@ impl Default for Stage {
 
 impl Stage {
     pub fn new() -> Stage {
-        let stage: Stage = glib::Object::new();
+        // A group, named for the folder whose backups it holds (S18-T8).
+        let stage: Stage = glib::Object::builder()
+            .property("accessible-role", gtk4::AccessibleRole::Group)
+            .build();
         stage.set_hexpand(true);
         stage.set_vexpand(true);
         stage.add_tick_callback(|stage, clock| {

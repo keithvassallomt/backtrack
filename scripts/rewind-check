@@ -68,6 +68,9 @@
 #                                  there, its tray icon alone, the development
 #                                  Dolphin menus out, a file to restore over
 #   scripts/rewind-check 16 done   the development build's menus and tray back
+#   scripts/rewind-check 17        on the GNOME VM, with Orca: what Rewind
+#                                  says, a restore by keyboard alone, and
+#                                  high contrast (S18-T8)
 #
 # Run from the checkout.
 
@@ -777,6 +780,40 @@ EOF
 
   Then: scripts/rewind-check 16 done. Tell me any of a to e that did not
   happen, or did and looked wrong.
+EOF
+    ;;
+17)
+    vm="fedora45 (GNOME)"
+    say "17. Rewind with a screen reader and the keyboard alone, on $vm (S18-T8)"
+    cat <<EOF
+  Close any Backtrack window open on the VM.
+
+  a. On the VM, turn Orca on: Super+Alt+S. From the laptop:
+       just vm-app "$vm" --select /home/keith/Pictures/stone_bird.jpg
+     and press Ctrl+T. Orca says Rewind's window.
+  b. Press Up. Once the stack settles, Orca says the backup in front, as
+     the lines under the stack say it ("Thu 5 Nov 2026, 08:26. Backup 2 of
+     6"). Hold Up for a second: Orca says only the backup it stops at.
+     Press Home: "Today (Now). The folder as it is now".
+  c. Press Tab until Orca says "Backups", a list. Press Up and Down: Orca
+     reads each backup as the list's item, once each, and the stack steps.
+  d. The rest by Tab: the step arrows are "Older" and "Newer", the bar's
+     "Cancel" and "Restore", and in the window in front's title bar "Show
+     as icons" and "Show as a list". In the icons, Left and Right move
+     among them, and Orca reads each as its name and badge ("stone_bird.jpg,
+     changed").
+  e. A restore, keyboard alone. Step to a backup where stone_bird.jpg is
+     marked "changed", select it with Left and Right, and press Enter. In
+     the dialog, Tab to Replace and press Enter. Rewind closes; in the
+     window, Tab to the bar under the header bar and its Undo, and press
+     Enter: it is put back.
+  f. Turn Orca off: Super+Alt+S. In Settings, Accessibility, turn High
+     Contrast on, and open Rewind again: the timeline's ticks and labels
+     and the lines under the stack are solid white, the wallpaper darker.
+     Turn High Contrast off.
+
+  Tell me any of a to f that did not happen, or did and sounded or looked
+  wrong.
 EOF
     ;;
 *)

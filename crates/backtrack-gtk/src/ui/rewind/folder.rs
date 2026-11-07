@@ -259,6 +259,9 @@ fn modes(mode: Mode, actions: Option<&Actions>) -> GtkBox {
         .active(mode == Mode::List)
         .group(&icons)
         .build();
+    // Their names for a screen reader, which reads no icon (S18-T8).
+    icons.update_property(&[gtk4::accessible::Property::Label("Show as icons")]);
+    list.update_property(&[gtk4::accessible::Property::Label("Show as a list")]);
     if let Some(actions) = actions {
         for (button, chosen) in [(&icons, Mode::Icons), (&list, Mode::List)] {
             let change = Rc::clone(&actions.mode);
@@ -377,6 +380,8 @@ fn icon_factory(pictures: &Pictures, cells: &Cells, shown: Option<Shown>) -> Sig
             if let Some(base) = &base {
                 base.set_visible(chosen.class.is_some());
             }
+            // What a screen reader says of the cell: its name and its badge.
+            item.set_accessible_label(&spoken(&row.entry.name, chosen.class.map(|_| chosen.text)));
             badge.set_text(chosen.text);
             if let Some(class) = chosen.class {
                 badge.add_css_class(class);
@@ -389,6 +394,15 @@ fn icon_factory(pictures: &Pictures, cells: &Cells, shown: Option<Shown>) -> Sig
         }
     });
     factory
+}
+
+/// A cell as a screen reader says it: the file's name, and its badge's word
+/// if it has one ("report.odt, changed").
+fn spoken(name: &str, badge: Option<&str>) -> String {
+    match badge {
+        Some(word) if !word.is_empty() => format!("{name}, {word}"),
+        _ => name.to_string(),
+    }
 }
 
 /// A picture made for `name` after its cell was bound, put in the cell if it
@@ -417,4 +431,16 @@ fn notice(title: &str, description: Option<&str>) -> GtkBox {
         notice.append(&more);
     }
     notice
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_cell_is_spoken_as_its_name_and_badge() {
+        assert_eq!(spoken("report.odt", Some("changed")), "report.odt, changed");
+        assert_eq!(spoken("notes.txt", None), "notes.txt");
+        assert_eq!(spoken("notes.txt", Some("")), "notes.txt");
+    }
 }
