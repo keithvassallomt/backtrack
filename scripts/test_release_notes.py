@@ -2,8 +2,13 @@
 # SPDX-FileCopyrightText: 2026 Keith Vassallo <keith@vassallo.cloud>
 """Tests for release_notes.py: python3 -m unittest discover -s scripts."""
 
+import contextlib
+import io
+import tempfile
 import unittest
 import xml.etree.ElementTree as ElementTree
+from pathlib import Path
+from unittest import mock
 
 import release_notes
 
@@ -62,6 +67,34 @@ class ReleaseNotes(unittest.TestCase):
         self.assertEqual(date, "2026-10-01")
         self.assertTrue(body.endswith("in it."), body)
         self.assertNotIn("example.org/compare", body)
+
+    def test_the_markdown_has_each_entry_on_one_line(self):
+        # GitHub shows a release's line breaks as they are.
+        with tempfile.TemporaryDirectory() as directory:
+            changelog = Path(directory) / "CHANGELOG.md"
+            changelog.write_text(CHANGELOG)
+            shown = io.StringIO()
+            with mock.patch.object(release_notes, "CHANGELOG", changelog):
+                with contextlib.redirect_stdout(shown):
+                    release_notes.main(["v0.2.0"])
+        self.assertEqual(
+            shown.getvalue(),
+            "### Added\n"
+            "\n"
+            "- Search finds files deleted since, in **every** backup.\n"
+            "- Restore a folder `as it was`, entries that wrap onto a second line included.\n"
+            "\n"
+            "### Fixed\n"
+            "\n"
+            "- A banner that said <nothing>.\n",
+        )
+
+    def test_a_link_stays_a_link_in_markdown(self):
+        body = "### Added\n\n- A [guide](https://example.org/guide.md)\n  here."
+        self.assertEqual(
+            release_notes.markdown(body),
+            "### Added\n\n- A [guide](https://example.org/guide.md) here.",
+        )
 
     def test_a_link_is_its_text_in_appstream(self):
         release = release_notes.appstream(

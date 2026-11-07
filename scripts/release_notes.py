@@ -3,7 +3,8 @@
 # SPDX-FileCopyrightText: 2026 Keith Vassallo <keith@vassallo.cloud>
 """A version's section of CHANGELOG.md, as release notes.
 
-    release_notes.py VERSION              the section's entries, as Markdown
+    release_notes.py VERSION              the section's entries, as Markdown,
+                                          each on one line
     release_notes.py --appstream VERSION  the same, as an AppStream <release>
 
 The release workflow (S13-T5) puts the first on the GitHub release, and the
@@ -107,6 +108,16 @@ def entries(body):
     return [(name, items) for name, items in categories if items]
 
 
+def markdown(body):
+    """The body as a GitHub release shows it: each entry on one line. GitHub
+    breaks a release's notes, as a comment, wherever the text breaks, so an
+    entry wrapped in CHANGELOG.md would read as a narrow column."""
+    out = []
+    for name, items in entries(body):
+        out += [f"### {name}", "", *(f"- {item}" for item in items), ""]
+    return "\n".join(out).strip()
+
+
 def inline(text):
     """Markdown emphasis and code, in the markup AppStream allows; a link,
     which it does not allow, as its text."""
@@ -138,7 +149,7 @@ def main(argv):
         date, body = notes(CHANGELOG.read_text(), version)
     except NotReleased as error:
         sys.exit(f"release_notes: {error}")
-    print(appstream(version, date, body) if as_appstream else body)
+    print(appstream(version, date, body) if as_appstream else markdown(body))
 
 
 if __name__ == "__main__":
