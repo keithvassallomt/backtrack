@@ -7,11 +7,11 @@ themselves stay quietly out of the way.
 
 ## Installing
 
-From the first release:
+[Install Backtrack](docs/installing.md) walks through each way, step by step.
 
 | Where | How |
 |---|---|
-| Any distribution | The Flatpak, from FriendlyHub: [packaging/flatpak/FRIENDLYHUB.md](packaging/flatpak/FRIENDLYHUB.md) |
+| Any distribution | [The Flatpak, from FriendlyHub](docs/installing.md#any-distribution-the-flatpak) |
 | Fedora 44 and later | COPR: `sudo dnf copr enable keithvassallo/backtrack`, then `sudo dnf install backtrack` |
 | Ubuntu 26.04 and later | PPA: `sudo add-apt-repository ppa:keithvassallomt/backtrack`, then `sudo apt install backtrack` |
 | Arch | AUR: `backtrack` |

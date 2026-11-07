@@ -2,7 +2,9 @@
 
 ## For Keith to do
 
-Nothing right now.
+- Follow the Arch Linux steps in `docs/installing.md` (S19-T4) on an Arch
+  machine, installing and then uninstalling, and say whether each step went
+  as written.
 
 ## Notes
 
@@ -220,7 +222,7 @@ Nothing right now.
 - [x] S19-T1 An index of the guides, with developer notes moved out of them
 - [x] S19-T2 Investigate: opening backups made by Vorta or Pika Backup
 - [x] S19-T3 Screenshots of Backtrack for the guides, the site and the software centres
-- [ ] S19-T4 A guide to installing Backtrack
+- [/] S19-T4 A guide to installing Backtrack
 - [ ] S19-T5 A guide to setting up your backups
 - [ ] S19-T6 A guide to getting a file back from an earlier backup
 - [ ] S19-T7 A guide to finding a lost file with search
