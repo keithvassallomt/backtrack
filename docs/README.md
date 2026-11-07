@@ -8,6 +8,10 @@ likely to need them.
 
 - [Install Backtrack](installing.md)
 - [Set up your backups](getting-started.md)
+- [Get a file back from an earlier backup](restoring.md)
+- [Find a lost file with search](searching.md)
+- [Move to a new computer](new-computer.md)
+- [When Backtrack needs you](when-backtrack-needs-you.md)
 - [Go back through a folder's history with Rewind](rewind.md)
 - [Get back a file you deleted between two backups](trash.md)
 - [Take snapshots between backups with Snapper](snapper.md)
@@ -20,6 +24,7 @@ hand. The plan for every stage, the architecture and the design notes are in
 [backtrack_plan](../backtrack_plan/README.md).
 
 - [How the file manager items work](file-manager-integration-internals.md)
+- [How Backtrack reads the Trash](trash-internals.md)
 - [The tray icon, and Backtrack running in the background](tray-and-background.md)
 - [The development VMs](development-vms.md)
 - [The disaster recovery drill](disaster-recovery-drill.md)

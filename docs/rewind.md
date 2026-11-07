@@ -1,78 +1,97 @@
-# Rewind
+# Go back through a folder's history with Rewind
 
-Rewind is Backtrack's full-screen way back through a folder's history: the
-folder as it is now in front, its backups receding behind it into the
-distance, and a timeline down the right-hand edge. Going back in time flies
-the stack towards you. It is for the moment you want something back and want
-to see the folder as it was, rather than read a list of dates.
+Rewind fills the screen with a folder as it is now, its backups stretching
+away behind it, and a timeline down the side. Going back in time flies the
+backups towards you, so you can watch the folder change until it looks the
+way you remember. This guide opens Rewind from wherever you are, goes back to
+the moment you want, restores a file, and undoes the restore if it was the
+wrong one.
 
-Backtrack's window stays the everyday tool. Rewind shows the same backups and
-restores through the same steps; only the way of looking differs.
+## Open Rewind
 
-## Opening Rewind
+Choose whichever way is closest:
 
-| From | How | Where it opens |
-|---|---|---|
-| Backtrack's window | The Rewind button in the header bar, **Rewind…** in the main menu, or Ctrl+T | The folder, backup and file the window is showing |
-| GNOME Files | Right-click a file: **Rewind This File…**. Right-click a folder, or the empty space of the folder being shown: **Rewind This Folder…** | That file's folder, with the file selected; or that folder |
-| Dolphin | The same two items, in the **Backtrack** submenu | As in GNOME Files |
-| The application launcher | Right-click Backtrack in GNOME's dock or Plasma's task manager: **Rewind** | Where Backtrack's window would open: your home folder, if that is what you back up |
-| The tray icon | **Rewind…** in its menu, on desktops with a tray | As from the launcher |
+- In Backtrack's window, click the Rewind button at the top right, choose
+  **Rewind…** in the main menu, or press **Ctrl+T**. Rewind opens at the
+  folder, backup and file the window is showing.
+- In GNOME Files, right-click a file and choose **Rewind This File…**, or
+  right-click a folder, or the empty space of the folder you are in, and
+  choose **Rewind This Folder…**. In Dolphin, the same items are in the
+  **Backtrack** submenu. These need Backtrack's items in your file manager
+  ([Add Backtrack to your file manager's menu](file-manager-integration.md)).
+- From your desktop's app list or dock, right-click Backtrack's icon and
+  choose **Rewind**.
+- From the tray, on desktops with one, choose **Rewind…** in Backtrack's
+  menu.
 
-From the file manager, the launcher and the tray, Rewind starts at the folder
-as it is now, and leaving it takes you back to where you were. Backtrack's
-window, if it is open, is left as it was.
+Opened from anywhere but the window, Rewind starts at **Today (Now)**: the
+folder as it is now.
 
-The file managers' items need Backtrack's integration for them; see
-[File-manager integration](file-manager-integration.md). In Dolphin 26.04 and
-later you can give Rewind's items keyboard shortcuts of your own, in
-Dolphin's **Configure Keyboard Shortcuts**.
+![Rewind over a folder of photos](images/rewind.png)
 
-## Moving through time
+## Go back to the moment you want
 
-- **Up** and **Down** (or Page Up and Page Down, or the mouse wheel) step one
-  backup older or newer. Held down, the stack glides.
-- **Home** goes to the folder as it is now, **End** to the oldest backup.
-- **The timeline** down the right-hand edge has a mark for each backup: the
-  oldest at the top, now at the bottom, labelled by day and by month. Point at
-  it to magnify the marks near the pointer, rest on one to see when it was,
-  and click one to fly there. The two round arrows beside it step older and
-  newer.
+1. Press **Up**, or **Page Up**, or turn the mouse wheel up, to go one backup
+   back. **Down** goes one forward. Hold the key down and the stack glides.
+   **Home** goes to **Today (Now)** and **End** to the oldest backup.
+2. Or use the timeline down the right-hand edge, which has a mark for each
+   backup, oldest at the top. Point at it to spread the marks out, rest on
+   one to see when it was, and click it to fly there. The arrows beside it go
+   one backup older or newer.
+3. Under the stack, Rewind says which backup you are looking at, such as "Thu
+   5 Nov 2026, 08:26" and "Backup 3 of 8 with changes to this folder". It
+   lists only the backups in which the folder changed.
 
-Only the backups in which the folder changed are listed, as in the window. A
-backup kept only on this computer, a snapshot, and things in the Trash are
-marked as the window's sidebar marks them.
+## Find the file
 
-## The window in front
+The folder in front shows its files as icons, or as a list with the buttons
+in its title bar. A file marked **changed** has a newer version in the latest
+backup; one marked **deleted** is not in the latest backup at all.
 
-The folder at the backup in front, as icons or, with the buttons in its title
-bar, as the window's list. Pictures show as pictures: the desktop's own
-thumbnails where it has them, and, for a picture that has changed since,
-one made from the backup's copy. **changed** and **deleted** say how each
-file differs from the one on your computer now.
+- Double-click a folder, or select it and press **Enter**, to open it.
+- **Alt+Up** goes up a folder.
+- **Left** and **Right** move between the icons.
+- **Ctrl+H** shows or hides hidden files.
 
-Open a folder by double-clicking it, or selecting it and pressing Enter. Go
-up with Alt+Up, or through the path at the top left. Left and Right move
-among the icons. Ctrl+H shows or hides hidden files.
+## Restore it
 
-## Restoring
+1. Click the file to select it.
+2. Click **Restore**, under the stack, or press **Enter**. With nothing
+   selected, the whole folder is restored.
+3. If something on your computer is in the way, Backtrack asks what to do, as
+   it does in the window: **Replace**, **Keep Both** or **Cancel** for one
+   file, or one question for a whole folder. [Get a file back from an earlier
+   backup](restoring.md) says what each choice does.
 
-**Restore**, under the stack, puts back the selected file or folder as it was
-in the backup in front; with nothing selected, the whole folder. Enter does
-the same, except on a folder, which Enter opens. If something is in the way
-on your computer, Backtrack asks what to do, as it does in the window, and
-nothing changes until you answer.
+When the restore is done, Rewind closes.
 
-Once a restore is done, Rewind closes, and Backtrack offers to undo it, in a
-bar under the window's header bar that stays until you use it or restore
-something else. When Rewind was opened from elsewhere, the offer comes as a
-notification: its **Undo** button undoes the restore, and clicking the
-notification itself opens Backtrack with the same bar.
+## Undo it if it was the wrong one
 
-**Cancel**, or Escape, leaves without changing anything.
+- If you opened Rewind from the window, the window shows a bar under its
+  header with **Undo**. Click it to put things back as they were.
+- If you opened it from anywhere else, a notification says what was
+  restored, with an **Undo** button, for ten minutes. Clicking the
+  notification itself opens Backtrack, with the same bar.
 
-## Behind the stack
+## Leave without restoring
 
-Rewind shows your desktop's wallpaper behind the stack, dimmed. Where it
-cannot find it, or cannot read it, it shows a field of stars instead, which
-streams past as you move through time.
+Click **Cancel**, or press **Escape**. Nothing changes. If you opened Rewind
+from the window, the window then shows the folder you were looking at in
+Rewind.
+
+## If it did not go as described
+
+- **Restore is greyed out.** You are at **Today (Now)**, the folder as it is
+  already. Go back at least one backup.
+- **Backtrack's window opened instead of Rewind.** Backtrack was still reading
+  its list of backups. Try again in a moment.
+- **There are no Rewind items in your file manager.** They need installing
+  first: see [Add Backtrack to your file manager's
+  menu](file-manager-integration.md).
+
+In Dolphin 26.04 and later you can give Rewind's items keyboard shortcuts of
+your own, in Dolphin's **Configure Keyboard Shortcuts**.
+
+## Where to go next
+
+[Get back a file you deleted between two backups](trash.md).
