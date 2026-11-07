@@ -22,4 +22,5 @@ Actions=rewind;
 
 [Desktop Action rewind]
 Name=Rewind
+Icon=tools.backtrack.Backtrack-rewind-symbolic
 Exec=backtrack-gtk --rewind

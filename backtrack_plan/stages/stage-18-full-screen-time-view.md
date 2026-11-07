@@ -381,8 +381,8 @@ checked here.
 File…** (on a file: its folder, the file selected) and **Rewind This
 Folder…** (on a folder, or the folder being shown), after the existing two.
 Opened from outside the window, Rewind leaves an open window as it was. The
-header bar button gets an icon of its own, drawn for it; until then a stock
-stand-in.
+header bar button gets an icon of its own: Keith's design (a window with a
+folder, a window behind, the timeline's ticks), snapped to the 16 px grid.
 
 **Built** (2026-11-07, in progress):
 - `backtrack-gtk --rewind`, with `--path` and `--select` as the window takes
@@ -405,6 +405,10 @@ stand-in.
   packages and the Flatpak's copies install the third file.
 - The launcher: a **Rewind** desktop action. The tray: **Rewind…** beside
   **Open Backtrack**.
+- The icon, `tools.backtrack.Backtrack-rewind-symbolic`, compiled into the
+  window as a resource (`build.rs`, with GLib's `glib-compile-resources`), so
+  it shows in every build; the packages and the Flatpak install it too, for
+  Dolphin's items and the launcher's action.
 - Dolphin 26.04 shipped keyboard shortcuts for service menu actions
   (Dolphin MR !1167), which the user assigns in Configure Keyboard Shortcuts;
   a service menu cannot declare one, so Backtrack's files carry none, and the

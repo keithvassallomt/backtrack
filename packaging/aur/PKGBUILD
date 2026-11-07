@@ -27,7 +27,7 @@ license=(GPL-3.0-or-later)
 # dolphin, python and python-nautilus here, as it does for every split package's
 # dependencies; they are needed only at run time, and installing a desktop's
 # file manager to build a package that does not link against it buys nothing.
-makedepends=(cargo gtk4 libadwaita)
+makedepends=(cargo glib2 gtk4 libadwaita)
 # The libraries the window is linked against. namcap also asks for borg, compiles the SQLite that rusqlite bundles to GCC's LTO
 # bytecode, which Rust's linker cannot read: every sqlite3_* symbol is then
 # undefined. Rust code is unaffected; this turns it off for the C.
@@ -84,6 +84,8 @@ package_backtrack() {
   install -Dm644 -t "$pkgdir/usr/share/icons/hicolor/symbolic/apps" \
     packaging/icons/hicolor/symbolic/apps/tools.backtrack.Backtrack-symbolic.svg \
     packaging/icons/hicolor/symbolic/apps/tools.backtrack.Backtrack-tray-symbolic.svg
+  install -Dm644 -t "$pkgdir/usr/share/icons/hicolor/symbolic/actions" \
+    packaging/icons/hicolor/symbolic/actions/tools.backtrack.Backtrack-rewind-symbolic.svg
   install -Dm644 -t "$pkgdir/etc/xdg/autostart" packaging/autostart/backtrack-tray.desktop
 }
 

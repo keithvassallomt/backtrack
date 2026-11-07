@@ -28,6 +28,8 @@ BuildRequires:  rust
 BuildRequires:  gcc
 BuildRequires:  pkgconfig(gtk4) >= 4.22
 BuildRequires:  pkgconfig(libadwaita-1) >= 1.9
+# The window's own icons are compiled into it (crates/backtrack-gtk/build.rs).
+BuildRequires:  /usr/bin/glib-compile-resources
 BuildRequires:  desktop-file-utils
 BuildRequires:  appstream
 BuildRequires:  systemd-rpm-macros
@@ -100,6 +102,8 @@ install -Dm644 -t %{buildroot}%{_datadir}/icons/hicolor/scalable/apps \
 install -Dm644 -t %{buildroot}%{_datadir}/icons/hicolor/symbolic/apps \
     packaging/icons/hicolor/symbolic/apps/tools.backtrack.Backtrack-symbolic.svg \
     packaging/icons/hicolor/symbolic/apps/tools.backtrack.Backtrack-tray-symbolic.svg
+install -Dm644 -t %{buildroot}%{_datadir}/icons/hicolor/symbolic/actions \
+    packaging/icons/hicolor/symbolic/actions/tools.backtrack.Backtrack-rewind-symbolic.svg
 install -Dm644 -t %{buildroot}%{_sysconfdir}/xdg/autostart packaging/autostart/backtrack-tray.desktop
 install -Dm644 -t %{buildroot}%{_datadir}/nautilus-python/extensions integrations/nautilus/backtrack.py
 install -Dm644 -t %{buildroot}%{_datadir}/kio/servicemenus \
@@ -135,6 +139,7 @@ appstreamcli validate --no-net %{buildroot}%{_metainfodir}/tools.backtrack.Backt
 %{_datadir}/icons/hicolor/scalable/apps/tools.backtrack.Backtrack.svg
 %{_datadir}/icons/hicolor/symbolic/apps/tools.backtrack.Backtrack-symbolic.svg
 %{_datadir}/icons/hicolor/symbolic/apps/tools.backtrack.Backtrack-tray-symbolic.svg
+%{_datadir}/icons/hicolor/symbolic/actions/tools.backtrack.Backtrack-rewind-symbolic.svg
 %config(noreplace) %{_sysconfdir}/xdg/autostart/backtrack-tray.desktop
 
 %files nautilus

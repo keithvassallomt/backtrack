@@ -461,8 +461,8 @@ EOF
     say "13. Every way into Rewind, on $vm, the development build (S18-T7)"
     cat <<EOF
   Run scripts/rewind-check 13 setup first, and close any Backtrack window
-  open on the VM. Rewind's button has a stand-in icon (two arrows) until its
-  own is drawn.
+  open on the VM. Rewind's button has its own icon: a window with a folder,
+  a window behind it, and the timeline's ticks.
 
   a. Backtrack's window. From the laptop:
        just vm-app "$vm" --path /home/keith/Pictures

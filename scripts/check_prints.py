@@ -39,6 +39,8 @@ EXEMPT_FILES = {
     # drawing the desktop's wallpaper went, for checking a desktop by hand.
     "crates/backtrack-gtk/src/wallpaper/report.rs",
     "crates/backtrack-core/examples/ingest_memory.rs",
+    # A build script talks to Cargo through its standard output.
+    "crates/backtrack-gtk/build.rs",
 }
 
 

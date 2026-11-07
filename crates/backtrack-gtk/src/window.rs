@@ -1699,8 +1699,8 @@ const STATUS_TICK_SECONDS: u32 = 30;
 /// before the window is shown instead.
 const CATALOGUE_WAIT_SECONDS: u32 = 15;
 
-/// The icon of Rewind's button: a stand-in until its own is drawn.
-const REWIND_ICON: &str = "media-seek-backward-symbolic";
+/// The icon of Rewind's button, built into the window (build.rs).
+const REWIND_ICON: &str = "tools.backtrack.Backtrack-rewind-symbolic";
 
 /// What the window says when something needs the daemon and there isn't one.
 const NO_SERVICE: &str = "The Backtrack service is not running, so this cannot be done from here";

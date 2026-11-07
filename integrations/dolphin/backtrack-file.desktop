@@ -23,5 +23,5 @@ Actions=backtrackTimeViewFile
 
 [Desktop Action backtrackTimeViewFile]
 Name=Rewind This File…
-Icon=media-seek-backward
+Icon=tools.backtrack.Backtrack-rewind-symbolic
 Exec=backtrack-gtk --rewind --select %f

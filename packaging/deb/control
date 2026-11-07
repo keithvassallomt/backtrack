@@ -8,6 +8,7 @@ Build-Depends: debhelper-compat (= 13),
                pkgconf,
                libgtk-4-dev (>= 4.22),
                libadwaita-1-dev (>= 1.9),
+               libglib2.0-dev-bin,
                desktop-file-utils,
                appstream
 Standards-Version: 4.7.2

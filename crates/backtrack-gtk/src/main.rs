@@ -135,6 +135,13 @@ fn main() -> glib::ExitCode {
         "backtrack-gtk starting"
     );
 
+    // The window's own icons (build.rs). GtkApplication adds their folder,
+    // under the resource base path the application ID gives, to the icon
+    // theme as it starts.
+    if let Err(error) = gio::resources_register_include!("backtrack.gresource") {
+        warn!(%error, "the window's own icons could not be registered");
+    }
+
     let app = adw::Application::builder()
         .application_id(APP_ID)
         // SEND_ENVIRONMENT is what makes `command_line.getenv` answer for a
