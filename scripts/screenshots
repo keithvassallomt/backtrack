@@ -304,15 +304,22 @@ import_() {
 }
 
 keep() {
-    local name="$1" newest
-    newest="$(as_user 'ls -t ~/Pictures/Screenshots/*.png 2>/dev/null | head -1')"
+    local name="$1" from newest
+    # sam's on the GNOME VM; on a VM without sam, such as the Plasma one, its
+    # own user's. GNOME's Alt+Print and Spectacle both save there.
+    if as_owner "id -u $SHOTS_USER" >/dev/null 2>&1; then
+        from="$SHOTS_USER@$(host)"
+    else
+        from="$(owner)"
+    fi
+    newest="$(ssh "${SSH[@]}" "$from" 'ls -t ~/Pictures/Screenshots/*.png 2>/dev/null | head -1')"
     if [ -z "$newest" ]; then
-        echo "No screenshot in $SHOTS_USER's Pictures/Screenshots." >&2
+        echo "No screenshot in ${from%@*}'s Pictures/Screenshots." >&2
         exit 1
     fi
     mkdir -p "$OUT"
-    scp -q "${SSH[@]}" "$SHOTS_USER@$(host):$newest" "$OUT/$name.png"
-    as_user "rm -f $(printf '%q' "$newest")"
+    scp -q "${SSH[@]}" "$from:$newest" "$OUT/$name.png"
+    ssh "${SSH[@]}" "$from" "rm -f $(printf '%q' "$newest")"
     say "Kept as $OUT/$name.png"
 }
 

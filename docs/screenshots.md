@@ -102,8 +102,10 @@ Take a window with **Alt+Print** on the VM's screen, which saves it to sam's
    on a folder of documents and right-click one with the **Backtrack**
    submenu open, then the tray icon's menu, each taken with Spectacle
    (**Meta+Print** for the active window, **Meta+Shift+Print** for a
-   region). Copy them into `target/screenshots/` as `dolphin-menu.png` and
-   `tray-menu.png`.
+   region). After each, fetch it with
+   `BACKTRACK_SHOTS_VM="fedora45 (KDE)" scripts/screenshots keep
+   dolphin-menu` (or `tray-menu`), which takes the newest screenshot in the
+   VM's own user's `Pictures/Screenshots`.
 
 Then `scripts/screenshots images` again.
 
