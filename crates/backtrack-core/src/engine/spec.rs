@@ -115,8 +115,11 @@ impl Encryption {
 pub enum Presence {
     /// Nothing there yet, or an empty folder: a repository can be created.
     Empty,
-    /// A Borg repository is already there.
+    /// A Borg repository is already there, and its passphrase opens it.
     Existing,
+    /// A Borg repository is already there that opens without a passphrase:
+    /// unencrypted, or encrypted with an empty one.
+    Open,
     /// Something that is not a repository is there.
     Occupied,
     /// Nothing is there, and nothing can be put there: a folder on this

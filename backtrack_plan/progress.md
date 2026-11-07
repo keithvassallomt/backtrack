@@ -232,7 +232,7 @@
 - [ ] S19-T12 The Snapper guide as a walk-through
 - [ ] S19-T13 The file-manager guide as a walk-through
 - [x] S19-T14 Backtrack prunes only its own backups
-- [ ] S19-T15 Unencrypted backups made by other programs open from the wizard
+- [x] S19-T15 Unencrypted backups made by other programs open from the wizard
 - [ ] S19-T16 Backups whose key is in a key file can be opened with it
 - [ ] S19-T17 Rewind's window belongs to Backtrack
 

@@ -450,6 +450,60 @@ async fn borgs_checkpoint_archives_never_reach_the_timeline() {
 }
 
 #[tokio::test]
+async fn backups_that_need_no_passphrase_are_opened_without_one() {
+    // Pika Backup's Continue Unencrypted (S19-T15): Borg's repokey with an
+    // empty passphrase, made by a Borg that has never met this one, which
+    // the wizard opens with nothing typed.
+    let fixture = fixture().await;
+    let shared = Arc::clone(&fixture.shared);
+    let dir = tempfile::tempdir().unwrap();
+    let repo = dir.path().join("pika").to_str().unwrap().to_string();
+    let made = std::process::Command::new("borg")
+        .env("BORG_BASE_DIR", dir.path().join("elsewhere"))
+        .env("BORG_NEW_PASSPHRASE", "")
+        .args(["init", "--encryption=repokey-blake2", &repo])
+        .output()
+        .unwrap();
+    assert!(made.status.success(), "{made:?}");
+
+    let (_server, client) = connect(Arc::clone(&shared)).await;
+    let reply = client
+        .call_method(
+            None::<()>,
+            PATH,
+            Some(IFACE),
+            "InspectDestination",
+            &(repo.as_str(),),
+        )
+        .await
+        .expect("InspectDestination answers");
+    let answer: String = reply.body().deserialize().unwrap();
+    assert_eq!(answer, "open");
+    client
+        .call_method(
+            None::<()>,
+            PATH,
+            Some(IFACE),
+            "ImportRepo",
+            &(repo.as_str(), ""),
+        )
+        .await
+        .expect("imported with nothing typed");
+    // Kept as the stand-in a keyring can hold.
+    assert_eq!(
+        shared.secrets.get(&repo).await.unwrap(),
+        backtrack_core::secret::NO_PASSPHRASE
+    );
+
+    // Backing up carries on into them.
+    let job = Daemon1::new(Arc::clone(&shared))
+        .backup_now()
+        .await
+        .unwrap();
+    assert!(completed(&settle(&shared, job).await));
+}
+
+#[tokio::test]
 async fn importing_a_repository_leaves_the_newest_snapshot_browsable_at_once() {
     // The first-run acceptance criterion against a real repository: adopting one
     // that already holds history must return with something to show, not with an

@@ -16,6 +16,9 @@ All notable changes to Backtrack are documented here. This project adheres to
 ## [Unreleased]
 
 ### Fixed
+- Backups that need no passphrase now open from Already have backups?
+  without one: Vorta's unencrypted backups, and Pika Backup's made with
+  Continue Unencrypted. The wizard used to stop at "Something went wrong".
 - When Backtrack carries on backing up into backups another program made,
   such as Vorta or Pika Backup, thinning out older backups no longer removes
   some of that program's. Backtrack now thins out only its own.

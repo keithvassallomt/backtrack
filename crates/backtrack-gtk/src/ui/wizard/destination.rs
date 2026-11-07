@@ -448,6 +448,21 @@ impl Page {
                     self.wizard.nav.push_by_tag("passphrase");
                 }
             }
+            // Backups that need no passphrase: carried on into without one.
+            Ok("open") => {
+                if self.offer_existing().await {
+                    *self.wizard.import.borrow_mut() = Some(Import {
+                        repository,
+                        adopting: true,
+                    });
+                    // An empty passphrase cannot be typed in again later, so
+                    // it is kept.
+                    self.wizard.choices.borrow_mut().remember = true;
+                    if let Err(message) = super::import::open_and_go_on(&self.wizard, "").await {
+                        self.wizard.toast(&message);
+                    }
+                }
+            }
             Ok("occupied") => self.wizard.toast(
                 "That folder already holds other files. Choose an empty folder or another place.",
             ),

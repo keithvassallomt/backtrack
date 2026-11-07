@@ -318,6 +318,9 @@ keep() {
 
 done_() {
     log_in "$(owner | cut -d@ -f1)"
+    # A login after boot is not the one `just vm-start` unlocked the keyring
+    # for, and Backtrack's passphrases are in it.
+    as_owner "python3 - unlock" < "$ROOT/scripts/vm-keyring"
     as_owner "if sudo mountpoint -q '$DRIVE'; then sudo umount '$DRIVE'; fi"
     say "$VM is back to its own user."
 }

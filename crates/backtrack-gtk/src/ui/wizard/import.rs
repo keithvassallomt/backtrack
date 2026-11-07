@@ -139,6 +139,18 @@ async fn found(wizard: &Rc<Wizard>, repository: String) {
             });
             wizard.nav.push_by_tag("passphrase");
         }
+        // Backups that need no passphrase: there is nothing to ask.
+        Ok("open") => {
+            *wizard.import.borrow_mut() = Some(Import {
+                repository,
+                adopting: false,
+            });
+            // An empty passphrase cannot be typed in again later, so it is kept.
+            wizard.choices.borrow_mut().remember = true;
+            if let Err(message) = open_and_go_on(wizard, "").await {
+                wizard.toast(&message);
+            }
+        }
         Ok(_) => wizard.toast("No backups were found there. Choose the folder that holds them."),
         Err(error) => {
             warn!(%error, repository, "the backups could not be looked for");
@@ -193,23 +205,31 @@ fn passphrase_page(wizard: &Rc<Wizard>) -> adw::NavigationPage {
             button.set_sensitive(false);
             button.set_label("Opening…");
             problem.set_visible(false);
-            let outcome = open_backups(&this, &passphrase).await;
+            let outcome = open_and_go_on(&this, &passphrase).await;
             button.set_label("Open Backups");
             button.set_sensitive(true);
-            let adopting = this.import.borrow().as_ref().is_some_and(|i| i.adopting);
-            match outcome {
-                // Somebody's backups, arriving on a new computer: restoring
-                // it comes first, if they want it.
-                Ok(()) if !adopting => super::everything::offer(&this).await,
-                Ok(()) => this.open_timeline().await,
-                Err(message) => {
-                    problem.set_label(&message);
-                    problem.set_visible(true);
-                }
+            if let Err(message) = outcome {
+                problem.set_label(&message);
+                problem.set_visible(true);
             }
         });
     });
     page
+}
+
+/// Open the chosen backups with `passphrase`, empty for backups that need
+/// none, then go where that leads.
+pub(super) async fn open_and_go_on(wizard: &Rc<Wizard>, passphrase: &str) -> Result<(), String> {
+    open_backups(wizard, passphrase).await?;
+    let adopting = wizard.import.borrow().as_ref().is_some_and(|i| i.adopting);
+    if adopting {
+        wizard.open_timeline().await;
+    } else {
+        // Somebody's backups, arriving on a new computer: restoring it comes
+        // first, if they want it.
+        super::everything::offer(wizard).await;
+    }
+    Ok(())
 }
 
 /// Adopt the chosen repository with `passphrase`.

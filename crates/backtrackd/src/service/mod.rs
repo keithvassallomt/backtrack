@@ -3644,8 +3644,10 @@ impl Daemon1 {
     }
 
     /// What is at `repository` before anything is created there: `empty`,
-    /// `existing` (a Borg repository), `occupied` (something else), or
-    /// `unwritable`. Connection problems are errors, named as usual.
+    /// `existing` (a Borg repository, which its passphrase opens), `open` (a
+    /// Borg repository that needs no passphrase: unencrypted, or encrypted
+    /// with an empty one), `occupied` (something else), or `unwritable`.
+    /// Connection problems are errors, named as usual.
     ///
     /// The wizard asks before it offers to create anything, so that choosing a
     /// drive that already holds this computer's backups leads to them rather
@@ -3667,6 +3669,7 @@ impl Daemon1 {
         Ok(match presence {
             backtrack_core::engine::Presence::Empty => "empty",
             backtrack_core::engine::Presence::Existing => "existing",
+            backtrack_core::engine::Presence::Open => "open",
             backtrack_core::engine::Presence::Occupied => "occupied",
             backtrack_core::engine::Presence::Unwritable => "unwritable",
         }
@@ -3977,6 +3980,13 @@ impl Daemon1 {
         passphrase: &str,
         #[zbus(connection)] connection: &zbus::Connection,
     ) -> Result<()> {
+        // Backups that need no passphrase are opened with an empty one,
+        // which a keyring cannot keep (S19-T15).
+        let passphrase = if passphrase.is_empty() {
+            backtrack_core::secret::NO_PASSPHRASE
+        } else {
+            passphrase
+        };
         let previous = self.shared.config().storage.repository;
         let old = self.shared.spool_passphrase(previous.as_deref()).await;
         self.shared.secrets.set(path, passphrase).await?;
@@ -3986,6 +3996,10 @@ impl Daemon1 {
             self.shared.secrets.clone(),
         )
         .await?;
+        // Borg's first contact with backups the person chose, as when the
+        // wizard inspects them: an unencrypted repository Borg has not seen
+        // before is admitted here, and nowhere after.
+        engine.presence().await?;
         let info = engine.repo_info().await?;
 
         let mut config = self.shared.config();

@@ -73,6 +73,14 @@ impl BorgCli {
     ///
     /// No passphrase is offered. An encrypted repository then refuses with
     /// `PassphraseWrong`, and that refusal is the answer: something is there.
+    /// One that opens anyway needs no passphrase at all.
+    ///
+    /// This is Borg's first contact with a place the person chose, so it also
+    /// answers Borg's question about an unencrypted repository it has not
+    /// seen before, which nobody is at a terminal to answer (S19-T15). Borg
+    /// then knows the repository, and every later command leaves the
+    /// question unanswered: a different repository put in its place is
+    /// refused.
     pub async fn presence(&self) -> Result<Presence> {
         let local = Path::new(&self.repo);
         if local.is_absolute() {
@@ -89,6 +97,7 @@ impl BorgCli {
         if std::env::var_os("BORG_RSH").is_none() {
             cmd.env("BORG_RSH", "ssh -o BatchMode=yes -o ConnectTimeout=15");
         }
+        cmd.env("BORG_UNKNOWN_UNENCRYPTED_REPO_ACCESS_IS_OK", "yes");
         cmd.arg("list").arg("--json").arg(&self.repo);
         cmd.stdout(Stdio::null()).stderr(Stdio::piped());
         let out = cmd.output().await.map_err(|e| EngineError::BorgFailed {
@@ -97,8 +106,9 @@ impl BorgCli {
         })?;
         let code = out.status.code().unwrap_or(-1);
         if classify::classify_exit(code) != classify::ExitClass::Error {
-            // An unencrypted repository opens without a passphrase.
-            return Ok(Presence::Existing);
+            // An unencrypted repository, or one encrypted with an empty
+            // passphrase, opens without one.
+            return Ok(Presence::Open);
         }
 
         // Whether the server refused us or could not be reached at all is in
@@ -207,7 +217,7 @@ impl BackupEngine for BorgCli {
         // passphrase always does, and never on its command line, where any
         // other user of the machine could read them.
         let mut cmd = base_command(&self.bin, old);
-        cmd.env("BORG_NEW_PASSPHRASE", new)
+        cmd.env("BORG_NEW_PASSPHRASE", invoke::for_borg(new))
             .arg("key")
             .arg("change-passphrase")
             .arg(&self.repo);

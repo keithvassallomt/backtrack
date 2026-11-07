@@ -25,6 +25,14 @@ pub use session::SessionSecretStore;
 /// Stable Secret Service attribute: the application id.
 pub const APP_ID: &str = "tools.backtrack.Backtrack";
 
+/// What is kept for backups that need no passphrase: unencrypted ones, or
+/// ones encrypted with an empty passphrase, which Vorta and Pika Backup can
+/// make (S19-T15). A keyring cannot hold an empty secret, which is how a
+/// locked KWallet answers, so this stands in for one, and Borg is given the
+/// empty passphrase it means. Nobody can type it: it begins with a control
+/// character.
+pub const NO_PASSPHRASE: &str = "\u{1}no passphrase";
+
 /// Get/set/delete a repository passphrase under a stable attribute set
 /// (`app-id` + `repo-id`).
 // See `engine::BackupEngine`: async-trait's `#[must_use]`, and clippy 1.99.
