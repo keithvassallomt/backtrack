@@ -46,6 +46,11 @@
 #                                  there, for a marked tick
 #   scripts/rewind-check 12        on the GNOME VM: Restore and Cancel in
 #                                  Rewind, a conflict, then Undo (S18-T6)
+#   scripts/rewind-check 13        on the GNOME VM, the development build:
+#                                  every way into Rewind there (S18-T7)
+#   scripts/rewind-check 13 setup  a launcher for the development build, and
+#                                  Nautilus restarted onto its extension
+#   scripts/rewind-check 13 done   take the launcher away again
 #
 # Run from the checkout.
 
@@ -426,6 +431,74 @@ EOF
      Escape: the same.
 
   Tell me any of a to g that did not happen, or did and looked wrong.
+EOF
+    ;;
+13)
+    vm="fedora45 (GNOME)"
+    launcher='$HOME/.local/share/applications/tools.backtrack.Backtrack.desktop'
+    case "${2:-}" in
+    setup)
+        # The development build's launcher, with its Rewind action, in place
+        # of the Flatpak's (the same application ID): the user's own
+        # applications folder comes first. Nautilus loads extensions when it
+        # starts.
+        ssh "$("$ROOT/scripts/vm" address "$vm")" "set -e
+            mkdir -p \$HOME/.local/share/applications
+            sed 's|^Exec=backtrack-gtk|Exec=env BACKTRACK_DEV=1 '\$HOME'/backtrack/target/debug/backtrack-gtk|' \
+                \$HOME/backtrack/packaging/desktop/tools.backtrack.Backtrack.desktop > $launcher
+            update-desktop-database \$HOME/.local/share/applications 2>/dev/null || true
+            nautilus -q 2>/dev/null || true"
+        echo "The development build has a launcher on the VM, and Nautilus has quit."
+        exit 0
+        ;;
+    done)
+        ssh "$("$ROOT/scripts/vm" address "$vm")" "rm -f $launcher
+            update-desktop-database \$HOME/.local/share/applications 2>/dev/null || true"
+        echo "The development launcher is gone; the Flatpak's shows again."
+        exit 0
+        ;;
+    esac
+    say "13. Every way into Rewind, on $vm, the development build (S18-T7)"
+    cat <<EOF
+  Run scripts/rewind-check 13 setup first, and close any Backtrack window
+  open on the VM. Rewind's button has a stand-in icon (two arrows) until its
+  own is drawn.
+
+  a. Backtrack's window. From the laptop:
+       just vm-app "$vm" --path /home/keith/Pictures
+     In the header bar, left of the search button, the Rewind button: it
+     opens Rewind at Pictures, at the backup the window shows. Escape. The
+     main menu has "Rewind…" first, which does the same; Keyboard Shortcuts
+     lists "Rewind, the full-screen view" with Ctrl+T. Close the window.
+  b. Nautilus, a file. On the VM, open Files at Pictures and right-click
+     stone_bird.jpg: "Rewind This File…" after "Restore Previous Version…".
+     Choose it: Rewind opens at "Today (Now)" with stone_bird.jpg selected.
+     Press Escape: you are back in Files, and no Backtrack window is left
+     open.
+  c. Nautilus, the folder. Right-click the empty space: "Rewind This
+     Folder…" after "Browse Backups of This Folder…". Choose it: Rewind at
+     Pictures, nothing selected. Leave it open, switch to Files (Alt+Tab),
+     go to your home folder and right-click Pictures: "Rewind This Folder…"
+     is there too. Choose it: the same Rewind comes forward, not a second
+     one. Escape.
+  d. A restore from Files. Right-click stone_bird.jpg, "Rewind This File…",
+     then press Up until stone_bird.jpg shows the stone bird, marked
+     "changed". Click Restore and choose Replace. Rewind closes, back in
+     Files, which shows stone_bird.jpg as the stone bird, and a notification
+     says it was restored, with an Undo button. Click Undo (open the
+     notification list from the clock if it has gone): the notification
+     says it was put back, and stone_bird.jpg is the ladybugs again.
+  e. The window left alone. From the laptop:
+       just vm-app "$vm" --path /home/keith/.local/share/backtrack-dev/demo-src
+     Backtrack's window shows demo-src. In Files, right-click Pictures in
+     your home folder, "Rewind This Folder…": Rewind opens at Pictures.
+     Escape: Backtrack's window still shows demo-src. Close it.
+  f. The launcher. Open Activities and the app grid, right-click Backtrack:
+     "Rewind". Choose it: Rewind opens on your home folder, at now.
+     Escape.
+
+  Then: scripts/rewind-check 13 done. Tell me any of a to f that did not
+  happen, or did and looked wrong.
 EOF
     ;;
 *)

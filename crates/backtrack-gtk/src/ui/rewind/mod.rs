@@ -61,6 +61,9 @@ pub enum Origin {
 // until the list is chosen, then the list, for as long as Backtrack runs.
 thread_local! {
     static MODE: Cell<Mode> = const { Cell::new(Mode::Icons) };
+    // Rewind, while it is open: a second way in re-points it rather than
+    // opening another over it.
+    static OPEN: RefCell<std::rc::Weak<Rewind>> = const { RefCell::new(std::rc::Weak::new()) };
 }
 
 /// The rows of a backup whose pictures are looked for in the desktop's cache
@@ -71,6 +74,9 @@ const PICTURES_AHEAD: usize = 64;
 /// Which of the folder's times a slot shows: the folder as it is now, or a
 /// backup.
 type When = Option<i64>;
+
+/// Sets what the lines under the stack say, for the slot in front.
+type Say = Rc<dyn Fn(usize)>;
 
 struct Rewind {
     state: Rc<AppState>,
@@ -87,6 +93,8 @@ struct Rewind {
     restoring: Cell<bool>,
     /// Opened from outside the window (S18-T7).
     elsewhere: bool,
+    /// What the lines under the stack say, for each slot.
+    say: RefCell<Option<Say>>,
     lister: Rc<Lister>,
     index: Index,
     /// What each time held, as listed, for the folder being viewed: kept
@@ -113,6 +121,16 @@ pub fn open(
     restores: Option<Rc<Restores>>,
     origin: Origin,
 ) {
+    // Already open: re-pointed at the folder asked for, and brought forward.
+    if let Origin::Elsewhere { target, .. } = &origin {
+        let open = OPEN
+            .with(|open| open.borrow().upgrade())
+            .filter(|open| open.shell.upgrade().is_some());
+        if let Some(open) = open {
+            open.retarget(target);
+            return;
+        }
+    }
     let shell = adw::Window::builder()
         .title("Rewind")
         .transient_for(parent)
@@ -158,6 +176,7 @@ pub fn open(
         shell: shell.downgrade(),
         restoring: Cell::new(false),
         elsewhere: matches!(origin, Origin::Elsewhere { .. }),
+        say: RefCell::new(None),
         lister,
         index: index.clone(),
         bodies: RefCell::new(HashMap::new()),
@@ -235,6 +254,8 @@ pub fn open(
     };
     let say: Rc<dyn Fn(usize)> = Rc::new(say);
     say(stage.target());
+    *rewind.say.borrow_mut() = Some(Rc::clone(&say));
+    OPEN.with(|open| *open.borrow_mut() = Rc::downgrade(&rewind));
 
     stage.set_actions(rewind.actions());
     rewind.watch(&say);
@@ -264,17 +285,20 @@ pub fn open(
     {
         let (rewind, window, parent) = (Rc::clone(&rewind), Rc::clone(window), parent.clone());
         shell.connect_close_request(move |_| {
+            OPEN.with(|open| *open.borrow_mut() = std::rc::Weak::new());
             match &origin {
                 Origin::Window => {
                     leave(&rewind, &window);
                     parent.present();
                 }
                 // Made only for Rewind, and never shown: it goes too, once
-                // Rewind has gone.
-                Origin::Elsewhere { own: true, .. } => {
+                // Rewind has gone. Shown since (from the tray, say), it
+                // stays.
+                Origin::Elsewhere { own: true, .. } if !parent.is_visible() => {
                     let parent = parent.clone();
                     glib::idle_add_local_once(move || parent.close());
                 }
+                Origin::Elsewhere { own: true, .. } => {}
                 Origin::Elsewhere { own: false, .. } => {}
             }
             glib::Propagation::Proceed
@@ -833,6 +857,35 @@ fn wheel(rewind: &Rc<Rewind>, say: &Rc<dyn Fn(usize)>) -> gtk4::EventControllerS
 }
 
 impl Rewind {
+    /// Show `target` instead, at the folder as it is now, for a way in used
+    /// while Rewind is open (S18-T7).
+    fn retarget(self: &Rc<Self>, target: &crate::Target) {
+        if self.restoring.get() {
+            return;
+        }
+        self.state.set_folder(target.folder.clone());
+        let selected = target.select.as_ref().map(|select| crate::state::Selected {
+            path: select.clone(),
+            name: crate::path::name(select).to_string(),
+            is_dir: false,
+            size: -1,
+            mtime: 0,
+            on_disk: 0,
+            archive: None,
+        });
+        self.stage
+            .set_selected(selected.as_ref().map(|s| s.name.clone()));
+        self.state.set_selected(selected);
+        self.relist(false);
+        self.read();
+        if let Some(say) = self.say.borrow().clone() {
+            say(self.stage.target());
+        }
+        if let Some(shell) = self.shell.upgrade() {
+            shell.present();
+        }
+    }
+
     /// Restore the selection, or the folder when nothing is selected, from
     /// the backup in front, with the questions over Rewind; once it is done,
     /// leave, and the window offers to undo it (S18-T6). A file selected in
