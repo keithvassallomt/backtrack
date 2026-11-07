@@ -218,7 +218,7 @@ Nothing right now.
 
 ## Stage 19 — Guides anyone can follow ([stage file](stages/stage-19-guides-anyone-can-follow.md))
 - [x] S19-T1 An index of the guides, with developer notes moved out of them
-- [ ] S19-T2 Investigate: opening backups made by Vorta or Pika Backup
+- [x] S19-T2 Investigate: opening backups made by Vorta or Pika Backup
 - [ ] S19-T3 Screenshots of Backtrack for the guides, the site and the software centres
 - [ ] S19-T4 A guide to installing Backtrack
 - [ ] S19-T5 A guide to setting up your backups
@@ -230,6 +230,9 @@ Nothing right now.
 - [ ] S19-T11 The Trash guide as a walk-through
 - [ ] S19-T12 The Snapper guide as a walk-through
 - [ ] S19-T13 The file-manager guide as a walk-through
+- [ ] S19-T14 Backtrack prunes only its own backups
+- [ ] S19-T15 Unencrypted backups made by other programs open from the wizard
+- [ ] S19-T16 Backups whose key is in a key file can be opened with it
 
 ## Stage 20 — The website at backtrack.tools ([stage file](stages/stage-20-the-website.md))
 - [ ] S20-T1 The website built with Zola

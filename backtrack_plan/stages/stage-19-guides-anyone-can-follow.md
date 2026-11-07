@@ -63,7 +63,9 @@ Dolphin and the tray, and the Ubuntu VM for the PPA.
 T1 first, since it settles which file holds what. T2 and T3 next, side by
 side: T5 needs T2's answer, and every guide's pictures come from T3. Then T4
 to T13 in order, the new guides before the rewrites, since the site needs
-them most.
+them most. T14 to T16 are faults T2 found; T14 comes before T5, since it
+decides whether the setting-up guide may suggest carrying on into another
+program's backups.
 
 ## Tasks
 
@@ -268,6 +270,59 @@ stay as headings, word for word.
 
 **Accept:** followed as written from a package and from the Flatpak, on the
 GNOME VM and on the Plasma VM; `just check` passes.
+
+### S19-T14 — Backtrack prunes only its own backups
+`borg prune` (`crates/backtrack-core/src/engine/borg/mod.rs`) runs without
+`--glob-archives`, so Backtrack's retention applies to every archive in the
+repository, whoever made it. Carrying on into backups another program made,
+which the wizard offers ("Existing Backtrack/Borg backup found — use it?"),
+then deletes that program's backups: in S19-T2's test, Backtrack's first
+backup removed 12 of Vorta's 51 archives and 12 of Pika Backup's 51. The
+prune matches Backtrack's own archive names (`bt-…`) and nothing else, so an
+archive of any other name is left alone, and retention among Backtrack's own
+archives is as before.
+
+**Accept:** a test against a real Borg repository holding archives of
+another name, dated across weeks, keeps every one of them through a prune
+that removes some of Backtrack's, and fails without the change; the existing
+retention tests pass unchanged; a CHANGELOG entry under Unreleased.
+
+### S19-T15 — Unencrypted backups made by other programs open from the wizard
+Vorta's encryption "none", and Pika Backup's **Continue Unencrypted**, which
+is Borg's repokey with an empty passphrase. Two things stop them (S19-T2).
+Borg asks before it opens an unencrypted repository it has not seen on this
+computer, nobody is at a terminal to answer, and `InspectDestination` fails
+with "Something went wrong. The logs say what." That is every such
+repository in the Flatpak, whose Borg keeps its own memory, every one on a
+new computer, and every one Pika Backup made. The passphrase page's **Open
+Backups** also stays insensitive until something is typed, which Pika
+Backup's empty passphrase can never satisfy. The import answers Borg's
+question, since the person chose these backups, and only the import does:
+afterwards Borg knows the repository and asks again only if a different one
+takes its place. A repository that needs no passphrase, or an empty one,
+opens without one being typed.
+
+**Accept:** on the GNOME VM, in the native build and in the Flatpak, a
+repository made with Vorta's "none" and one made with Pika Backup's Continue
+Unencrypted each open from **Already have backups?** with nothing typed; a
+different unencrypted repository put in place of an imported one is still
+refused; a CHANGELOG entry under Unreleased.
+
+### S19-T16 — Backups whose key is in a key file can be opened with it
+Vorta offers key-file encryption, which keeps the key in Borg's own folder
+(`~/.config/borg/keys`) rather than in the repository. The native build on
+the computer that made the backups finds it there, but Backtrack's Flatpak
+looks in a folder of its own and a new computer has no key at all, so the
+import stops at "Something went wrong. The logs say what." (S19-T2). The
+wizard says that these backups need their key file, and lets the person
+choose the file Vorta exported, after which the passphrase opens them as it
+opens any others.
+
+**Accept:** on the GNOME VM, a repository made with Vorta's key-file
+encryption opened in the Flatpak and on a computer without the key, by
+choosing the exported key file; without the file, the wizard says what is
+missing rather than "Something went wrong"; a CHANGELOG entry under
+Unreleased.
 
 ## Definition of Done
 All tasks done; `docs/README.md` lists every guide in the order a new user
