@@ -114,9 +114,9 @@ All notable changes to Backtrack are documented here. This project adheres to
   way unless you say otherwise.
 - Replacing a file is never destructive. The version that was there is kept
   for 30 days, and "Recently Replaced Files" in the menu lists them grouped by
-  the restore that displaced them, with a button to put any of them back. The
-  toast's Undo puts a whole restore back; this is for when you notice on
-  Friday what went wrong on Tuesday.
+  the restore that displaced them, with a button to put any of them back.
+  Undo, in the bar under the header bar after a restore, puts a whole restore
+  back; this is for when you notice on Friday what went wrong on Tuesday.
 - Restore To… puts the files in a folder you choose instead of over the
   originals, in a new folder named for the backup they came from. Nothing on
   your computer is touched and there is nothing to decide, so it is the way to
@@ -314,6 +314,9 @@ All notable changes to Backtrack are documented here. This project adheres to
   [docs/snapper.md](docs/snapper.md).
 
 ### Changed
+- After a restore, Undo stays in a bar under the window's header bar until
+  you use it or restore something else, instead of in a message that went
+  away after ten seconds.
 - Backtrack now requires GNOME 50 or newer (GTK 4.22, libadwaita 1.9).
 - A backup that is due but held up because the computer is on battery, or on a
   metered connection, now says so in the window ("waiting for charger"), the

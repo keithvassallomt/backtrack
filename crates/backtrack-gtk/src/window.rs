@@ -33,6 +33,10 @@ use crate::Target;
 // without `unsafe`, and the workspace forbids that.
 thread_local! {
     static OPEN: RefCell<Vec<Rc<Window>>> = const { RefCell::new(Vec::new()) };
+    // An Undo to offer in the next window to open: a restore's notification
+    // clicked with none open (S18-T7). The job, what it restored, and what
+    // the notification said.
+    static PENDING_UNDO: RefCell<Option<(u64, String, String)>> = const { RefCell::new(None) };
 }
 
 /// One Backtrack window and everything it is wired to.
@@ -55,6 +59,9 @@ pub struct Window {
     /// The line under that one while a backup runs, saying how far it has
     /// got (S06-T12).
     progress: adw::Banner,
+    /// What the last restore did, with Undo, until it is used or another
+    /// restore takes its place (S18-T7).
+    restored: adw::Banner,
     /// What the person calls the place backups go, for the one banner that
     /// names it. Read when that banner is showing.
     destination: RefCell<String>,
@@ -150,6 +157,7 @@ impl Window {
             banner: adw::Banner::new(""),
             banner_action: Cell::new(None),
             progress: adw::Banner::new(""),
+            restored: adw::Banner::new(""),
             destination: RefCell::new(String::new()),
             pending_fix: RefCell::new(None),
             older,
@@ -209,6 +217,7 @@ impl Window {
             });
         layout.add_top_bar(&self.banner);
         layout.add_top_bar(&self.progress);
+        layout.add_top_bar(&self.restored);
         layout.set_content(Some(&self.body()));
         layout.add_bottom_bar(&self.actions());
 
@@ -598,8 +607,8 @@ impl Window {
         self.window.add_action(&resume);
 
         // The safety stash, which is what makes Replace a decision rather than
-        // a commitment: the toast's Undo covers ten seconds, this covers
-        // thirty days.
+        // a commitment: the banner's Undo covers the last restore, this
+        // covers thirty days.
         let replaced = gio::SimpleAction::new("recently-replaced", None);
         let owner = self.window.clone();
         let service = Rc::clone(&self.daemon);
@@ -1174,7 +1183,18 @@ impl Window {
         self.preview_slot.append(&preview.widget());
         *self.preview.borrow_mut() = Some(preview);
 
-        let restores = ui::restore::build(&self.window, &self.toasts, &self.state, &self.daemon);
+        let restores = ui::restore::build(
+            &self.window,
+            &self.toasts,
+            &self.restored,
+            &self.state,
+            &self.daemon,
+        );
+        // An offer the window was opened to make: a restore's notification,
+        // clicked with no window open.
+        if let Some((job, name, said)) = PENDING_UNDO.with(|pending| pending.borrow_mut().take()) {
+            restores.offer(job, &name, &said);
+        }
         *self.restores.borrow_mut() = Some(Rc::clone(&restores));
         let this = Rc::clone(self);
         self.state.subscribe(move |_, change| {
@@ -1625,6 +1645,30 @@ pub fn fix(window: &gtk4::Window, reason: Reason) {
             Err(error) => warn!(%error, "the status could not be read"),
         }
     });
+}
+
+/// Offer Undo for restore `job`, which restored `name`, saying `said`, in the
+/// window open, or in the next one to open: a restore's notification has been
+/// clicked (S18-T7).
+pub fn offer_undo(job: u64, name: String, said: String) {
+    let open = OPEN.with(|open| open.borrow().first().cloned());
+    let restores = open.and_then(|window| window.restores.borrow().clone());
+    match restores {
+        Some(restores) => restores.offer(job, &name, &said),
+        None => PENDING_UNDO.with(|pending| *pending.borrow_mut() = Some((job, name, said))),
+    }
+}
+
+/// Restore `job` has been put back from its notification: no window offers
+/// it any longer, and each shows the disk as it is now.
+pub fn undone(job: u64) {
+    let open: Vec<Rc<Window>> = OPEN.with(|open| open.borrow().clone());
+    for window in open {
+        let restores = window.restores.borrow().clone();
+        if let Some(restores) = restores {
+            restores.forget(job);
+        }
+    }
 }
 
 /// Open Rewind at `target` over the window already open, for a caller outside

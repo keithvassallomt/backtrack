@@ -395,7 +395,13 @@ folder, a window behind, the timeline's ticks), snapped to the 16 px grid.
   with it once its catalogue has been read (or is shown, should it not be).
   After a restore, Undo is a notification's button, `app.undo-restore`, which
   needs no window; Backtrack stays running ten minutes for it, then withdraws
-  it.
+  it. Clicking the notification itself (`app.show-restore`), which also
+  dismisses it, opens the window at what was restored with the same offer.
+- Undo after a restore, from the window or from Rewind, stays in a banner
+  under the window's header bar until it is used or another restore takes
+  its place, rather than in a toast for ten seconds (Keith, 2026-11-07:
+  reaching the window through the notification dismissed the notification,
+  its Undo with it, and left no way to undo).
 - Backtrack's window: a header bar button, **Rewind…** first in the main menu,
   Ctrl+T as before, and an entry in the shortcuts dialog.
 - Nautilus: the two items, in the extension and its tests. Dolphin: **Rewind

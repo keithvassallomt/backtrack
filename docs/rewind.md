@@ -63,9 +63,11 @@ the same, except on a folder, which Enter opens. If something is in the way
 on your computer, Backtrack asks what to do, as it does in the window, and
 nothing changes until you answer.
 
-Once a restore is done, Rewind closes, and Backtrack offers to undo it: in
-the window, or, when Rewind was opened from elsewhere, in a notification with
-an **Undo** button, for ten minutes.
+Once a restore is done, Rewind closes, and Backtrack offers to undo it, in a
+bar under the window's header bar that stays until you use it or restore
+something else. When Rewind was opened from elsewhere, the offer comes as a
+notification: its **Undo** button undoes the restore, and clicking the
+notification itself opens Backtrack with the same bar.
 
 **Cancel**, or Escape, leaves without changing anything.
 

@@ -249,7 +249,7 @@ fn main() -> glib::ExitCode {
     app.add_action(&rewinding);
     let undo = gio::SimpleAction::new(
         backtrack_core::dbus::APP_ACTION_UNDO_RESTORE,
-        Some(glib::VariantTy::new("(ts)").expect("a valid variant type")),
+        Some(glib::VariantTy::new(ui::restore::UNDO_TARGET).expect("a valid variant type")),
     );
     let undoer = app.clone();
     undo.connect_activate(move |_, parameter| {
@@ -258,6 +258,25 @@ fn main() -> glib::ExitCode {
         }
     });
     app.add_action(&undo);
+    let showing = gio::SimpleAction::new(
+        backtrack_core::dbus::APP_ACTION_SHOW_RESTORE,
+        Some(glib::VariantTy::new(ui::restore::SHOW_TARGET).expect("a valid variant type")),
+    );
+    let shower = app.clone();
+    showing.connect_activate(move |_, parameter| {
+        let Some((job, name, said, path)) =
+            parameter.and_then(|value| value.get::<(u64, String, String, String)>())
+        else {
+            return;
+        };
+        let target = Target {
+            folder: crate::path::parent(&path).unwrap_or_default(),
+            select: Some(path),
+        };
+        window::offer_undo(job, name, said);
+        show(&shower, Some(target), None);
+    });
+    app.add_action(&showing);
 
     // The user's own argv, forwarded to whichever instance is primary: that is
     // what lets a second `--path` re-point the window already on screen.

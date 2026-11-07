@@ -10,8 +10,11 @@
 //! nothing to ask about gets neither and simply happens.
 //!
 //! Cancelling at any point before the last step costs nothing, because nothing
-//! has been touched. Cancelling after it costs nothing either: the toast's
-//! Undo puts everything back from the stash.
+//! has been touched. Cancelling after it costs nothing either: Undo, in the
+//! banner under the window's header bar, puts everything back from the stash.
+//! The banner stays until it is used or another restore takes its place; a
+//! restore from Rewind opened from outside the window offers the same in a
+//! notification, and clicking that opens the window with the banner (S18-T7).
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -42,17 +45,36 @@ pub struct Asking {
     pub toasts: adw::ToastOverlay,
 }
 
-/// How a restore offers Undo: in the window's toast, or, for a restore from
-/// Rewind opened from outside the window, in a notification (S18-T7).
+/// How a restore offers Undo: in the window, or, for a restore from Rewind
+/// opened from outside the window, in a notification (S18-T7).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UndoBy {
-    Toast,
+    /// The banner under the window's header bar.
+    Window,
+    /// A notification, whose Undo button undoes it and which, clicked, opens
+    /// the window with the banner.
     Notification,
 }
 
 /// The notification a restore from outside the window offers Undo in, and
 /// then says it was put back in.
 const UNDO_NOTIFICATION: &str = "restore-undo";
+
+/// What the notification's Undo button passes to `app.undo-restore`: the
+/// restore's job and what it restored.
+pub const UNDO_TARGET: &str = "(ts)";
+
+/// What clicking the notification passes to `app.show-restore`: the same,
+/// what the notification says, and the path restored.
+pub const SHOW_TARGET: &str = "(tsss)";
+
+fn undo_target(job: u64, name: &str) -> glib::Variant {
+    (job, name.to_string()).to_variant()
+}
+
+fn show_target(job: u64, name: &str, said: &str, path: &str) -> glib::Variant {
+    (job, name.to_string(), said.to_string(), path.to_string()).to_variant()
+}
 
 /// How long Backtrack keeps running for that notification's Undo, after
 /// which the notification is withdrawn. Not every desktop can start
@@ -64,17 +86,32 @@ struct Done {
     job: u64,
     preview: RestorePreview,
     name: String,
+    /// What was restored, archive-relative: where the notification opens the
+    /// window.
+    target: String,
+}
+
+impl Done {
+    /// What the restore did, in a few words.
+    fn said(&self) -> String {
+        let p = &self.preview;
+        copy::restored_toast(
+            (p.conflicts + p.only_in_backup + p.type_changed) as usize,
+            &self.name,
+        )
+    }
 }
 
 /// Drives a restore from the window.
 pub struct Restores {
     window: adw::ApplicationWindow,
     toasts: adw::ToastOverlay,
+    /// Under the header bar: what the last restore did, and Undo.
+    banner: adw::Banner,
     state: Rc<AppState>,
     daemon: Rc<RefCell<Option<Daemon1Proxy<'static>>>>,
     /// The prepared restore that was last carried out, and what it was called,
-    /// which is what the toast's Undo reaches for. Kept until the next one, so
-    /// the offer outlives the toast that made it.
+    /// which is what the banner's Undo reaches for.
     undoable: RefCell<Option<(u64, String)>>,
     /// One at a time. Two restores of the same folder at once is not a
     /// situation worth having opinions about.
@@ -84,17 +121,27 @@ pub struct Restores {
 pub fn build(
     window: &adw::ApplicationWindow,
     toasts: &adw::ToastOverlay,
+    banner: &adw::Banner,
     state: &Rc<AppState>,
     daemon: &Rc<RefCell<Option<Daemon1Proxy<'static>>>>,
 ) -> Rc<Restores> {
-    Rc::new(Restores {
+    let restores = Rc::new(Restores {
         window: window.clone(),
         toasts: toasts.clone(),
+        banner: banner.clone(),
         state: Rc::clone(state),
         daemon: Rc::clone(daemon),
         undoable: RefCell::new(None),
         busy: Cell::new(false),
-    })
+    });
+    banner.set_button_label(Some("Undo"));
+    let weak = Rc::downgrade(&restores);
+    banner.connect_button_clicked(move |_| {
+        if let Some(restores) = weak.upgrade() {
+            restores.undo();
+        }
+    });
+    restores
 }
 
 impl Restores {
@@ -112,7 +159,7 @@ impl Restores {
             };
             let state = Rc::clone(&this.state);
             if let Some(done) = this.run(&state, &asking).await {
-                this.carried_out(done, UndoBy::Toast);
+                this.carried_out(done, UndoBy::Window);
             }
             this.busy.set(false);
         });
@@ -148,10 +195,12 @@ impl Restores {
 
     /// Offer to put it back, and show the folder as it is now.
     fn carried_out(self: &Rc<Self>, done: Done, undo: UndoBy) {
-        *self.undoable.borrow_mut() = Some((done.job, done.name.clone()));
         match undo {
-            UndoBy::Toast => self.offer_undo(&done.preview, &done.name),
-            UndoBy::Notification => self.notify_undo(&done),
+            UndoBy::Window => self.offer(done.job, &done.name, &done.said()),
+            UndoBy::Notification => {
+                *self.undoable.borrow_mut() = Some((done.job, done.name.clone()));
+                self.notify_undo(&done);
+            }
         }
         // The pane is showing a folder whose contents just changed.
         self.state.disk_changed();
@@ -325,7 +374,12 @@ impl Restores {
         // ── Carry it out ──
         let done = run_job(&proxy, |p| p.execute_restore(job, &blanket, &decisions)).await;
         match done {
-            Ok(_) => Some(Done { job, preview, name }),
+            Ok(_) => Some(Done {
+                job,
+                preview,
+                name,
+                target,
+            }),
             Err(error) => {
                 warn!(%error, job, "the restore did not finish");
                 say(asking, &error);
@@ -334,17 +388,28 @@ impl Restores {
         }
     }
 
-    /// The toast, with the offer that makes Replace safe to click.
-    fn offer_undo(self: &Rc<Self>, preview: &RestorePreview, name: &str) {
-        let moved = (preview.conflicts + preview.only_in_backup + preview.type_changed) as usize;
-        let toast = crate::ui::toast(&copy::restored_toast(moved, name));
-        toast.set_button_label(Some("Undo"));
-        // Long enough to read and reach; the stash keeps the files far longer,
-        // so a missed toast is an inconvenience rather than a loss.
-        toast.set_timeout(10);
-        let this = Rc::clone(self);
-        toast.connect_button_clicked(move |_| this.undo());
-        self.toasts.add_toast(toast);
+    /// The offer that makes Replace safe to click: restore `job`, which
+    /// restored `name`, in the banner, saying `said`, until it is used or
+    /// another restore takes its place.
+    pub fn offer(&self, job: u64, name: &str, said: &str) {
+        *self.undoable.borrow_mut() = Some((job, name.to_string()));
+        self.banner.set_title(said);
+        self.banner.set_revealed(true);
+    }
+
+    /// Restore `job` has been put back from its notification: no longer
+    /// offered here.
+    pub fn forget(&self, job: u64) {
+        let ours = self
+            .undoable
+            .borrow()
+            .as_ref()
+            .is_some_and(|(undoable, _)| *undoable == job);
+        if ours {
+            *self.undoable.borrow_mut() = None;
+            self.banner.set_revealed(false);
+        }
+        self.state.disk_changed();
     }
 
     /// The same offer in a notification, for a restore from Rewind opened
@@ -353,13 +418,19 @@ impl Restores {
         let Some(app) = self.window.application() else {
             return;
         };
-        let preview = &done.preview;
-        let moved = (preview.conflicts + preview.only_in_backup + preview.type_changed) as usize;
-        let notification = gio::Notification::new(&copy::restored_toast(moved, &done.name));
+        let said = done.said();
+        let notification = gio::Notification::new(&said);
         notification.add_button_with_target_value(
             "Undo",
             &format!("app.{}", backtrack_core::dbus::APP_ACTION_UNDO_RESTORE),
-            Some(&(done.job, done.name.clone()).to_variant()),
+            Some(&undo_target(done.job, &done.name)),
+        );
+        // Clicked, rather than its button: the window, at what was restored,
+        // with the same offer in its banner. The click dismisses the
+        // notification, Undo and all, so the offer must not be only here.
+        notification.set_default_action_and_target_value(
+            &format!("app.{}", backtrack_core::dbus::APP_ACTION_SHOW_RESTORE),
+            Some(&show_target(done.job, &done.name, &said, &done.target)),
         );
         app.send_notification(Some(UNDO_NOTIFICATION), &notification);
         let hold = app.hold();
@@ -381,6 +452,11 @@ impl Restores {
                 Ok(_) => {
                     info!(job, "restore undone");
                     *this.undoable.borrow_mut() = None;
+                    this.banner.set_revealed(false);
+                    // Its notification's Undo would now undo nothing.
+                    if let Some(app) = this.window.application() {
+                        app.withdraw_notification(UNDO_NOTIFICATION);
+                    }
                     this.toast(&copy::put_back_toast(&name));
                     this.state.disk_changed();
                 }
@@ -489,6 +565,7 @@ pub fn undo_from_notification(app: &adw::Application, job: u64, name: String) {
         let said = match done {
             Ok(_) => {
                 info!(job, "restore undone from its notification");
+                crate::window::undone(job);
                 copy::put_back_toast(&name)
             }
             Err(error) => {
@@ -545,4 +622,32 @@ fn clean(message: &str) -> String {
         .rsplit_once(": ")
         .map_or(message, |(_, tail)| tail)
         .to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_notification_passes_what_its_actions_take() {
+        // A target of another type than the action's is dropped without a
+        // word, and the button or the click does nothing.
+        assert_eq!(undo_target(7, "a.txt").type_().as_str(), UNDO_TARGET);
+        assert_eq!(
+            show_target(7, "a.txt", "Restored a.txt", "home/k/a.txt")
+                .type_()
+                .as_str(),
+            SHOW_TARGET
+        );
+        let shown = show_target(7, "a.txt", "Restored a.txt", "home/k/a.txt");
+        assert_eq!(
+            shown.get::<(u64, String, String, String)>(),
+            Some((
+                7,
+                "a.txt".to_string(),
+                "Restored a.txt".to_string(),
+                "home/k/a.txt".to_string()
+            ))
+        );
+    }
 }

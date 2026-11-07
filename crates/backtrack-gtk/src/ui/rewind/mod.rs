@@ -924,7 +924,7 @@ impl Rewind {
         let undo = if self.elsewhere {
             UndoBy::Notification
         } else {
-            UndoBy::Toast
+            UndoBy::Window
         };
         restores.start_from(state, asking, undo, move |carried_out| {
             let Some(rewind) = weak.upgrade() else {

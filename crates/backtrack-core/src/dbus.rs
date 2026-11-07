@@ -498,11 +498,14 @@ pub const APP_OBJECT_PATH: &str = "/tools/backtrack/Backtrack";
 /// full-screen view, there (S18-T7); both empty, where the window would open.
 /// `undo-restore` takes a restore's job and what it restored, and puts it
 /// back: the Undo button of the notification a restore from Rewind sends when
-/// Rewind was opened from outside the window (S18-T7).
+/// Rewind was opened from outside the window (S18-T7). `show-restore` takes
+/// the same, what the notification says and the path restored, and opens the
+/// window there with Undo offered: the notification, clicked.
 pub const APP_ACTION_FIX: &str = "fix";
 pub const APP_ACTION_BROWSE: &str = "browse";
 pub const APP_ACTION_REWIND: &str = "rewind";
 pub const APP_ACTION_UNDO_RESTORE: &str = "undo-restore";
+pub const APP_ACTION_SHOW_RESTORE: &str = "show-restore";
 
 /// The prefix for the daemon's named D-Bus errors, which mirror the engine's
 /// error taxonomy (e.g. `tools.backtrack.Backtrack.Error.PassphraseMissing`).

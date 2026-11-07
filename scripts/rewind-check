@@ -421,14 +421,14 @@ EOF
      whether to replace stone_bird.jpg, as the window asks. Choose Cancel:
      Rewind stays, nothing changed.
   c. Click Restore again and choose Replace. Rewind closes; the window shows
-     Pictures with stone_bird.jpg selected, and a toast says it was
-     restored, with Undo. On the VM, Files shows stone_bird.jpg as the stone
-     bird.
-  d. Click Undo within ten seconds: the toast says it was put back, and
+     Pictures with stone_bird.jpg selected, and a bar under its header bar
+     says it was restored, with Undo. On the VM, Files shows stone_bird.jpg
+     as the stone bird.
+  d. Click Undo in the bar: it goes, a message says it was put back, and
      stone_bird.jpg is the ladybugs again.
   e. Ctrl+T, go back to the same backup, select tiny_blast_of_red.jpg and
      press Enter: nothing is in its way, so it is restored without a
-     question; Rewind closes, and the toast offers Undo. Click Undo: it is
+     question; Rewind closes, and the bar offers Undo. Click Undo: it is
      gone again.
   f. Ctrl+T, go to the same backup, and press Alt+Up: Rewind is at your
      home folder. Select Pictures and click Restore: over Rewind, the
@@ -509,9 +509,9 @@ EOF
      then press Up until stone_bird.jpg shows the stone bird, marked
      "changed". Click Restore and choose Replace. Rewind closes, back in
      Files, which shows stone_bird.jpg as the stone bird, and a notification
-     says it was restored, with an Undo button. Click Undo (open the
-     notification list from the clock if it has gone): the notification
-     says it was put back, and stone_bird.jpg is the ladybugs again.
+     says it was restored. Click the notification itself: Backtrack's window
+     opens at Pictures, stone_bird.jpg selected, with a bar under its header
+     bar offering Undo. Click Undo: stone_bird.jpg is the ladybugs again.
   e. The window left alone. From the laptop:
        just vm-app "$vm" --path /home/keith/.local/share/backtrack-dev/demo-src
      Backtrack's window shows demo-src. In Files, right-click Pictures in
@@ -595,10 +595,11 @@ EOF
      space: "Rewind This Folder…" opens Rewind at Documents. Escape.
   c. A restore from Files. "Rewind This File…" on rewind-check.txt, press
      Up to its newest backup, click Restore and choose Replace. Rewind
-     closes, back in Files; a notification says it was restored, with Undo.
-     Open rewind-check.txt: the first draft. Click Undo in the notification
-     (in the list under the clock if it has gone): it says it was put back,
-     and the file is the second draft again.
+     closes, back in Files; a notification says it was restored. Open
+     rewind-check.txt: the first draft. Click the notification itself:
+     Backtrack's window opens at Documents with rewind-check.txt selected,
+     and a bar under its header bar offers Undo. Click Undo: the file is the
+     second draft again.
   d. The launcher. Right-click Backtrack in the app grid: "Rewind" opens
      Rewind on the folders the Flatpak backs up. Escape.
 
