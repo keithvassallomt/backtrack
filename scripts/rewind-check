@@ -448,7 +448,24 @@ EOF
                 \$HOME/backtrack/packaging/desktop/tools.backtrack.Backtrack.desktop > $launcher
             update-desktop-database \$HOME/.local/share/applications 2>/dev/null || true
             nautilus -q 2>/dev/null || true"
+        # For step d, a version of stone_bird.jpg that differs from the one
+        # on the disk, in a backup made now: the stone bird, backed up, then
+        # the ladybugs copied over it again. Retention keeps every backup of
+        # the last day, so it stays for one.
+        ssh "$("$ROOT/scripts/vm" address "$vm")" 'set -e
+            cli() { BACKTRACK_DEV=1 "$HOME/backtrack/target/debug/backtrack" "$@"; }
+            settle() {
+                for _ in $(seq 1 45); do
+                    cli status | grep -qiE "backing up|cataloguing" || return 0
+                    sleep 4
+                done
+            }
+            settle
+            cp /usr/share/backgrounds/images/stone_bird.jpg ~/Pictures/stone_bird.jpg
+            cli backup-now >/dev/null && sleep 2 && settle
+            cp /usr/share/backgrounds/images/ladybugs.jpg ~/Pictures/stone_bird.jpg'
         echo "The development build has a launcher on the VM, and Nautilus has quit."
+        echo "Pictures' newest backup has the stone bird as stone_bird.jpg; the disk, the ladybugs."
         exit 0
         ;;
     done)
