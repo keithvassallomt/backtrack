@@ -217,7 +217,7 @@ Nothing right now.
 - [x] S18-T22 A backup made by hand keeps the one before it
 
 ## Stage 19 — Guides anyone can follow ([stage file](stages/stage-19-guides-anyone-can-follow.md))
-- [ ] S19-T1 An index of the guides, with developer notes moved out of them
+- [x] S19-T1 An index of the guides, with developer notes moved out of them
 - [ ] S19-T2 Investigate: opening backups made by Vorta or Pika Backup
 - [ ] S19-T3 Screenshots of Backtrack for the guides, the site and the software centres
 - [ ] S19-T4 A guide to installing Backtrack
