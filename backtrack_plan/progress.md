@@ -228,7 +228,7 @@ Nothing right now.
 - [ ] S19-T9 A guide to what Backtrack's warnings mean
 - [ ] S19-T10 The Rewind guide as a walk-through
 - [ ] S19-T11 The Trash guide as a walk-through
-- [ ] S19-T12 The Snapper guide as a walk-through
+- [/] S19-T12 The Snapper guide as a walk-through
 - [ ] S19-T13 The file-manager guide as a walk-through
 - [x] S19-T14 Backtrack prunes only its own backups
 - [x] S19-T15 Unencrypted backups made by other programs open from the wizard

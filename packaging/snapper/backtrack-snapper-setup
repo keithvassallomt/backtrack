@@ -4,7 +4,7 @@
 #
 # Have Snapper take a snapshot of /home every five minutes, for Backtrack to
 # show in its timeline among the backups, and run again, undo exactly that.
-# docs/snapper.md says what each step does, and gives the same commands.
+# docs/snapper-by-hand.md says what each step does, and gives the same commands.
 #
 #   backtrack-snapper-setup                 set up, or offer to undo a setup
 #   backtrack-snapper-setup --yes           the same, without asking first
@@ -30,7 +30,7 @@ distro=""
 
 say() { printf '%s\n' "$*"; }
 
-# One command, shown as docs/snapper.md gives it, then run. Each is a fixed
+# One command, shown as docs/snapper-by-hand.md gives it, then run. Each is a fixed
 # string, so what is shown is exactly what runs.
 step() {
     if [[ $mode == print ]]; then
