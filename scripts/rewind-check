@@ -58,6 +58,16 @@
 #                                  extension out, and give the Flatpak a
 #                                  file to restore over
 #   scripts/rewind-check 14 done   put the development extension back
+#   scripts/rewind-check 15        on the Plasma VM, the development build:
+#                                  every way into Rewind there (S18-T7)
+#   scripts/rewind-check 15 setup  a launcher for the development build, its
+#                                  tray icon alone, and a folder to restore in
+#   scripts/rewind-check 15 done   take the launcher away again
+#   scripts/rewind-check 16        on the Plasma VM, the Flatpak (S18-T7)
+#   scripts/rewind-check 16 setup  install this checkout's Flatpak build
+#                                  there, its tray icon alone, the development
+#                                  Dolphin menus out, a file to restore over
+#   scripts/rewind-check 16 done   the development build's menus and tray back
 #
 # Run from the checkout.
 
@@ -604,6 +614,168 @@ EOF
      Rewind on the folders the Flatpak backs up. Escape.
 
   Then: scripts/rewind-check 14 done. Tell me any of a to d that did not
+  happen, or did and looked wrong.
+EOF
+    ;;
+15)
+    vm="fedora45 (KDE)"
+    launcher='$HOME/.local/share/applications/tools.backtrack.Backtrack.desktop'
+    case "${2:-}" in
+    setup)
+        # The development build's launcher with its Rewind action, in place of
+        # the Flatpak's (the same application ID), and its tray icon alone:
+        # the Flatpak's looks the same. Then ~/Rewind-check, backed up by the
+        # development service with a draft whose backup differs from the disk.
+        ssh "$("$ROOT/scripts/vm" address "$vm")" "set -e
+            for pid in \$(pgrep -u \$USER -f '^/app/bin/backtrack-tray') \$(pgrep -u \$USER -f \"^\$HOME/backtrack/target/debug/backtrack-gtk\"); do
+                kill \$pid
+            done
+            mkdir -p \$HOME/.local/share/applications
+            sed 's|^Exec=backtrack-gtk|Exec=env BACKTRACK_DEV=1 '\$HOME'/backtrack/target/debug/backtrack-gtk|' \
+                \$HOME/backtrack/packaging/desktop/tools.backtrack.Backtrack.desktop > $launcher
+            kbuildsycoca6 >/dev/null 2>&1 || true"
+        ssh "$("$ROOT/scripts/vm" address "$vm")" 'set -e
+            cli() { BACKTRACK_DEV=1 "$HOME/backtrack/target/debug/backtrack" "$@"; }
+            settle() {
+                for _ in $(seq 1 45); do
+                    cli status | grep -qiE "backing up|cataloguing" || return 0
+                    sleep 4
+                done
+            }
+            mkdir -p ~/Rewind-check
+            picture=$(find /usr/share/wallpapers -name "*.png" | head -1)
+            cp "$picture" ~/Rewind-check/wallpaper.png
+            echo "The first draft, as backed up." > ~/Rewind-check/draft.txt
+            cli config set backup.include "[\"$HOME/.local/share/backtrack-dev/demo-src\", \"$HOME/Rewind-check\"]" >/dev/null
+            settle
+            cli backup-now >/dev/null && sleep 2 && settle
+            echo "The second draft, on the disk only." > ~/Rewind-check/draft.txt'
+        echo "The development build has a launcher and the only tray icon on the VM;"
+        echo "~/Rewind-check is backed up, and its draft.txt changed since."
+        exit 0
+        ;;
+    done)
+        ssh "$("$ROOT/scripts/vm" address "$vm")" "rm -f $launcher; kbuildsycoca6 >/dev/null 2>&1 || true"
+        echo "The development launcher is gone; the Flatpak's shows again."
+        exit 0
+        ;;
+    esac
+    say "15. Every way into Rewind, on $vm, the development build (S18-T7)"
+    cat <<EOF
+  Run scripts/rewind-check 15 setup first. It backs up ~/Rewind-check, with
+  draft.txt (backed up as the first draft, the second on the disk) and a
+  picture.
+
+  a. Backtrack's window. From the laptop:
+       just vm-app "$vm" --path /home/keith/Rewind-check
+     The Rewind button in the header bar, with its icon, opens Rewind;
+     Escape. "Rewind…" is first in the main menu. Close the window.
+  b. Dolphin, a file. Open Dolphin at ~/Rewind-check and right-click
+     draft.txt: the Backtrack submenu has "Restore Previous Version…" and
+     "Rewind This File…", with Rewind's icon. Choose it: Rewind opens at
+     "Today (Now)" with draft.txt selected. Escape: back in Dolphin, no
+     Backtrack window left.
+  c. Dolphin, the folder. Right-click the empty space: the submenu has
+     Restore, Browse and "Rewind This Folder…", in that order. Choose it:
+     Rewind at Rewind-check. Escape.
+  d. A shortcut. In Dolphin, Settings, Configure Keyboard Shortcuts: search
+     for Rewind. "Rewind This File…" and "Rewind This Folder…" are listed.
+     Give "Rewind This Folder…" Ctrl+Alt+R, and press it in Rewind-check:
+     Rewind opens there. Escape.
+  e. A restore from Dolphin. "Rewind This File…" on draft.txt, press Up to
+     its backup, click Restore and choose Replace. Rewind closes, back in
+     Dolphin; a notification says it was restored. Click the notification
+     itself: Backtrack's window opens at Rewind-check with draft.txt
+     selected, and a bar under its header bar offers Undo. Click Undo:
+     draft.txt is the second draft again. Close the window.
+  f. The tray. Click Backtrack's tray icon's menu: "Rewind…", beside "Open
+     Backtrack". Choose it: Rewind opens on your home folder. Escape.
+  g. The launcher. In the application launcher, right-click Backtrack:
+     "Rewind", with its icon. Choose it: Rewind opens on your home folder.
+     Escape.
+
+  Then: scripts/rewind-check 15 done. Tell me any of a to g that did not
+  happen, or did and looked wrong.
+EOF
+    ;;
+16)
+    vm="fedora45 (KDE)"
+    case "${2:-}" in
+    setup)
+        # This checkout's Flatpak, its service and tray icon started again on
+        # it (the helper's uninstall deletes the folder they watch for
+        # upgrades), the development build's windows and tray icon closed (the
+        # same application ID; the same icon), and the development Dolphin
+        # menus out, so the Flatpak's own are installed from Preferences.
+        BT_VM="$vm" "$ROOT/target/helpers/t13-flatpak.sh" send >/dev/null
+        BT_VM="$vm" "$ROOT/target/helpers/t13-flatpak.sh" install user
+        ssh "$("$ROOT/scripts/vm" address "$vm")" 'for pid in $(pgrep -u "$USER" -f "^$HOME/backtrack/target/debug/backtrack-(gtk|tray)"); do
+                kill "$pid"
+            done
+            flatpak kill tools.backtrack.Backtrack 2>/dev/null || true
+            sleep 2
+            for unit in t13-backtrackd t13-backtrack-tray; do
+                systemctl --user stop $unit 2>/dev/null || true
+                systemctl --user reset-failed $unit 2>/dev/null || true
+            done
+            systemd-run --user --quiet --unit=t13-backtrackd \
+                flatpak run --command=backtrackd tools.backtrack.Backtrack --supervise
+            systemd-run --user --quiet --unit=t13-backtrack-tray \
+                flatpak run --command=backtrack-tray tools.backtrack.Backtrack
+            sleep 8
+            cd ~/backtrack && just uninstall-dolphin-dev >/dev/null'
+        # The Flatpak backs up ~/Smoke/Documents: a file there whose newest
+        # backup differs from the disk.
+        ssh "$("$ROOT/scripts/vm" address "$vm")" 'set -e
+            cli() { flatpak run --command=backtrack tools.backtrack.Backtrack "$@"; }
+            settle() {
+                for _ in $(seq 1 45); do
+                    cli status | grep -qiE "backing up|cataloguing" || return 0
+                    sleep 4
+                done
+            }
+            settle
+            echo "The first draft, as backed up." > ~/Smoke/Documents/rewind-check.txt
+            cli backup-now >/dev/null && sleep 2 && settle
+            echo "The second draft, on the disk only." > ~/Smoke/Documents/rewind-check.txt
+            flatpak ps --columns=application,commit | sort -u'
+        echo "The Flatpak is this checkout's, with the only tray icon; the development"
+        echo "Dolphin menus are out."
+        exit 0
+        ;;
+    done)
+        # The development build's menus and tray icon, as vm push leaves them.
+        "$ROOT/scripts/vm" push "$vm" >/dev/null
+        echo "The development build's Dolphin menus and tray icon are back."
+        exit 0
+        ;;
+    esac
+    say "16. Every way into Rewind, on $vm, the Flatpak (S18-T7)"
+    cat <<EOF
+  Run scripts/rewind-check 15 done, then scripts/rewind-check 16 setup. The
+  Flatpak backs up ~/Smoke/Documents, where setup left rewind-check.txt: its
+  newest backup has the first draft, the disk the second.
+
+  a. Backtrack's window. Open Backtrack from the application launcher (the
+     Flatpak's). The Rewind button, with its icon, opens Rewind; Escape. In
+     Preferences, General, click Install beside Dolphin. Close Backtrack.
+  b. Dolphin. Open Dolphin at ~/Smoke/Documents. Right-click
+     rewind-check.txt: the Backtrack submenu has "Rewind This File…", with
+     Rewind's icon; it opens Rewind at "Today (Now)" with the file selected.
+     Escape. Right-click the empty space: "Rewind This Folder…" opens
+     Rewind at Documents. Escape.
+  c. A restore from Dolphin. "Rewind This File…" on rewind-check.txt, press
+     Up to its newest backup, click Restore and choose Replace. Rewind
+     closes; a notification says it was restored. Click the notification
+     itself: Backtrack's window opens at Documents with rewind-check.txt
+     selected, and a bar under its header bar offers Undo. Click Undo: the
+     file is the second draft again. Close the window.
+  d. The tray. The tray icon's menu has "Rewind…": it opens Rewind on the
+     folders the Flatpak backs up. Escape.
+  e. The launcher. In the application launcher, right-click Backtrack:
+     "Rewind", with its icon, opens Rewind. Escape.
+
+  Then: scripts/rewind-check 16 done. Tell me any of a to e that did not
   happen, or did and looked wrong.
 EOF
     ;;
