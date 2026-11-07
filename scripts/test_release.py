@@ -206,24 +206,29 @@ class Tags(unittest.TestCase):
             self.assertEqual(log.read_text().splitlines(), lines)
 
 
+def git_env(directory):
+    """An environment for git that reads none of this machine's settings, but
+    names a new repository's branch main, as many machines' git does."""
+    config = directory / "gitconfig"
+    config.write_text("[init]\n\tdefaultBranch = main\n")
+    return {
+        **os.environ,
+        "GIT_CONFIG_GLOBAL": str(config),
+        "GIT_CONFIG_NOSYSTEM": "1",
+        "GIT_AUTHOR_NAME": "Test",
+        "GIT_AUTHOR_EMAIL": "test@example.org",
+        "GIT_COMMITTER_NAME": "Test",
+        "GIT_COMMITTER_EMAIL": "test@example.org",
+    }
+
+
 class Aur(unittest.TestCase):
     """The AUR's own git, played by a bare repository: it takes master only."""
 
     def setUp(self):
         self.dir = Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, self.dir)
-        config = self.dir / "gitconfig"
-        # As on a machine whose git names a new repository's branch main.
-        config.write_text("[init]\n\tdefaultBranch = main\n")
-        self.env = {
-            **os.environ,
-            "GIT_CONFIG_GLOBAL": str(config),
-            "GIT_CONFIG_NOSYSTEM": "1",
-            "GIT_AUTHOR_NAME": "Test",
-            "GIT_AUTHOR_EMAIL": "test@example.org",
-            "GIT_COMMITTER_NAME": "Test",
-            "GIT_COMMITTER_EMAIL": "test@example.org",
-        }
+        self.env = git_env(self.dir)
         # The AUR's repository: on master, and saying nothing of its HEAD while
         # it is empty, so the first clone is on the branch git names itself.
         self.aur = self.dir / "aur.git"
@@ -262,6 +267,69 @@ class Aur(unittest.TestCase):
         self.assertNotIn("stray", files)
         log = self.git("-C", self.aur, "log", "--format=%s", "master").split("\n")
         self.assertEqual(log[:2], ["Backtrack 0.1.1", "Backtrack 0.1.0"])
+
+
+class Tagged(unittest.TestCase):
+    """A release run again after its tag was pushed, from a later commit."""
+
+    def setUp(self):
+        self.dir = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.dir)
+        self.env = git_env(self.dir)
+        self.repo = self.dir / "repo"
+        self.repo.mkdir()
+        self.git("init", "--quiet")
+        self.commit({"CHANGELOG.md": "0.1.0", "packaging/aur/PKGBUILD": "pkgver=0.1.0"})
+        self.commit({"scripts/release.py": "push to main"})
+        self.tagged = self.git("rev-parse", "HEAD").strip()
+
+    def git(self, *args):
+        return subprocess.run(
+            ["git", *map(str, args)],
+            cwd=self.repo,
+            env=self.env,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout
+
+    def run_git(self, *args, check=True, **_):
+        # As Run.run: the command's exit status, its output only logged.
+        result = subprocess.run(
+            list(map(str, args)), cwd=self.repo, env=self.env, capture_output=True
+        )
+        return result.returncode
+
+    def commit(self, files):
+        for name, text in files.items():
+            (self.repo / name).parent.mkdir(parents=True, exist_ok=True)
+            (self.repo / name).write_text(text)
+        self.git("add", "--all")
+        self.git("commit", "--quiet", "--message", "change")
+
+    def goes_on(self):
+        return release.ships_what_was_tagged(self.run_git, self.tagged)
+
+    def test_the_tagged_commit_goes_on(self):
+        self.assertTrue(self.goes_on())
+
+    def test_a_fix_to_the_release_tooling_goes_on(self):
+        self.commit({"scripts/release.py": "push to master"})
+        self.commit({"scripts/test_release.py": "a test of it"})
+        self.commit({"RELEASING.md": "what a fix may change"})
+        self.assertTrue(self.goes_on())
+
+    def test_a_change_to_what_ships_does_not(self):
+        self.commit({"packaging/aur/PKGBUILD": "pkgver=0.1.0\npkgrel=2"})
+        self.assertFalse(self.goes_on())
+
+    def test_a_change_to_the_changelog_does_not(self):
+        self.commit({"CHANGELOG.md": "0.1.0, and more"})
+        self.assertFalse(self.goes_on())
+
+    def test_a_tag_this_checkout_lacks_does_not(self):
+        self.tagged = "0" * 40
+        self.assertFalse(self.goes_on())
 
 
 class Rerun(unittest.TestCase):

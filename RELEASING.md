@@ -66,6 +66,10 @@ credential beyond its GitHub token; `just release` does the publishing.
    elsewhere).
 7. Read the summary it prints. If it stopped, fix what it names and run
    `just release` again: whatever already reached a channel is skipped.
+   Once the tag is pushed, a fix may change the release's own scripts, under
+   `scripts/`, and this file, and nothing else: the rest of the release ships
+   the tagged files, so the run stops if anything else has changed since the
+   tag.
 8. Submit the FriendlyHub files, as
    [packaging/flatpak/FRIENDLYHUB.md](packaging/flatpak/FRIENDLYHUB.md) says.
 9. After the release, bump nothing. The next bump comes when the next release

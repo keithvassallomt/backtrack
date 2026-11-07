@@ -532,12 +532,34 @@ def absent_assets(assets, version):
     return absent + ([] if "SHA256SUMS" in assets else ["SHA256SUMS"])
 
 
+# The release's own tooling and its instructions, which ship in no package.
+TOOLING = ("scripts", "RELEASING.md")
+
+
+def ships_what_was_tagged(run, tagged):
+    """Whether HEAD holds the files of the commit `tagged`, the release's own
+    tooling aside.
+
+    A release that stopped is fixed on main and run again, so a fix to a step
+    that failed after the tag was pushed comes after the tag. The steps still
+    to run read the packaging and the CHANGELOG from this checkout: a change
+    to anything but the tooling would ship files the tag does not hold.
+    """
+    diff = ("git", "diff", "--quiet", tagged, "HEAD", "--", ".")
+    diff += tuple(f":(exclude){path}" for path in TOOLING)
+    return run(*diff, check=False) == 0
+
+
 def tag_and_wait(r):
     r.say(f"== Tag {r.tag} and the release workflow")
     head = r.run("git", "rev-parse", "HEAD", capture=True).strip()
     remote = r.run("git", "ls-remote", "origin", f"refs/tags/{r.tag}^{{}}", capture=True).split()
-    if remote and remote[0] != head:
-        raise Failed(f"{r.tag} is already on origin, at another commit")
+    tagged = remote[0] if remote else head
+    if remote and not ships_what_was_tagged(r.run, tagged):
+        raise Failed(
+            f"{r.tag} is already on origin, at {tagged[:12]}, "
+            f"and this checkout has changed more than {' and '.join(TOOLING)} since"
+        )
     if not remote:
         r.publish("git", "tag", "--annotate", r.tag, "--message", f"Backtrack {r.version}")
         r.publish("git", "push", "origin", r.tag)
@@ -563,7 +585,7 @@ def tag_and_wait(r):
                 capture=True,
             )
         )
-        run_id = release_run(runs, r.tag, head)
+        run_id = release_run(runs, r.tag, tagged)
         if run_id:
             break
         time.sleep(10)
