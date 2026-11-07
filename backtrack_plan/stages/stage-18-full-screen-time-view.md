@@ -450,7 +450,7 @@ Undo from the notification.
 - Everything the view does can be done from the keyboard alone.
 - High contrast is honoured; the motion follows S18-T3's crossfade rule.
 
-**Built** (2026-11-07, in progress):
+**Built** (2026-11-07):
 - Stepping is announced (GTK's accessible announcement) as the lines under
   the stack say it, once the stack has been still for 400 ms, so a held key
   says only where it stops, and never the same twice running.
@@ -468,6 +468,12 @@ Undo from the notification.
 - Checked on the GNOME VM through AT-SPI, as Orca sees it: the "Backups"
   list and its items, the one in front selected, the group, and the named,
   focusable buttons, greyed where they do nothing.
+
+**Checked by Keith** (2026-11-07, GNOME VM, Orca, `scripts/rewind-check
+17`): stepping read out once the stack settles, and once for a held key; the
+timeline read as the "Backups" list from Tab; every button and icon cell
+named; a restore with its conflict and its Undo by keyboard alone; high
+contrast.
 
 **Accept:** with Orca on the GNOME VM, stepping reads out each backup and the
 timeline reads as a list of them; the whole of S18-T6's restore done with the
