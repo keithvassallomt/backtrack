@@ -3646,8 +3646,10 @@ impl Daemon1 {
     /// What is at `repository` before anything is created there: `empty`,
     /// `existing` (a Borg repository, which its passphrase opens), `open` (a
     /// Borg repository that needs no passphrase: unencrypted, or encrypted
-    /// with an empty one), `occupied` (something else), or `unwritable`.
-    /// Connection problems are errors, named as usual.
+    /// with an empty one), `needs-key-file` (a Borg repository whose key is in
+    /// a file of its own, which [`add_key_file`](Self::add_key_file) is
+    /// given), `occupied` (something else), or `unwritable`. Connection
+    /// problems are errors, named as usual.
     ///
     /// The wizard asks before it offers to create anything, so that choosing a
     /// drive that already holds this computer's backups leads to them rather
@@ -3670,10 +3672,47 @@ impl Daemon1 {
             backtrack_core::engine::Presence::Empty => "empty",
             backtrack_core::engine::Presence::Existing => "existing",
             backtrack_core::engine::Presence::Open => "open",
+            backtrack_core::engine::Presence::NeedsKeyFile => "needs-key-file",
             backtrack_core::engine::Presence::Occupied => "occupied",
             backtrack_core::engine::Presence::Unwritable => "unwritable",
         }
         .to_string())
+    }
+
+    /// Give backups at `repository` whose key is kept in a file of its own
+    /// (Borg's key-file encryption, which Vorta offers) that file's
+    /// contents, `key`: the file from Borg's keys folder on the
+    /// computer that made them, or what `borg key export` wrote. Borg keeps it
+    /// where it looks for keys, and from then on the passphrase opens the
+    /// backups as it opens any others (S19-T16).
+    ///
+    /// Only for backups `InspectDestination` called `needs-key-file`: a key
+    /// put into any other repository would replace the one it holds. A key
+    /// of other backups is refused as `KeyForAnotherRepository`, and a file
+    /// that is not a key as `NotARecoveryKey`.
+    async fn add_key_file(&self, repository: &str, key: &str) -> Result<()> {
+        if repository.trim().is_empty() || key.trim().is_empty() {
+            return Err(DaemonError::InvalidArgument(
+                "a destination and a key file are both needed".into(),
+            ));
+        }
+        let engine = BorgCli::new(
+            repository.to_string(),
+            repository.to_string(),
+            self.shared.secrets.clone(),
+        )
+        .await?;
+        if engine.presence().await? != backtrack_core::engine::Presence::NeedsKeyFile {
+            return Err(DaemonError::InvalidArgument(
+                "these backups do not need a key file".into(),
+            ));
+        }
+        engine.key_import(key).await?;
+        info!(
+            repository,
+            "the key file for these backups was put in place"
+        );
+        Ok(())
     }
 
     /// Change the repository's passphrase.

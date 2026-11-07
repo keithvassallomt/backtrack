@@ -25,7 +25,11 @@ use super::{explain, Import, Wizard};
 use crate::model::wizard as model;
 
 pub fn build(wizard: &Rc<Wizard>) -> Vec<adw::NavigationPage> {
-    vec![location_page(wizard), passphrase_page(wizard)]
+    vec![
+        location_page(wizard),
+        key_file_page(wizard),
+        passphrase_page(wizard),
+    ]
 }
 
 /// A plain page: a heading, a line of explanation, and the page's own rows.
@@ -132,22 +136,12 @@ async fn found(wizard: &Rc<Wizard>, repository: String) {
         .await
         .as_deref()
     {
-        Ok("existing") => {
+        Ok(answer @ ("existing" | "open" | "needs-key-file")) => {
             *wizard.import.borrow_mut() = Some(Import {
                 repository,
                 adopting: false,
             });
-            wizard.nav.push_by_tag("passphrase");
-        }
-        // Backups that need no passphrase: there is nothing to ask.
-        Ok("open") => {
-            *wizard.import.borrow_mut() = Some(Import {
-                repository,
-                adopting: false,
-            });
-            // An empty passphrase cannot be typed in again later, so it is kept.
-            wizard.choices.borrow_mut().remember = true;
-            if let Err(message) = open_and_go_on(wizard, "").await {
+            if let Err(message) = ask_for_what_opens(wizard, answer).await {
                 wizard.toast(&message);
             }
         }
@@ -156,6 +150,120 @@ async fn found(wizard: &Rc<Wizard>, repository: String) {
             warn!(%error, repository, "the backups could not be looked for");
             wizard.toast(&explain(error));
         }
+    }
+}
+
+/// Ask for whatever opens the chosen backups, by what `InspectDestination`
+/// answered about them: their passphrase, their key file first, or nothing
+/// at all for backups that need no passphrase, which are opened at once.
+pub(super) async fn ask_for_what_opens(wizard: &Rc<Wizard>, answer: &str) -> Result<(), String> {
+    match answer {
+        "needs-key-file" => wizard.nav.push_by_tag("key-file"),
+        "open" => {
+            // An empty passphrase cannot be typed in again later, so it is kept.
+            wizard.choices.borrow_mut().remember = true;
+            open_and_go_on(wizard, "").await?;
+        }
+        _ => wizard.nav.push_by_tag("passphrase"),
+    }
+    Ok(())
+}
+
+/// Backups whose key is kept in a file of its own (Borg's key-file
+/// encryption, which Vorta offers): the file is chosen here and handed to the
+/// daemon, and then they open as any others do (S19-T16).
+fn key_file_page(wizard: &Rc<Wizard>) -> adw::NavigationPage {
+    let (page, body) = page(
+        "key-file",
+        "Choose the key file",
+        "These backups keep their key in a file of its own, and cannot be opened without \
+         it. The computer that made them has it, in the hidden folder .config/borg/keys \
+         in the home folder. Choose that file, or a copy of it.",
+    );
+    let hint = Label::builder()
+        .label("To see hidden folders while choosing, press Ctrl+H.")
+        .xalign(0.0)
+        .wrap(true)
+        .build();
+    hint.add_css_class("dim-label");
+    body.append(&hint);
+    let problem = Label::builder()
+        .xalign(0.0)
+        .wrap(true)
+        .visible(false)
+        .build();
+    problem.add_css_class("error");
+    body.append(&problem);
+    let choose = Button::with_label("Choose Key File…");
+    choose.add_css_class("pill");
+    choose.add_css_class("suggested-action");
+    choose.set_halign(Align::Center);
+    body.append(&choose);
+
+    let this = Rc::clone(wizard);
+    choose.connect_clicked(move |button| {
+        let this = Rc::clone(&this);
+        let button = button.clone();
+        let problem = problem.clone();
+        crate::ui::spawn(async move {
+            let dialog = gtk4::FileDialog::builder()
+                .title("Choose the Key File")
+                .accept_label("Use This Key File")
+                .modal(true)
+                .build();
+            let Ok(file) = dialog.open_future(Some(&this.window)).await else {
+                return;
+            };
+            button.set_sensitive(false);
+            problem.set_visible(false);
+            let outcome = use_key_file(&this, &file).await;
+            button.set_sensitive(true);
+            if let Err(message) = outcome {
+                problem.set_label(&message);
+                problem.set_visible(true);
+            }
+        });
+    });
+    page
+}
+
+/// Give the chosen backups the key in `file`, then ask for what opens them.
+async fn use_key_file(wizard: &Rc<Wizard>, file: &gtk4::gio::File) -> Result<(), String> {
+    let Some(import) = wizard.import.borrow().clone() else {
+        return Err("Choose where your backups are first.".to_string());
+    };
+    let (bytes, _) = file
+        .load_contents_future()
+        .await
+        .map_err(|error| format!("That file could not be read: {error}"))?;
+    let key = String::from_utf8_lossy(&bytes);
+    if let Err(error) = wizard.daemon.add_key_file(&import.repository, &key).await {
+        warn!(%error, repository = import.repository, "the key file was not taken");
+        return Err(key_file_refusal(&error));
+    }
+    info!(repository = import.repository, "a key file was given");
+    // Now that the key is there, the passphrase opens them, or, for a key
+    // made with an empty passphrase, nothing is needed.
+    let answer = wizard
+        .daemon
+        .inspect_destination(&import.repository)
+        .await
+        .map_err(|error| explain(&error))?;
+    ask_for_what_opens(wizard, &answer).await
+}
+
+/// What to say when the daemon did not take a key file.
+fn key_file_refusal(error: &zbus::Error) -> String {
+    let name = match error {
+        zbus::Error::MethodError(name, _, _) => {
+            name.as_str().rsplit('.').next().unwrap_or_default()
+        }
+        _ => "",
+    };
+    match name {
+        "KeyForAnotherRepository" => "That key file belongs to other backups.".to_string(),
+        "NotARecoveryKey" => "That file is not a Borg key file.".to_string(),
+        _ => explain(error),
     }
 }
 

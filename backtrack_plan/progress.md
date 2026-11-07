@@ -232,7 +232,7 @@ Nothing right now.
 - [ ] S19-T13 The file-manager guide as a walk-through
 - [x] S19-T14 Backtrack prunes only its own backups
 - [x] S19-T15 Unencrypted backups made by other programs open from the wizard
-- [ ] S19-T16 Backups whose key is in a key file can be opened with it
+- [x] S19-T16 Backups whose key is in a key file can be opened with it
 - [ ] S19-T17 Rewind's window belongs to Backtrack
 
 ## Stage 20 — The website at backtrack.tools ([stage file](stages/stage-20-the-website.md))

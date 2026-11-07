@@ -22,6 +22,9 @@ All notable changes to Backtrack are documented here. This project adheres to
 - When Backtrack carries on backing up into backups another program made,
   such as Vorta or Pika Backup, thinning out older backups no longer removes
   some of that program's. Backtrack now thins out only its own.
+- Backups whose key is kept in a file of its own, as Vorta's key-file
+  encryption keeps it, now open from the wizard once you choose that file.
+  The wizard used to stop at "Something went wrong".
 
 ## [0.1.0] - 2026-11-07
 

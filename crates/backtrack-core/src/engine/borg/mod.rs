@@ -115,6 +115,12 @@ impl BorgCli {
         // ssh's own words, which the collection includes.
         let errors = collect_json_errors(&out.stderr);
         let said = |msgid: &str| errors.iter().any(|e| e.msgid.as_deref() == Some(msgid));
+        // Key-file encryption keeps the key on the computer that made the
+        // backups, in that Borg's keys folder, so another computer, or the
+        // Flatpak with a keys folder of its own, has no key to try.
+        if said("KeyfileNotFoundError") {
+            return Ok(Presence::NeedsKeyFile);
+        }
         if said("PassphraseWrong") {
             return Ok(Presence::Existing);
         }
@@ -476,9 +482,10 @@ impl BackupEngine for BorgCli {
     }
 
     async fn key_import(&self, key: &str) -> Result<()> {
-        // No passphrase: putting the key back only writes it into the
-        // repository's configuration, and using it is what needs one. The key
-        // goes in on stdin so that it is never written to a file on the way.
+        // No passphrase: putting the key back only writes it, into the
+        // repository's configuration or, for key-file encryption, into this
+        // Borg's keys folder, and using it is what needs one. The key goes in
+        // on stdin so that it is never written to a file on the way.
         let mut cmd = base_command(&self.bin, "");
         cmd.arg("key").arg("import").arg(&self.repo).arg("-");
         run_with_input(cmd, key).await.map(|_| ())

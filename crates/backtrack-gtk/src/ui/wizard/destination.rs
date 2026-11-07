@@ -439,26 +439,17 @@ impl Page {
                 self.wizard.protect.borrow_mut().retarget(&repository);
                 self.wizard.nav.push_by_tag("protect");
             }
-            Ok("existing") => {
+            // Backups already there: carried on into, once whatever opens
+            // them is given.
+            Ok(answer @ ("existing" | "open" | "needs-key-file")) => {
                 if self.offer_existing().await {
                     *self.wizard.import.borrow_mut() = Some(Import {
                         repository,
                         adopting: true,
                     });
-                    self.wizard.nav.push_by_tag("passphrase");
-                }
-            }
-            // Backups that need no passphrase: carried on into without one.
-            Ok("open") => {
-                if self.offer_existing().await {
-                    *self.wizard.import.borrow_mut() = Some(Import {
-                        repository,
-                        adopting: true,
-                    });
-                    // An empty passphrase cannot be typed in again later, so
-                    // it is kept.
-                    self.wizard.choices.borrow_mut().remember = true;
-                    if let Err(message) = super::import::open_and_go_on(&self.wizard, "").await {
+                    if let Err(message) =
+                        super::import::ask_for_what_opens(&self.wizard, answer).await
+                    {
                         self.wizard.toast(&message);
                     }
                 }

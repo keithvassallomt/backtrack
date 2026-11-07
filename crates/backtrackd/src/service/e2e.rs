@@ -504,6 +504,92 @@ async fn backups_that_need_no_passphrase_are_opened_without_one() {
 }
 
 #[tokio::test]
+async fn backups_whose_key_is_in_a_file_are_opened_with_it() {
+    // Vorta's key-file encryption (S19-T16), made on another computer: the
+    // wizard learns that the key file is missing, gives the daemon the file
+    // the person chose, and then opens the backups with their passphrase.
+    let fixture = fixture().await;
+    let shared = Arc::clone(&fixture.shared);
+    let dir = tempfile::tempdir().unwrap();
+    // The key goes into this Borg's keys folder, which is this test's own
+    // rather than the keys folder of whoever runs the tests. Only key-file
+    // repositories use it, and no other test makes one.
+    std::env::set_var("BORG_KEYS_DIR", dir.path().join("here-keys"));
+    let repo = dir.path().join("vorta").to_str().unwrap().to_string();
+    let elsewhere = dir.path().join("elsewhere");
+    let made = std::process::Command::new("borg")
+        .env("BORG_BASE_DIR", &elsewhere)
+        .env("BORG_KEYS_DIR", elsewhere.join("keys"))
+        .env("BORG_NEW_PASSPHRASE", "vorta passphrase")
+        .args(["init", "--encryption=keyfile-blake2", &repo])
+        .output()
+        .unwrap();
+    assert!(made.status.success(), "{made:?}");
+    let kept = std::fs::read_dir(elsewhere.join("keys"))
+        .unwrap()
+        .next()
+        .unwrap()
+        .unwrap()
+        .path();
+    let key = std::fs::read_to_string(kept).unwrap();
+
+    let (_server, client) = connect(Arc::clone(&shared)).await;
+    let inspect = |repo: String| {
+        let client = client.clone();
+        async move {
+            let reply = client
+                .call_method(
+                    None::<()>,
+                    PATH,
+                    Some(IFACE),
+                    "InspectDestination",
+                    &(repo,),
+                )
+                .await
+                .expect("InspectDestination answers");
+            reply.body().deserialize::<String>().unwrap()
+        }
+    };
+    let add = |repo: String, key: String| {
+        let client = client.clone();
+        async move {
+            client
+                .call_method(None::<()>, PATH, Some(IFACE), "AddKeyFile", &(repo, key))
+                .await
+        }
+    };
+    let refused = |result: zbus::Result<zbus::message::Message>| match result {
+        Err(zbus::Error::MethodError(name, _, _)) => name.as_str().to_string(),
+        other => panic!("expected a named refusal, got {other:?}"),
+    };
+    assert_eq!(inspect(repo.clone()).await, "needs-key-file");
+
+    // Not a key, and backups that keep their key themselves: refused.
+    assert_eq!(
+        refused(add(repo.clone(), "Lentil soup".into()).await),
+        "tools.backtrack.Backtrack.Error.NotARecoveryKey"
+    );
+    let own = shared.config().storage.repository.clone().unwrap();
+    assert_eq!(
+        refused(add(own, key.clone()).await),
+        "tools.backtrack.Backtrack.Error.InvalidArgument"
+    );
+
+    add(repo.clone(), key).await.expect("the key file is taken");
+    assert_eq!(inspect(repo.clone()).await, "existing");
+    client
+        .call_method(
+            None::<()>,
+            PATH,
+            Some(IFACE),
+            "ImportRepo",
+            &(repo.as_str(), "vorta passphrase"),
+        )
+        .await
+        .expect("opened with their passphrase");
+}
+
+#[tokio::test]
 async fn importing_a_repository_leaves_the_newest_snapshot_browsable_at_once() {
     // The first-run acceptance criterion against a real repository: adopting one
     // that already holds history must return with something to show, not with an

@@ -315,12 +315,14 @@ the computer that made the backups finds it there, but Backtrack's Flatpak
 looks in a folder of its own and a new computer has no key at all, so the
 import stops at "Something went wrong. The logs say what." (S19-T2). The
 wizard says that these backups need their key file, and lets the person
-choose the file Vorta exported, after which the passphrase opens them as it
-opens any others.
+choose it, after which the passphrase opens them as it opens any others.
+Vorta has no way to export the key, so the file is the one in Borg's keys
+folder on the computer that made the backups, or one `borg key export`
+wrote.
 
 **Accept:** on the GNOME VM, a repository made with Vorta's key-file
 encryption opened in the Flatpak and on a computer without the key, by
-choosing the exported key file; without the file, the wizard says what is
+choosing the key file; without the file, the wizard says what is
 missing rather than "Something went wrong"; a CHANGELOG entry under
 Unreleased.
 
