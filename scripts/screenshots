@@ -22,7 +22,7 @@
 #                                screen, as target/screenshots/NAME.png
 #   scripts/screenshots video    Rewind on Documents, at Now, ready to record
 #   scripts/screenshots keep-video  the newest screen recording, as
-#                                target/screenshots/rewind.webm
+#                                target/screenshots/rewind.mp4 (or .webm)
 #
 #   scripts/screenshots done     log the VM's own user back in
 #
@@ -344,18 +344,21 @@ video() {
     say "Rewind is open on Documents. Record it as docs/screenshots.md says."
 }
 
-# GNOME's screen recorder saves to Videos/Screencasts.
+# GNOME's screen recorder saves to Videos/Screencasts, as MP4 or, in older
+# versions, WebM.
 keep_video() {
-    local newest
-    newest="$(as_user 'ls -t ~/Videos/Screencasts/*.webm 2>/dev/null | head -1')"
+    local newest kept
+    newest="$(as_user 'ls -t ~/Videos/Screencasts/*.mp4 ~/Videos/Screencasts/*.webm 2>/dev/null | head -1')"
     if [ -z "$newest" ]; then
         echo "No recording in $SHOTS_USER's Videos/Screencasts." >&2
         exit 1
     fi
+    kept="$OUT/rewind.${newest##*.}"
     mkdir -p "$OUT"
-    scp -q "${SSH[@]}" "$SHOTS_USER@$(host):$newest" "$OUT/rewind.webm"
+    rm -f "$OUT/rewind.mp4" "$OUT/rewind.webm"
+    scp -q "${SSH[@]}" "$SHOTS_USER@$(host):$newest" "$kept"
     as_user "rm -f $(printf '%q' "$newest")"
-    say "Kept as $OUT/rewind.webm"
+    say "Kept as $kept"
 }
 
 done_() {

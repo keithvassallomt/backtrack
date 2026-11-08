@@ -133,7 +133,7 @@ recorded by hand on the GNOME VM.
    - click it, then **Restore**. Rewind closes once the letter is back.
 4. Press **Ctrl+Shift+Alt+R** again to stop, as soon as Rewind has closed.
 5. `scripts/screenshots keep-video` fetches the recording as
-   `target/screenshots/rewind.webm`.
+   `target/screenshots/rewind.mp4` (`.webm` from an older GNOME).
 
 In the backtrack.tools repository, `scripts/make-video` with that file makes
 the site's copies of it, and the still shown in its place to anyone whose
