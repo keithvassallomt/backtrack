@@ -175,9 +175,10 @@ test-integration:
     fi
     cargo test --workspace --features integration
 
-# ─── Versioning (human-only — see VERSIONING.md) ────────────────────────────
+# ─── Versioning (see VERSIONING.md) ─────────────────────────────────────────
 
-# Set the version across all tracked locations. Human-only; does NOT commit.
+# Set the version across all tracked locations, for a release Keith has decided
+# on (VERSIONING.md). Does NOT commit.
 bump-version NEW_VERSION:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -265,8 +266,8 @@ verify-version:
     PY
 
 # Take a release from tag to every channel (scripts/release.py, RELEASING.md).
-# Human-only, like bump-version: run once the version bump and the CHANGELOG's
-# move are merged to main. DIR is where the FriendlyHub files go.
+# Run once the version bump and the CHANGELOG's move are merged to main, by
+# Keith or by Claude at his word. DIR is where the FriendlyHub files go.
 release DIR="":
     python3 scripts/release.py {{DIR}}
 

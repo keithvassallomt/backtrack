@@ -14,8 +14,10 @@ MINOR = additive, PATCH = fixes).
 
 ## The one rule
 
-**Version numbers are changed only by a human, and only via `just bump-version`.**
-No automated process and no AI contributor may edit a version number by hand.
+**A version number changes only through `just bump-version`, and only for a
+release Keith has decided on.** Keith runs it, or has Claude run it with the
+rest of the release ([RELEASING.md](RELEASING.md)). Nothing edits a version
+number by hand.
 `just bump-version NEW_VERSION` updates every location below in lockstep;
 `just verify-version` (run in CI) fails if they ever disagree.
 

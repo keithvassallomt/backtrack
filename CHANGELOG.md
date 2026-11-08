@@ -3,8 +3,9 @@
   - Format follows Keep a Changelog (https://keepachangelog.com/en/1.1.0/).
   - Categories, in this order: Added, Changed, Deprecated, Removed, Fixed, Security.
   - Entries are user-facing sentences describing the change, not commit subjects.
-  - AI/contributors add entries under [Unreleased] ONLY. A human moves them into a
-    versioned section at release time via `just bump-version` (see VERSIONING.md).
+  - Entries go under [Unreleased] only. At release time, whoever runs the release
+    (Keith, or Claude at his word) moves them into a versioned section (see
+    RELEASING.md).
 -->
 
 # Changelog
@@ -14,6 +15,8 @@ All notable changes to Backtrack are documented here. This project adheres to
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) format.
 
 ## [Unreleased]
+
+## [0.1.1] - 2026-11-08
 
 ### Changed
 - How to Install… and the links to the Snapper guide in Preferences now open
@@ -101,5 +104,6 @@ All notable changes to Backtrack are documented here. This project adheres to
   and the
   [file manager items](https://github.com/keithvassallomt/backtrack/blob/main/docs/file-manager-integration.md).
 
-[Unreleased]: https://github.com/keithvassallomt/backtrack/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/keithvassallomt/backtrack/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/keithvassallomt/backtrack/releases/tag/v0.1.1
 [0.1.0]: https://github.com/keithvassallomt/backtrack/releases/tag/v0.1.0
