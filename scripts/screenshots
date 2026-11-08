@@ -20,6 +20,9 @@
 #   scripts/screenshots import   the welcome wizard at "Where are your backups?"
 #   scripts/screenshots keep NAME  the newest screenshot taken on the VM's
 #                                screen, as target/screenshots/NAME.png
+#   scripts/screenshots video    Rewind on Documents, at Now, ready to record
+#   scripts/screenshots keep-video  the newest screen recording, as
+#                                target/screenshots/rewind.webm
 #
 #   scripts/screenshots done     log the VM's own user back in
 #
@@ -323,6 +326,28 @@ keep() {
     say "Kept as $OUT/$name.png"
 }
 
+# Rewind full screen on sam's Documents, at Now, for the website's video
+# (docs/screenshots.md, The Rewind video).
+video() {
+    shots close
+    shots app --rewind --path "/home/$SHOTS_USER/Documents"
+    say "Rewind is open on Documents. Record it as docs/screenshots.md says."
+}
+
+# GNOME's screen recorder saves to Videos/Screencasts.
+keep_video() {
+    local newest
+    newest="$(as_user 'ls -t ~/Videos/Screencasts/*.webm 2>/dev/null | head -1')"
+    if [ -z "$newest" ]; then
+        echo "No recording in $SHOTS_USER's Videos/Screencasts." >&2
+        exit 1
+    fi
+    mkdir -p "$OUT"
+    scp -q "${SSH[@]}" "$SHOTS_USER@$(host):$newest" "$OUT/rewind.webm"
+    as_user "rm -f $(printf '%q' "$newest")"
+    say "Kept as $OUT/rewind.webm"
+}
+
 done_() {
     log_in "$(owner | cut -d@ -f1)"
     # A login after boot is not the one `just vm-start` unlocked the keyring
@@ -340,6 +365,8 @@ case "${1:-}" in
     wizard) wizard ;;
     import) import_ ;;
     keep) keep "${2:?keep NAME}" ;;
+    video) video ;;
+    keep-video) keep_video ;;
     done) done_ ;;
-    *) sed -n '5,27p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
+    *) sed -n '5,30p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
 esac

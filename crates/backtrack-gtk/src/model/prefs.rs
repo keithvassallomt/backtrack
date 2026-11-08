@@ -362,12 +362,17 @@ impl Plugin {
     }
 }
 
+/// Where the guides are published. backtrack.tools renders `docs/` at each
+/// release: `docs/<name>.md` is `GUIDES/<name>/`, its headings keeping the
+/// anchors GitHub gives them. The Markdown on GitHub stays where it is, for
+/// the releases that link there.
+pub const GUIDES: &str = "https://backtrack.tools/guides";
+
 /// The page How to Install… opens: the steps for installing either
 /// integration, those for the Flatpak when Backtrack is one.
 pub fn install_page(flatpak: bool) -> String {
     format!(
-        "{}/blob/main/docs/file-manager-integration.md#{}",
-        env!("CARGO_PKG_REPOSITORY"),
+        "{GUIDES}/file-manager-integration/#{}",
         if flatpak {
             "from-the-flatpak"
         } else {
@@ -378,7 +383,7 @@ pub fn install_page(flatpak: bool) -> String {
 
 /// The guide to Snapper (Stage 17), at `section` if one is named.
 pub fn snapper_guide(section: Option<&str>) -> String {
-    let page = format!("{}/blob/main/docs/snapper.md", env!("CARGO_PKG_REPOSITORY"));
+    let page = format!("{GUIDES}/snapper/");
     match section {
         Some(section) => format!("{page}#{section}"),
         None => page,
@@ -773,7 +778,8 @@ mod tests {
             .collect();
         for flatpak in [false, true] {
             let page = install_page(flatpak);
-            let anchor = page.rsplit_once('#').unwrap().1;
+            let (guide, anchor) = page.rsplit_once('#').unwrap();
+            assert_eq!(guide, format!("{GUIDES}/file-manager-integration/"));
             assert!(
                 anchors.iter().any(|a| a == anchor),
                 "docs/file-manager-integration.md has no heading for #{anchor}"
@@ -945,8 +951,10 @@ mod tests {
     #[test]
     fn the_access_section_is_a_section_of_the_snapper_guide() {
         let doc = include_str!("../../../../docs/snapper.md");
-        let anchor = snapper_guide(Some(SNAPPER_ACCESS));
-        let anchor = anchor.rsplit_once('#').unwrap().1;
+        let page = snapper_guide(Some(SNAPPER_ACCESS));
+        let (guide, anchor) = page.rsplit_once('#').unwrap();
+        assert_eq!(guide, format!("{GUIDES}/snapper/"));
+        assert_eq!(snapper_guide(None), guide);
         assert!(
             doc.lines().any(|line| line == "## Giving Backtrack access"),
             "docs/snapper.md has no heading for #{anchor}"

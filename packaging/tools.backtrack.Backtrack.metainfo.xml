@@ -62,16 +62,28 @@
 
   <screenshots>
     <screenshot type="default">
-      <image>https://raw.githubusercontent.com/keithvassallomt/backtrack/main/backtrack_plan/screenshots/stage-06-main-window-light.png</image>
+      <image>https://backtrack.tools/screenshots/window.png</image>
       <caption>A folder as it was at an earlier backup</caption>
     </screenshot>
     <screenshot>
-      <image>https://raw.githubusercontent.com/keithvassallomt/backtrack/main/backtrack_plan/screenshots/stage-06-main-window-dark.png</image>
+      <image>https://backtrack.tools/screenshots/window-dark.png</image>
       <caption>The same window in the dark style</caption>
     </screenshot>
     <screenshot>
-      <image>https://raw.githubusercontent.com/keithvassallomt/backtrack/main/backtrack_plan/screenshots/stage-12-nautilus-file-menu.png</image>
-      <caption>Restore Previous Version from the file manager</caption>
+      <image>https://backtrack.tools/screenshots/rewind.png</image>
+      <caption>Rewind: a folder, with its backups stretching away behind it</caption>
+    </screenshot>
+    <screenshot>
+      <image>https://backtrack.tools/screenshots/restore.png</image>
+      <caption>Before a restore replaces a file, it shows both dates</caption>
+    </screenshot>
+    <screenshot>
+      <image>https://backtrack.tools/screenshots/search.png</image>
+      <caption>Search finds files that are no longer on your computer</caption>
+    </screenshot>
+    <screenshot>
+      <image>https://backtrack.tools/screenshots/file-manager.png</image>
+      <caption>Backtrack's items in the file manager's menu</caption>
     </screenshot>
   </screenshots>
 </component>
