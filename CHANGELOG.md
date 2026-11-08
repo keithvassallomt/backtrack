@@ -16,6 +16,8 @@ All notable changes to Backtrack are documented here. This project adheres to
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-11-08
+
 ### Changed
 - How to Install… and the links to the Snapper guide in Preferences now open
   the guides on backtrack.tools, at the same section, instead of their
@@ -102,5 +104,6 @@ All notable changes to Backtrack are documented here. This project adheres to
   and the
   [file manager items](https://github.com/keithvassallomt/backtrack/blob/main/docs/file-manager-integration.md).
 
-[Unreleased]: https://github.com/keithvassallomt/backtrack/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/keithvassallomt/backtrack/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/keithvassallomt/backtrack/releases/tag/v0.1.1
 [0.1.0]: https://github.com/keithvassallomt/backtrack/releases/tag/v0.1.0
