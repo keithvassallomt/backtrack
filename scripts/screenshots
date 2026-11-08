@@ -20,6 +20,9 @@
 #   scripts/screenshots import   the welcome wizard at "Where are your backups?"
 #   scripts/screenshots keep NAME  the newest screenshot taken on the VM's
 #                                screen, as target/screenshots/NAME.png
+#   scripts/screenshots video    Rewind on Documents, at Now, ready to record
+#   scripts/screenshots keep-video  the newest screen recording, as
+#                                target/screenshots/rewind.mp4 (or .webm)
 #
 #   scripts/screenshots done     log the VM's own user back in
 #
@@ -52,10 +55,7 @@ log_in() {
         && sudo systemctl restart gdm"
     say "Waiting for $who's desktop…"
     for _ in $(seq 1 60); do
-        if as_owner "loginctl list-sessions --no-legend | awk '\$3 == \"$who\" && \$4 == \"seat0\"' | grep -q ." 2>/dev/null \
-            && as_owner "sudo -u $who env XDG_RUNTIME_DIR=/run/user/\$(id -u $who) \
-                gdbus call --session --dest org.gnome.Shell --object-path /org/gnome/Shell \
-                --method org.gnome.Shell.Eval 1" >/dev/null 2>&1; then
+        if on_screen "$who"; then
             sleep 3
             return 0
         fi
@@ -63,6 +63,15 @@ log_in() {
     done
     echo "$who's desktop did not come up" >&2
     exit 1
+}
+
+# Whether `who` has the VM's screen, with GNOME Shell answering.
+on_screen() {
+    local who="$1"
+    as_owner "loginctl list-sessions --no-legend | awk '\$3 == \"$who\" && \$4 == \"seat0\"' | grep -q ." 2>/dev/null \
+        && as_owner "sudo -u $who env XDG_RUNTIME_DIR=/run/user/\$(id -u $who) \
+            gdbus call --session --dest org.gnome.Shell --object-path /org/gnome/Shell \
+            --method org.gnome.Shell.Eval 1" >/dev/null 2>&1
 }
 
 install_files() {
@@ -323,6 +332,35 @@ keep() {
     say "Kept as $OUT/$name.png"
 }
 
+# Rewind full screen on sam's Documents, at Now, for the website's video
+# (docs/screenshots.md, The Rewind video). sam is logged in if need be, and
+# the home folder is made afresh, as the shots leave it changed: the letter
+# to the council is deleted again.
+video() {
+    on_screen "$SHOTS_USER" || { mount_drive; log_in "$SHOTS_USER"; }
+    home
+    shots close
+    shots app --rewind --path "/home/$SHOTS_USER/Documents"
+    say "Rewind is open on Documents. Record it as docs/screenshots.md says."
+}
+
+# GNOME's screen recorder saves to Videos/Screencasts, as MP4 or, in older
+# versions, WebM.
+keep_video() {
+    local newest kept
+    newest="$(as_user 'ls -t ~/Videos/Screencasts/*.mp4 ~/Videos/Screencasts/*.webm 2>/dev/null | head -1')"
+    if [ -z "$newest" ]; then
+        echo "No recording in $SHOTS_USER's Videos/Screencasts." >&2
+        exit 1
+    fi
+    kept="$OUT/rewind.${newest##*.}"
+    mkdir -p "$OUT"
+    rm -f "$OUT/rewind.mp4" "$OUT/rewind.webm"
+    scp -q "${SSH[@]}" "$SHOTS_USER@$(host):$newest" "$kept"
+    as_user "rm -f $(printf '%q' "$newest")"
+    say "Kept as $kept"
+}
+
 done_() {
     log_in "$(owner | cut -d@ -f1)"
     # A login after boot is not the one `just vm-start` unlocked the keyring
@@ -340,6 +378,8 @@ case "${1:-}" in
     wizard) wizard ;;
     import) import_ ;;
     keep) keep "${2:?keep NAME}" ;;
+    video) video ;;
+    keep-video) keep_video ;;
     done) done_ ;;
-    *) sed -n '5,27p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
+    *) sed -n '5,30p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
 esac

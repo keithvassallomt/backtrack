@@ -114,6 +114,31 @@ Take a window with **Alt+Print** on the VM's screen, which saves it to sam's
 
 Then `scripts/screenshots images` again.
 
+## The Rewind video
+
+The home page of backtrack.tools shows Rewind moving: a short, silent loop of
+a folder going back through its backups and a deleted file coming back. It is
+recorded by hand on the GNOME VM.
+
+1. `scripts/screenshots video` logs sam in on the VM's screen if need be,
+   makes sam's home folder afresh with its four weeks of backups (a few
+   minutes), and opens Rewind full screen on sam's **Documents**, at
+   **Today (Now)**.
+2. On the VM's screen, press **Ctrl+Shift+Alt+R** to start GNOME's screen
+   recorder.
+3. Record about fifteen seconds, without hurrying:
+   - stay on Now for a second;
+   - press **↑** about once a second until **Letter to the council.odt**
+     appears, marked **deleted** (two or three presses);
+   - click it, then **Restore**. Rewind closes once the letter is back.
+4. Press **Ctrl+Shift+Alt+R** again to stop, as soon as Rewind has closed.
+5. `scripts/screenshots keep-video` fetches the recording as
+   `target/screenshots/rewind.mp4` (`.webm` from an older GNOME).
+
+In the backtrack.tools repository, `scripts/make-video` with that file makes
+the site's copies of it, and the still shown in its place to anyone whose
+system asks for reduced motion. To record it again, start from step 1.
+
 ## Putting the VM back
 
 ```sh

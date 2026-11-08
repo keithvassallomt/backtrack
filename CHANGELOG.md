@@ -15,6 +15,15 @@ All notable changes to Backtrack are documented here. This project adheres to
 
 ## [Unreleased]
 
+### Changed
+- How to Install… and the links to the Snapper guide in Preferences now open
+  the guides on backtrack.tools, at the same section, instead of their
+  Markdown files on GitHub.
+- Software centres such as GNOME Software and Discover now show screenshots
+  of this version: the window in its light and dark styles, Rewind, a
+  restore, search, and Backtrack's items in the file manager. They are
+  served from backtrack.tools.
+
 ### Fixed
 - Backups that need no passphrase now open from Already have backups?
   without one: Vorta's unencrypted backups, and Pika Backup's made with

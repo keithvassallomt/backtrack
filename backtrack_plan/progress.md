@@ -18,8 +18,8 @@ Nothing right now.
 > tasks: add them here + to the stage file, then `just provision-board-apply`.
 > See [../CLAUDE.md](../CLAUDE.md) for the full workflow.
 
-**Current stage:** 19
-**Last updated:** 2026-11-07
+**Current stage:** 20
+**Last updated:** 2026-11-08
 
 ## Stage 0 — Bootstrap ([stage file](stages/stage-00-bootstrap.md))
 - [x] S00-T1 Git repo, license, .gitignore, README skeleton
@@ -237,17 +237,17 @@ Nothing right now.
 - [x] S19-T18 The status does not say the files are backed up before the first backup
 
 ## Stage 20 — The website at backtrack.tools ([stage file](stages/stage-20-the-website.md))
-- [ ] S20-T1 The website built with Zola (NOPE. New Plan. Ask me.)
-- [ ] S20-T2 Pages below the top level, and a real 404, on CloudFront
-- [ ] S20-T3 Stage 19's guides published under /guides/
-- [ ] S20-T4 The website's look
-- [ ] S20-T5 The home page
-- [ ] S20-T6 Rewind, moving, on the home page
-- [ ] S20-T7 The install page
-- [ ] S20-T8 The changelog page
-- [ ] S20-T9 Search engines and shared links
-- [ ] S20-T10 Software centres show screenshots served from backtrack.tools
-- [ ] S20-T11 Preferences opens the guides on backtrack.tools
+- [x] S20-T1 The website built with Zola
+- [/] S20-T2 Pages below the top level, and a real 404, on CloudFront
+- [x] S20-T3 Stage 19's guides published under /guides/
+- [x] S20-T4 The website's look
+- [x] S20-T5 The home page
+- [x] S20-T6 Rewind, moving, on the home page
+- [/] S20-T7 The install page
+- [x] S20-T8 The changelog page
+- [/] S20-T9 Search engines and shared links
+- [x] S20-T10 Software centres show screenshots served from backtrack.tools
+- [/] S20-T11 Preferences opens the guides on backtrack.tools
 - [ ] S20-T12 The website goes live with the release
 
 ## Stage 21 — Telling people about Backtrack ([stage file](stages/stage-21-telling-people-about-backtrack.md))
