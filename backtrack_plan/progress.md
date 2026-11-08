@@ -2,8 +2,10 @@
 
 ## For Keith to do
 
-- Record the Rewind video, as `docs/screenshots.md` says under The Rewind
-  video (S20-T6).
+- Watch the Rewind video play on the home page in Firefox and in GNOME Web,
+  and see its still in its place with reduced motion turned on (S20-T6): in
+  backtrack.tools on branch `stage-20-site`, `just serve`, then
+  <http://localhost:1111/>.
 
 ## Notes
 
@@ -243,7 +245,7 @@
 - [x] S20-T3 Stage 19's guides published under /guides/
 - [x] S20-T4 The website's look
 - [x] S20-T5 The home page
-- [!] S20-T6 Rewind, moving, on the home page
+- [/] S20-T6 Rewind, moving, on the home page
 - [/] S20-T7 The install page
 - [x] S20-T8 The changelog page
 - [/] S20-T9 Search engines and shared links
@@ -257,5 +259,4 @@
 
 ## Blocked
 
-- **S20-T6:** waits for Keith to record the Rewind video. The site shows the
-  screenshot in its place until `scripts/make-video` has made it.
+Nothing is blocked.
