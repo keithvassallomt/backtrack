@@ -2,7 +2,9 @@
 
 ## For Keith to do
 
-Nothing right now.
+- Submit the 0.1.1 FriendlyHub files in `~/Downloads/backtrack-0.1.1-friendlyhub/`, as `packaging/flatpak/FRIENDLYHUB.md` says.
+- Paste `https://backtrack.tools` into a messenger and check the preview shows the Rewind picture and the title (S20-T9).
+- Look the live site over (S20-T12).
 
 ## Notes
 
@@ -238,7 +240,7 @@ Nothing right now.
 
 ## Stage 20 — The website at backtrack.tools ([stage file](stages/stage-20-the-website.md))
 - [x] S20-T1 The website built with Zola
-- [/] S20-T2 Pages below the top level, and a real 404, on CloudFront
+- [x] S20-T2 Pages below the top level, and a real 404, on CloudFront
 - [x] S20-T3 Stage 19's guides published under /guides/
 - [x] S20-T4 The website's look
 - [x] S20-T5 The home page
@@ -248,7 +250,7 @@ Nothing right now.
 - [/] S20-T9 Search engines and shared links
 - [x] S20-T10 Software centres show screenshots served from backtrack.tools
 - [/] S20-T11 Preferences opens the guides on backtrack.tools
-- [ ] S20-T12 The website goes live with the release
+- [/] S20-T12 The website goes live with the release
 
 ## Stage 21 — Telling people about Backtrack ([stage file](stages/stage-21-telling-people-about-backtrack.md))
 - [/] S21-T1 New screenshots for the FriendlyHub listing and the README
