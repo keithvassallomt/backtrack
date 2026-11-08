@@ -253,6 +253,7 @@
 ## Stage 21 — Telling people about Backtrack ([stage file](stages/stage-21-telling-people-about-backtrack.md))
 - [/] S21-T1 New screenshots for the FriendlyHub listing and the README
 - [ ] S21-T2 Ideas for blog posts about Backtrack
+- [ ] S21-T3 An install script for Backtrack
 
 ## Blocked
 

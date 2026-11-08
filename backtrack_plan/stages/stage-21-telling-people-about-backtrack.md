@@ -12,7 +12,7 @@ S19-T3: the screenshots of the release they illustrate, and the script that
 takes them.
 
 ## Order of work
-T1 once S19-T3 is done. T2 at any time.
+T1 once S19-T3 is done. T2 at any time. T3 once Keith has agreed its scope.
 
 ## Tasks
 
@@ -41,5 +41,13 @@ true of the release it would describe.
 **Accept:** the list is a comment on this task's issue; Keith has picked the
 ones to write, and each one picked becomes a task of its own.
 
+### S21-T3 — An install script for Backtrack
+Added at Keith's request, 2026-11-08. A script that installs Backtrack. What
+it does, which systems it covers and where it is published are to be agreed
+with Keith before work starts; this section is then rewritten to match.
+
+**Accept:** Keith has agreed the scope, and the criteria written for it here
+then pass.
+
 ## Definition of Done
-Both tasks done.
+All tasks done.
