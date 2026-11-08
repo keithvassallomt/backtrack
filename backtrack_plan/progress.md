@@ -2,9 +2,7 @@
 
 ## For Keith to do
 
-- Submit the 0.1.1 FriendlyHub files in `~/Downloads/backtrack-0.1.1-friendlyhub/`, as `packaging/flatpak/FRIENDLYHUB.md` says.
-- Paste `https://backtrack.tools` into a messenger and check the preview shows the Rewind picture and the title (S20-T9).
-- Look the live site over (S20-T12).
+- FriendlyHub: 0.1.1 is submitted; say when it is published.
 
 ## Notes
 
@@ -247,7 +245,7 @@
 - [x] S20-T6 Rewind, moving, on the home page
 - [/] S20-T7 The install page
 - [x] S20-T8 The changelog page
-- [/] S20-T9 Search engines and shared links
+- [x] S20-T9 Search engines and shared links
 - [x] S20-T10 Software centres show screenshots served from backtrack.tools
 - [/] S20-T11 Preferences opens the guides on backtrack.tools
 - [/] S20-T12 The website goes live with the release
