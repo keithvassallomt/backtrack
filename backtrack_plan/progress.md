@@ -2,7 +2,7 @@
 
 ## For Keith to do
 
-- FriendlyHub: 0.1.1 is submitted; say when it is published.
+Nothing right now.
 
 ## Notes
 
@@ -243,15 +243,15 @@
 - [x] S20-T4 The website's look
 - [x] S20-T5 The home page
 - [x] S20-T6 Rewind, moving, on the home page
-- [/] S20-T7 The install page
+- [x] S20-T7 The install page
 - [x] S20-T8 The changelog page
 - [x] S20-T9 Search engines and shared links
 - [x] S20-T10 Software centres show screenshots served from backtrack.tools
-- [/] S20-T11 Preferences opens the guides on backtrack.tools
-- [/] S20-T12 The website goes live with the release
+- [x] S20-T11 Preferences opens the guides on backtrack.tools
+- [x] S20-T12 The website goes live with the release
 
 ## Stage 21 — Telling people about Backtrack ([stage file](stages/stage-21-telling-people-about-backtrack.md))
-- [/] S21-T1 New screenshots for the FriendlyHub listing and the README
+- [x] S21-T1 New screenshots for the FriendlyHub listing and the README
 - [ ] S21-T2 Ideas for blog posts about Backtrack
 - [ ] S21-T3 An install script for Backtrack
 
