@@ -12,7 +12,7 @@ file, and bring it back. It runs on GNOME, KDE Plasma and other Linux desktops,
 and keeps your backups encrypted with Borg on a USB drive, a network folder or
 a server over SSH.
 
-<!-- The Rewind video goes here: in GitHub's editor, drag rewind.mp4 onto this line. -->
+https://github.com/user-attachments/assets/738dac90-f916-4377-80e7-518608e668ea
 
 > [!NOTE]
 > <picture><source media="(prefers-color-scheme: dark)" srcset="assets/readme/friendly-manifesto-badge-white.svg" /><img width="200" alt="The Friendly Manifesto" src="assets/readme/friendly-manifesto-badge-black.svg" /></picture> <br>
