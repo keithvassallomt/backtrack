@@ -179,12 +179,14 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           version="${{ needs.version.outputs.version }}"
-          mkdir assets
+          # Outside the checkout, so that no folder in the repository is in the way.
+          out="$RUNNER_TEMP/release"
+          mkdir "$out"
           find artifacts -type f \( -name '*.tar.*' -o -name '*.flatpak' -o -name '*.rpm' -o -name '*.deb' \) \
-            -exec cp {} assets/ \;
-          (cd assets && sha256sum * > SHA256SUMS)
+            -exec cp {} "$out"/ \;
+          (cd "$out" && sha256sum * > SHA256SUMS)
           python3 scripts/release_notes.py "${version}" > notes.md
           prerelease=()
           if [ "${{ needs.version.outputs.prerelease }}" = "true" ]; then prerelease=(--prerelease); fi
-          gh release create "${GITHUB_REF_NAME}" assets/* --title "Backtrack ${version}" \
+          gh release create "${GITHUB_REF_NAME}" "$out"/* --title "Backtrack ${version}" \
             --notes-file notes.md --verify-tag "${prerelease[@]}"
