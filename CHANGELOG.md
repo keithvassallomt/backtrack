@@ -3,8 +3,9 @@
   - Format follows Keep a Changelog (https://keepachangelog.com/en/1.1.0/).
   - Categories, in this order: Added, Changed, Deprecated, Removed, Fixed, Security.
   - Entries are user-facing sentences describing the change, not commit subjects.
-  - AI/contributors add entries under [Unreleased] ONLY. A human moves them into a
-    versioned section at release time via `just bump-version` (see VERSIONING.md).
+  - Entries go under [Unreleased] only. At release time, whoever runs the release
+    (Keith, or Claude at his word) moves them into a versioned section (see
+    RELEASING.md).
 -->
 
 # Changelog

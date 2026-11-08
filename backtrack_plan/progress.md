@@ -10,7 +10,7 @@ Nothing right now.
 > `[ ]` upcoming · `[/]` in progress · `[x]` done (acceptance criteria verified) ·
 > `[!]` blocked (explain under **Blocked** below).
 > Marking `[x]` without the stage file's acceptance criteria passing is a breach of
-> contract. Version numbers are human-only — see README.md.
+> contract. Version numbers change only through `just bump-version`; see VERSIONING.md.
 >
 > **GitHub board:** this file is the source of truth; the [Backtrack Project
 > board](https://github.com/users/keithvassallomt/projects/2) mirrors it. After

@@ -1,9 +1,11 @@
 # Releasing Backtrack
 
-**The version-control contract: a version number is changed only by a human,
-and only with `just bump-version`. No automated process and no AI contributor
-changes one. In a release, an AI contributor does nothing, except fix red CI
-when asked to.**
+**A version number changes only through `just bump-version`, and only for a
+release Keith has decided on. Keith may run a release himself, or have Claude
+run all of it: the bump, the CHANGELOG, the pull request, `just release`, and
+the website. Two steps are always Keith's: typing the passphrase of the PPA's
+signing key into the dialog `just release` opens, and submitting the
+FriendlyHub files.**
 
 A release is published from one machine, the release machine, where every
 credential lives. CI builds the artifacts and the GitHub release, and holds no

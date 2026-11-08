@@ -5,8 +5,8 @@
 
     release.py [--dry-run] [--friendlyhub-only] [DIR]
 
-Run by the human only, through `just release` (or `just release-dry`), once
-`just bump-version` and the CHANGELOG's move are merged. It never changes a
+Run through `just release` (or `just release-dry`), by Keith or by Claude at
+his word, once `just bump-version` and the CHANGELOG's move are merged. It never changes a
 version: it reads the one `just bump-version` set, and refuses if anything
 disagrees with it.
 
