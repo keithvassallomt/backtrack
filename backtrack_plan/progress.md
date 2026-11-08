@@ -18,7 +18,7 @@ Nothing right now.
 > tasks: add them here + to the stage file, then `just provision-board-apply`.
 > See [../CLAUDE.md](../CLAUDE.md) for the full workflow.
 
-**Current stage:** 20
+**Current stage:** 21
 **Last updated:** 2026-11-08
 
 ## Stage 0 — Bootstrap ([stage file](stages/stage-00-bootstrap.md))
@@ -251,7 +251,7 @@ Nothing right now.
 - [ ] S20-T12 The website goes live with the release
 
 ## Stage 21 — Telling people about Backtrack ([stage file](stages/stage-21-telling-people-about-backtrack.md))
-- [ ] S21-T1 New screenshots for the FriendlyHub listing and the README
+- [/] S21-T1 New screenshots for the FriendlyHub listing and the README
 - [ ] S21-T2 Ideas for blog posts about Backtrack
 
 ## Blocked
