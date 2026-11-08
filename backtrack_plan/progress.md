@@ -2,9 +2,6 @@
 
 ## For Keith to do
 
-- Install Zola from Arch's repository (`sudo pacman -S zola`); the site needs 0.23.
-- In backtrack.tools, on branch `stage-20-zola`, run `just deploy` and then
-  `just provision` (S20-T1, S20-T2). Both need the AWS CLI signed in.
 - Look over the guide, install, changelog and 404 pages: in backtrack.tools
   on branch `stage-20-site`, `just fetch-docs main`, then `just serve`, and
   open <http://localhost:1111/guides/> (S20-T4).
@@ -245,7 +242,7 @@
 - [x] S19-T18 The status does not say the files are backed up before the first backup
 
 ## Stage 20 — The website at backtrack.tools ([stage file](stages/stage-20-the-website.md))
-- [/] S20-T1 The website built with Zola
+- [x] S20-T1 The website built with Zola
 - [/] S20-T2 Pages below the top level, and a real 404, on CloudFront
 - [x] S20-T3 Stage 19's guides published under /guides/
 - [/] S20-T4 The website's look
@@ -254,7 +251,7 @@
 - [/] S20-T7 The install page
 - [x] S20-T8 The changelog page
 - [/] S20-T9 Search engines and shared links
-- [/] S20-T10 Software centres show screenshots served from backtrack.tools
+- [x] S20-T10 Software centres show screenshots served from backtrack.tools
 - [/] S20-T11 Preferences opens the guides on backtrack.tools
 - [ ] S20-T12 The website goes live with the release
 
