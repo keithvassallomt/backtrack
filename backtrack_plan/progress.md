@@ -2,10 +2,6 @@
 
 ## For Keith to do
 
-- Look over the guide, install, changelog and 404 pages: in backtrack.tools
-  on branch `stage-20-site`, `just fetch-docs main`, then `just serve`, and
-  open <http://localhost:1111/guides/> (S20-T4).
-- Decide whether the home page names Time Machine (S20-T5).
 - Record the Rewind video, as `docs/screenshots.md` says under The Rewind
   video (S20-T6).
 
@@ -245,8 +241,8 @@
 - [x] S20-T1 The website built with Zola
 - [/] S20-T2 Pages below the top level, and a real 404, on CloudFront
 - [x] S20-T3 Stage 19's guides published under /guides/
-- [/] S20-T4 The website's look
-- [/] S20-T5 The home page
+- [x] S20-T4 The website's look
+- [x] S20-T5 The home page
 - [!] S20-T6 Rewind, moving, on the home page
 - [/] S20-T7 The install page
 - [x] S20-T8 The changelog page

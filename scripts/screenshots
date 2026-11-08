@@ -55,10 +55,7 @@ log_in() {
         && sudo systemctl restart gdm"
     say "Waiting for $who's desktop…"
     for _ in $(seq 1 60); do
-        if as_owner "loginctl list-sessions --no-legend | awk '\$3 == \"$who\" && \$4 == \"seat0\"' | grep -q ." 2>/dev/null \
-            && as_owner "sudo -u $who env XDG_RUNTIME_DIR=/run/user/\$(id -u $who) \
-                gdbus call --session --dest org.gnome.Shell --object-path /org/gnome/Shell \
-                --method org.gnome.Shell.Eval 1" >/dev/null 2>&1; then
+        if on_screen "$who"; then
             sleep 3
             return 0
         fi
@@ -66,6 +63,15 @@ log_in() {
     done
     echo "$who's desktop did not come up" >&2
     exit 1
+}
+
+# Whether `who` has the VM's screen, with GNOME Shell answering.
+on_screen() {
+    local who="$1"
+    as_owner "loginctl list-sessions --no-legend | awk '\$3 == \"$who\" && \$4 == \"seat0\"' | grep -q ." 2>/dev/null \
+        && as_owner "sudo -u $who env XDG_RUNTIME_DIR=/run/user/\$(id -u $who) \
+            gdbus call --session --dest org.gnome.Shell --object-path /org/gnome/Shell \
+            --method org.gnome.Shell.Eval 1" >/dev/null 2>&1
 }
 
 install_files() {
@@ -327,8 +333,12 @@ keep() {
 }
 
 # Rewind full screen on sam's Documents, at Now, for the website's video
-# (docs/screenshots.md, The Rewind video).
+# (docs/screenshots.md, The Rewind video). sam is logged in if need be, and
+# the home folder is made afresh, as the shots leave it changed: the letter
+# to the council is deleted again.
 video() {
+    on_screen "$SHOTS_USER" || { mount_drive; log_in "$SHOTS_USER"; }
+    home
     shots close
     shots app --rewind --path "/home/$SHOTS_USER/Documents"
     say "Rewind is open on Documents. Record it as docs/screenshots.md says."
