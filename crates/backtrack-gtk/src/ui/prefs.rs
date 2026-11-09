@@ -770,12 +770,15 @@ impl Prefs {
             } else {
                 "Not installed"
             });
+            // The row's activatable widget is labelled by the row's title,
+            // which is right for the switch. A button keeps its own label as
+            // its name (S12-T10), with the subtitle still as its description.
             if installed {
                 shown.set_activatable_widget(Some(&toggle));
-            } else if can_copy {
-                shown.set_activatable_widget(Some(&adding));
             } else {
-                shown.set_activatable_widget(Some(&install));
+                let button = if can_copy { &adding } else { &install };
+                shown.set_activatable_widget(Some(button));
+                button.reset_relation(gtk4::AccessibleRelation::LabelledBy);
             }
         });
         {

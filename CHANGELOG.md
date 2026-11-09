@@ -16,6 +16,12 @@ All notable changes to Backtrack are documented here. This project adheres to
 
 ## [Unreleased]
 
+### Fixed
+- Screen readers now read out the Install and How to Install… buttons in
+  Preferences by their own names. They used to announce them by the file
+  manager's name, such as GNOME Files (Nautilus), so the buttons sounded the
+  same as the row they sit in.
+
 ## [0.1.1] - 2026-11-08
 
 ### Changed

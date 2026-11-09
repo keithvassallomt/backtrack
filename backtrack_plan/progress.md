@@ -135,7 +135,7 @@ Nothing right now.
 - [x] S12-T7 The tray starts with Backtrack, not only at login
 - [x] S12-T8 The tray sends its icon as pixels
 - [x] S12-T9 The tray's icon matches Plasma's own
-- [ ] S12-T10 Screen readers hear each file-manager button's own label
+- [x] S12-T10 Screen readers hear each file-manager button's own label
 
 ## Stage 13 — Packaging & release ([stage file](stages/stage-13-packaging-release.md))
 - [x] S13-T1 Flatpak manifest (GNOME runtime, portals, bundled borg)
