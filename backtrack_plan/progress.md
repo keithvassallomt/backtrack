@@ -252,7 +252,7 @@ Nothing right now.
 
 ## Stage 21 — Telling people about Backtrack ([stage file](stages/stage-21-telling-people-about-backtrack.md))
 - [x] S21-T1 New screenshots for the FriendlyHub listing and the README
-- [ ] S21-T2 Ideas for blog posts about Backtrack
+- [x] S21-T2 A brief for a blog post announcing Backtrack
 - [ ] S21-T3 An install script for Backtrack
 
 ## Blocked

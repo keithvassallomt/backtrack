@@ -2,8 +2,7 @@
 
 ## Objective
 The places where people meet Backtrack before they install it show it as it
-is now, and there is a list of blog posts worth writing about it for Keith to
-choose from.
+is now, and Keith's blog has what it needs to announce it.
 
 Added at Keith's request, 2026-11-07.
 
@@ -33,13 +32,16 @@ end is S20-T10's question; this task does not wait for it.
 the network, which fetches every screenshot; the README shows its picture on
 GitHub; the next release's FriendlyHub listing shows the new set.
 
-### S21-T2 — Ideas for blog posts about Backtrack
-A list of posts worth writing, for Keith to choose from. For each: a working
-title, who it is for, what it says, and what it would show. Every idea is
-true of the release it would describe.
+### S21-T2 — A brief for a blog post announcing Backtrack
+Keith's own agent writes his blog posts. This task gives it what an
+announcement needs: what Backtrack does, as backtrack.tools describes it; why
+Keith built it, in his words; the screenshots and the Rewind video to include,
+with their captions; where to link; and what not to claim. The post is for
+people who use Linux, not for developers. Changed at Keith's request,
+2026-11-09: it replaces a list of post ideas for him to choose from.
 
-**Accept:** the list is a comment on this task's issue; Keith has picked the
-ones to write, and each one picked becomes a task of its own.
+**Accept:** the brief is a comment on this task's issue, and Keith has given
+it to his agent.
 
 ### S21-T3 — An install script for Backtrack
 Added at Keith's request, 2026-11-08. A script that installs Backtrack. What
