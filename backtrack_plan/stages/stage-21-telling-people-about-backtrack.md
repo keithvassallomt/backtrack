@@ -44,12 +44,46 @@ people who use Linux, not for developers. Changed at Keith's request,
 it to his agent.
 
 ### S21-T3 — An install script for Backtrack
-Added at Keith's request, 2026-11-08. A script that installs Backtrack. What
-it does, which systems it covers and where it is published are to be agreed
-with Keith before work starts; this section is then rewritten to match.
+Added at Keith's request, 2026-11-08; scope agreed 2026-11-09. One command,
+`curl -fsSL https://backtrack.tools/install.sh | bash`, installs Backtrack
+the way the install page would for the computer it runs on. It says what it
+found and what it will do, and changes nothing until the user agrees. Its
+output is a pleasure to watch: colour, spinners and a little animation,
+falling back to plain text outside a terminal or with `NO_COLOR`.
 
-**Accept:** Keith has agreed the scope, and the criteria written for it here
-then pass.
+- Fedora 44 or later, and Fedora-based systems on that base, such as Nobara:
+  COPR. Fedora Atomic desktops: the Flatpak.
+- Ubuntu 26.04 or later, and Ubuntu-based systems on that base, such as
+  Linux Mint, Pop!_OS and Zorin OS: the PPA.
+- Arch Linux and Arch-based systems such as EndeavourOS and CachyOS: the
+  AUR, through yay or paru when one is installed, else with `makepkg` as the
+  install page does. Manjaro and SteamOS: the Flatpak.
+- Anything else, or an older Fedora or Ubuntu: the Flatpak, installing
+  Flatpak first where the distribution's package manager is known.
+- On Fedora, Ubuntu and Arch, the user can choose the Flatpak instead.
+- It always offers the file-manager items for each file manager it finds
+  (GNOME Files, Dolphin), switched on by default. For the Flatpak, that
+  means nautilus-python on the host, and the last step in Preferences.
+- If Backtrack is already installed, however it got there, it says so and
+  stops. It refuses to run as root, and asks for a password once.
+
+The script lives in backtrack.tools' repository and is served by the site.
+The home page's Get Backtrack section has two tabs: **The quick way**,
+shown first, with the command and a link to **What this script does**; and
+**Choose your own way**, with the section as it was. What this script does
+is a page made from the script and the comments in it, so the two cannot
+drift apart: every step that changes the computer, explained. The install
+guide (`docs/installing.md`) starts with the command too.
+
+**Accept:** run from a terminal, the command installs Backtrack and the
+chosen file-manager items on Fedora 45 (COPR), Ubuntu 26.04 (PPA), Arch
+Linux with yay and with no helper (AUR) and openSUSE Tumbleweed (Flatpak),
+and the Flatpak instead on one of the first three; on each it reports what
+it found and installs nothing until told to; shellcheck passes; both tabs
+work from the keyboard and Orca reads them as tabs; What this script does
+shows every line of the script; `docs/installing.md` gives the command,
+and /install/ shows it from the next release; Keith has watched it run and
+likes how it looks.
 
 ## Definition of Done
 All tasks done.
