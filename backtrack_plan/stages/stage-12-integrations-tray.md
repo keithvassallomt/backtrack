@@ -132,6 +132,21 @@ colour in both light and dark themes; `IconName` is the tray icon's name on
 KDE and empty elsewhere; the RPM, deb, AUR and Flatpak packages install the
 icon.
 
+### S12-T10 — Screen readers hear each file-manager button's own label
+Found 2026-11-08 during S20-T11's check of the Flatpak build (0.1.1, Ubuntu
+26.04). In Preferences, General, File manager integration, the How to
+Install… button reaches the accessibility tree named after its row: AT-SPI
+lists it as a button called "GNOME Files (Nautilus)", with its own label
+only as a child. Orca would announce the row's name, and someone using a
+screen reader cannot tell that button apart from the row or from the row's
+other buttons. The row's other buttons (Install, Remove) are likely named
+the same way, and the native build likely matches the Flatpak; both are to
+be checked first.
+
+**Accept:** in the native build and the Flatpak, AT-SPI names every button
+in the file-manager rows by its own label (How to Install…, Install,
+Remove), and Orca reads each one out by that label.
+
 ## Definition of Done
 Demo videos/screenshots for GNOME (menu + background presence) and KDE (menu +
 tray) attached to the PR; the outside-roots friendly state implemented; CI green
