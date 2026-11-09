@@ -248,7 +248,7 @@ checksum = "f2032f911046de80f0a198e0901378627c33f59ea0ac00e363d481118bd70a53"
 
 [[package]]
 name = "backtrack-cli"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "backtrack-core",
  "clap",
@@ -263,7 +263,7 @@ dependencies = [
 
 [[package]]
 name = "backtrack-core"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "ashpd",
  "async-trait",
@@ -289,7 +289,7 @@ dependencies = [
 
 [[package]]
 name = "backtrack-gtk"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "async-channel",
  "backtrack-core",
@@ -312,7 +312,7 @@ dependencies = [
 
 [[package]]
 name = "backtrack-testkit"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "async-trait",
  "backtrack-core",
@@ -322,7 +322,7 @@ dependencies = [
 
 [[package]]
 name = "backtrackd"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "ashpd",
  "async-trait",
@@ -1148,14 +1148,17 @@ name = "hashbrown"
 version = "0.17.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ed5909b6e89a2db4456e54cd5f673791d7eca6732202bbf2a9cc504fe2f9b84a"
+dependencies = [
+ "foldhash",
+]
 
 [[package]]
 name = "hashlink"
-version = "0.11.1"
+version = "0.12.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "824e001ac4f3012dd16a264bec811403a67ca9deb6c102fc5049b32c4574b35f"
+checksum = "a596f1b20ed2cc5ecac41a164aaebc7258057060f06c0cf7a2ba3991ee7990fb"
 dependencies = [
- "hashbrown 0.16.1",
+ "hashbrown 0.17.1",
 ]
 
 [[package]]
@@ -1334,9 +1337,9 @@ checksum = "b6d2cec3eae94f9f509c767b45932f1ada8350c4bdb85af2fcab4a3c14807981"
 
 [[package]]
 name = "libsqlite3-sys"
-version = "0.37.0"
+version = "0.39.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b1f111c8c41e7c61a49cd34e44c7619462967221a6443b0ec299e0ac30cfb9b1"
+checksum = "14a5f01b87b92705d07b433c06f96cbc764637d81a0bffb5734ce17cf0f9a2b3"
 dependencies = [
  "cc",
  "pkg-config",
@@ -1807,9 +1810,9 @@ dependencies = [
 
 [[package]]
 name = "rusqlite"
-version = "0.39.0"
+version = "0.41.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a0d2b0146dd9661bf67bb107c0bb2a55064d556eeb3fc314151b957f313bcd4e"
+checksum = "da9bba6f3506135e120a6586df05be18b48d18896600646a4bec8f993d91a594"
 dependencies = [
  "bitflags",
  "fallible-iterator",
