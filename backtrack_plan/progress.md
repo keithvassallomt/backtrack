@@ -2,7 +2,7 @@
 
 ## For Keith to do
 
-- Submit the 0.1.2 FriendlyHub files in `~/Downloads/backtrack-0.1.2-friendlyhub/`, as `packaging/flatpak/FRIENDLYHUB.md` says.
+Nothing right now.
 
 ## Notes
 
