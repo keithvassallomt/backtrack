@@ -16,6 +16,8 @@ All notable changes to Backtrack are documented here. This project adheres to
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-11-09
+
 ### Fixed
 - Screen readers now read out the Install and How to Install… buttons in
   Preferences by their own names. They used to announce them by the file
@@ -110,6 +112,7 @@ All notable changes to Backtrack are documented here. This project adheres to
   and the
   [file manager items](https://github.com/keithvassallomt/backtrack/blob/main/docs/file-manager-integration.md).
 
-[Unreleased]: https://github.com/keithvassallomt/backtrack/compare/v0.1.1...HEAD
+[Unreleased]: https://github.com/keithvassallomt/backtrack/compare/v0.1.2...HEAD
+[0.1.2]: https://github.com/keithvassallomt/backtrack/releases/tag/v0.1.2
 [0.1.1]: https://github.com/keithvassallomt/backtrack/releases/tag/v0.1.1
 [0.1.0]: https://github.com/keithvassallomt/backtrack/releases/tag/v0.1.0
