@@ -14,6 +14,9 @@ page, ready to set up.
    curl -fsSL https://backtrack.tools/install.sh | bash
    ```
 
+   If the terminal says curl isn't found, which can happen on Ubuntu,
+   install it with `sudo apt install curl` and run the command again.
+
 3. It shows what it found, such as your distribution and your file manager,
    and the best way to install Backtrack on it. If it asks whether to add
    Backtrack to your file manager's right-click menu, press **Enter** for yes.
