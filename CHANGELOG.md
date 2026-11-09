@@ -24,6 +24,10 @@ All notable changes to Backtrack are documented here. This project adheres to
   manager's name, such as GNOME Files (Nautilus), so the buttons sounded the
   same as the row they sit in.
 
+### Security
+- The SQLite library built into Backtrack is updated to a version with the
+  fix for CVE-2026-119375 (RUSTSEC-2026-0459).
+
 ## [0.1.1] - 2026-11-08
 
 ### Changed
