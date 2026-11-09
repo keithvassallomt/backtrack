@@ -1,8 +1,32 @@
 # Install Backtrack
 
-The way to install Backtrack depends on which Linux distribution you use, so
-start by finding that out. At the end, Backtrack is open at its welcome page,
-ready to set up.
+The quickest way is one command, which works out the right way for your
+computer. To install Backtrack yourself, the way depends on which Linux
+distribution you use. Either way, at the end Backtrack is open at its welcome
+page, ready to set up.
+
+## The quick way: one command
+
+1. Open a terminal: search your apps for **Terminal**.
+2. Paste this command with **Ctrl+Shift+V** and press **Enter**:
+
+   ```sh
+   curl -fsSL https://backtrack.tools/install.sh | bash
+   ```
+
+3. It shows what it found, such as your distribution and your file manager,
+   and the best way to install Backtrack on it. If it asks whether to add
+   Backtrack to your file manager's right-click menu, press **Enter** for yes.
+4. It shows its plan, with each command it will run, and asks **Go ahead?**
+   Press **Enter**.
+5. When it asks for your password, type it and press **Enter**. Nothing
+   appears on the screen while you type.
+6. When it says **Backtrack is installed**, it asks **Open Backtrack now?**
+   Press **Enter**. You see **Welcome to Backtrack**.
+
+[What the install script does](https://backtrack.tools/install-script/) goes
+through the script line by line. To install Backtrack yourself instead, read
+on.
 
 ## Which way to install
 
