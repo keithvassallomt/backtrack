@@ -19,7 +19,7 @@ page, ready to set up.
    Backtrack to your file manager's right-click menu, press **Enter** for yes.
 4. It shows its plan, with each command it will run, and asks **Go ahead?**
    Press **Enter**.
-5. When it asks for your password, type it and press **Enter**. Nothing
+5. If it asks for a password, type it and press **Enter**. Nothing
    appears on the screen while you type.
 6. When it says **Backtrack is installed**, it asks **Open Backtrack now?**
    Press **Enter**. You see **Welcome to Backtrack**.
