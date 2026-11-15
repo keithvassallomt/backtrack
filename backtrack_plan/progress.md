@@ -2,7 +2,7 @@
 
 ## For Keith to do
 
-- Install the S18-T23 build and check Rewind opens folders inside folders (steps in the chat of 2026-11-15).
+Nothing right now.
 
 ## Notes
 
@@ -216,7 +216,7 @@
 - [x] S18-T20 Rewind shows Sway's wallpaper
 - [x] S18-T21 Cataloguing a backup holds less memory
 - [x] S18-T22 A backup made by hand keeps the one before it
-- [/] S18-T23 Rewind opens a folder inside a folder walked into
+- [x] S18-T23 Rewind opens a folder inside a folder walked into
 
 ## Stage 19 — Guides anyone can follow ([stage file](stages/stage-19-guides-anyone-can-follow.md))
 - [x] S19-T1 An index of the guides, with developer notes moved out of them

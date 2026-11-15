@@ -1006,6 +1006,12 @@ looked for inside the old folder (`home/Documents` for `home/keith/Documents`).
 - The cards are laid out again whenever the folder changes, not only when its
   backups do.
 
+**Checked** (2026-11-15): the test fails with the folder left out of the
+comparison and passes with it. On Keith's laptop, with the AUR build of the
+change, Rewind opened from the tray at `/home` went into keith, then
+Documents, each under its own trail, and a folder opened in an earlier
+backup showed that backup's files.
+
 **Accept:** a test that a folder walked into with the same backups as the
 folder before is laid out again, failing without the change; on Keith's
 laptop, with Rewind opened from the tray, opening his home folder and then a
