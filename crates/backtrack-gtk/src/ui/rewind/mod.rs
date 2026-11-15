@@ -87,6 +87,15 @@ fn announcement(when: &str, where_: &str) -> String {
 /// Sets what the lines under the stack say, for the slot in front.
 type Say = Rc<dyn Fn(usize)>;
 
+/// Whether a stack laid out for one folder and its times, `laid`, is laid out
+/// again for `wanted`. Two folders can list the very same backups: a folder
+/// and the only folder in it, or two folders nothing in has changed since the
+/// newest backup. Kept for the times alone, the cards went on naming the
+/// folder before, and a folder opened in front was looked for inside that one.
+fn lay_out_again(laid: (&str, &[When]), wanted: (&str, &[When])) -> bool {
+    laid != wanted
+}
+
 struct Rewind {
     state: Rc<AppState>,
     stage: Stage,
@@ -111,6 +120,8 @@ struct Rewind {
     bodies: RefCell<HashMap<When, Body>>,
     /// The time each slot shows, front first.
     slots: RefCell<Vec<When>>,
+    /// The folder the slots were laid out for.
+    laid_for: RefCell<String>,
     /// Counts the folder's listings, so that a late answer to an earlier one
     /// is dropped.
     generation: Cell<u64>,
@@ -195,6 +206,7 @@ pub fn open(
         index: index.clone(),
         bodies: RefCell::new(HashMap::new()),
         slots: RefCell::new(Vec::new()),
+        laid_for: RefCell::new(String::new()),
         generation: Cell::new(0),
         making: RefCell::new(HashSet::new()),
         thumbnails: crate::host::Host::here().cache.join("thumbnails"),
@@ -449,12 +461,19 @@ impl Rewind {
 
     /// Lay the stack out again from the state's listing, the same backup in
     /// front, or the folder as it is now if that was. With `kept`, only when
-    /// the times listed changed. Says whether it did.
+    /// the folder or the times listed changed. Says whether it did.
     fn relist(&self, kept: bool) -> bool {
         let view = self.state.view();
         let mut slots: Vec<When> = vec![None];
         slots.extend(view.listed.iter().map(|backup| Some(backup.seq)));
-        if kept && *self.slots.borrow() == slots && self.stage.has_slots() {
+        let unchanged = !lay_out_again(
+            (
+                self.laid_for.borrow().as_str(),
+                self.slots.borrow().as_slice(),
+            ),
+            (&view.folder, &slots),
+        );
+        if kept && unchanged && self.stage.has_slots() {
             return false;
         }
         // From elsewhere, Rewind starts at the folder as it is now.
@@ -486,6 +505,7 @@ impl Rewind {
         drop(bodies);
         self.generation.set(self.generation.get() + 1);
         *self.slots.borrow_mut() = slots;
+        *self.laid_for.borrow_mut() = folder;
         self.stage.set_slots(contents, at);
         let named = match crate::path::name(&view.folder) {
             "" => "Backups".to_owned(),
@@ -1078,5 +1098,22 @@ mod tests {
             announcement("Thu 5 Nov 2026, 08:26", "Backup 3 of 8"),
             "Thu 5 Nov 2026, 08:26. Backup 3 of 8"
         );
+    }
+
+    #[test]
+    fn a_folder_walked_into_is_laid_out_again_even_with_the_same_backups() {
+        let times = [None, Some(44), Some(43)];
+        assert!(
+            lay_out_again(("home", &times), ("home/keith", &times)),
+            "another folder, the same backups"
+        );
+        assert!(lay_out_again(
+            ("home/keith", &times),
+            ("home/keith", &times[..2])
+        ));
+        assert!(!lay_out_again(
+            ("home/keith", &times),
+            ("home/keith", &times)
+        ));
     }
 }

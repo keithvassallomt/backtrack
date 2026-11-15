@@ -994,6 +994,24 @@ hour both survive the prune with the default retention (and that it fails
 without the change); on the GNOME VM, two backups made seconds apart are
 both in the catalogue after the second one's prune.
 
+### S18-T23 — Rewind opens a folder inside a folder walked into
+Found in daily use (2026-11-15): in Rewind, a folder opened inside one just
+walked into came up as "No such file or directory". Rewind laid its cards out
+again only when the folder's list of backups changed, and two folders often
+list the very same backups: `home` and `home/keith`, or two folders nothing
+in has changed since the newest backup (47 of the 77 folders in Keith's home
+folder). The cards then kept the folder before as theirs, showing the new
+folder's files under the old trail, and a folder opened among those files was
+looked for inside the old folder (`home/Documents` for `home/keith/Documents`).
+- The cards are laid out again whenever the folder changes, not only when its
+  backups do.
+
+**Accept:** a test that a folder walked into with the same backups as the
+folder before is laid out again, failing without the change; on Keith's
+laptop, with Rewind opened from the tray, opening his home folder and then a
+folder in it shows that folder's files under its own trail, on the Now card
+and on a backup.
+
 ## Definition of Done
 All tasks done; the CHANGELOG's Unreleased section introduces Rewind; mockups 25 and 26 match what was built; the README and the file
 manager documentation (`docs/file-manager-integration.md`) mention the new

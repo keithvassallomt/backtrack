@@ -16,6 +16,11 @@ All notable changes to Backtrack are documented here. This project adheres to
 
 ## [Unreleased]
 
+### Fixed
+- In Rewind, a folder opened inside a folder you have just opened now opens.
+  It used to say "No such file or directory", because Rewind went on
+  looking inside the folder you had come from.
+
 ## [0.1.2] - 2026-11-09
 
 ### Fixed
