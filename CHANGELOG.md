@@ -16,6 +16,8 @@ All notable changes to Backtrack are documented here. This project adheres to
 
 ## [Unreleased]
 
+## [0.1.3] - 2026-11-15
+
 ### Fixed
 - In Rewind, a folder opened inside a folder you have just opened now opens.
   It used to say "No such file or directory", because Rewind went on
@@ -121,7 +123,8 @@ All notable changes to Backtrack are documented here. This project adheres to
   and the
   [file manager items](https://github.com/keithvassallomt/backtrack/blob/main/docs/file-manager-integration.md).
 
-[Unreleased]: https://github.com/keithvassallomt/backtrack/compare/v0.1.2...HEAD
+[Unreleased]: https://github.com/keithvassallomt/backtrack/compare/v0.1.3...HEAD
+[0.1.3]: https://github.com/keithvassallomt/backtrack/releases/tag/v0.1.3
 [0.1.2]: https://github.com/keithvassallomt/backtrack/releases/tag/v0.1.2
 [0.1.1]: https://github.com/keithvassallomt/backtrack/releases/tag/v0.1.1
 [0.1.0]: https://github.com/keithvassallomt/backtrack/releases/tag/v0.1.0
