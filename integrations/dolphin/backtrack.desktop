@@ -17,6 +17,9 @@
 Type=Application
 Name=Backtrack
 NoDisplay=true
+# desktop-file-validate requires an application's own Exec; KIO runs only
+# the actions below.
+Exec=backtrack-gtk --select %f
 MimeType=application/octet-stream;inode/directory;
 X-KDE-Submenu=Backtrack
 X-KDE-Priority=TopLevel

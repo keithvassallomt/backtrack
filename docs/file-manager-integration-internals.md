@@ -269,8 +269,10 @@ where the executable bit is not needed.
 
 The files use `Type=Application`, not the `Type=Service` of older service
 menus, so that `desktop-file-validate` accepts them: KIO ignores `Type`, and
-`NoDisplay=true` keeps them out of application launchers. `just
-check-integrations` validates them, and CI runs it.
+`NoDisplay=true` keeps them out of application launchers. Since
+desktop-file-utils 0.29 an application must also have an `Exec` of its
+own, so each file has one, the same as its first action's; KIO runs only the
+actions. `just check-integrations` validates them, and CI runs it.
 
 ### Manual checklist
 
