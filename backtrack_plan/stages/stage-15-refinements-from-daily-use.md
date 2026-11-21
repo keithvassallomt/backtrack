@@ -240,6 +240,64 @@ anything about such a folder.
 the older ones, and files that only resemble them are not; a default
 configuration lists them, read in Preferences as one row.
 
+### S15-T9 — Borg pauses when the computer goes to sleep
+Found 2026-11-21 on Keith's laptop, whose destination is an SMB share: two
+suspends failed because a backup was running. On 13 November Borg was waiting
+on a read from the share; on 20 November the SMB client's deferred close of a
+file Borg had used was. NetworkManager takes the network down 110 to 160 ms
+after logind announces sleep, and the kernel freezes processes only after
+that, so whatever was waiting on the share at that moment can no longer
+finish, and the freeze gives up after 20 seconds.
+
+Stopping the backup cleanly at the announcement would not help: Borg answers
+SIGTERM by rolling back its transaction and removing its lock, which is more
+I/O on the share just as the network goes.
+- The daemon holds a logind delay lock for sleep. When logind announces sleep
+  (`PrepareForSleep(true)`), the daemon stops each of its Borg processes with
+  SIGSTOP and then releases the lock. A stopped process starts no further I/O,
+  and what is already in flight has the remaining moment of network to finish.
+- On wake (`PrepareForSleep(false)`) it continues them with SIGCONT and takes
+  the lock again. Borg then carries on exactly as it does today after the
+  kernel's own freeze. If the wake is never announced, they are continued after
+  two minutes regardless.
+- Without the lock (no logind, or a refusal), the daemon still follows the
+  announcements. The Flatpak gains `--system-talk-name=org.freedesktop.login1`.
+- This narrows the window rather than closing it: a read still waiting when
+  the network goes cannot be helped from user space. Mounting the share with
+  `closetimeo=0` removes the deferred-close half; that is the machine's
+  configuration, not Backtrack's.
+
+**Accept:** a test drives the sleep watcher through a fake logind: the lock is
+taken, a child process with the watched name is stopped when sleep is announced
+and only then is the lock released, and on wake the child continues and the
+lock is taken again; a child is continued anyway when no wake is announced.
+On Keith's laptop, with a release containing this, closing the lid during a
+backup suspends, and the backup finishes after wake.
+
+### S15-T10 — The destination check leaves an automounted share free to unmount
+Found the same day: the destination check (S05-T1) looks at the repository's
+path every minute, and every look counts as use of a systemd automount, so a
+share set to unmount after 15 idle minutes never does. Keith's was mounted by
+the check when the daemon started and stayed mounted, although the hourly
+backups use it for about 12 minutes in each hour.
+- When the repository lies under an automount point (`autofs` in
+  `/proc/self/mountinfo`), the check asks the server behind the share instead
+  of the path: a TCP connection to port 445 for SMB (`cifs`, `smb3`) or 2049
+  for NFS (`nfs`, `nfs4`), within the same two seconds, read as an `ssh://`
+  destination's connection is.
+- The server is read from the share's own entry in `mountinfo` while it is
+  mounted, and remembered for when it is not. Until the daemon has seen the
+  share mounted, and for any other kind of automount, the check looks at the
+  path as it does today.
+- Backups still reach the share through its path, which mounts it as before.
+
+**Accept:** tests over sample `mountinfo` text: a repository under an SMB or
+NFS automount is checked through its server, mounted or not once its server
+has been seen; one under an ordinary mount or an unrecognised automount
+through its path; a server that refuses the connection reads as unreachable.
+On Keith's laptop, with a release containing this, the share unmounts 15
+minutes after a backup ends while the daemon runs.
+
 ## Definition of Done
 All tasks done; the CHANGELOG's Unreleased section says what changed for the
 user; the timeline browser on the GNOME VM behaves as described on the demo
