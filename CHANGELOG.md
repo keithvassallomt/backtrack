@@ -16,6 +16,8 @@ All notable changes to Backtrack are documented here. This project adheres to
 
 ## [Unreleased]
 
+## [0.1.4] - 2026-11-21
+
 ### Fixed
 - A backup to a network share is far less likely to keep a laptop awake when
   you close the lid. Backtrack now pauses the backup the moment the computer
