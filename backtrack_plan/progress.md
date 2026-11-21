@@ -172,7 +172,7 @@ Nothing right now.
 - [x] S15-T7 A switch to list every backup
 - [x] S15-T8 Nextcloud's sync files are left out by default
 - [/] S15-T9 Borg pauses when the computer goes to sleep
-- [ ] S15-T10 The destination check leaves an automounted share free to unmount
+- [/] S15-T10 The destination check leaves an automounted share free to unmount
 
 ## Stage 16 — The Trash in the timeline ([stage file](stages/stage-16-trash-in-the-timeline.md))
 - [x] S16-T1 Read the Trash

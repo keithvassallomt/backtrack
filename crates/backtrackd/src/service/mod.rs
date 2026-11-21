@@ -364,7 +364,7 @@ impl Shared {
             restores: Arc::new(crate::restore::Restores::default()),
             staging_dir,
             replaced_dir,
-            destination_probe: Mutex::new(Arc::new(RealProbe)),
+            destination_probe: Mutex::new(Arc::new(RealProbe::default())),
             health_changed: Arc::new(Notify::new()),
             spool: Mutex::new(None),
             spool_dir,

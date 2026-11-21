@@ -26,7 +26,9 @@
 //! drive is gone" because a probe timed out would send the product into local
 //! protection over nothing.
 
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
 
 use async_trait::async_trait;
@@ -110,7 +112,12 @@ pub trait DestinationProbe: Send + Sync {
 }
 
 /// The real probe.
-pub struct RealProbe;
+#[derive(Default)]
+pub struct RealProbe {
+    /// The server behind each repository on an automounted network share, as
+    /// last seen while the share was mounted (S15-T10).
+    servers: Mutex<HashMap<String, Server>>,
+}
 
 #[async_trait]
 impl DestinationProbe for RealProbe {
@@ -120,9 +127,175 @@ impl DestinationProbe for RealProbe {
         }
         match backtrack_core::destination::ssh_endpoint(repository) {
             Some((host, port)) => probe_remote(&host, port, engine).await,
+            None => {
+                // Reading the mount table touches no mount, so it cannot wake
+                // an automount the way looking at the path does.
+                let mountinfo = std::fs::read_to_string("/proc/self/mountinfo").unwrap_or_default();
+                self.probe_path(repository, &mountinfo).await
+            }
+        }
+    }
+}
+
+impl RealProbe {
+    /// A repository on this computer's filesystem, given its mount table.
+    ///
+    /// Every look at a path under an automount point counts as using the
+    /// share, so a probe once a minute keeps one set to unmount after a few
+    /// idle minutes mounted for as long as the daemon runs. For a network
+    /// share there, the server is asked instead, as an `ssh://` destination's
+    /// is: the share is reachable when its server is.
+    ///
+    /// The server is read from the share's own mount while it is mounted,
+    /// and remembered for when it is not. Until the share has been seen
+    /// mounted, and for an automounted disk, the path is looked at as for any
+    /// other folder. The backup that follows mounts the share through its
+    /// path, as it always has.
+    async fn probe_path(&self, repository: &str, mountinfo: &str) -> Reach {
+        let server = match mounted(mountinfo, Path::new(repository)) {
+            Mounted::Share(server) => {
+                let mut servers = self.servers.lock().unwrap();
+                servers.insert(repository.to_string(), server.clone());
+                Some(server)
+            }
+            Mounted::Idle => self.servers.lock().unwrap().get(repository).cloned(),
+            Mounted::Plain | Mounted::Other => None,
+        };
+        match server {
+            Some(server) => connect(&server.host, server.port).await,
             None => probe_local(repository).await,
         }
     }
+}
+
+/// The machine a network share is served from.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Server {
+    host: String,
+    port: u16,
+}
+
+/// What holds a repository's path, as far as the probe is concerned.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Mounted {
+    /// No automount point above it: a folder, a disk, an ordinary mount.
+    Plain,
+    /// Under an automount point with nothing mounted there now.
+    Idle,
+    /// Under an automount point, on a network share from this server.
+    Share(Server),
+    /// Under an automount point, on something other than a network share
+    /// the probe can reach: a disk, or a kind of share it does not know.
+    Other,
+}
+
+/// Where `repository` lies, read from `/proc/self/mountinfo` text.
+fn mounted(mountinfo: &str, repository: &Path) -> Mounted {
+    let mounts: Vec<Mount> = mountinfo.lines().filter_map(Mount::parse).collect();
+    let depth = |m: &Mount| m.point.components().count();
+    let Some(automount) = mounts
+        .iter()
+        .filter(|m| m.fstype == "autofs" && repository.starts_with(&m.point))
+        .max_by_key(|m| depth(m))
+    else {
+        return Mounted::Plain;
+    };
+    // The filesystem the repository is on: the deepest mount over it at or
+    // below the automount point. One mounted over another at the same place
+    // comes later in the table, so of two equally deep, the later wins. A
+    // map such as autofs's /net mounts each share below its point, not on it.
+    let on = mounts
+        .iter()
+        .enumerate()
+        .filter(|(_, m)| {
+            m.fstype != "autofs"
+                && repository.starts_with(&m.point)
+                && m.point.starts_with(&automount.point)
+        })
+        .max_by_key(|(order, m)| (depth(m), *order));
+    match on {
+        None => Mounted::Idle,
+        Some((_, mount)) => mount.server().map_or(Mounted::Other, Mounted::Share),
+    }
+}
+
+/// One line of `/proc/self/mountinfo`.
+struct Mount {
+    point: PathBuf,
+    fstype: String,
+    source: String,
+    options: String,
+}
+
+impl Mount {
+    /// The fields are: id, parent, device, root, mount point, options,
+    /// optional fields, `-`, type, source, superblock options.
+    fn parse(line: &str) -> Option<Mount> {
+        let (before, after) = line.split_once(" - ")?;
+        let point = before.split(' ').nth(4)?;
+        let mut after = after.split(' ');
+        let fstype = after.next()?;
+        let source = after.next()?;
+        let options = after.next().unwrap_or("");
+        Some(Mount {
+            point: PathBuf::from(unescape(point)),
+            fstype: fstype.to_string(),
+            source: unescape(source),
+            options: options.to_string(),
+        })
+    }
+
+    /// The server, for the network shares the probe knows how to reach.
+    fn server(&self) -> Option<Server> {
+        let (host, default_port) = match self.fstype.as_str() {
+            // //server/share
+            "cifs" | "smb3" => (self.source.strip_prefix("//")?.split('/').next()?, 445),
+            // server:/export, or [address]:/export
+            "nfs" | "nfs4" => match self.source.strip_prefix('[') {
+                Some(bracketed) => (bracketed.split_once(']')?.0, 2049),
+                None => (self.source.split_once(':')?.0, 2049),
+            },
+            _ => return None,
+        };
+        if host.is_empty() {
+            return None;
+        }
+        // A share mounted from another port says so among its options.
+        let port = self
+            .options
+            .split(',')
+            .find_map(|option| option.strip_prefix("port=")?.parse().ok())
+            .filter(|&port| port != 0)
+            .unwrap_or(default_port);
+        Some(Server {
+            host: host.to_string(),
+            port,
+        })
+    }
+}
+
+/// Undo `mountinfo`'s octal escapes: `\040` for a space, and the like.
+fn unescape(field: &str) -> String {
+    let bytes = field.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        let escaped = (bytes[i] == b'\\')
+            .then(|| field.get(i + 1..i + 4))
+            .flatten()
+            .and_then(|digits| u8::from_str_radix(digits, 8).ok());
+        match escaped {
+            Some(byte) => {
+                out.push(byte);
+                i += 4;
+            }
+            None => {
+                out.push(bytes[i]);
+                i += 1;
+            }
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
 }
 
 /// A local path or a mounted share: it is there, or it is not.
@@ -183,17 +356,9 @@ async fn probe_local(repository: &str) -> Reach {
 /// destination answered, and those are health failures with their own banners,
 /// not reasons to start protecting locally.
 async fn probe_remote(host: &str, port: u16, engine: Option<Arc<dyn BackupEngine>>) -> Reach {
-    let connect = tokio::net::TcpStream::connect((host, port));
-    match tokio::time::timeout(PROBE_TIMEOUT, connect).await {
-        Ok(Ok(_)) => {}
-        Ok(Err(e)) => {
-            debug!(host, port, "destination did not accept a connection: {e}");
-            return Reach::No;
-        }
-        Err(_) => {
-            debug!(host, port, "destination did not answer in time");
-            return Reach::Unknown;
-        }
+    let connected = connect(host, port).await;
+    if connected != Reach::Yes {
+        return connected;
     }
 
     let Some(engine) = engine else {
@@ -210,6 +375,22 @@ async fn probe_remote(host: &str, port: u16, engine: Option<Arc<dyn BackupEngine
             Reach::Yes
         }
         Err(_) => Reach::Unknown,
+    }
+}
+
+/// Whether `host` accepts a TCP connection on `port`.
+async fn connect(host: &str, port: u16) -> Reach {
+    let connect = tokio::net::TcpStream::connect((host, port));
+    match tokio::time::timeout(PROBE_TIMEOUT, connect).await {
+        Ok(Ok(_)) => Reach::Yes,
+        Ok(Err(e)) => {
+            debug!(host, port, "destination did not accept a connection: {e}");
+            Reach::No
+        }
+        Err(_) => {
+            debug!(host, port, "destination did not answer in time");
+            Reach::Unknown
+        }
     }
 }
 
@@ -468,13 +649,17 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let repo = dir.path().join("repo");
         assert_eq!(
-            RealProbe.probe(repo.to_str().unwrap(), None).await,
+            RealProbe::default()
+                .probe(repo.to_str().unwrap(), None)
+                .await,
             Reach::No,
             "an unplugged drive presents as an absent path"
         );
         std::fs::create_dir(&repo).unwrap();
         assert_eq!(
-            RealProbe.probe(repo.to_str().unwrap(), None).await,
+            RealProbe::default()
+                .probe(repo.to_str().unwrap(), None)
+                .await,
             Reach::Yes
         );
     }
@@ -500,7 +685,9 @@ mod tests {
         std::os::unix::fs::PermissionsExt::set_mode(&mut perms, 0o500);
         std::fs::set_permissions(&repo, perms).unwrap();
 
-        let reach = RealProbe.probe(repo.to_str().unwrap(), None).await;
+        let reach = RealProbe::default()
+            .probe(repo.to_str().unwrap(), None)
+            .await;
 
         // Restore before asserting, so a failure does not leave an undeletable
         // temporary directory behind.
@@ -525,7 +712,9 @@ mod tests {
         std::os::unix::fs::PermissionsExt::set_mode(&mut perms, 0o000);
         std::fs::set_permissions(&share, perms).unwrap();
 
-        let reach = RealProbe.probe(repo.to_str().unwrap(), None).await;
+        let reach = RealProbe::default()
+            .probe(repo.to_str().unwrap(), None)
+            .await;
 
         let mut perms = std::fs::metadata(&share).unwrap().permissions();
         std::os::unix::fs::PermissionsExt::set_mode(&mut perms, 0o700);
@@ -536,6 +725,156 @@ mod tests {
 
     #[tokio::test]
     async fn an_unconfigured_destination_is_unknown_rather_than_absent() {
-        assert_eq!(RealProbe.probe("", None).await, Reach::Unknown);
+        assert_eq!(RealProbe::default().probe("", None).await, Reach::Unknown);
+    }
+
+    // Taken from a laptop with a systemd automount for an SMB share and one
+    // for an encrypted disk, with the user and address replaced.
+    const ROOT: &str =
+        "26 1 0:25 /@ / rw,noatime shared:1 - btrfs /dev/mapper/root rw,compress=zstd:3";
+    const SHARE_AUTOMOUNT: &str = "141 44 0:48 / /mnt/truenas-backups rw,relatime shared:54 - autofs systemd-1 rw,fd=81,pgrp=1,timeout=900,minproto=5,maxproto=5,direct,pipe_ino=12616";
+    const SHARE: &str = "733 141 0:130 / /mnt/truenas-backups rw,nosuid,nodev,noexec,relatime shared:699 - cifs //192.0.2.10/Backup rw,vers=3.1.1,cache=strict,username=someone,uid=1000,forceuid,gid=1000,forcegid,addr=192.0.2.10,file_mode=0600,dir_mode=0700,soft,nounix,serverino,mapposix,rsize=4194304,wsize=4194304,bsize=1048576,echo_interval=60,actimeo=1,closetimeo=1";
+    const DISK_AUTOMOUNT: &str = "56 44 0:43 / /mnt/tank rw,relatime shared:24 - autofs systemd-1 rw,fd=76,pgrp=1,timeout=0,minproto=5,maxproto=5,direct,pipe_ino=12611";
+    const DISK: &str = "159 56 253:1 / /mnt/tank rw,noatime shared:722 - ext4 /dev/mapper/tank rw";
+
+    fn table(lines: &[&str]) -> String {
+        lines.join("\n")
+    }
+
+    fn server(host: &str, port: u16) -> Mounted {
+        Mounted::Share(Server {
+            host: host.into(),
+            port,
+        })
+    }
+
+    #[test]
+    fn an_automounted_smb_share_is_known_by_its_server() {
+        let mounts = table(&[ROOT, SHARE_AUTOMOUNT, SHARE]);
+        assert_eq!(
+            mounted(&mounts, Path::new("/mnt/truenas-backups/borg")),
+            server("192.0.2.10", 445)
+        );
+    }
+
+    #[test]
+    fn an_automount_with_nothing_mounted_is_idle() {
+        let mounts = table(&[ROOT, SHARE_AUTOMOUNT]);
+        assert_eq!(
+            mounted(&mounts, Path::new("/mnt/truenas-backups/borg")),
+            Mounted::Idle
+        );
+    }
+
+    #[test]
+    fn an_automounted_disk_and_an_ordinary_folder_are_looked_at_by_path() {
+        let mounts = table(&[ROOT, DISK_AUTOMOUNT, DISK, SHARE_AUTOMOUNT, SHARE]);
+        assert_eq!(
+            mounted(&mounts, Path::new("/mnt/tank/borg")),
+            Mounted::Other
+        );
+        assert_eq!(
+            mounted(&mounts, Path::new("/home/someone/borg")),
+            Mounted::Plain
+        );
+        // A neighbour whose name only begins the same is not under it.
+        assert_eq!(
+            mounted(&mounts, Path::new("/mnt/truenas-backups-old/borg")),
+            Mounted::Plain
+        );
+    }
+
+    #[test]
+    fn nfs_shares_and_autofs_maps_are_known_by_their_servers_too() {
+        // autofs's /net map mounts each export below its own point.
+        let mounts = table(&[
+            ROOT,
+            "90 26 0:60 / /net rw,relatime shared:80 - autofs /etc/auto.net rw,fd=7,pgrp=900,timeout=300,minproto=5,maxproto=5,indirect",
+            "95 90 0:61 / /net/nas/backups rw,relatime shared:81 - nfs4 nas:/backups rw,vers=4.2,addr=192.0.2.20",
+            "96 90 0:62 / /net/old/backups rw,relatime shared:82 - nfs [2001:db8::5]:/backups rw,vers=3,port=2050",
+        ]);
+        assert_eq!(
+            mounted(&mounts, Path::new("/net/nas/backups/borg")),
+            server("nas", 2049)
+        );
+        assert_eq!(
+            mounted(&mounts, Path::new("/net/old/backups/borg")),
+            server("2001:db8::5", 2050),
+            "an address in brackets, and a port of its own"
+        );
+        assert_eq!(
+            mounted(&mounts, Path::new("/net/elsewhere/borg")),
+            Mounted::Idle
+        );
+    }
+
+    #[test]
+    fn escaped_spaces_in_a_mount_point_are_read_as_spaces() {
+        let mounts = table(&[
+            ROOT,
+            r"141 44 0:48 / /mnt/my\040backups rw,relatime shared:54 - autofs systemd-1 rw,direct",
+            r"733 141 0:130 / /mnt/my\040backups rw,relatime shared:699 - smb3 //nas/My\040Share rw",
+        ]);
+        assert_eq!(
+            mounted(&mounts, Path::new("/mnt/my backups/borg")),
+            server("nas", 445)
+        );
+    }
+
+    /// A share on a server that listens on this machine, at `port`.
+    fn share_at(port: u16) -> String {
+        table(&[
+            ROOT,
+            SHARE_AUTOMOUNT,
+            &format!("733 141 0:130 / /mnt/truenas-backups rw,relatime shared:699 - cifs //127.0.0.1/Backup rw,port={port}"),
+        ])
+    }
+
+    #[tokio::test]
+    async fn an_automounted_share_is_checked_at_its_server_not_its_path() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let probe = RealProbe::default();
+        // Nothing is at this path, so a look at it would answer No.
+        let repository = "/mnt/truenas-backups/borg";
+
+        assert_eq!(
+            probe.probe_path(repository, &share_at(port)).await,
+            Reach::Yes,
+            "the server answers"
+        );
+        assert_eq!(
+            probe
+                .probe_path(repository, &table(&[ROOT, SHARE_AUTOMOUNT]))
+                .await,
+            Reach::Yes,
+            "the share has gone idle, and its server is still asked"
+        );
+
+        drop(listener);
+        assert_eq!(
+            probe
+                .probe_path(repository, &table(&[ROOT, SHARE_AUTOMOUNT]))
+                .await,
+            Reach::No,
+            "a server that refuses the connection is not there"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_idle_share_never_seen_mounted_is_looked_at_by_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = dir.path().join("repo");
+        let point = dir.path().display().to_string();
+        let mounts = table(&[
+            ROOT,
+            &format!("141 44 0:48 / {point} rw,relatime shared:54 - autofs systemd-1 rw,direct"),
+        ]);
+        let probe = RealProbe::default();
+        let repository = repo.to_str().unwrap();
+
+        assert_eq!(probe.probe_path(repository, &mounts).await, Reach::No);
+        std::fs::create_dir(&repo).unwrap();
+        assert_eq!(probe.probe_path(repository, &mounts).await, Reach::Yes);
     }
 }

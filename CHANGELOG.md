@@ -23,6 +23,11 @@ All notable changes to Backtrack are documented here. This project adheres to
   carries on after the computer wakes. Before, the backup could be left
   waiting on a network that had already gone, and the computer gave up on
   sleeping.
+- A network share that your computer mounts only when it is used (an
+  automount) can now unmount again between backups. Backtrack checks whether
+  the share is there once a minute, and that check used to count as using
+  it, so the share stayed mounted for as long as Backtrack ran. Backtrack now
+  asks the server behind the share instead.
 
 ## [0.1.3] - 2026-11-15
 
