@@ -460,6 +460,7 @@ async fn connect_system_probe(
     };
     let connection = probe.connection().clone();
     shared.set_probe(Arc::new(probe));
+    tokio::spawn(crate::sleep::watch(connection.clone()));
     preflight::watch_for_changes(connection, waker, network_changed).await;
     info!("battery and metered-connection checks are active");
 }

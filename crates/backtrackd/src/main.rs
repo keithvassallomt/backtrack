@@ -19,6 +19,7 @@ mod recovery;
 mod restore;
 mod schedule;
 mod service;
+mod sleep;
 mod snapper;
 mod snapshot;
 mod supervise;
