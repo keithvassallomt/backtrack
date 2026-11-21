@@ -2,7 +2,8 @@
 
 ## For Keith to do
 
-Nothing right now.
+- Submit the 0.1.4 FriendlyHub files in `~/Downloads/backtrack-0.1.4-friendlyhub/`, as `packaging/flatpak/FRIENDLYHUB.md` says.
+- S15-T9 and S15-T10: with 0.1.4 installed on the laptop, use it as usual for a few days, closing the lid during backups too, then pass on the output of `target/sleep-check/after-release.sh`.
 
 ## Notes
 
